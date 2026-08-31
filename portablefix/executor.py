@@ -40,13 +40,19 @@ class ActionRunner(QThread):
             self._plan.argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        assert process.stdout is not None
-        for raw_line in process.stdout:
-            line = raw_line.rstrip("\n")
-            self.captured_output.append(line)
-            self.output_line.emit(line)
-        process.wait()
-        self.finished_with_code.emit(process.returncode)
+        try:
+            assert process.stdout is not None
+            for raw_line in process.stdout:
+                line = raw_line.rstrip("\n")
+                self.captured_output.append(line)
+                self.output_line.emit(line)
+            process.wait()
+            self.finished_with_code.emit(process.returncode)
+        except Exception:
+            process.kill()
+            process.wait()
+            self.finished_with_code.emit(-1)
