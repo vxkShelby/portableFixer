@@ -1,0 +1,59 @@
+module_id: m04_integrity
+category: REPAIR
+actions:
+  - id: dism_checkhealth
+    label_sk: "Rychla kontrola uloziska komponentov"
+    label_en: "Quick component store check"
+    risk: SAFE
+    command: "DISM /Online /Cleanup-Image /CheckHealth"
+    description_sk: "Rychlo overi, ci je uloziste komponentov oznacene ako poskodene."
+    description_en: "Quickly checks whether the component store is flagged as corrupted."
+  - id: dism_scanhealth
+    label_sk: "Hlbkova kontrola uloziska komponentov"
+    label_en: "Deep component store scan"
+    risk: SAFE
+    command: "DISM /Online /Cleanup-Image /ScanHealth"
+    description_sk: "Dokladnejsie skenovanie uloziska komponentov (dlhsie trva)."
+    description_en: "More thorough component store scan (takes longer)."
+  - id: dism_restorehealth
+    label_sk: "Oprava uloziska komponentov"
+    label_en: "Repair component store"
+    risk: REQUIRES_REBOOT
+    command: "DISM /Online /Cleanup-Image /RestoreHealth"
+    description_sk: "Opravi uloziste komponentov cez Windows Update. Po dokonceni sa odporuca restart pred spustenim sfc /scannow."
+    description_en: "Repairs the component store via Windows Update. A restart is recommended before running sfc /scannow afterward."
+  - id: sfc_scannow
+    label_sk: "System File Checker (oprava)"
+    label_en: "System File Checker (repair)"
+    risk: MODERATE
+    command: "sfc /scannow"
+    description_sk: "Skontroluje a opravi chranene systemove subory."
+    description_en: "Scans and repairs protected system files."
+  - id: sfc_verifyonly
+    label_sk: "System File Checker (len overenie)"
+    label_en: "System File Checker (verify only)"
+    risk: SAFE
+    command: "sfc /verifyonly"
+    description_sk: "Len overi integritu systemovych suborov, nic nemeni."
+    description_en: "Only verifies system file integrity, changes nothing."
+  - id: appx_reregister
+    label_sk: "Re-registracia Windows Store aplikacii"
+    label_en: "Re-register Windows Store apps"
+    risk: MODERATE
+    command: "Get-AppXPackage -AllUsers | Foreach {Add-AppxPackage -DisableDevelopmentMode -Register \"$($_.InstallLocation)\\AppXManifest.xml\"}"
+    description_sk: "Znova zaregistruje vsetky nainstalovane UWP aplikacie pre vsetkych pouzivatelov."
+    description_en: "Re-registers all installed UWP apps for all users."
+  - id: wmi_verify
+    label_sk: "Overenie WMI repozitara"
+    label_en: "Verify WMI repository"
+    risk: SAFE
+    command: "winmgmt /verifyrepository"
+    description_sk: "Skontroluje konzistenciu WMI repozitara bez zmien."
+    description_en: "Checks WMI repository consistency without making changes."
+  - id: wmi_salvage
+    label_sk: "Zachranenie WMI repozitara"
+    label_en: "Salvage WMI repository"
+    risk: DESTRUCTIVE
+    command: "winmgmt /salvagerepository"
+    description_sk: "Pokusi sa opravit poskodeny WMI repozitar. Robit len po zalohe, moze stratit vlastne WMI rozsirenia."
+    description_en: "Attempts to repair a corrupted WMI repository. Only after a backup - may lose custom WMI extensions."
