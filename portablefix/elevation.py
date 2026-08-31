@@ -8,6 +8,6 @@ def is_admin() -> bool:
         return False
 
 
-def relaunch_as_admin(executable: str, args: list[str] | None = None) -> None:
+def relaunch_as_admin(executable: str, args: list[str] | None = None) -> int:
     params = " ".join(args or [])
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, 1)
+    return ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, 1)

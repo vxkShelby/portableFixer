@@ -8,6 +8,8 @@ _STRINGS = {
         "category_diagnostics": "Diagnostika",
         "fallback_banner": "USB nedostupny na zapis - pouzivam %TEMP%\\PortableFix.",
         "integrity_warning": "Kontrola integrity zlyhala - subory boli zmenene.",
+        "elevation_failed": "Restart ako administrator zlyhal alebo bol zruseny.",
+        "confirm_risky_action": "Naozaj chcete spustit tuto akciu?",
     },
     "en": {
         "app_title": "PortableFix",
@@ -18,6 +20,8 @@ _STRINGS = {
         "category_diagnostics": "Diagnostics",
         "fallback_banner": "USB not writable - using %TEMP%\\PortableFix instead.",
         "integrity_warning": "Integrity check failed - files were modified.",
+        "elevation_failed": "Restart as administrator failed or was cancelled.",
+        "confirm_risky_action": "Are you sure you want to run this action?",
     },
 }
 

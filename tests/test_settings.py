@@ -21,3 +21,11 @@ def test_load_settings_fills_missing_keys(tmp_path):
     path.write_text(json.dumps({"language": "en"}), encoding="utf-8")
     loaded = load_settings(tmp_path)
     assert loaded == Settings(language="en", dry_run=True)
+
+
+def test_load_settings_returns_defaults_on_corrupted_file(tmp_path):
+    path = settings_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe{not json at all")
+    loaded = load_settings(tmp_path)
+    assert loaded == Settings()

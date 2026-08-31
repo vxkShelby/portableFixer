@@ -16,7 +16,8 @@ class ExecutionPlan:
 def build_execution_plan(command: str, dry_run: bool) -> ExecutionPlan:
     if dry_run:
         return ExecutionPlan(mode="dry_run", display_command=command, argv=None)
-    return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [command])
+    utf8_command = f"[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}"
+    return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [utf8_command])
 
 
 class ActionRunner(QThread):

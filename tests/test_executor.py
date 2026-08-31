@@ -13,7 +13,15 @@ def test_build_execution_plan_dry_run():
 def test_build_execution_plan_real_run():
     plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
     assert plan.mode == "run"
-    assert plan.argv == POWERSHELL_PREFIX + ["Write-Output 'hi'"]
+    assert plan.argv == POWERSHELL_PREFIX + [
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output 'hi'"
+    ]
+
+
+def test_build_execution_plan_real_run_forces_utf8_but_keeps_display_command_clean():
+    plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
+    assert plan.argv[-1] == "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output 'hi'"
+    assert plan.display_command == "Write-Output 'hi'"
 
 
 def test_action_runner_dry_run_emits_without_subprocess(qtbot):

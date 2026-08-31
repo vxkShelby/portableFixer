@@ -19,7 +19,10 @@ def load_settings(base_dir: Path) -> Settings:
     path = settings_path(base_dir)
     if not path.exists():
         return Settings()
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return Settings()
     return Settings(
         language=data.get("language", DEFAULT_LANGUAGE),
         dry_run=data.get("dry_run", True),

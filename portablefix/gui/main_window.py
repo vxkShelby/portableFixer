@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 from .. import elevation, i18n
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
-from ..models import ActionDef, ModuleDef
+from ..models import ActionDef, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
 from ..settings import Settings
 
@@ -25,18 +26,20 @@ from ..settings import Settings
 class MainWindow(QMainWindow):
     def __init__(
         self,
-        base_dir: Path,
+        assets_dir: Path,
+        state_dir: Path,
         settings: Settings,
         is_admin: bool,
         run_id: str,
         parent=None,
     ):
         super().__init__(parent)
-        self.base_dir = base_dir
+        self.assets_dir = assets_dir
+        self.state_dir = state_dir
         self.settings = settings
         self.is_admin = is_admin
         self.run_id = run_id
-        self.modules: list[ModuleDef] = load_all_modules(base_dir / "Modules")
+        self.modules: list[ModuleDef] = load_all_modules(assets_dir / "Modules")
         self._action_checkboxes: dict[str, QCheckBox] = {}
         self._queue: list[str] = []
         self._runner: ActionRunner | None = None
@@ -63,6 +66,9 @@ class MainWindow(QMainWindow):
         self.dry_run_checkbox.setChecked(self.settings.dry_run)
         self.dry_run_checkbox.toggled.connect(self._on_dry_run_toggled)
         top_bar.addWidget(self.dry_run_checkbox)
+        self.language_button = QPushButton(self.settings.language.upper())
+        self.language_button.clicked.connect(self._on_toggle_language)
+        top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
 
         body_layout = QHBoxLayout()
@@ -90,8 +96,24 @@ class MainWindow(QMainWindow):
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
 
+    def _on_toggle_language(self) -> None:
+        self.settings.language = "en" if self.settings.language == "sk" else "sk"
+        old_central = self.centralWidget()
+        self._action_checkboxes = {}
+        self._build_ui()
+        if old_central is not None:
+            old_central.deleteLater()
+
     def _on_restart_as_admin(self) -> None:
-        elevation.relaunch_as_admin(sys.executable)
+        result = elevation.relaunch_as_admin(sys.executable)
+        if result <= 32:
+            QMessageBox.warning(
+                self,
+                self._t("app_title"),
+                self._t("elevation_failed"),
+            )
+        else:
+            self.close()
 
     def _find_action(self, action_id: str) -> tuple[ModuleDef, ActionDef]:
         for module in self.modules:
@@ -109,6 +131,17 @@ class MainWindow(QMainWindow):
             return
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
+
+        if action.risk != RiskLevel.SAFE:
+            confirmed = QMessageBox.question(
+                self,
+                self._t("app_title"),
+                f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}",
+            )
+            if confirmed != QMessageBox.Yes:
+                self._run_next()
+                return
+
         plan = build_execution_plan(action.command, self.settings.dry_run)
         runner = ActionRunner(plan, parent=self)
         self._runner = runner
@@ -125,5 +158,5 @@ class MainWindow(QMainWindow):
     ) -> None:
         output = "\n".join(runner.captured_output)
         entry = make_entry(module_id, action_id, command, exit_code, output, self.settings.dry_run)
-        append_entry(self.base_dir, self.run_id, entry)
+        append_entry(self.state_dir, self.run_id, entry)
         self._run_next()
