@@ -1,6 +1,14 @@
 from unittest.mock import patch
 
-from portablefix.executor import POWERSHELL_PREFIX, ActionRunner, build_execution_plan
+from portablefix.executor import POWERSHELL_PREFIX, ActionRunner, _clean_line, build_execution_plan
+
+
+def test_clean_line_strips_embedded_null_bytes():
+    assert _clean_line("Y\x00o\x00u\x00 \x00m\x00u\x00s\x00t\x00\n") == "You must"
+
+
+def test_clean_line_passes_through_normal_text_unchanged():
+    assert _clean_line("normal output line\n") == "normal output line"
 
 
 def test_build_execution_plan_dry_run():

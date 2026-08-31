@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
                     continue
                 for action in module.actions:
                     checkbox = QCheckBox(f"[{action.risk.value}] {action.label(self.settings.language)}")
+                    checkbox.setToolTip(action.description(self.settings.language))
                     self._action_checkboxes[action.id] = checkbox
                     center_layout.addWidget(checkbox)
         self.run_button = QPushButton(self._t("run_selected"))

@@ -65,6 +65,28 @@ def test_main_window_loads_m01_actions(qtbot, tmp_path):
     assert "hello" in window._action_checkboxes
 
 
+def test_action_checkbox_shows_description_as_tooltip(qtbot, tmp_path):
+    module_dir = tmp_path / "Modules" / "m01_diagnostics"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m01_diagnostics\n"
+        "category: DIAGNOSTICS\n"
+        "actions:\n"
+        "  - id: described_action\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'x'\"\n"
+        "    description_sk: \"Popis SK\"\n"
+        "    description_en: \"Description EN\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_tooltip")
+    qtbot.addWidget(window)
+    assert window._action_checkboxes["described_action"].toolTip() == "Description EN"
+
+
 def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     settings = Settings(language="sk", dry_run=False)

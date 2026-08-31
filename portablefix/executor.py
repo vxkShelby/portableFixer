@@ -20,6 +20,10 @@ def build_execution_plan(command: str, dry_run: bool) -> ExecutionPlan:
     return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [utf8_command])
 
 
+def _clean_line(raw_line: str) -> str:
+    return raw_line.replace("\x00", "").rstrip("\n")
+
+
 class ActionRunner(QThread):
     output_line = Signal(str)
     finished_with_code = Signal(int)
@@ -49,7 +53,7 @@ class ActionRunner(QThread):
         try:
             assert process.stdout is not None
             for raw_line in process.stdout:
-                line = raw_line.rstrip("\n")
+                line = _clean_line(raw_line)
                 self.captured_output.append(line)
                 self.output_line.emit(line)
             process.wait()
