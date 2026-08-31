@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 from pathlib import Path
 
 from portablefix.paths import get_base_dir, resolve_writable_base_dir
