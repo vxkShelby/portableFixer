@@ -1,4 +1,5 @@
 module_id: m02_cleanup
+category: CLEANUP
 actions:
   - id: user_temp
     label_sk: "Docasne subory pouzivatela"

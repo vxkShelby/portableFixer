@@ -1,7 +1,7 @@
 # tests/test_m02_catalog.py
 from pathlib import Path
 
-from portablefix.models import RiskLevel
+from portablefix.models import ModuleCategory, RiskLevel
 from portablefix.module_engine import load_module
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m02_cleanup" / "actions.yaml"
@@ -45,3 +45,8 @@ def test_stale_user_profiles_excludes_null_lastusetime_and_loaded_profiles():
     assert "$_.LastUseTime -ne $null" in action.command
     assert "-not $_.Loaded" in action.preview_command
     assert "$_.LastUseTime -ne $null" in action.preview_command
+
+
+def test_m02_catalog_has_cleanup_category():
+    module = load_module(CATALOG_PATH)
+    assert module.category == ModuleCategory.CLEANUP

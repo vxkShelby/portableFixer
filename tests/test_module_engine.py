@@ -149,3 +149,8 @@ def test_load_module_unknown_category_raises(tmp_path):
     )
     with pytest.raises(ModuleLoadError):
         load_module(yaml_path)
+
+
+def test_m01_actions_yaml_has_diagnostics_category():
+    module = load_module(Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml")
+    assert module.category == ModuleCategory.DIAGNOSTICS
