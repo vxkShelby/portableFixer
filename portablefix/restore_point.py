@@ -1,5 +1,7 @@
 import subprocess
 
+from PySide6.QtCore import QThread, Signal
+
 from .executor import POWERSHELL_PREFIX
 
 
@@ -13,3 +15,16 @@ def create_restore_point(description: str) -> bool:
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
+
+
+class RestorePointRunner(QThread):
+    result_ready = Signal(bool)
+
+    def __init__(self, description: str, parent=None):
+        super().__init__(parent)
+        self._description = description
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        success = create_restore_point(self._description)
+        self.result_ready.emit(success)

@@ -28,6 +28,7 @@ class ActionRunner(QThread):
         super().__init__(parent)
         self._plan = plan
         self.captured_output: list[str] = []
+        self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
         if self._plan.mode == "dry_run":

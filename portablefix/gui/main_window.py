@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
         self._queue: list[str] = []
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
+        self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
         self._build_ui()
 
     def _t(self, key: str) -> str:
@@ -139,20 +140,34 @@ class MainWindow(QMainWindow):
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
 
+        if action.risk == RiskLevel.DESTRUCTIVE and not self._restore_point_attempted:
+            self._restore_point_attempted = True
+            rp_runner = restore_point.RestorePointRunner(f"PortableFix cleanup {self.run_id}", parent=self)
+            rp_runner.result_ready.connect(
+                lambda success, m=module, a=action: self._on_restore_point_checked(success, m, a)
+            )
+            self._pending_restore_point_runner = rp_runner
+            rp_runner.start()
+            return
+
+        self._dispatch_action(module, action)
+
+    def _on_restore_point_checked(self, success: bool, module: ModuleDef, action: ActionDef) -> None:
+        if not success:
+            proceed = QMessageBox.warning(
+                self,
+                self._t("app_title"),
+                self._t("restore_point_failed_confirm"),
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if proceed != QMessageBox.Yes:
+                self._skip_destructive_actions_in_queue()
+                self._run_next()
+                return
+        self._dispatch_action(module, action)
+
+    def _dispatch_action(self, module: ModuleDef, action: ActionDef) -> None:
         if action.risk == RiskLevel.DESTRUCTIVE:
-            if not self._restore_point_attempted:
-                self._restore_point_attempted = True
-                if not restore_point.create_restore_point(f"PortableFix cleanup {self.run_id}"):
-                    proceed = QMessageBox.warning(
-                        self,
-                        self._t("app_title"),
-                        self._t("restore_point_failed_confirm"),
-                        QMessageBox.Yes | QMessageBox.No,
-                    )
-                    if proceed != QMessageBox.Yes:
-                        self._skip_destructive_actions_in_queue()
-                        self._run_next()
-                        return
             confirmed = QMessageBox.warning(
                 self,
                 self._t("app_title"),
