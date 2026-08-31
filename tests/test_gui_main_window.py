@@ -261,6 +261,35 @@ def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path,
     assert "safe_thing" in log_content
 
 
+def test_running_a_batch_generates_a_report(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)  # from F1: single "hello" SAFE action, no preview_command
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_report"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+
+    window.run_selected_actions()
+
+    reports_dir = base_dir / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists() and any(reports_dir.glob("*.html")), timeout=10000)
+    assert any(reports_dir.glob("*.json"))
+
+
+def test_opening_without_running_anything_generates_no_report(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_none"
+    )
+    qtbot.addWidget(window)
+
+    window.run_selected_actions()  # nothing checked
+
+    assert not (base_dir / "Reports").exists()
+
+
 def test_destructive_action_accepted_runs_normally(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 

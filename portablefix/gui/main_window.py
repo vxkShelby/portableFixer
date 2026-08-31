@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import elevation, i18n, restore_point
+from .. import elevation, i18n, report, restore_point
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleDef, RiskLevel
@@ -45,6 +46,8 @@ class MainWindow(QMainWindow):
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
+        self._batch_active = False
+        self._snapshot_before: dict = {}
         self._build_ui()
 
     def _t(self, key: str) -> str:
@@ -129,13 +132,34 @@ class MainWindow(QMainWindow):
             aid for aid in self._queue if self._find_action(aid)[1].risk != RiskLevel.DESTRUCTIVE
         ]
 
+    def _take_snapshot(self) -> dict:
+        usage = shutil.disk_usage(self.state_dir)
+        return {
+            "free_gb": round(usage.free / (1024**3), 2),
+            "total_gb": round(usage.total / (1024**3), 2),
+        }
+
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._restore_point_attempted = False
+        if self._queue:
+            self._batch_active = True
+            self._snapshot_before = self._take_snapshot()
         self._run_next()
 
     def _run_next(self) -> None:
         if not self._queue:
+            if self._batch_active:
+                self._batch_active = False
+                snapshot_after = self._take_snapshot()
+                report.generate_report(
+                    self.state_dir,
+                    self.run_id,
+                    self.modules,
+                    self.settings.language,
+                    self._snapshot_before,
+                    snapshot_after,
+                )
             return
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
