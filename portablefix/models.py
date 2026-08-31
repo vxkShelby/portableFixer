@@ -9,6 +9,13 @@ class RiskLevel(str, Enum):
     REQUIRES_REBOOT = "REQUIRES_REBOOT"
 
 
+class ModuleCategory(str, Enum):
+    DIAGNOSTICS = "DIAGNOSTICS"
+    CLEANUP = "CLEANUP"
+    REPAIR = "REPAIR"
+    SECURITY = "SECURITY"
+
+
 @dataclass
 class ActionDef:
     id: str
@@ -31,3 +38,4 @@ class ActionDef:
 class ModuleDef:
     module_id: str
     actions: list[ActionDef]
+    category: ModuleCategory = ModuleCategory.DIAGNOSTICS

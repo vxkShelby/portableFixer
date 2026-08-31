@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from portablefix.module_engine import ModuleLoadError, load_all_modules, load_module
-from portablefix.models import RiskLevel
+from portablefix.models import ModuleCategory, RiskLevel
 
 VALID_YAML = """
 module_id: m_test
@@ -99,3 +99,53 @@ def test_load_module_without_preview_command_defaults_to_none(tmp_path):
     yaml_path.write_text(VALID_YAML, encoding="utf-8")
     module = load_module(yaml_path)
     assert module.actions[0].preview_command is None
+
+
+def test_load_module_with_explicit_category(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.category == ModuleCategory.REPAIR
+
+
+def test_load_module_without_category_defaults_to_diagnostics(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.category == ModuleCategory.DIAGNOSTICS
+
+
+def test_load_module_unknown_category_raises(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "category: BOGUS\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import ActionDef, ModuleDef, RiskLevel
+from .models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 
 REQUIRED_ACTION_FIELDS = ("id", "label_sk", "label_en", "risk", "command")
 
@@ -16,6 +16,12 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
     module_id = data.get("module_id")
     if not module_id:
         raise ModuleLoadError(f"{actions_yaml_path}: missing module_id")
+
+    category_raw = data.get("category", ModuleCategory.DIAGNOSTICS.value)
+    try:
+        category = ModuleCategory(category_raw)
+    except ValueError:
+        raise ModuleLoadError(f"{actions_yaml_path}: unknown category '{category_raw}'") from None
 
     actions = []
     for raw in data.get("actions", []):
@@ -38,7 +44,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 preview_command=raw.get("preview_command"),
             )
         )
-    return ModuleDef(module_id=module_id, actions=actions)
+    return ModuleDef(module_id=module_id, actions=actions, category=category)
 
 
 def load_all_modules(modules_dir: Path) -> list[ModuleDef]:
