@@ -29,3 +29,19 @@ def test_m02_catalog_no_wmic():
     for action in module.actions:
         assert "wmic" not in action.command.lower()
         assert "wmic" not in (action.preview_command or "").lower()
+
+
+def test_shadow_copies_and_windows_old_commands_avoid_interactive_prompts():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert "/quiet" in by_id["shadow_copies_oldest"].command
+    assert "/D Y" in by_id["windows_old_removal"].command
+
+
+def test_stale_user_profiles_excludes_null_lastusetime_and_loaded_profiles():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "stale_user_profiles")
+    assert "-not $_.Loaded" in action.command
+    assert "$_.LastUseTime -ne $null" in action.command
+    assert "-not $_.Loaded" in action.preview_command
+    assert "$_.LastUseTime -ne $null" in action.preview_command

@@ -35,3 +35,17 @@ def test_create_restore_point_exception_is_false(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", raise_error)
     assert create_restore_point("x") is False
+
+
+def test_create_restore_point_escapes_embedded_quotes(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, capture_output, timeout):
+        captured["argv"] = argv
+        return _FakeResult(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    create_restore_point('test "quoted" description')
+    command = captured["argv"][-1]
+    assert '"quoted"' not in command
+    assert "'quoted'" in command

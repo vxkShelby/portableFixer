@@ -63,3 +63,16 @@ def test_generate_report_writes_html_and_json(tmp_path):
     json_data = json.loads(json_path.read_text(encoding="utf-8"))
     assert json_data["run_id"] == "run3"
     assert len(json_data["actions"]) == 1
+
+
+def test_render_html_escapes_unsafe_characters(tmp_path):
+    from portablefix.audit_log import append_entry, make_entry
+
+    entry = make_entry("m02_cleanup", "<script>alert(1)</script>", "cmd", 0, "out", False)
+    append_entry(tmp_path, "run_xss", entry)
+
+    html_path, _ = generate_report(tmp_path, "run_xss", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+
+    assert "<script>alert(1)</script>" not in content
+    assert "&lt;script&gt;" in content

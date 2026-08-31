@@ -112,7 +112,7 @@ actions:
     label_sk: "Odstranenie Windows.old"
     label_en: "Remove Windows.old"
     risk: DESTRUCTIVE
-    command: "takeown /F C:\\Windows.old /R /A | Out-Null; icacls C:\\Windows.old /reset /T /C | Out-Null; Remove-Item C:\\Windows.old -Recurse -Force -EA SilentlyContinue"
+    command: "takeown /F C:\\Windows.old /R /A /D Y | Out-Null; icacls C:\\Windows.old /reset /T /C | Out-Null; Remove-Item C:\\Windows.old -Recurse -Force -EA SilentlyContinue"
     preview_command: "if (Test-Path C:\\Windows.old) { $f = Get-ChildItem C:\\Windows.old -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $gb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1GB,2); Write-Output \"Would delete $c files, $gb GB from C:\\Windows.old\" } else { Write-Output \"C:\\Windows.old not present\" }"
     description_sk: "Odstrani C:\\Windows.old. Nevratne."
     description_en: "Removes C:\\Windows.old. Irreversible."
@@ -121,7 +121,7 @@ actions:
     label_sk: "Najstarsia shadow copy"
     label_en: "Oldest shadow copy"
     risk: DESTRUCTIVE
-    command: "vssadmin delete shadows /for=C: /oldest"
+    command: "vssadmin delete shadows /for=C: /oldest /quiet"
     preview_command: "Get-CimInstance Win32_ShadowCopy | Select-Object ID,InstallDate,VolumeName | Format-Table"
     description_sk: "Zmaze najstarsiu shadow copy na disku C:. Nevratne."
     description_en: "Deletes the oldest shadow copy on drive C:. Irreversible."
@@ -139,7 +139,7 @@ actions:
     label_sk: "Stare pouzivatelske profily"
     label_en: "Stale user profiles"
     risk: DESTRUCTIVE
-    command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Remove-CimInstance"
-    preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
+    command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Remove-CimInstance"
+    preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
     description_sk: "Odstrani neaktivne pouzivatelske profily starsie ako 180 dni. Nevratne."
     description_en: "Removes inactive user profiles older than 180 days. Irreversible."

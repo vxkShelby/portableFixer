@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 from pathlib import Path
 
 from PySide6.QtWidgets import QMessageBox
@@ -259,6 +261,68 @@ def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path,
     log_content = log_path.read_text(encoding="utf-8")
     assert "risky_thing" not in log_content
     assert "safe_thing" in log_content
+
+
+def test_dry_run_destructive_action_never_creates_restore_point(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from portablefix import restore_point
+
+    def fail_if_called(description):
+        raise AssertionError("create_restore_point must not be called in dry-run")
+
+    monkeypatch.setattr(restore_point, "create_restore_point", fail_if_called)
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+
+    base_dir = _make_destructive_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_dryrun_destructive"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: "destructive-preview" in window.console.toPlainText(), timeout=10000)
+    assert "destructive-ran" not in window.console.toPlainText()
+
+
+def test_take_snapshot_measures_system_drive_not_state_dir(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_snapshot"
+    )
+    qtbot.addWidget(window)
+
+    captured = {}
+    real_disk_usage = shutil.disk_usage  # capture before patching, since it's the same shutil module
+
+    def fake_disk_usage(path):
+        captured["path"] = path
+        return real_disk_usage(os.environ.get("SystemDrive", "C:") + "\\")
+
+    monkeypatch.setattr("portablefix.gui.main_window.shutil.disk_usage", fake_disk_usage)
+    window._take_snapshot()
+
+    assert str(captured["path"]) != str(base_dir)
+    assert str(tmp_path) not in str(captured["path"])
+
+
+def test_run_button_disabled_during_batch_and_reenabled_after(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_button_lock"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+
+    window.run_selected_actions()
+    assert window.run_button.isEnabled() is False
+
+    qtbot.waitUntil(lambda: window.run_button.isEnabled() is True, timeout=10000)
 
 
 def test_running_a_batch_generates_a_report(qtbot, tmp_path):

@@ -1,3 +1,4 @@
+import html
 import json
 import platform
 import socket
@@ -65,16 +66,16 @@ def build_report_data(
 
 def _render_html(data: dict) -> str:
     rows = "\n".join(
-        f"<tr><td>{a['module_id']}</td><td>{a['label']}</td><td>{a['risk']}</td>"
+        f"<tr><td>{html.escape(a['module_id'])}</td><td>{html.escape(a['label'])}</td><td>{html.escape(a['risk'])}</td>"
         f"<td>{a['exit_code']}</td><td>{a['dry_run']}</td></tr>"
         for a in data["actions"]
     )
     restart_section = ""
     if data["requires_restart"]:
-        items = "".join(f"<li>{a['label']}</li>" for a in data["requires_restart"])
+        items = "".join(f"<li>{html.escape(a['label'])}</li>" for a in data["requires_restart"])
         restart_section = f"<h2>Requires restart</h2><ul>{items}</ul>"
     return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>PortableFix report {data['run_id']}</title>
+<html><head><meta charset="utf-8"><title>PortableFix report {html.escape(data['run_id'])}</title>
 <style>
 body {{ font-family: sans-serif; margin: 2em; }}
 table {{ border-collapse: collapse; width: 100%; }}
@@ -82,9 +83,9 @@ th, td {{ border: 1px solid #ccc; padding: 4px 8px; text-align: left; }}
 th {{ background: #eee; }}
 </style></head>
 <body>
-<h1>PortableFix report - {data['hostname']}</h1>
-<p>Run: {data['run_id']}</p>
-<p>OS: {data['os']}</p>
+<h1>PortableFix report - {html.escape(data['hostname'])}</h1>
+<p>Run: {html.escape(data['run_id'])}</p>
+<p>OS: {html.escape(data['os'])}</p>
 <p>Free space before: {data['snapshot_before'].get('free_gb', '?')} GB,
 after: {data['snapshot_after'].get('free_gb', '?')} GB</p>
 <h2>Actions</h2>

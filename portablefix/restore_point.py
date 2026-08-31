@@ -6,9 +6,10 @@ from .executor import POWERSHELL_PREFIX
 
 
 def create_restore_point(description: str) -> bool:
+    safe_description = description.replace('"', "'")
     command = (
         'Enable-ComputerRestore -Drive "C:\\"; '
-        f'Checkpoint-Computer -Description "{description}" -RestorePointType MODIFY_SETTINGS'
+        f'Checkpoint-Computer -Description "{safe_description}" -RestorePointType MODIFY_SETTINGS'
     )
     try:
         result = subprocess.run(POWERSHELL_PREFIX + [command], capture_output=True, timeout=120)

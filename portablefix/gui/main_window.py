@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -48,7 +49,15 @@ class MainWindow(QMainWindow):
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
         self._batch_active = False
         self._snapshot_before: dict = {}
+        self._closed = False
         self._build_ui()
+
+    def closeEvent(self, event) -> None:
+        # ponytail: plain-Python flag (safe even if a delayed cross-thread
+        # callback fires after the C++ widgets are gone) so async batch-completion
+        # handlers know not to touch self.run_button once the window is closing.
+        self._closed = True
+        super().closeEvent(event)
 
     def _t(self, key: str) -> str:
         return i18n.translate(key, self.settings.language)
@@ -133,7 +142,8 @@ class MainWindow(QMainWindow):
         ]
 
     def _take_snapshot(self) -> dict:
-        usage = shutil.disk_usage(self.state_dir)
+        system_drive = os.environ.get("SystemDrive", "C:") + "\\"
+        usage = shutil.disk_usage(system_drive)
         return {
             "free_gb": round(usage.free / (1024**3), 2),
             "total_gb": round(usage.total / (1024**3), 2),
@@ -145,12 +155,15 @@ class MainWindow(QMainWindow):
         if self._queue:
             self._batch_active = True
             self._snapshot_before = self._take_snapshot()
+            self.run_button.setEnabled(False)
         self._run_next()
 
     def _run_next(self) -> None:
         if not self._queue:
             if self._batch_active:
                 self._batch_active = False
+                if not self._closed:
+                    self.run_button.setEnabled(True)
                 snapshot_after = self._take_snapshot()
                 report.generate_report(
                     self.state_dir,
@@ -164,7 +177,7 @@ class MainWindow(QMainWindow):
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
 
-        if action.risk == RiskLevel.DESTRUCTIVE and not self._restore_point_attempted:
+        if action.risk == RiskLevel.DESTRUCTIVE and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
             rp_runner = restore_point.RestorePointRunner(f"PortableFix cleanup {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
