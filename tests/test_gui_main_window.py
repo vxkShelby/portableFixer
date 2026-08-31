@@ -10,6 +10,22 @@ from portablefix.audit_log import audit_log_path
 from portablefix.gui.main_window import MainWindow
 from portablefix.settings import Settings
 
+
+def _write_module(base_dir, module_id, category, action_id):
+    module_dir = base_dir / "Modules" / module_id
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        f"module_id: {module_id}\n"
+        f"category: {category}\n"
+        "actions:\n"
+        f"  - id: {action_id}\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'x'\"\n",
+        encoding="utf-8",
+    )
+
 ACTIONS_YAML = """
 module_id: m01_diagnostics
 actions:
@@ -401,3 +417,24 @@ def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_saf
     log_path = audit_log_path(base_dir, "run_rpfail")
     qtbot.waitUntil(lambda: log_path.exists() and "safe_thing" in log_path.read_text(encoding="utf-8"), timeout=10000)
     assert "risky_thing" not in log_path.read_text(encoding="utf-8")
+
+
+def test_category_list_deduplicates_same_category_across_modules(qtbot, tmp_path):
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
+    _write_module(tmp_path, "m02_other", "DIAGNOSTICS", "a2")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat1")
+    qtbot.addWidget(window)
+    assert window.category_list.count() == 1
+    assert window.category_list.item(0).text() == "Diagnostics"
+
+
+def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tmp_path):
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "a2")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat2")
+    qtbot.addWidget(window)
+    assert window.category_list.count() == 2
+    labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
+    assert labels == {"Diagnostics", "System repair"}

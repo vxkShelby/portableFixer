@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from .. import elevation, i18n, report, restore_point
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
-from ..models import ActionDef, ModuleDef, RiskLevel
+from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
 from ..settings import Settings
 
@@ -85,18 +85,35 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
 
+        category_i18n_keys = {
+            ModuleCategory.DIAGNOSTICS: "category_diagnostics",
+            ModuleCategory.CLEANUP: "category_cleanup",
+            ModuleCategory.REPAIR: "category_repair",
+            ModuleCategory.SECURITY: "category_security",
+        }
+        categories_seen: list[ModuleCategory] = []
+        for module in self.modules:
+            if module.category not in categories_seen:
+                categories_seen.append(module.category)
+
         body_layout = QHBoxLayout()
         self.category_list = QListWidget()
-        for module in self.modules:
-            self.category_list.addItem(QListWidgetItem(self._t("category_diagnostics")))
+        for category in categories_seen:
+            self.category_list.addItem(QListWidgetItem(self._t(category_i18n_keys[category])))
         body_layout.addWidget(self.category_list, 1)
 
         center_layout = QVBoxLayout()
-        for module in self.modules:
-            for action in module.actions:
-                checkbox = QCheckBox(f"[{action.risk.value}] {action.label(self.settings.language)}")
-                self._action_checkboxes[action.id] = checkbox
-                center_layout.addWidget(checkbox)
+        for category in categories_seen:
+            category_label = QLabel(self._t(category_i18n_keys[category]))
+            category_label.setStyleSheet("font-weight: bold;")
+            center_layout.addWidget(category_label)
+            for module in self.modules:
+                if module.category != category:
+                    continue
+                for action in module.actions:
+                    checkbox = QCheckBox(f"[{action.risk.value}] {action.label(self.settings.language)}")
+                    self._action_checkboxes[action.id] = checkbox
+                    center_layout.addWidget(checkbox)
         self.run_button = QPushButton(self._t("run_selected"))
         self.run_button.clicked.connect(self.run_selected_actions)
         center_layout.addWidget(self.run_button)
