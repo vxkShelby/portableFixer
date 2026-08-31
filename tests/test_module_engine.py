@@ -1,0 +1,77 @@
+from pathlib import Path
+
+import pytest
+
+from portablefix.module_engine import ModuleLoadError, load_all_modules, load_module
+from portablefix.models import RiskLevel
+
+VALID_YAML = """
+module_id: m_test
+actions:
+  - id: a1
+    label_sk: "Akcia 1"
+    label_en: "Action 1"
+    risk: SAFE
+    command: "Write-Output 'hi'"
+    description_sk: "Popis"
+    description_en: "Description"
+"""
+
+
+def test_load_module_valid(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML, encoding="utf-8")
+    module = load_module(yaml_path)
+    assert module.module_id == "m_test"
+    assert len(module.actions) == 1
+    action = module.actions[0]
+    assert action.id == "a1"
+    assert action.risk == RiskLevel.SAFE
+    assert action.label("sk") == "Akcia 1"
+    assert action.label("en") == "Action 1"
+
+
+def test_load_module_missing_module_id(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text("actions: []\n", encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_module_action_missing_field(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\nactions:\n  - id: a1\n    risk: SAFE\n    command: x\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_module_unknown_risk(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\nactions:\n  - id: a1\n    label_sk: a\n    label_en: a\n"
+        "    risk: SUPER_DANGEROUS\n    command: x\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_all_modules_finds_m01(tmp_path):
+    (tmp_path / "m01_diagnostics").mkdir()
+    (tmp_path / "m01_diagnostics" / "actions.yaml").write_text(VALID_YAML, encoding="utf-8")
+    (tmp_path / "m02_cleanup").mkdir()
+    (tmp_path / "m02_cleanup" / "actions.yaml").write_text(
+        VALID_YAML.replace("m_test", "m02_cleanup"), encoding="utf-8"
+    )
+    modules = load_all_modules(tmp_path)
+    assert [m.module_id for m in modules] == ["m_test", "m02_cleanup"]
+
+
+def test_m01_actions_yaml_loads():
+    module = load_module(Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml")
+    assert module.module_id == "m01_diagnostics"
+    assert len(module.actions) >= 5
+    assert all(a.risk == RiskLevel.SAFE for a in module.actions)
