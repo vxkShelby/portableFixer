@@ -1,6 +1,8 @@
+.worktrees/
 __pycache__/
 *.pyc
 .pytest_cache/
 App/
 build/
 Data/SHA256SUMS
+Data/settings.json
