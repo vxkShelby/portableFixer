@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import elevation, i18n
+from .. import elevation, i18n, restore_point
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleDef, RiskLevel
@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         self._action_checkboxes: dict[str, QCheckBox] = {}
         self._queue: list[str] = []
         self._runner: ActionRunner | None = None
+        self._restore_point_attempted = False
         self._build_ui()
 
     def _t(self, key: str) -> str:
@@ -122,8 +123,14 @@ class MainWindow(QMainWindow):
                     return module, action
         raise KeyError(action_id)
 
+    def _skip_destructive_actions_in_queue(self) -> None:
+        self._queue = [
+            aid for aid in self._queue if self._find_action(aid)[1].risk != RiskLevel.DESTRUCTIVE
+        ]
+
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        self._restore_point_attempted = False
         self._run_next()
 
     def _run_next(self) -> None:
@@ -132,7 +139,30 @@ class MainWindow(QMainWindow):
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
 
-        if action.risk != RiskLevel.SAFE:
+        if action.risk == RiskLevel.DESTRUCTIVE:
+            if not self._restore_point_attempted:
+                self._restore_point_attempted = True
+                if not restore_point.create_restore_point(f"PortableFix cleanup {self.run_id}"):
+                    proceed = QMessageBox.warning(
+                        self,
+                        self._t("app_title"),
+                        self._t("restore_point_failed_confirm"),
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if proceed != QMessageBox.Yes:
+                        self._skip_destructive_actions_in_queue()
+                        self._run_next()
+                        return
+            confirmed = QMessageBox.warning(
+                self,
+                self._t("app_title"),
+                f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_destructive_action')}",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirmed != QMessageBox.Yes:
+                self._run_next()
+                return
+        elif action.risk != RiskLevel.SAFE:
             confirmed = QMessageBox.question(
                 self,
                 self._t("app_title"),
@@ -142,7 +172,11 @@ class MainWindow(QMainWindow):
                 self._run_next()
                 return
 
-        plan = build_execution_plan(action.command, self.settings.dry_run)
+        if self.settings.dry_run and action.preview_command:
+            plan = build_execution_plan(action.preview_command, dry_run=False)
+        else:
+            plan = build_execution_plan(action.command, self.settings.dry_run)
+
         runner = ActionRunner(plan, parent=self)
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)

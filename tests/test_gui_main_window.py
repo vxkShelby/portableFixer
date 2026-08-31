@@ -187,3 +187,124 @@ def test_moderate_risk_action_accepted_runs_and_logs(qtbot, tmp_path, monkeypatc
     entry = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
     assert entry["action_id"] == "risky"
     assert entry["exit_code"] == 0
+
+
+DESTRUCTIVE_ACTIONS_YAML = """
+module_id: m02_cleanup
+actions:
+  - id: risky_thing
+    label_sk: "Riskantna vec"
+    label_en: "Risky thing"
+    risk: DESTRUCTIVE
+    command: "Write-Output 'destructive-ran'"
+    preview_command: "Write-Output 'destructive-preview'"
+    description_sk: "Test"
+    description_en: "Test"
+  - id: safe_thing
+    label_sk: "Bezpecna vec"
+    label_en: "Safe thing"
+    risk: SAFE
+    command: "Write-Output 'safe-ran'"
+    preview_command: "Write-Output 'safe-preview'"
+    description_sk: "Test"
+    description_en: "Test"
+"""
+
+
+def _make_destructive_base_dir(tmp_path):
+    module_dir = tmp_path / "Modules" / "m02_cleanup"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(DESTRUCTIVE_ACTIONS_YAML, encoding="utf-8")
+    return tmp_path
+
+
+def test_dry_run_with_preview_command_runs_preview_not_real_command(qtbot, tmp_path):
+    base_dir = _make_destructive_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_preview"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["safe_thing"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: "safe-preview" in window.console.toPlainText(), timeout=10000)
+    assert "safe-ran" not in window.console.toPlainText()
+
+
+def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
+
+    base_dir = _make_destructive_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_decline"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+    window._action_checkboxes["safe_thing"].setChecked(True)
+
+    window.run_selected_actions()
+
+    from portablefix.audit_log import audit_log_path
+    log_path = audit_log_path(base_dir, "run_decline")
+    qtbot.waitUntil(lambda: log_path.exists() and log_path.read_text(encoding="utf-8").strip() != "", timeout=10000)
+
+    log_content = log_path.read_text(encoding="utf-8")
+    assert "risky_thing" not in log_content
+    assert "safe_thing" in log_content
+
+
+def test_destructive_action_accepted_runs_normally(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+
+    base_dir = _make_destructive_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_accept"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+
+    window.run_selected_actions()
+
+    from portablefix.audit_log import audit_log_path
+    log_path = audit_log_path(base_dir, "run_accept")
+    qtbot.waitUntil(lambda: log_path.exists() and "risky_thing" in log_path.read_text(encoding="utf-8"), timeout=10000)
+    assert "destructive-ran" in window.console.toPlainText()
+
+
+def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_safe(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: False)
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
+
+    base_dir = _make_destructive_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_rpfail"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+    window._action_checkboxes["safe_thing"].setChecked(True)
+
+    window.run_selected_actions()
+
+    from portablefix.audit_log import audit_log_path
+    log_path = audit_log_path(base_dir, "run_rpfail")
+    qtbot.waitUntil(lambda: log_path.exists() and "safe_thing" in log_path.read_text(encoding="utf-8"), timeout=10000)
+    assert "risky_thing" not in log_path.read_text(encoding="utf-8")

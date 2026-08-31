@@ -10,6 +10,8 @@ _STRINGS = {
         "integrity_warning": "Kontrola integrity zlyhala - subory boli zmenene.",
         "elevation_failed": "Restart ako administrator zlyhal alebo bol zruseny.",
         "confirm_risky_action": "Naozaj chcete spustit tuto akciu?",
+        "confirm_destructive_action": "POZOR: Tato akcia je nevratna a nie je mozne ju vratit spat cez PortableFix. Naozaj pokracovat?",
+        "restore_point_failed_confirm": "Nepodarilo sa vytvorit bod obnovenia (Windows to mozno obmedzuje). Pokracovat aj tak?",
     },
     "en": {
         "app_title": "PortableFix",
@@ -22,6 +24,8 @@ _STRINGS = {
         "integrity_warning": "Integrity check failed - files were modified.",
         "elevation_failed": "Restart as administrator failed or was cancelled.",
         "confirm_risky_action": "Are you sure you want to run this action?",
+        "confirm_destructive_action": "WARNING: This action is irreversible and cannot be undone through PortableFix. Continue anyway?",
+        "restore_point_failed_confirm": "Could not create a System Restore Point (Windows may be limiting this). Continue anyway?",
     },
 }
 
