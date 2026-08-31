@@ -18,6 +18,7 @@ class ActionDef:
     command: str
     description_sk: str = ""
     description_en: str = ""
+    preview_command: str | None = None
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

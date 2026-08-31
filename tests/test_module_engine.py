@@ -75,3 +75,27 @@ def test_m01_actions_yaml_loads():
     assert module.module_id == "m01_diagnostics"
     assert len(module.actions) >= 5
     assert all(a.risk == RiskLevel.SAFE for a in module.actions)
+
+
+def test_load_module_with_preview_command(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Remove-Item foo\"\n"
+        "    preview_command: \"Write-Output preview\"\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.actions[0].preview_command == "Write-Output preview"
+
+
+def test_load_module_without_preview_command_defaults_to_none(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML, encoding="utf-8")
+    module = load_module(yaml_path)
+    assert module.actions[0].preview_command is None

@@ -35,6 +35,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 command=raw["command"],
                 description_sk=raw.get("description_sk", ""),
                 description_en=raw.get("description_en", ""),
+                preview_command=raw.get("preview_command"),
             )
         )
     return ModuleDef(module_id=module_id, actions=actions)
