@@ -86,9 +86,10 @@ def create_undo_script(base_dir: Path, run_id: str, steps: list[str] | None = No
     obsahuje len informačnú hlavičku."""
 ```
 
-Volá sa raz za dávku (rovnaké miesto ako `report.generate_report`), nie
-raz za akciu — F3a nemá žiadne kroky na registráciu, takže `steps` je
-vždy `None`/prázdny zoznam. Mechanizmus na registráciu jednotlivých
+Volá sa raz za dávku, na rovnakom mieste ako spúšťač Restore Point
+(začiatok dávky, pozri sekciu vyššie), nie raz za akciu a nie na konci
+dávky ako `report.generate_report` — F3a nemá žiadne kroky na
+registráciu, takže `steps` je vždy `None`/prázdny zoznam. Mechanizmus na registráciu jednotlivých
 krokov (napr. `MainWindow` by zbieral kroky z akcií, ktoré ich vedia
 poskytnúť) nechá sa navrhnúť až pri M05/M06, keď bude reálny obsah na
 registráciu — stavať ho teraz naslepo by bolo YAGNI porušenie.
