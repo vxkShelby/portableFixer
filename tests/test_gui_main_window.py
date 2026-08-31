@@ -438,3 +438,97 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     assert window.category_list.count() == 2
     labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
     assert labels == {"Diagnostics", "System repair"}
+
+
+def test_repair_category_safe_action_triggers_restore_point_and_undo_script(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    captured = {}
+
+    def fake_create_restore_point(description):
+        captured["called"] = True
+        return True
+
+    monkeypatch.setattr(restore_point, "create_restore_point", fake_create_restore_point)
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action")
+
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_repair")
+    qtbot.addWidget(window)
+    window._action_checkboxes["safe_repair_action"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: captured.get("called") is True, timeout=10000)
+    assert (tmp_path / "Backups" / "run_repair" / "undo.ps1").exists()
+
+
+def test_dry_run_repair_action_never_creates_restore_point_or_undo_script(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    def fail_if_called(description):
+        raise AssertionError("create_restore_point must not be called in dry-run")
+
+    monkeypatch.setattr(restore_point, "create_restore_point", fail_if_called)
+    module_dir = tmp_path / "Modules" / "m04_integrity"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m04_integrity\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: safe_repair_action\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'repaired'\"\n"
+        "    preview_command: \"Write-Output 'preview'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_repair_dry")
+    qtbot.addWidget(window)
+    window._action_checkboxes["safe_repair_action"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: "preview" in window.console.toPlainText(), timeout=10000)
+    assert not (tmp_path / "Backups").exists()
+
+
+def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: False)
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
+
+    module_dir = tmp_path / "Modules" / "m04_integrity"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m04_integrity\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: repair_action\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'repair-ran'\"\n"
+        "  - id: other_repair_action\n"
+        "    label_sk: \"Y\"\n"
+        "    label_en: \"Y\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'other-ran'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_rp_repair_fail")
+    qtbot.addWidget(window)
+    window._action_checkboxes["repair_action"].setChecked(True)
+    window._action_checkboxes["other_repair_action"].setChecked(True)
+
+    window.run_selected_actions()
+
+    reports_dir = tmp_path / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+    assert "repair-ran" not in window.console.toPlainText()
+    assert "other-ran" not in window.console.toPlainText()

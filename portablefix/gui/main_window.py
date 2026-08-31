@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import elevation, i18n, report, restore_point
+from .. import elevation, i18n, report, restore_point, undo
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -153,10 +153,15 @@ class MainWindow(QMainWindow):
                     return module, action
         raise KeyError(action_id)
 
-    def _skip_destructive_actions_in_queue(self) -> None:
-        self._queue = [
-            aid for aid in self._queue if self._find_action(aid)[1].risk != RiskLevel.DESTRUCTIVE
-        ]
+    def _skip_high_risk_actions_in_queue(self) -> None:
+        def _is_high_risk(action_id: str) -> bool:
+            module, action = self._find_action(action_id)
+            return action.risk == RiskLevel.DESTRUCTIVE or module.category in (
+                ModuleCategory.REPAIR,
+                ModuleCategory.SECURITY,
+            )
+
+        self._queue = [aid for aid in self._queue if not _is_high_risk(aid)]
 
     def _take_snapshot(self) -> dict:
         system_drive = os.environ.get("SystemDrive", "C:") + "\\"
@@ -194,8 +199,13 @@ class MainWindow(QMainWindow):
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
 
-        if action.risk == RiskLevel.DESTRUCTIVE and not self._restore_point_attempted and not self.settings.dry_run:
+        needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
+            ModuleCategory.REPAIR,
+            ModuleCategory.SECURITY,
+        )
+        if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
+            undo.create_undo_script(self.state_dir, self.run_id)
             rp_runner = restore_point.RestorePointRunner(f"PortableFix cleanup {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
                 lambda success, m=module, a=action: self._on_restore_point_checked(success, m, a)
@@ -215,7 +225,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
             )
             if proceed != QMessageBox.Yes:
-                self._skip_destructive_actions_in_queue()
+                self._skip_high_risk_actions_in_queue()
                 self._run_next()
                 return
         self._dispatch_action(module, action)
