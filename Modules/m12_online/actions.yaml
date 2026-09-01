@@ -1,0 +1,24 @@
+module_id: m12_online
+category: DIAGNOSTICS
+actions:
+  - id: online_connectivity_ladder
+    label_sk: "Postupny test pripojenia"
+    label_en: "Connectivity ladder test"
+    risk: SAFE
+    command: "$gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop; Write-Output ('Gateway: ' + $gw); if ($gw) { Test-Connection -ComputerName $gw -Count 2 -ErrorAction SilentlyContinue | Format-Table -AutoSize }; Write-Output '--- 8.8.8.8 ---'; Test-Connection -ComputerName 8.8.8.8 -Count 2 -ErrorAction SilentlyContinue | Format-Table -AutoSize; Write-Output '--- DNS resolve microsoft.com ---'; Resolve-DnsName microsoft.com -ErrorAction SilentlyContinue | Format-Table -AutoSize"
+    description_sk: "Otestuje pripojenie po vrstvach: brana, internet (8.8.8.8), DNS. Ukaze, kde presne spojenie zlyhava."
+    description_en: "Tests connectivity layer by layer: gateway, internet (8.8.8.8), DNS. Shows exactly where the connection fails."
+  - id: online_dns_benchmark
+    label_sk: "Porovnanie rychlosti DNS"
+    label_en: "DNS speed comparison"
+    risk: SAFE
+    command: "Write-Output 'Aktualny DNS:'; (Measure-Command { Resolve-DnsName microsoft.com -ErrorAction SilentlyContinue }).TotalMilliseconds; Write-Output 'Google DNS (8.8.8.8):'; (Measure-Command { Resolve-DnsName microsoft.com -Server 8.8.8.8 -ErrorAction SilentlyContinue }).TotalMilliseconds"
+    description_sk: "Porovna rychlost odpovede aktualneho DNS servera s Google DNS (8.8.8.8), nic nemeni."
+    description_en: "Compares response time of the current DNS server against Google DNS (8.8.8.8), changes nothing."
+  - id: online_proxy_check
+    label_sk: "Kontrola proxy nastaveni"
+    label_en: "Proxy settings check"
+    risk: SAFE
+    command: "netsh winhttp show proxy; Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue | Select-Object ProxyEnable,ProxyServer,AutoConfigURL | Format-List"
+    description_sk: "Vypise systemove (WinHTTP) aj pouzivatelske proxy nastavenia. Nezname proxy moze znamenat malware presmerovanie."
+    description_en: "Shows system (WinHTTP) and per-user proxy settings. An unknown proxy can indicate malware traffic redirection."
