@@ -1,6 +1,7 @@
 import sys
 import uuid
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import i18n
@@ -16,6 +17,9 @@ def main() -> int:
         app = QApplication(sys.argv)
 
         raw_base_dir = get_base_dir()
+        icon_path = raw_base_dir / "portablefix.ico"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
         base_dir, used_fallback = resolve_writable_base_dir(raw_base_dir)
         settings = load_settings(base_dir)
 

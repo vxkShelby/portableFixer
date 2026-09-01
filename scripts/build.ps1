@@ -13,9 +13,11 @@ $distStage = "$root\App"
 # case-insensitive, so a "PortableFix" output folder at the project root collides
 # with the existing "portablefix" source package folder and PyInstaller refuses
 # to write into it (non-empty dir error).
-pyinstaller --onedir --noconsole --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
+pyinstaller --onedir --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
   --add-data "$root\Modules;Modules" `
   --add-data "$root\Data;Data" `
+  --add-data "$root\portablefix.ico;." `
+  --icon "$root\portablefix.ico" `
   --name PortableFix `
   "$root\main.py"
 
