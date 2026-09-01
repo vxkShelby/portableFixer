@@ -1,0 +1,47 @@
+module_id: m05_windows_update
+category: REPAIR
+actions:
+  - id: wu_check_services
+    label_sk: "Kontrola stavu sluzieb Windows Update"
+    label_en: "Check Windows Update service status"
+    risk: SAFE
+    command: "Get-Service -Name wuauserv,bits,cryptsvc,msiserver | Select-Object Name,Status,StartType | Format-Table -AutoSize"
+    description_sk: "Zobrazi aktualny stav sluzieb potrebnych pre Windows Update, nic nemeni."
+    description_en: "Shows the current status of services required by Windows Update, changes nothing."
+  - id: wu_stop_services
+    label_sk: "Zastavenie sluzieb Windows Update"
+    label_en: "Stop Windows Update services"
+    risk: MODERATE
+    command: "Stop-Service -Name wuauserv,bits,cryptsvc,msiserver -Force -ErrorAction SilentlyContinue"
+    undo_command: "Start-Service -Name wuauserv,bits,cryptsvc,msiserver -ErrorAction SilentlyContinue"
+    description_sk: "Docasne zastavi sluzby Windows Update pred resetom cache. Potrebne pred dalsim krokom."
+    description_en: "Temporarily stops Windows Update services before resetting the cache. Required before the next step."
+  - id: wu_reset_cache
+    label_sk: "Reset cache Windows Update"
+    label_en: "Reset Windows Update cache"
+    risk: MODERATE
+    command: "if (Test-Path \"$env:WINDIR\\SoftwareDistribution\") { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution\" -NewName \"SoftwareDistribution.bak\" -Force -ErrorAction SilentlyContinue }; if (Test-Path \"$env:WINDIR\\System32\\catroot2\") { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2\" -NewName \"catroot2.bak\" -Force -ErrorAction SilentlyContinue }"
+    undo_command: "if ((Test-Path \"$env:WINDIR\\SoftwareDistribution.bak\") -and -not (Test-Path \"$env:WINDIR\\SoftwareDistribution\")) { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution.bak\" -NewName \"SoftwareDistribution\" -Force }; if ((Test-Path \"$env:WINDIR\\System32\\catroot2.bak\") -and -not (Test-Path \"$env:WINDIR\\System32\\catroot2\")) { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2.bak\" -NewName \"catroot2\" -Force }"
+    description_sk: "Premenuje priecinky SoftwareDistribution a catroot2 na .bak, Windows si vytvori nove pri dalsom starte sluzieb. Undo funguje spolahlivo len ak sa medzitym nespustil krok Restart sluzieb Windows Update."
+    description_en: "Renames the SoftwareDistribution and catroot2 folders to .bak; Windows recreates them fresh when services restart. Undo only works reliably if the Restart Windows Update services step hasn't run yet."
+  - id: wu_restart_services
+    label_sk: "Restart sluzieb Windows Update"
+    label_en: "Restart Windows Update services"
+    risk: SAFE
+    command: "Start-Service -Name wuauserv,bits,cryptsvc,msiserver -ErrorAction SilentlyContinue"
+    description_sk: "Nastartuje sluzby Windows Update naspat po resete cache."
+    description_en: "Starts Windows Update services back up after the cache reset."
+  - id: wu_reregister_dlls
+    label_sk: "Znovu-registracia DLL kniznic Windows Update"
+    label_en: "Re-register Windows Update DLL libraries"
+    risk: MODERATE
+    command: "$dlls = @('atl.dll','urlmon.dll','mshtml.dll','shdocvw.dll','browseui.dll','jscript.dll','vbscript.dll','scrrun.dll','msxml.dll','msxml3.dll','msxml6.dll','actxprxy.dll','softpub.dll','wintrust.dll','dssenh.dll','rsaenh.dll','gpkcsp.dll','sccbase.dll','slbcsp.dll','cryptdlg.dll','oleaut32.dll','ole32.dll','shell32.dll','initpki.dll','wuapi.dll','wuaueng.dll','wucltui.dll','wups.dll','wups2.dll','wuwebv.dll'); foreach ($dll in $dlls) { regsvr32.exe /s \"$env:WINDIR\\System32\\$dll\" }"
+    description_sk: "Znovu zaregistruje systemove DLL suvisiace s Windows Update. Casto nie je potrebne na modernom Windows, pomaha pri starsich/poskodenych instalaciach."
+    description_en: "Re-registers system DLLs related to Windows Update. Often unnecessary on modern Windows, helps with older/corrupted installations."
+  - id: wu_trigger_detection
+    label_sk: "Spustenie detekcie aktualizacii"
+    label_en: "Trigger update detection"
+    risk: SAFE
+    command: "UsoClient.exe StartScan"
+    description_sk: "Spusti kontrolu dostupnych aktualizacii na pozadi."
+    description_en: "Starts a background scan for available updates."
