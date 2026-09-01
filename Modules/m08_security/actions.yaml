@@ -1,0 +1,38 @@
+module_id: m08_security
+category: SECURITY
+actions:
+  - id: sec_defender_status
+    label_sk: "Stav Windows Defender"
+    label_en: "Windows Defender status"
+    risk: SAFE
+    command: "Get-MpComputerStatus | Select-Object AMServiceEnabled,RealTimeProtectionEnabled,AntivirusEnabled,AntivirusSignatureLastUpdated,QuickScanAge,FullScanAge | Format-List"
+    description_sk: "Zobrazi stav ochrany Defendera a vek definicii, nic nemeni."
+    description_en: "Shows Defender protection status and signature age, changes nothing."
+  - id: sec_firewall_status
+    label_sk: "Stav Windows Firewall"
+    label_en: "Windows Firewall status"
+    risk: SAFE
+    command: "Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction | Format-Table -AutoSize"
+    description_sk: "Zobrazi stav vsetkych firewall profilov (Domain/Private/Public), nic nemeni."
+    description_en: "Shows the status of all firewall profiles (Domain/Private/Public), changes nothing."
+  - id: sec_defender_update
+    label_sk: "Aktualizacia definicii Defendera"
+    label_en: "Update Defender signatures"
+    risk: SAFE
+    command: "Update-MpSignature"
+    description_sk: "Stiahne najnovsie definicie hrozieb pre Windows Defender. Vyzaduje internet."
+    description_en: "Downloads the latest threat definitions for Windows Defender. Requires internet access."
+  - id: sec_defender_quickscan
+    label_sk: "Rychly sken Defenderom"
+    label_en: "Defender quick scan"
+    risk: MODERATE
+    command: "Start-MpScan -ScanType QuickScan"
+    description_sk: "Spusti rychly antivirovy sken. Moze trvat niekolko minut a najdene hrozby presunie do karanteny."
+    description_en: "Runs a quick antivirus scan. May take several minutes; detected threats are moved to quarantine."
+  - id: sec_uac_status
+    label_sk: "Stav kontroly pouzivatelskych uctov (UAC)"
+    label_en: "User Account Control (UAC) status"
+    risk: SAFE
+    command: "Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' | Select-Object EnableLUA,ConsentPromptBehaviorAdmin,PromptOnSecureDesktop | Format-List"
+    description_sk: "Zobrazi, ci je UAC zapnute a ako sa spravaju vyzvy na povolenie, nic nemeni."
+    description_en: "Shows whether UAC is enabled and how elevation prompts behave, changes nothing."
