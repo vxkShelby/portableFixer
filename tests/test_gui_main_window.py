@@ -553,4 +553,144 @@ def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot
     reports_dir = tmp_path / "Reports"
     qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
     assert "repair-ran" not in window.console.toPlainText()
+
+
+def test_successful_actions_with_undo_command_accumulate_in_undo_script(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m05_windows_update\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: step_one\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'one'\"\n"
+        "    undo_command: \"Write-Output 'undo-one'\"\n"
+        "  - id: step_two\n"
+        "    label_sk: \"Y\"\n"
+        "    label_en: \"Y\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'two'\"\n"
+        "    undo_command: \"Write-Output 'undo-two'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_accum")
+    qtbot.addWidget(window)
+    window._action_checkboxes["step_one"].setChecked(True)
+    window._action_checkboxes["step_two"].setChecked(True)
+
+    window.run_selected_actions()
+
+    reports_dir = tmp_path / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+    undo_content = (tmp_path / "Backups" / "run_undo_accum" / "undo.ps1").read_text(encoding="utf-8")
+    assert "Write-Output 'undo-one'" in undo_content
+    assert "Write-Output 'undo-two'" in undo_content
+    assert undo_content.index("Write-Output 'undo-one'") < undo_content.index("Write-Output 'undo-two'")
+
+
+def test_failed_action_with_undo_command_not_added_to_undo_script(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m05_windows_update\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: failing_step\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"exit 1\"\n"
+        "    undo_command: \"Write-Output 'should-not-appear'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_fail")
+    qtbot.addWidget(window)
+    window._action_checkboxes["failing_step"].setChecked(True)
+
+    window.run_selected_actions()
+
+    reports_dir = tmp_path / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+    undo_content = (tmp_path / "Backups" / "run_undo_fail" / "undo.ps1").read_text(encoding="utf-8")
+    assert "should-not-appear" not in undo_content
+
+
+def test_dry_run_action_with_undo_command_never_creates_backups_dir(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    def fail_if_called(description):
+        raise AssertionError("create_restore_point must not be called in dry-run")
+
+    monkeypatch.setattr(restore_point, "create_restore_point", fail_if_called)
+
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m05_windows_update\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: step_one\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'one'\"\n"
+        "    undo_command: \"Write-Output 'undo-one'\"\n"
+        "    preview_command: \"Write-Output 'preview'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_dry")
+    qtbot.addWidget(window)
+    window._action_checkboxes["step_one"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: "preview" in window.console.toPlainText(), timeout=10000)
+    assert not (tmp_path / "Backups").exists()
+
+
+def test_undo_steps_reset_between_batches(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m05_windows_update\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: step_one\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'one'\"\n"
+        "    undo_command: \"Write-Output 'undo-one'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_reset")
+    qtbot.addWidget(window)
+    window._action_checkboxes["step_one"].setChecked(True)
+    window.run_selected_actions()
+    reports_dir = tmp_path / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+
+    assert window._undo_steps == ["Write-Output 'undo-one'"]
+    window._action_checkboxes["step_one"].setChecked(False)
+    window.run_selected_actions()
+    assert window._undo_steps == []
     assert "other-ran" not in window.console.toPlainText()

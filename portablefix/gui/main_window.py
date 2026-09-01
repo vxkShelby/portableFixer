@@ -49,6 +49,7 @@ class MainWindow(QMainWindow):
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
         self._batch_active = False
         self._snapshot_before: dict = {}
+        self._undo_steps: list[str] = []
         self._closed = False
         self._build_ui()
 
@@ -175,6 +176,7 @@ class MainWindow(QMainWindow):
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._restore_point_attempted = False
+        self._undo_steps = []
         if self._queue:
             self._batch_active = True
             self._snapshot_before = self._take_snapshot()
@@ -273,4 +275,9 @@ class MainWindow(QMainWindow):
         output = "\n".join(runner.captured_output)
         entry = make_entry(module_id, action_id, command, exit_code, output, self.settings.dry_run)
         append_entry(self.state_dir, self.run_id, entry)
+        if not self.settings.dry_run and exit_code == 0:
+            _, action = self._find_action(action_id)
+            if action.undo_command:
+                self._undo_steps.append(action.undo_command)
+                undo.create_undo_script(self.state_dir, self.run_id, steps=self._undo_steps)
         self._run_next()
