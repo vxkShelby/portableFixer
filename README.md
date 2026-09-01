@@ -80,10 +80,21 @@ súčty: `python scripts/generate_sha256sums.py`.
 
 Tieto kroky vyžadujú zdroje mimo repozitára a robia sa ručne:
 
-1. **Podpísanie kódu** — potrebný code-signing certifikát:
+1. **Podpísanie kódu** — `App\PortableFix.exe` je podpísaný self-signed
+   certifikátom (`CN=PortableFix Self-Signed`, verejná časť v
+   `Data\PortableFix-SelfSigned.cer`). Na cieľovom počítači sa dá
+   podpis zdôveryhodniť importom (admin PowerShell):
    ```powershell
-   signtool sign /fd SHA256 /a /t http://timestamp.digicert.com App\PortableFix\PortableFix.exe
+   Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\Root
+   Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
    ```
+   Pre distribúciu bez varovaní na cudzích počítačoch je potrebný
+   komerčný certifikát (OV/EV); potom prepodpíš:
+   ```powershell
+   signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 App\PortableFix.exe
+   ```
+   Po každom podpísaní znovu vygeneruj SHA256SUMS
+   (`python scripts/generate_sha256sums.py .`).
 2. **VM test** — otestuj na čistej inštalácii Windows 10 aj 11
    (bez admin práv aj s nimi): štart aplikácie, DRY-RUN dávka,
    ostrá SAFE dávka, kontrola vygenerovaného reportu a undo.ps1.
