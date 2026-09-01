@@ -79,14 +79,14 @@ body { font-family: 'Segoe UI', sans-serif; background: #1a1b26; color: #c0caf5;
        margin: 0; padding: 32px; font-size: 14px; }
 .wrap { max-width: 900px; margin: 0 auto; }
 h1 { color: #7aa2f7; font-size: 22px; margin: 0 0 4px 0; }
-.meta { color: #565f89; margin-bottom: 20px; line-height: 1.6; }
+.meta { color: #7982a9; margin-bottom: 20px; line-height: 1.6; }
 .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
 .chip { background: #24283b; border-radius: 8px; padding: 10px 18px; text-align: center; }
 .chip .num { font-size: 20px; font-weight: bold; display: block; }
 .chip.ok .num { color: #9ece6a; }
 .chip.fail .num { color: #f7768e; }
 .chip.dry .num { color: #e0af68; }
-.chip .lbl { font-size: 11px; color: #565f89; text-transform: uppercase; }
+.chip .lbl { font-size: 11px; color: #7982a9; text-transform: uppercase; }
 .card { background: #24283b; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; }
 .card.fail { border-left: 3px solid #f7768e; }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -95,8 +95,8 @@ h1 { color: #7aa2f7; font-size: 22px; margin: 0 0 4px 0; }
 .status.fail { background: #f7768e; }
 .label { font-weight: 600; flex: 1; }
 .badge { font-size: 10px; font-weight: bold; border-radius: 7px; padding: 1px 8px; color: #1a1b26; }
-.mod { color: #565f89; font-size: 12px; }
-.ts { color: #565f89; font-size: 11px; }
+.mod { color: #7982a9; font-size: 12px; }
+.ts { color: #7982a9; font-size: 11px; }
 .dry-tag { color: #e0af68; font-size: 11px; font-weight: bold; }
 details { margin-top: 8px; }
 summary { color: #7aa2f7; cursor: pointer; font-size: 12px; }

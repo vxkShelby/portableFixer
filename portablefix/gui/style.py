@@ -175,7 +175,7 @@ QPushButton#selectionBtn:hover {
     background: transparent;
 }
 QLabel#selectionScope {
-    color: #565f89;
+    color: #7982a9;
     font-size: 9pt;
 }
 

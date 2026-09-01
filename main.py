@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import i18n
 from portablefix.elevation import is_admin
+from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
 from portablefix.integrity import check_integrity
 from portablefix.paths import get_base_dir, resolve_writable_base_dir
@@ -15,6 +16,7 @@ from portablefix.settings import load_settings, save_settings
 def main() -> int:
     try:
         app = QApplication(sys.argv)
+        app.setStyleSheet(style.STYLE)
 
         raw_base_dir = get_base_dir()
         icon_path = raw_base_dir / "portablefix.ico"

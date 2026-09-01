@@ -278,13 +278,24 @@ class MainWindow(QMainWindow):
             note.setObjectName("summaryDryRunNote")
             layout.addWidget(note)
 
+        rows_container = QWidget()
+        rows_layout = QVBoxLayout(rows_container)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(4)
         for action_id, exit_code in self._batch_results:
             _, action = self._find_action(action_id)
             status = self._t("status_ok") if exit_code == 0 else self._t("status_failed")
             row_label = QLabel(f"[{status}] {action.label(self.settings.language)}")
             row_label.setObjectName("summaryRow")
             row_label.setProperty("ok", "true" if exit_code == 0 else "false")
-            layout.addWidget(row_label)
+            rows_layout.addWidget(row_label)
+        rows_layout.addStretch(1)
+
+        rows_scroll = QScrollArea()
+        rows_scroll.setWidgetResizable(True)
+        rows_scroll.setMaximumHeight(320)
+        rows_scroll.setWidget(rows_container)
+        layout.addWidget(rows_scroll)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
