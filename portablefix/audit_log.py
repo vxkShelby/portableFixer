@@ -12,6 +12,7 @@ class AuditEntry:
     action_id: str
     command: str
     exit_code: int | None
+    output: str
     output_hash: str
     dry_run: bool
 
@@ -25,6 +26,7 @@ def make_entry(
         action_id=action_id,
         command=command,
         exit_code=exit_code,
+        output=output,
         output_hash=hashlib.sha256(output.encode("utf-8")).hexdigest(),
         dry_run=dry_run,
     )

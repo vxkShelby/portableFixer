@@ -76,3 +76,34 @@ def test_render_html_escapes_unsafe_characters(tmp_path):
 
     assert "<script>alert(1)</script>" not in content
     assert "&lt;script&gt;" in content
+
+
+def test_build_report_data_includes_captured_output(tmp_path):
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "Skipped locked items: 3", False)
+    append_entry(tmp_path, "run_out", entry)
+
+    data = build_report_data(
+        tmp_path, "run_out", modules, "en",
+        snapshot_before={}, snapshot_after={},
+    )
+
+    assert data["actions"][0]["output"] == "Skipped locked items: 3"
+
+
+def test_html_report_has_collapsible_escaped_output_and_failure_marker(tmp_path):
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_html", make_entry("m02_cleanup", "user_temp", "cmd", 0, "<b>raw & output</b>", False))
+    append_entry(tmp_path, "run_html", make_entry("m02_cleanup", "user_temp", "cmd", 1, "boom", False))
+
+    html_path, _ = generate_report(
+        tmp_path, "run_html", modules, "en",
+        snapshot_before={"free_gb": 10.0}, snapshot_after={"free_gb": 11.0},
+    )
+    content = html_path.read_text(encoding="utf-8")
+
+    assert "<details>" in content
+    assert "&lt;b&gt;raw &amp; output&lt;/b&gt;" in content
+    assert "<b>raw & output</b>" not in content
+    assert 'class="card fail"' in content
+    assert "FAILED" in content
