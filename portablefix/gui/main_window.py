@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self._batch_results: list[tuple[str, int]] = []
         self._summary_dialog: QDialog | None = None
         self._closed = False
+        self._cancel_requested = False
         self._build_ui()
 
     def closeEvent(self, event) -> None:
@@ -208,10 +209,18 @@ class MainWindow(QMainWindow):
         scroll.setWidget(scroll_content)
         center_layout.addWidget(scroll, 1)
 
+        run_row = QHBoxLayout()
         self.run_button = QPushButton(self._t("run_selected"))
         self.run_button.setObjectName("runButton")
         self.run_button.clicked.connect(self.run_selected_actions)
-        center_layout.addWidget(self.run_button)
+        run_row.addWidget(self.run_button, 1)
+
+        self.cancel_button = QPushButton(self._t("cancel_batch"))
+        self.cancel_button.setObjectName("cancelButton")
+        self.cancel_button.clicked.connect(lambda _checked=False: self._on_cancel_clicked())
+        self.cancel_button.setEnabled(False)
+        run_row.addWidget(self.cancel_button)
+        center_layout.addLayout(run_row)
         body_layout.addLayout(center_layout, 1)
         root_layout.addLayout(body_layout, 3)
 
@@ -337,15 +346,24 @@ class MainWindow(QMainWindow):
             "total_gb": round(usage.total / (1024**3), 2),
         }
 
+    def _on_cancel_clicked(self) -> None:
+        self._cancel_requested = True
+        self._queue = []
+        self.cancel_button.setEnabled(False)
+        if self._runner is not None:
+            self._runner.cancel()
+
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._restore_point_attempted = False
         self._batch_results = []
         self._summary_dialog = None
+        self._cancel_requested = False
         if self._queue:
             self._batch_active = True
             self._snapshot_before = self._take_snapshot()
             self.run_button.setEnabled(False)
+            self.cancel_button.setEnabled(True)
         self._run_next()
 
     def _run_next(self) -> None:
@@ -354,6 +372,7 @@ class MainWindow(QMainWindow):
                 self._batch_active = False
                 if not self._closed:
                     self.run_button.setEnabled(True)
+                    self.cancel_button.setEnabled(False)
                 snapshot_after = self._take_snapshot()
                 html_path, _ = report.generate_report(
                     self.state_dir,

@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from portablefix.executor import POWERSHELL_PREFIX, ActionRunner, _clean_line, build_execution_plan
+from portablefix import executor as executor_module
 
 
 def test_clean_line_strips_embedded_null_bytes():
@@ -51,13 +52,12 @@ def test_action_runner_real_run_executes_powershell(qtbot):
 
 
 def test_action_runner_emits_sentinel_code_on_read_error(qtbot):
-    class ExplodingStdout:
-        def __iter__(self):
-            yield "first line\n"
-            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte")
+    class FakeStdout:
+        def fileno(self):
+            return 99
 
     class FakeProcess:
-        stdout = ExplodingStdout()
+        stdout = FakeStdout()
         returncode = 0
 
         def wait(self):
@@ -66,10 +66,74 @@ def test_action_runner_emits_sentinel_code_on_read_error(qtbot):
         def kill(self):
             pass
 
+    reads = [b"first line\n", None]
+
+    def fake_read(fd, size):
+        assert fd == 99
+        chunk = reads.pop(0)
+        if chunk is None:
+            raise OSError("boom")
+        return chunk
+
     plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
     runner = ActionRunner(plan)
     with patch("portablefix.executor.subprocess.Popen", return_value=FakeProcess()):
-        with qtbot.waitSignal(runner.finished_with_code, timeout=2000) as blocker:
-            runner.start()
+        with patch("portablefix.executor.os.read", side_effect=fake_read):
+            with qtbot.waitSignal(runner.finished_with_code, timeout=2000) as blocker:
+                runner.start()
     assert blocker.args == [-1]
     assert runner.captured_output == ["first line"]
+
+
+def test_action_runner_splits_progress_on_bare_carriage_return(qtbot):
+    class FakeStdout:
+        def fileno(self):
+            return 7
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    reads = [b"10%\r20%\r30%\n", b""]
+
+    def fake_read(fd, size):
+        return reads.pop(0)
+
+    plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
+    runner = ActionRunner(plan)
+    with patch("portablefix.executor.subprocess.Popen", return_value=FakeProcess()):
+        with patch("portablefix.executor.os.read", side_effect=fake_read):
+            with qtbot.waitSignal(runner.finished_with_code, timeout=2000) as blocker:
+                runner.start()
+    assert blocker.args == [0]
+    assert runner.captured_output == ["10%", "20%", "30%"]
+
+
+def test_action_runner_cancel_kills_process_and_reports_cancelled_code(qtbot):
+    plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
+    runner = ActionRunner(plan)
+    results = []
+    runner.finished_with_code.connect(results.append)
+    runner.start()
+    qtbot.waitUntil(lambda: runner._process is not None, timeout=5000)
+    runner.cancel()
+    qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
+    assert results[0] == ActionRunner.CANCELLED_EXIT_CODE
+
+
+def test_action_runner_watchdog_kills_process_after_inactivity_timeout(qtbot):
+    plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
+    runner = ActionRunner(plan)
+    results = []
+    runner.finished_with_code.connect(results.append)
+    with patch.object(executor_module, "INACTIVITY_TIMEOUT_SEC", 0.2):
+        with patch.object(executor_module, "WATCHDOG_POLL_SEC", 0.1):
+            runner.start()
+            qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
+    assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE

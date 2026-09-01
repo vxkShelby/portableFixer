@@ -146,6 +146,20 @@ QPushButton#runButton:disabled {
     background-color: #3b4261;
     color: #565f89;
 }
+QPushButton#cancelButton {
+    background-color: #24283b;
+    color: #f7768e;
+    border: 1px solid #f7768e;
+    padding: 9px 18px;
+}
+QPushButton#cancelButton:hover {
+    background-color: #3b4261;
+}
+QPushButton#cancelButton:disabled {
+    background-color: #24283b;
+    color: #565f89;
+    border: 1px solid #414868;
+}
 
 QPushButton#selectionBtn {
     background: transparent;
