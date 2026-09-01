@@ -179,6 +179,25 @@ QLabel#selectionScope {
     font-size: 9pt;
 }
 
+QLabel#actionStatus {
+    font-size: 8pt;
+    font-weight: bold;
+}
+QLabel#actionStatus[state="running"] { color: #e0af68; }
+QLabel#actionStatus[state="ok"] { color: #9ece6a; }
+QLabel#actionStatus[state="fail"] { color: #f7768e; }
+
+QLineEdit#searchBox {
+    background-color: #16161e;
+    border: 1px solid #3b4261;
+    border-radius: 6px;
+    padding: 5px 10px;
+    color: #c0caf5;
+}
+QLineEdit#searchBox:focus {
+    border-color: #7aa2f7;
+}
+
 QDialog {
     background-color: #1a1b26;
 }

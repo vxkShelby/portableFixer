@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -30,6 +32,26 @@ from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
 from ..settings import Settings
 
+PRESETS: dict[str, list[str]] = {
+    "quick_clean": [
+        "user_temp", "system_temp", "recycle_bin", "prefetch", "wer_reports",
+        "thumbnail_cache", "directx_shader_cache", "browser_cache_sweep",
+    ],
+    "full_diagnostic": [
+        "os_info", "computer_info", "bios_info", "cpu_info", "memory_info",
+        "volumes", "physical_disks", "recent_hotfixes", "pending_reboot",
+        "eventlog_critical_7d", "bsod_summary", "disk_reliability_counters",
+        "defender_status", "top_cpu_processes", "sec_defender_status",
+        "sec_firewall_status", "sec_uac_status",
+    ],
+    "privacy_debloat": [
+        "debloat_disable_telemetry", "debloat_disable_suggestions",
+        "debloat_disable_web_search", "debloat_disable_copilot",
+        "debloat_disable_widgets", "debloat_disable_advertising_id",
+        "debloat_disable_diagtrack", "debloat_disable_ceip_tasks",
+    ],
+}
+
 
 class MainWindow(QMainWindow):
     def __init__(
@@ -49,6 +71,10 @@ class MainWindow(QMainWindow):
         self.run_id = run_id
         self.modules: list[ModuleDef] = load_all_modules(assets_dir / "Modules")
         self._action_checkboxes: dict[str, QCheckBox] = {}
+        self._action_rows: dict[str, QWidget] = {}
+        self._action_status_labels: dict[str, QLabel] = {}
+        self._action_start_times: dict[str, float] = {}
+        self._queue_total = 0
         self._queue: list[str] = []
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
@@ -149,6 +175,29 @@ class MainWindow(QMainWindow):
         global_select_row.addStretch(1)
         center_layout.addLayout(global_select_row)
 
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        preset_label = QLabel(self._t("presets_label"))
+        preset_label.setObjectName("selectionScope")
+        preset_row.addWidget(preset_label)
+        preset_row.addWidget(self._make_selection_button(
+            self._t("preset_quick_clean"), lambda: self._apply_preset("quick_clean")
+        ))
+        preset_row.addWidget(self._make_selection_button(
+            self._t("preset_full_diagnostic"), lambda: self._apply_preset("full_diagnostic")
+        ))
+        preset_row.addWidget(self._make_selection_button(
+            self._t("preset_privacy_debloat"), lambda: self._apply_preset("privacy_debloat")
+        ))
+        preset_row.addStretch(1)
+        self.search_box = QLineEdit()
+        self.search_box.setObjectName("searchBox")
+        self.search_box.setPlaceholderText(self._t("search_placeholder"))
+        self.search_box.setMaximumWidth(220)
+        self.search_box.textChanged.connect(self._on_search_changed)
+        preset_row.addWidget(self.search_box)
+        center_layout.addLayout(preset_row)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_content = QWidget()
@@ -191,18 +240,26 @@ class MainWindow(QMainWindow):
                     continue
                 for action in module.actions:
                     self._category_action_ids[category].append(action.id)
-                    row = QHBoxLayout()
+                    row_widget = QWidget()
+                    row = QHBoxLayout(row_widget)
+                    row.setContentsMargins(0, 0, 0, 0)
                     row.setSpacing(8)
                     checkbox = QCheckBox(action.label(self.settings.language))
                     checkbox.setToolTip(action.description(self.settings.language))
+                    checkbox.stateChanged.connect(lambda _state=0: self._update_status_bar())
                     self._action_checkboxes[action.id] = checkbox
                     row.addWidget(checkbox)
                     badge = QLabel(action.risk.value)
                     badge.setObjectName("riskBadge")
                     badge.setProperty("risk", action.risk.value)
                     row.addWidget(badge)
+                    status_label = QLabel("")
+                    status_label.setObjectName("actionStatus")
+                    self._action_status_labels[action.id] = status_label
+                    row.addWidget(status_label)
                     row.addStretch(1)
-                    card_layout.addLayout(row)
+                    card_layout.addWidget(row_widget)
+                    self._action_rows[action.id] = row_widget
             self._category_groups[category] = card
             scroll_layout.addWidget(card)
         scroll_layout.addStretch(1)
@@ -232,10 +289,43 @@ class MainWindow(QMainWindow):
         self.category_list.currentRowChanged.connect(self._on_category_changed)
         if self._categories_order:
             self.category_list.setCurrentRow(0)
+        self._update_status_bar()
 
     def _on_category_changed(self, row: int) -> None:
         for index, category in enumerate(self._categories_order):
             self._category_groups[category].setHidden(index != row)
+
+    def _on_search_changed(self, text: str) -> None:
+        needle = text.strip().lower()
+        for action_id, row_widget in self._action_rows.items():
+            if not needle:
+                row_widget.setHidden(False)
+                continue
+            _, action = self._find_action(action_id)
+            haystack = action.label(self.settings.language).lower()
+            row_widget.setHidden(needle not in haystack)
+
+    def _apply_preset(self, preset_key: str) -> None:
+        wanted = [aid for aid in PRESETS[preset_key] if aid in self._action_checkboxes]
+        self._apply_selection(list(self._action_checkboxes), "none")
+        self._apply_selection(wanted, "all")
+
+    def _update_status_bar(self) -> None:
+        if self._batch_active:
+            return
+        selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        if not selected:
+            self.statusBar().showMessage(self._t("status_bar_none_selected"))
+            return
+        risk_order = [RiskLevel.DESTRUCTIVE, RiskLevel.REQUIRES_REBOOT, RiskLevel.MODERATE, RiskLevel.SAFE]
+        highest = RiskLevel.SAFE
+        for aid in selected:
+            _, action = self._find_action(aid)
+            if risk_order.index(action.risk) < risk_order.index(highest):
+                highest = action.risk
+        self.statusBar().showMessage(
+            self._t("status_bar_selected").format(count=len(selected), risk=highest.value)
+        )
 
     def _make_selection_button(self, text: str, on_click) -> QPushButton:
         button = QPushButton(text)
@@ -364,12 +454,24 @@ class MainWindow(QMainWindow):
         if self._runner is not None:
             self._runner.cancel()
 
+    def _set_action_status(self, action_id: str, state: str, text: str) -> None:
+        label = self._action_status_labels.get(action_id)
+        if label is None:
+            return
+        label.setText(text)
+        label.setProperty("state", state)
+        label.style().unpolish(label)
+        label.style().polish(label)
+
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
         self._summary_dialog = None
         self._cancel_requested = False
+        for action_id in self._queue:
+            self._set_action_status(action_id, "", "")
         if self._queue:
             self._batch_active = True
             self._snapshot_before = self._take_snapshot()
@@ -384,6 +486,7 @@ class MainWindow(QMainWindow):
                 if not self._closed:
                     self.run_button.setEnabled(True)
                     self.cancel_button.setEnabled(False)
+                    self._update_status_bar()
                 snapshot_after = self._take_snapshot()
                 html_path, _ = report.generate_report(
                     self.state_dir,
@@ -398,6 +501,13 @@ class MainWindow(QMainWindow):
             return
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
+        position = self._queue_total - len(self._queue)
+        if not self._closed:
+            self.statusBar().showMessage(
+                self._t("status_bar_running").format(
+                    pos=position, total=self._queue_total, label=action.label(self.settings.language)
+                )
+            )
 
         needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
             ModuleCategory.REPAIR,
@@ -456,6 +566,8 @@ class MainWindow(QMainWindow):
         else:
             plan = build_execution_plan(action.command, self.settings.dry_run)
 
+        self._set_action_status(action.id, "running", self._t("status_running"))
+        self._action_start_times[action.id] = time.monotonic()
         runner = ActionRunner(plan, parent=self)
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)
@@ -473,6 +585,9 @@ class MainWindow(QMainWindow):
         entry = make_entry(module_id, action_id, command, exit_code, output, self.settings.dry_run)
         append_entry(self.state_dir, self.run_id, entry)
         self._batch_results.append((action_id, exit_code))
+        elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
+        status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
+        self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
         if not self.settings.dry_run and exit_code == 0:
             _, action = self._find_action(action_id)
             if action.undo_command:

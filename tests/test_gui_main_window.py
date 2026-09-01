@@ -891,3 +891,74 @@ def test_undo_order_uses_real_m05_undo_commands_in_reversed_order(qtbot, tmp_pat
     qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
     undo_content = (tmp_path / "Backups" / "run_real_m05_order" / "undo.ps1").read_text(encoding="utf-8")
     assert undo_content.index(reset_undo) < undo_content.index(stop_undo)
+
+
+_TWO_ACTIONS_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: temp_cleanup
+    label_sk: "X"
+    label_en: "Temp cleanup"
+    risk: SAFE
+    command: "Write-Output 'a'"
+  - id: firewall_check
+    label_sk: "X"
+    label_en: "Firewall status"
+    risk: MODERATE
+    command: "Write-Output 'b'"
+"""
+
+
+def test_search_box_filters_action_rows_by_label(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search")
+    qtbot.addWidget(window)
+
+    window.search_box.setText("firewall")
+
+    assert window._action_rows["firewall_check"].isHidden() is False
+    assert window._action_rows["temp_cleanup"].isHidden() is True
+
+
+def test_search_box_shows_all_rows_when_cleared(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search2")
+    qtbot.addWidget(window)
+
+    window.search_box.setText("firewall")
+    window.search_box.setText("")
+
+    assert window._action_rows["firewall_check"].isHidden() is False
+    assert window._action_rows["temp_cleanup"].isHidden() is False
+
+
+def test_apply_preset_selects_only_ids_present_in_catalog(qtbot, tmp_path):
+    from portablefix.gui.main_window import PRESETS
+
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_preset")
+    qtbot.addWidget(window)
+    PRESETS["_test_preset"] = ["temp_cleanup", "does_not_exist_in_this_catalog"]
+
+    try:
+        window._action_checkboxes["firewall_check"].setChecked(True)
+        window._apply_preset("_test_preset")
+
+        assert window._action_checkboxes["temp_cleanup"].isChecked() is True
+        assert window._action_checkboxes["firewall_check"].isChecked() is False
+    finally:
+        del PRESETS["_test_preset"]
+
+
+def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_statusbar")
+    qtbot.addWidget(window)
+
+    assert window.statusBar().currentMessage() == "Nothing selected"
+
+    window._action_checkboxes["temp_cleanup"].setChecked(True)
+    assert window.statusBar().currentMessage() == "Selected: 1  |  Highest risk: SAFE"
+
+    window._action_checkboxes["firewall_check"].setChecked(True)
+    assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: MODERATE"
