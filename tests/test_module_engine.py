@@ -154,3 +154,36 @@ def test_load_module_unknown_category_raises(tmp_path):
 def test_m01_actions_yaml_has_diagnostics_category():
     module = load_module(Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml")
     assert module.category == ModuleCategory.DIAGNOSTICS
+
+
+def test_load_module_parses_undo_command(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n"
+        "    undo_command: \"Write-Output 'undo'\"\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.actions[0].undo_command == "Write-Output 'undo'"
+
+
+def test_load_module_without_undo_command_defaults_to_none(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.actions[0].undo_command is None
