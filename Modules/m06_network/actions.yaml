@@ -1,0 +1,53 @@
+module_id: m06_network
+category: REPAIR
+actions:
+  - id: net_adapter_status
+    label_sk: "Stav sietovych adapterov"
+    label_en: "Network adapter status"
+    risk: SAFE
+    command: "Get-NetAdapter | Select-Object Name,Status,LinkSpeed,MacAddress | Format-Table -AutoSize"
+    description_sk: "Zobrazi stav a rychlost sietovych adapterov, nic nemeni."
+    description_en: "Shows network adapter status and speed, changes nothing."
+  - id: net_ip_config_report
+    label_sk: "Prehlad IP konfiguracie"
+    label_en: "IP configuration report"
+    risk: SAFE
+    command: "Get-NetIPConfiguration | Format-List"
+    description_sk: "Zobrazi aktualnu IP konfiguraciu vsetkych rozhrani, nic nemeni."
+    description_en: "Shows the current IP configuration of all interfaces, changes nothing."
+  - id: net_flush_dns
+    label_sk: "Vycistenie DNS cache"
+    label_en: "Flush DNS cache"
+    risk: SAFE
+    command: "ipconfig /flushdns"
+    description_sk: "Vymaze lokalnu DNS cache, vynuti nove vyhladavanie nazvov."
+    description_en: "Clears the local DNS resolver cache, forcing fresh name lookups."
+  - id: net_hosts_reset
+    label_sk: "Reset hosts suboru"
+    label_en: "Reset hosts file"
+    risk: MODERATE
+    command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (-not (Test-Path \"$hostsPath.bak\")) { Copy-Item -Path $hostsPath -Destination \"$hostsPath.bak\" -Force }; Set-Content -Path $hostsPath -Value \"# Copyright (c) 1993-2009 Microsoft Corp.`r`n#`r`n127.0.0.1 localhost`r`n::1 localhost`r`n\" -Encoding ASCII"
+    undo_command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (Test-Path \"$hostsPath.bak\") { Copy-Item -Path \"$hostsPath.bak\" -Destination $hostsPath -Force }"
+    description_sk: "Zalohuje aktualny hosts subor (len pri prvom behu) a nahradi ho predvolenym obsahom bez ceph presmerovani. Caste malware presmerovava domeny cez tento subor."
+    description_en: "Backs up the current hosts file (only on first run) and replaces it with default content with no redirects. Malware commonly hijacks domains via this file."
+  - id: net_dhcp_renew
+    label_sk: "Obnovenie DHCP adresy"
+    label_en: "Renew DHCP address"
+    risk: MODERATE
+    command: "ipconfig /release; ipconfig /renew"
+    description_sk: "Uvolni a znovu ziska IP adresu cez DHCP. Kratko prerusi sietove spojenie."
+    description_en: "Releases and re-acquires the IP address via DHCP. Briefly interrupts network connectivity."
+  - id: net_winsock_reset
+    label_sk: "Reset Winsock katalogu"
+    label_en: "Reset Winsock catalog"
+    risk: REQUIRES_REBOOT
+    command: "netsh winsock reset"
+    description_sk: "Resetuje Winsock katalog na predvolene nastavenia. Vyzaduje restart pre plne uplatnenie."
+    description_en: "Resets the Winsock catalog to default settings. Requires a restart to fully apply."
+  - id: net_tcpip_reset
+    label_sk: "Reset TCP/IP zasobnika"
+    label_en: "Reset TCP/IP stack"
+    risk: REQUIRES_REBOOT
+    command: "netsh int ip reset"
+    description_sk: "Resetuje TCP/IP zasobnik na predvolene nastavenia. Vyzaduje restart pre plne uplatnenie."
+    description_en: "Resets the TCP/IP stack to default settings. Requires a restart to fully apply."
