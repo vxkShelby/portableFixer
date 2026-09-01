@@ -1,0 +1,52 @@
+module_id: m03_disk
+category: REPAIR
+actions:
+  - id: disk_smart_status
+    label_sk: "Stav diskov (SMART)"
+    label_en: "Disk health status (SMART)"
+    risk: SAFE
+    command: "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,OperationalStatus | Format-Table -AutoSize"
+    description_sk: "Zobrazi stav a typ fyzickych diskov, nic nemeni."
+    description_en: "Shows physical disk health and type, changes nothing."
+  - id: disk_volume_report
+    label_sk: "Prehlad diskovych oddielov"
+    label_en: "Volume report"
+    risk: SAFE
+    command: "Get-Volume | Select-Object DriveLetter,FileSystemLabel,FileSystem,HealthStatus,SizeRemaining,Size | Format-Table -AutoSize"
+    description_sk: "Zobrazi volne miesto a stav vsetkych diskovych oddielov, nic nemeni."
+    description_en: "Shows free space and health of all volumes, changes nothing."
+  - id: disk_scan_readonly
+    label_sk: "Kontrola systemoveho disku (len citanie)"
+    label_en: "Scan system drive (read-only)"
+    risk: SAFE
+    command: "Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Scan"
+    description_sk: "Skontroluje NTFS chyby na systemovom disku bez zamykania disku, nic neopravuje."
+    description_en: "Checks the system drive for NTFS errors without locking the volume; fixes nothing."
+  - id: disk_spotfix
+    label_sk: "Rychla oprava disku (SpotFix)"
+    label_en: "Quick disk repair (SpotFix)"
+    risk: MODERATE
+    command: "Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -SpotFix"
+    description_sk: "Opravi zname NTFS chyby online, bez restartu."
+    description_en: "Repairs known NTFS errors online, without a restart."
+  - id: disk_optimize_volume
+    label_sk: "Optimalizacia disku (TRIM/defragmentacia)"
+    label_en: "Optimize volume (TRIM/defrag)"
+    risk: MODERATE
+    command: "Optimize-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Verbose"
+    description_sk: "Automaticky zvoli TRIM pre SSD alebo defragmentaciu pre HDD."
+    description_en: "Automatically applies TRIM for SSDs or defragmentation for HDDs."
+  - id: disk_full_scan_reboot
+    label_sk: "Plna kontrola disku pri restarte"
+    label_en: "Full disk check at restart"
+    risk: REQUIRES_REBOOT
+    command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r"
+    description_sk: "Naplanuje plnu kontrolu a opravu systemoveho disku pri dalsom restarte. Moze trvat dlho."
+    description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time."
+  - id: disk_check_scheduled
+    label_sk: "Overenie naplanovanej kontroly"
+    label_en: "Verify scheduled check"
+    risk: SAFE
+    command: "fsutil dirty query $env:SystemDrive"
+    description_sk: "Overi, ci je systemovy disk oznaceny ako 'dirty' (naplanovana kontrola pri restarte)."
+    description_en: "Checks whether the system drive is marked 'dirty' (a check is scheduled at restart)."
