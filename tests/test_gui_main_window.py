@@ -462,6 +462,37 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     assert labels == {"Diagnostics", "System repair"}
 
 
+def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
+
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "a2")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_filter")
+    qtbot.addWidget(window)
+
+    assert window.category_list.currentRow() == 0
+    assert not window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden()
+    assert window._category_groups[ModuleCategory.REPAIR].isHidden()
+
+    window.category_list.setCurrentRow(1)
+    assert window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden()
+    assert not window._category_groups[ModuleCategory.REPAIR].isHidden()
+
+
+def test_checkbox_state_survives_category_switch(qtbot, tmp_path):
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "a2")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_persist")
+    qtbot.addWidget(window)
+
+    window._action_checkboxes["a1"].setChecked(True)
+    window.category_list.setCurrentRow(1)
+    window.category_list.setCurrentRow(0)
+    assert window._action_checkboxes["a1"].isChecked()
+
+
 def test_repair_category_safe_action_triggers_restore_point_and_undo_script(qtbot, tmp_path, monkeypatch):
     from portablefix import restore_point
 

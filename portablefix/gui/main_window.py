@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFrame,
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
@@ -12,11 +13,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QLabel,
     QWidget,
 )
 
+from . import style
 from .. import elevation, i18n, report, restore_point, undo
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
@@ -65,18 +68,29 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle(self._t("app_title"))
+        self.setStyleSheet(style.STYLE)
+        self.resize(1000, 700)
         central = QWidget(self)
+        central.setObjectName("central")
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setSpacing(10)
 
         top_bar = QHBoxLayout()
+        title_label = QLabel(self._t("app_title"))
+        title_label.setObjectName("appTitle")
+        top_bar.addWidget(title_label)
         admin_text = "admin" if self.is_admin else self._t("readonly_banner")
         self.admin_label = QLabel(admin_text)
+        self.admin_label.setObjectName("adminPill")
+        self.admin_label.setProperty("admin", "true" if self.is_admin else "false")
         top_bar.addWidget(self.admin_label)
         self.restart_admin_button = QPushButton(self._t("restart_as_admin"))
         self.restart_admin_button.setVisible(not self.is_admin)
         self.restart_admin_button.clicked.connect(self._on_restart_as_admin)
         top_bar.addWidget(self.restart_admin_button)
+        top_bar.addStretch(1)
         self.dry_run_checkbox = QCheckBox(self._t("dry_run_toggle"))
         self.dry_run_checkbox.setChecked(self.settings.dry_run)
         self.dry_run_checkbox.toggled.connect(self._on_dry_run_toggled)
@@ -92,39 +106,80 @@ class MainWindow(QMainWindow):
             ModuleCategory.REPAIR: "category_repair",
             ModuleCategory.SECURITY: "category_security",
         }
-        categories_seen: list[ModuleCategory] = []
+        self._categories_order: list[ModuleCategory] = []
         for module in self.modules:
-            if module.category not in categories_seen:
-                categories_seen.append(module.category)
+            if module.category not in self._categories_order:
+                self._categories_order.append(module.category)
 
         body_layout = QHBoxLayout()
+        body_layout.setSpacing(10)
         self.category_list = QListWidget()
-        for category in categories_seen:
+        self.category_list.setObjectName("categoryList")
+        self.category_list.setFixedWidth(190)
+        for category in self._categories_order:
             self.category_list.addItem(QListWidgetItem(self._t(category_i18n_keys[category])))
-        body_layout.addWidget(self.category_list, 1)
+        body_layout.addWidget(self.category_list)
 
         center_layout = QVBoxLayout()
-        for category in categories_seen:
-            category_label = QLabel(self._t(category_i18n_keys[category]))
-            category_label.setStyleSheet("font-weight: bold;")
-            center_layout.addWidget(category_label)
+        center_layout.setSpacing(8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 6, 0)
+        scroll_layout.setSpacing(8)
+
+        self._category_groups: dict[ModuleCategory, QWidget] = {}
+        for category in self._categories_order:
+            card = QFrame()
+            card.setObjectName("actionCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 10, 14, 10)
+            card_layout.setSpacing(2)
+            heading = QLabel(self._t(category_i18n_keys[category]))
+            heading.setObjectName("cardHeading")
+            card_layout.addWidget(heading)
             for module in self.modules:
                 if module.category != category:
                     continue
                 for action in module.actions:
-                    checkbox = QCheckBox(f"[{action.risk.value}] {action.label(self.settings.language)}")
+                    row = QHBoxLayout()
+                    row.setSpacing(8)
+                    checkbox = QCheckBox(action.label(self.settings.language))
                     checkbox.setToolTip(action.description(self.settings.language))
                     self._action_checkboxes[action.id] = checkbox
-                    center_layout.addWidget(checkbox)
+                    row.addWidget(checkbox)
+                    badge = QLabel(action.risk.value)
+                    badge.setObjectName("riskBadge")
+                    badge.setProperty("risk", action.risk.value)
+                    row.addWidget(badge)
+                    row.addStretch(1)
+                    card_layout.addLayout(row)
+            self._category_groups[category] = card
+            scroll_layout.addWidget(card)
+        scroll_layout.addStretch(1)
+        scroll.setWidget(scroll_content)
+        center_layout.addWidget(scroll, 1)
+
         self.run_button = QPushButton(self._t("run_selected"))
+        self.run_button.setObjectName("runButton")
         self.run_button.clicked.connect(self.run_selected_actions)
         center_layout.addWidget(self.run_button)
-        body_layout.addLayout(center_layout, 2)
-        root_layout.addLayout(body_layout)
+        body_layout.addLayout(center_layout, 1)
+        root_layout.addLayout(body_layout, 3)
 
         self.console = QPlainTextEdit()
+        self.console.setObjectName("console")
         self.console.setReadOnly(True)
         root_layout.addWidget(self.console, 1)
+
+        self.category_list.currentRowChanged.connect(self._on_category_changed)
+        if self._categories_order:
+            self.category_list.setCurrentRow(0)
+
+    def _on_category_changed(self, row: int) -> None:
+        for index, category in enumerate(self._categories_order):
+            self._category_groups[category].setHidden(index != row)
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
