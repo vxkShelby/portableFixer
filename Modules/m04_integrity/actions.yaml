@@ -50,10 +50,18 @@ actions:
     command: "winmgmt /verifyrepository"
     description_sk: "Skontroluje konzistenciu WMI repozitara bez zmien."
     description_en: "Checks WMI repository consistency without making changes."
+  - id: wmi_backup
+    label_sk: "Zaloha WMI repozitara"
+    label_en: "Back up WMI repository"
+    risk: SAFE
+    command: "$bk = \"$env:ProgramData\\PortableFix\\wmi_backup.bin\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; winmgmt /backup $bk; if ($LASTEXITCODE -eq 0) { Write-Output ('WMI repository backed up to ' + $bk) } else { Write-Output 'WMI backup failed.'; exit 1 }"
+    description_sk: "Vytvori zalohu WMI repozitara pred pripadnym zachranenim (Salvage). Odporucane spustit pred wmi_salvage."
+    description_en: "Creates a backup of the WMI repository before a potential salvage. Recommended to run before wmi_salvage."
   - id: wmi_salvage
     label_sk: "Zachranenie WMI repozitara"
     label_en: "Salvage WMI repository"
     risk: DESTRUCTIVE
     command: "winmgmt /salvagerepository"
-    description_sk: "Pokusi sa opravit poskodeny WMI repozitar. Robit len po zalohe, moze stratit vlastne WMI rozsirenia."
-    description_en: "Attempts to repair a corrupted WMI repository. Only after a backup - may lose custom WMI extensions."
+    undo_command: "$bk = \"$env:ProgramData\\PortableFix\\wmi_backup.bin\"; if (Test-Path $bk) { winmgmt /restore $bk 1; Write-Output 'WMI repository restored from backup.' } else { Write-Output 'No WMI backup found - nothing to restore.' }"
+    description_sk: "Pokusi sa opravit poskodeny WMI repozitar. Robit len po zalohe (akcia wmi_backup), moze stratit vlastne WMI rozsirenia. Undo obnovi zo zalohy, ak existuje."
+    description_en: "Attempts to repair a corrupted WMI repository. Only after a backup (the wmi_backup action) - may lose custom WMI extensions. Undo restores from the backup, if one exists."

@@ -50,3 +50,11 @@ actions:
     command: "fsutil dirty query $env:SystemDrive"
     description_sk: "Overi, ci je systemovy disk oznaceny ako 'dirty' (naplanovana kontrola pri restarte)."
     description_en: "Checks whether the system drive is marked 'dirty' (a check is scheduled at restart)."
+
+  - id: disk_vss_writers_report
+    label_sk: "Stav VSS writerov"
+    label_en: "VSS writers status"
+    risk: SAFE
+    command: "vssadmin list writers"
+    description_sk: "Zobrazi stav VSS writerov (dolezite pre zalohovanie a shadow copies). Zlyhany writer casto blokuje zalohy. Nic nemeni."
+    description_en: "Shows VSS writer status (relevant for backups and shadow copies). A failed writer often blocks backups. Changes nothing."

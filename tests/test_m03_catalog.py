@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m03_disk" / "actions.yaml"
 
 
-def test_m03_catalog_loads_7_actions_in_repair_category():
+def test_m03_catalog_loads_8_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m03_disk"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 7
+    assert len(module.actions) == 8
 
 
 def test_m03_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m03_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 4
+    assert len(by_risk[RiskLevel.SAFE]) == 5
     assert len(by_risk[RiskLevel.MODERATE]) == 2
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
     assert RiskLevel.DESTRUCTIVE not in by_risk

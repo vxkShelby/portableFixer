@@ -51,3 +51,26 @@ actions:
     command: "netsh int ip reset"
     description_sk: "Resetuje TCP/IP zasobnik na predvolene nastavenia. Vyzaduje restart pre plne uplatnenie."
     description_en: "Resets the TCP/IP stack to default settings. Requires a restart to fully apply."
+  - id: net_firewall_reset
+    label_sk: "Reset Windows Firewall na predvolene"
+    label_en: "Reset Windows Firewall to defaults"
+    risk: MODERATE
+    command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; netsh advfirewall export $bk | Out-Null; $exportOk = $LASTEXITCODE -eq 0; netsh advfirewall reset | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Firewall reset to defaults (backup exported: ' + $exportOk + ').') } else { Write-Output 'Firewall reset failed (requires administrator privileges).'; exit 1 }"
+    undo_command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; if (Test-Path $bk) { netsh advfirewall import $bk | Out-Null; Write-Output 'Firewall settings restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
+    description_sk: "Zalohuje aktualne pravidla firewallu a resetuje ho na predvolene nastavenia Windows. Undo obnovi zo zalohy."
+    description_en: "Backs up current firewall rules and resets it to Windows defaults. Undo restores from the backup."
+  - id: net_print_spooler_reset
+    label_sk: "Reset tlacoveho spooleru"
+    label_en: "Reset print spooler"
+    risk: MODERATE
+    command: "Stop-Service -Name Spooler -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\System32\\spool\\PRINTERS\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service -Name Spooler -EA SilentlyContinue -ErrorVariable startErrs; Write-Output ('Skipped locked/in-use items: ' + $errs.Count + '; Spooler service restart: ' + $(if ($startErrs.Count -eq 0) { 'OK' } else { 'FAILED' }))"
+    description_sk: "Zastavi sluzbu tlacoveho spooleru, vycisti zaseknutu frontu tlace a spusti sluzbu spat."
+    description_en: "Stops the print spooler service, clears a stuck print queue, and restarts the service."
+  - id: net_adapter_power_disable
+    label_sk: "Vypnutie uspornej spravy sietovych adapterov"
+    label_en: "Disable network adapter power management"
+    risk: MODERATE
+    command: "$adapters = Get-NetAdapter -EA SilentlyContinue; $ok = 0; $failed = 0; foreach ($a in $adapters) { try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Disabled -EA Stop; $ok++ } catch { $failed++ } }; Write-Output ('Disabled power management on ' + $ok + ' adapter(s), unsupported/failed: ' + $failed)"
+    undo_command: "$adapters = Get-NetAdapter -EA SilentlyContinue; $ok = 0; $failed = 0; foreach ($a in $adapters) { try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Enabled -EA Stop; $ok++ } catch { $failed++ } }; Write-Output ('Re-enabled power management on ' + $ok + ' adapter(s), unsupported/failed: ' + $failed)"
+    description_sk: "Zabrani Windows vypinat sietove adaptery kvoli uspore energie - caste riesenie nahodnych vypadkov Wi-Fi/LAN po uspani."
+    description_en: "Prevents Windows from powering off network adapters to save energy - a common fix for random Wi-Fi/LAN drops after sleep."
