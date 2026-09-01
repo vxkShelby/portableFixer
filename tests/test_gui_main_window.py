@@ -493,6 +493,91 @@ def test_checkbox_state_survives_category_switch(qtbot, tmp_path):
     assert window._action_checkboxes["a1"].isChecked()
 
 
+def _write_mixed_module(base_dir, module_id, category, safe_id, moderate_id):
+    module_dir = base_dir / "Modules" / module_id
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        f"module_id: {module_id}\n"
+        f"category: {category}\n"
+        "actions:\n"
+        f"  - id: {safe_id}\n"
+        "    label_sk: \"S\"\n"
+        "    label_en: \"S\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 's'\"\n"
+        f"  - id: {moderate_id}\n"
+        "    label_sk: \"M\"\n"
+        "    label_en: \"M\"\n"
+        "    risk: MODERATE\n"
+        "    command: \"Write-Output 'm'\"\n",
+        encoding="utf-8",
+    )
+
+
+def test_global_select_buttons_cover_all_categories(qtbot, tmp_path):
+    _write_mixed_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "d_safe", "d_mod")
+    _write_mixed_module(tmp_path, "m04_integrity", "REPAIR", "r_safe", "r_mod")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_selall")
+    qtbot.addWidget(window)
+
+    window.global_select_all_button.click()
+    assert all(cb.isChecked() for cb in window._action_checkboxes.values())
+
+    window.global_select_none_button.click()
+    assert not any(cb.isChecked() for cb in window._action_checkboxes.values())
+
+    window.global_select_safe_button.click()
+    assert window._action_checkboxes["d_safe"].isChecked()
+    assert window._action_checkboxes["r_safe"].isChecked()
+    assert not window._action_checkboxes["d_mod"].isChecked()
+    assert not window._action_checkboxes["r_mod"].isChecked()
+
+
+def test_category_select_buttons_affect_only_their_category(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
+
+    _write_mixed_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "d_safe", "d_mod")
+    _write_mixed_module(tmp_path, "m04_integrity", "REPAIR", "r_safe", "r_mod")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_selcat")
+    qtbot.addWidget(window)
+
+    all_btn, safe_btn, none_btn = window._category_select_buttons[ModuleCategory.DIAGNOSTICS]
+    all_btn.click()
+    assert window._action_checkboxes["d_safe"].isChecked()
+    assert window._action_checkboxes["d_mod"].isChecked()
+    assert not window._action_checkboxes["r_safe"].isChecked()
+    assert not window._action_checkboxes["r_mod"].isChecked()
+
+    safe_btn2 = window._category_select_buttons[ModuleCategory.REPAIR][1]
+    safe_btn2.click()
+    assert window._action_checkboxes["r_safe"].isChecked()
+    assert not window._action_checkboxes["r_mod"].isChecked()
+
+    none_btn.click()
+    assert not window._action_checkboxes["d_safe"].isChecked()
+    assert not window._action_checkboxes["d_mod"].isChecked()
+    assert window._action_checkboxes["r_safe"].isChecked()
+
+
+def test_batch_completion_shows_summary_dialog(qtbot, tmp_path):
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_summary")
+    qtbot.addWidget(window)
+    window._action_checkboxes["a1"].setChecked(True)
+
+    window.run_selected_actions()
+
+    reports_dir = tmp_path / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+    qtbot.waitUntil(lambda: window._summary_dialog is not None, timeout=10000)
+    assert window._batch_results == [("a1", 0)]
+    assert not window._summary_dialog.isHidden()
+    assert window._summary_dialog.windowTitle() == "Batch results"
+
+
 def test_repair_category_safe_action_triggers_restore_point_and_undo_script(qtbot, tmp_path, monkeypatch):
     from portablefix import restore_point
 

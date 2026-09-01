@@ -147,6 +147,39 @@ QPushButton#runButton:disabled {
     color: #565f89;
 }
 
+QPushButton#selectionBtn {
+    background: transparent;
+    border: 1px solid #3b4261;
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-size: 8.5pt;
+    color: #a9b1d6;
+}
+QPushButton#selectionBtn:hover {
+    border-color: #7aa2f7;
+    color: #7aa2f7;
+    background: transparent;
+}
+QLabel#selectionScope {
+    color: #565f89;
+    font-size: 9pt;
+}
+
+QDialog {
+    background-color: #1a1b26;
+}
+QLabel#summaryHeader {
+    font-size: 12pt;
+    font-weight: bold;
+    color: #7aa2f7;
+}
+QLabel#summaryDryRunNote {
+    color: #e0af68;
+    font-weight: bold;
+}
+QLabel#summaryRow[ok="true"] { color: #9ece6a; }
+QLabel#summaryRow[ok="false"] { color: #f7768e; }
+
 QPlainTextEdit#console {
     background-color: #16161e;
     border: none;

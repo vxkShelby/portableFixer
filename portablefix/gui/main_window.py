@@ -3,8 +3,11 @@ import shutil
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QListWidget,
@@ -53,6 +56,8 @@ class MainWindow(QMainWindow):
         self._batch_active = False
         self._snapshot_before: dict = {}
         self._undo_steps: list[str] = []
+        self._batch_results: list[tuple[str, int]] = []
+        self._summary_dialog: QDialog | None = None
         self._closed = False
         self._build_ui()
 
@@ -122,6 +127,27 @@ class MainWindow(QMainWindow):
 
         center_layout = QVBoxLayout()
         center_layout.setSpacing(8)
+
+        global_select_row = QHBoxLayout()
+        global_select_row.setSpacing(6)
+        scope_label = QLabel(self._t("all_categories"))
+        scope_label.setObjectName("selectionScope")
+        global_select_row.addWidget(scope_label)
+        self.global_select_all_button = self._make_selection_button(
+            self._t("select_all"), lambda: self._apply_selection(list(self._action_checkboxes), "all")
+        )
+        global_select_row.addWidget(self.global_select_all_button)
+        self.global_select_safe_button = self._make_selection_button(
+            self._t("select_safe_only"), lambda: self._apply_selection(list(self._action_checkboxes), "safe")
+        )
+        global_select_row.addWidget(self.global_select_safe_button)
+        self.global_select_none_button = self._make_selection_button(
+            self._t("select_none"), lambda: self._apply_selection(list(self._action_checkboxes), "none")
+        )
+        global_select_row.addWidget(self.global_select_none_button)
+        global_select_row.addStretch(1)
+        center_layout.addLayout(global_select_row)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_content = QWidget()
@@ -130,19 +156,40 @@ class MainWindow(QMainWindow):
         scroll_layout.setSpacing(8)
 
         self._category_groups: dict[ModuleCategory, QWidget] = {}
+        self._category_action_ids: dict[ModuleCategory, list[str]] = {}
+        self._category_select_buttons: dict[ModuleCategory, tuple[QPushButton, QPushButton, QPushButton]] = {}
         for category in self._categories_order:
             card = QFrame()
             card.setObjectName("actionCard")
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(14, 10, 14, 10)
             card_layout.setSpacing(2)
+            heading_row = QHBoxLayout()
+            heading_row.setSpacing(6)
             heading = QLabel(self._t(category_i18n_keys[category]))
             heading.setObjectName("cardHeading")
-            card_layout.addWidget(heading)
+            heading_row.addWidget(heading)
+            heading_row.addStretch(1)
+            cat_all = self._make_selection_button(
+                self._t("select_all"), lambda c=category: self._apply_selection(self._category_action_ids[c], "all")
+            )
+            heading_row.addWidget(cat_all)
+            cat_safe = self._make_selection_button(
+                self._t("select_safe_only"), lambda c=category: self._apply_selection(self._category_action_ids[c], "safe")
+            )
+            heading_row.addWidget(cat_safe)
+            cat_none = self._make_selection_button(
+                self._t("select_none"), lambda c=category: self._apply_selection(self._category_action_ids[c], "none")
+            )
+            heading_row.addWidget(cat_none)
+            self._category_select_buttons[category] = (cat_all, cat_safe, cat_none)
+            card_layout.addLayout(heading_row)
+            self._category_action_ids[category] = []
             for module in self.modules:
                 if module.category != category:
                     continue
                 for action in module.actions:
+                    self._category_action_ids[category].append(action.id)
                     row = QHBoxLayout()
                     row.setSpacing(8)
                     checkbox = QCheckBox(action.label(self.settings.language))
@@ -180,6 +227,68 @@ class MainWindow(QMainWindow):
     def _on_category_changed(self, row: int) -> None:
         for index, category in enumerate(self._categories_order):
             self._category_groups[category].setHidden(index != row)
+
+    def _make_selection_button(self, text: str, on_click) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("selectionBtn")
+        # clicked(bool) would overwrite a lambda's bound default argument,
+        # so swallow the checked flag before invoking the handler.
+        button.clicked.connect(lambda _checked=False: on_click())
+        return button
+
+    def _apply_selection(self, action_ids: list[str], mode: str) -> None:
+        for action_id in action_ids:
+            if mode == "all":
+                checked = True
+            elif mode == "none":
+                checked = False
+            else:
+                _, action = self._find_action(action_id)
+                checked = action.risk == RiskLevel.SAFE
+            self._action_checkboxes[action_id].setChecked(checked)
+
+    def _show_batch_summary(self, html_path: Path) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("batch_results_title"))
+        dialog.setStyleSheet(style.STYLE)
+        dialog.setMinimumWidth(420)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(8)
+
+        ok_count = sum(1 for _, code in self._batch_results if code == 0)
+        fail_count = len(self._batch_results) - ok_count
+        header = QLabel(
+            f"{self._t('status_ok')}: {ok_count}    {self._t('status_failed')}: {fail_count}"
+        )
+        header.setObjectName("summaryHeader")
+        layout.addWidget(header)
+
+        if self.settings.dry_run:
+            note = QLabel(self._t("dry_run_batch_note"))
+            note.setObjectName("summaryDryRunNote")
+            layout.addWidget(note)
+
+        for action_id, exit_code in self._batch_results:
+            _, action = self._find_action(action_id)
+            status = self._t("status_ok") if exit_code == 0 else self._t("status_failed")
+            row_label = QLabel(f"[{status}] {action.label(self.settings.language)}")
+            row_label.setObjectName("summaryRow")
+            row_label.setProperty("ok", "true" if exit_code == 0 else "false")
+            layout.addWidget(row_label)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        open_button = QPushButton(self._t("open_report"))
+        open_button.setObjectName("runButton")
+        open_button.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path)))
+        )
+        button_row.addWidget(open_button)
+        layout.addLayout(button_row)
+
+        dialog.show()
+        self._summary_dialog = dialog
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
@@ -231,6 +340,8 @@ class MainWindow(QMainWindow):
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._restore_point_attempted = False
+        self._batch_results = []
+        self._summary_dialog = None
         if self._queue:
             self._batch_active = True
             self._snapshot_before = self._take_snapshot()
@@ -244,7 +355,7 @@ class MainWindow(QMainWindow):
                 if not self._closed:
                     self.run_button.setEnabled(True)
                 snapshot_after = self._take_snapshot()
-                report.generate_report(
+                html_path, _ = report.generate_report(
                     self.state_dir,
                     self.run_id,
                     self.modules,
@@ -252,6 +363,8 @@ class MainWindow(QMainWindow):
                     self._snapshot_before,
                     snapshot_after,
                 )
+                if not self._closed:
+                    self._show_batch_summary(html_path)
             return
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
@@ -329,6 +442,7 @@ class MainWindow(QMainWindow):
         output = "\n".join(runner.captured_output)
         entry = make_entry(module_id, action_id, command, exit_code, output, self.settings.dry_run)
         append_entry(self.state_dir, self.run_id, entry)
+        self._batch_results.append((action_id, exit_code))
         if not self.settings.dry_run and exit_code == 0:
             _, action = self._find_action(action_id)
             if action.undo_command:
