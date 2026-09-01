@@ -1,0 +1,31 @@
+module_id: m07_autoruns
+category: DIAGNOSTICS
+actions:
+  - id: autoruns_registry_run
+    label_sk: "Programy spustane z registrov (Run)"
+    label_en: "Registry autostart entries (Run)"
+    risk: SAFE
+    command: "foreach ($path in 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce') { Write-Output ('=== ' + $path + ' ==='); Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | Format-List }"
+    description_sk: "Vypise programy naplanovane na spustenie cez registrove kluce Run/RunOnce (HKLM aj HKCU), nic nemeni."
+    description_en: "Lists programs scheduled to start via the Run/RunOnce registry keys (HKLM and HKCU), changes nothing."
+  - id: autoruns_startup_folder
+    label_sk: "Polozky v priecinku Startup"
+    label_en: "Startup folder items"
+    risk: SAFE
+    command: "Get-ChildItem -Path \"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\",\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\" -ErrorAction SilentlyContinue | Select-Object FullName,LastWriteTime | Format-Table -AutoSize"
+    description_sk: "Vypise subory v pouzivatelskom aj spolocnom Startup priecinku, nic nemeni."
+    description_en: "Lists files in both the per-user and common Startup folders, changes nothing."
+  - id: autoruns_scheduled_tasks
+    label_sk: "Aktivne naplanovane ulohy"
+    label_en: "Active scheduled tasks"
+    risk: SAFE
+    command: "Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' } | Select-Object TaskName,TaskPath,State | Format-Table -AutoSize"
+    description_sk: "Vypise vsetky nezakazane naplanovane ulohy, nic nemeni."
+    description_en: "Lists all non-disabled scheduled tasks, changes nothing."
+  - id: autoruns_autostart_services
+    label_sk: "Automaticky spustane sluzby"
+    label_en: "Automatic-start services"
+    risk: SAFE
+    command: "Get-Service | Where-Object { $_.StartType -eq 'Automatic' } | Select-Object Name,DisplayName,Status | Format-Table -AutoSize"
+    description_sk: "Vypise sluzby nastavene na automaticke spustenie, nic nemeni."
+    description_en: "Lists services set to start automatically, changes nothing."
