@@ -144,3 +144,48 @@ actions:
     preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
     description_sk: "Odstrani neaktivne pouzivatelske profily starsie ako 180 dni. Nevratne."
     description_en: "Removes inactive user profiles older than 180 days. Irreversible."
+
+  - id: browser_cache_sweep
+    label_sk: "Cache prehliadacov (Chrome/Edge/Firefox)"
+    label_en: "Browser caches (Chrome/Edge/Firefox)"
+    risk: MODERATE
+    command: "$paths = @(\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\GPUCache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\GPUCache\"); $fx = Get-ChildItem \"$env:LOCALAPPDATA\\Mozilla\\Firefox\\Profiles\\*\\cache2\" -Directory -EA SilentlyContinue; $targets = @($paths | Where-Object { Test-Path $_ }) + @($fx.FullName); $swept = 0; foreach ($t in $targets) { Get-ChildItem $t -Force -EA SilentlyContinue | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable +errs; $swept++ }; Write-Output (\"Swept \" + $swept + \" cache folder(s), skipped/locked: \" + $errs.Count)"
+    preview_command: "$paths = @(\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\GPUCache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\GPUCache\"); $fx = Get-ChildItem \"$env:LOCALAPPDATA\\Mozilla\\Firefox\\Profiles\\*\\cache2\" -Directory -EA SilentlyContinue; $targets = @($paths | Where-Object { Test-Path $_ }) + @($fx.FullName); $f = $targets | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from browser caches (Chrome/Edge/Firefox)\""
+    description_sk: "Vycisti cache priecinky Chrome, Edge a Firefox (nie cookies ani historiu) pre aktualneho pouzivatela."
+    description_en: "Clears Chrome, Edge and Firefox cache folders (not cookies or history) for the current user."
+
+  - id: windows_upgrade_leftovers
+    label_sk: "Pozostatky aktualizacie Windows"
+    label_en: "Windows upgrade leftovers"
+    risk: DESTRUCTIVE
+    command: "$paths = @('C:\\$WINDOWS.~BT','C:\\$WINDOWS.~WS',\"$env:WINDIR\\WinREAgent\"); $processed = 0; $errs = @(); foreach ($p in $paths) { if (Test-Path $p) { takeown /F $p /R /A /D Y | Out-Null; icacls $p /reset /T /C | Out-Null; Remove-Item $p -Recurse -Force -EA SilentlyContinue -ErrorVariable +itemErrs; $errs += $itemErrs; $processed++ } }; Write-Output (\"Processed \" + $processed + \" leftover folder(s), skipped/locked: \" + $errs.Count)"
+    preview_command: "$paths = @('C:\\$WINDOWS.~BT','C:\\$WINDOWS.~WS',\"$env:WINDIR\\WinREAgent\"); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $gb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1GB,2); Write-Output \"Would delete $c files, $gb GB from Windows upgrade leftovers\" } else { Write-Output \"No Windows upgrade leftovers found\" }"
+    description_sk: "Odstrani pozostatky po nadstavbe Windows ($WINDOWS.~BT, $WINDOWS.~WS, WinREAgent). Nevratne - znemozni navrat na predoslu verziu."
+    description_en: "Removes Windows upgrade leftovers ($WINDOWS.~BT, $WINDOWS.~WS, WinREAgent). Irreversible - prevents rolling back to the previous version."
+
+  - id: gpu_driver_install_leftovers
+    label_sk: "Pozostatky instalacie GPU ovladacov"
+    label_en: "GPU driver install leftovers"
+    risk: MODERATE
+    command: "$paths = @('C:\\NVIDIA','C:\\AMD'); $removed = 0; foreach ($p in $paths) { if (Test-Path $p) { Remove-Item $p -Recurse -Force -EA SilentlyContinue -ErrorVariable +errs; $removed++ } }; Write-Output (\"Removed \" + $removed + \" GPU driver install folder(s), skipped/locked: \" + $errs.Count)"
+    preview_command: "$paths = @('C:\\NVIDIA','C:\\AMD'); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from GPU driver install leftovers (C:\\NVIDIA, C:\\AMD)\" } else { Write-Output \"No GPU driver install leftovers found\" }"
+    description_sk: "Odstrani docasne priecinky NVIDIA/AMD instalatorov ovladacov (C:\\NVIDIA, C:\\AMD). Nedotyka sa aktivneho ovladaca."
+    description_en: "Removes temporary NVIDIA/AMD driver installer staging folders (C:\\NVIDIA, C:\\AMD). Does not touch the active driver."
+
+  - id: directx_shader_cache
+    label_sk: "Cache DirectX shaderov"
+    label_en: "DirectX shader cache"
+    risk: SAFE
+    command: "$paths = @(\"$env:LOCALAPPDATA\\D3DSCache\",\"$env:LOCALAPPDATA\\NVIDIA\\DXCache\",\"$env:LOCALAPPDATA\\NVIDIA\\GLCache\",\"$env:LOCALAPPDATA\\AMD\\DxCache\"); $cleared = 0; foreach ($p in $paths) { if (Test-Path $p) { Get-ChildItem $p -Force -EA SilentlyContinue | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable +errs; $cleared++ } }; Write-Output (\"Cleared \" + $cleared + \" shader cache folder(s), skipped/locked: \" + $errs.Count)"
+    preview_command: "$paths = @(\"$env:LOCALAPPDATA\\D3DSCache\",\"$env:LOCALAPPDATA\\NVIDIA\\DXCache\",\"$env:LOCALAPPDATA\\NVIDIA\\GLCache\",\"$env:LOCALAPPDATA\\AMD\\DxCache\"); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from DirectX/GPU shader caches\" } else { Write-Output \"No shader cache folders found\" }"
+    description_sk: "Vymaze cache prekompilovanych shaderov (DirectX, NVIDIA, AMD). Bezpecne, znovu sa vytvori pri dalsom pouziti."
+    description_en: "Clears compiled shader caches (DirectX, NVIDIA, AMD). Safe, regenerates automatically on next use."
+
+  - id: largest_files_report
+    label_sk: "Najvacsie subory (Desktop/Dokumenty/Stiahnute...)"
+    label_en: "Largest files (Desktop/Documents/Downloads...)"
+    risk: SAFE
+    command: "$folders = @('Desktop','Documents','Downloads','Pictures','Videos','Music') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }; $files = Get-ChildItem $folders -Recurse -File -Force -EA SilentlyContinue; if ($files) { $files | Sort-Object Length -Descending | Select-Object -First 25 FullName,@{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize } else { Write-Output 'No files found.' }"
+    preview_command: "$folders = @('Desktop','Documents','Downloads','Pictures','Videos','Music') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }; $files = Get-ChildItem $folders -Recurse -File -Force -EA SilentlyContinue; if ($files) { $files | Sort-Object Length -Descending | Select-Object -First 25 FullName,@{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize } else { Write-Output 'No files found.' }"
+    description_sk: "Vypise 25 najvacsich suborov v priecinkoch Desktop/Dokumenty/Stiahnute/Obrazky/Videa/Hudba. Nic nemaze, len report."
+    description_en: "Lists the 25 largest files in Desktop/Documents/Downloads/Pictures/Videos/Music. Deletes nothing, report only."

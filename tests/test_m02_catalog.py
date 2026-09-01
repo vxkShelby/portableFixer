@@ -7,10 +7,10 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m02_cleanup" / "actions.yaml"
 
 
-def test_m02_catalog_loads_16_actions_all_with_preview():
+def test_m02_catalog_loads_21_actions_all_with_preview():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m02_cleanup"
-    assert len(module.actions) == 16
+    assert len(module.actions) == 21
     assert all(a.preview_command for a in module.actions)
 
 
@@ -19,9 +19,9 @@ def test_m02_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 7
-    assert len(by_risk[RiskLevel.MODERATE]) == 5
-    assert len(by_risk[RiskLevel.DESTRUCTIVE]) == 4
+    assert len(by_risk[RiskLevel.SAFE]) == 9
+    assert len(by_risk[RiskLevel.MODERATE]) == 7
+    assert len(by_risk[RiskLevel.DESTRUCTIVE]) == 5
 
 
 def test_m02_catalog_no_wmic():
