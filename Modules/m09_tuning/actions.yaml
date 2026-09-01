@@ -1,0 +1,33 @@
+module_id: m09_tuning
+category: REPAIR
+actions:
+  - id: tune_power_plan_report
+    label_sk: "Prehlad planov napajania"
+    label_en: "Power plan report"
+    risk: SAFE
+    command: "powercfg /list"
+    description_sk: "Vypise dostupne plany napajania a oznaci aktivny, nic nemeni."
+    description_en: "Lists available power plans and marks the active one, changes nothing."
+  - id: tune_power_high_performance
+    label_sk: "Prepnutie na vysoky vykon"
+    label_en: "Switch to High Performance"
+    risk: MODERATE
+    command: "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+    undo_command: "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
+    description_sk: "Aktivuje plan napajania Vysoky vykon. Undo vrati vyvazeny (Balanced) plan, nie povodny — ak si pouzival vlastny plan, prepni si ho rucne."
+    description_en: "Activates the High Performance power plan. Undo restores the Balanced plan, not the previous one — if you used a custom plan, switch back manually."
+  - id: tune_startup_apps_report
+    label_sk: "Prehlad startovacich aplikacii"
+    label_en: "Startup applications report"
+    risk: SAFE
+    command: "Get-CimInstance Win32_StartupCommand | Select-Object Name,Command,Location,User | Format-List"
+    description_sk: "Vypise aplikacie spustane pri starte systemu, nic nemeni."
+    description_en: "Lists applications launched at system startup, changes nothing."
+  - id: tune_visual_effects_performance
+    label_sk: "Vizualne efekty na vykon"
+    label_en: "Visual effects for performance"
+    risk: MODERATE
+    command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 2"
+    undo_command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 0"
+    description_sk: "Nastavi vizualne efekty na najlepsi vykon. Undo vrati automaticky rezim (Windows rozhodne). Prejavi sa po odhlaseni/prihlaseni."
+    description_en: "Sets visual effects to best performance. Undo restores the automatic mode (let Windows decide). Takes effect after sign-out/sign-in."
