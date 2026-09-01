@@ -48,22 +48,40 @@ pred behom akcií — vtedy ešte nevieme, ktoré kroky reálne uspejú.
 Prázdny zoznam bol pre F3a v poriadku (žiadny konzument), pre F3b už
 nie.
 
-Riešenie: `MainWindow` si počas dávky drží `self._undo_steps: list[str]`
-(inicializovaný na prázdny zoznam v `run_selected_actions`, vedľa
-existujúceho resetu `_restore_point_attempted`). Volanie
-`create_undo_script` na začiatku dávky (F3a, `_run_next`) zostáva
-nezmenené — zapíše hlavičku s prázdnym zoznamom ako doteraz (fallback
-pre prípad pádu appky pred prvým úspešným krokom).
+Riešenie: `MainWindow` si počas **celého behu appky** (nie len jednej
+dávky) drží `self._undo_steps: list[str]`, inicializovaný na prázdny
+zoznam raz v `__init__` — `Backups/<run_id>/undo.ps1` je viazaný na
+`run_id`, ktorý je jeden na proces appky, nie jeden na dávku, takže
+`_undo_steps` musí mať rovnakú životnosť. `run_selected_actions`
+resetuje len `_restore_point_attempted` (nová dávka si má vyžiadať
+vlastný pokus o Restore Point), `_undo_steps` sa medzi dávkami
+**neresetuje** — druhá dávka v tom istom behu appky pridáva k prvej,
+nezačína odznova.
+
+Kroky sa do `self._undo_steps` pridávajú v poradí, v akom akcie reálne
+uspejú (execution/append poradie), ale pri každom zápise do
+`undo.ps1` sa zoznam **obráti** (`list(reversed(self._undo_steps))`) —
+undo musí bežať LIFO, nie v poradí vykonania. Dôvod: ak akcia A
+(napr. `wu_stop_services`) uspeje pred akciou B (`wu_reset_cache`),
+undo B (premenovanie `.bak` naspäť) musí prebehnúť **pred** undo A
+(naštartovanie služieb) — inak naštartovanie služieb medzičasom
+obnoví pôvodné priečinky a undo B-čka narazí na vlastnú `-not
+(Test-Path ...)` poistku a nič neurobí. Volanie `create_undo_script`
+na začiatku dávky (F3a, `_run_next`) aj volanie v `_on_action_finished`
+obe posielajú `steps=list(reversed(self._undo_steps))` — nikdy
+neprázdny zoznam po prvom úspešnom kroku, ani pri druhej a ďalšej
+dávke v tom istom behu.
 
 V `_on_action_finished` (po zápise audit log záznamu): ak
 `not self.settings.dry_run` **a** `exit_code == 0` **a**
 `action.undo_command` je nastavený, pridá sa `action.undo_command` do
 `self._undo_steps` a `undo.create_undo_script(self.state_dir,
-self.run_id, steps=self._undo_steps)` sa zavolá znova — prepíše ten
-istý súbor s aktuálnym, kumulatívnym stavom. `undo.py` (F3a) už je na
-toto pripravené — jeho signatúra `create_undo_script(base_dir, run_id,
-steps=None)` sa nemení, len sa teraz reálne volá s neprázdnym
-zoznamom, a to opakovane (idempotentné prepisovanie).
+self.run_id, steps=list(reversed(self._undo_steps)))` sa zavolá znova
+— prepíše ten istý súbor s aktuálnym, kumulatívnym a správne
+obráteným stavom. `undo.py` (F3a) už je na toto pripravené — jeho
+signatúra `create_undo_script(base_dir, run_id, steps=None)` sa
+nemení, len sa teraz reálne volá s neprázdnym zoznamom, a to
+opakovane (idempotentné prepisovanie).
 
 Výhoda oproti alternatíve "zapísať raz na konci dávky": aj pri páde
 appky uprostred dávky zostane na disku `undo.ps1` odrážajúci presne
