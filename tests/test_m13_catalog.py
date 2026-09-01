@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m13_debloat" / "actions.yaml"
 
 
-def test_m13_catalog_loads_5_actions_in_cleanup_category():
+def test_m13_catalog_loads_10_actions_in_cleanup_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m13_debloat"
     assert module.category == ModuleCategory.CLEANUP
-    assert len(module.actions) == 5
+    assert len(module.actions) == 10
 
 
 def test_m13_catalog_risk_distribution():
@@ -23,6 +23,11 @@ def test_m13_catalog_risk_distribution():
         "debloat_remove_promo_apps",
         "debloat_disable_telemetry",
         "debloat_disable_suggestions",
+        "debloat_remove_onedrive",
+        "debloat_disable_web_search",
+        "debloat_disable_copilot",
+        "debloat_disable_widgets",
+        "debloat_disable_advertising_id",
     }
     assert by_risk[RiskLevel.DESTRUCTIVE] == ["debloat_remove_provisioned"]
 
@@ -30,11 +35,22 @@ def test_m13_catalog_risk_distribution():
 def test_m13_registry_tweaks_have_undo_commands_removals_do_not():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    assert by_id["debloat_disable_telemetry"].undo_command is not None
-    assert by_id["debloat_disable_suggestions"].undo_command is not None
-    assert by_id["debloat_list_installed"].undo_command is None
-    assert by_id["debloat_remove_promo_apps"].undo_command is None
-    assert by_id["debloat_remove_provisioned"].undo_command is None
+    for undoable in (
+        "debloat_disable_telemetry",
+        "debloat_disable_suggestions",
+        "debloat_disable_web_search",
+        "debloat_disable_copilot",
+        "debloat_disable_widgets",
+        "debloat_disable_advertising_id",
+    ):
+        assert by_id[undoable].undo_command is not None, undoable
+    for not_undoable in (
+        "debloat_list_installed",
+        "debloat_remove_promo_apps",
+        "debloat_remove_provisioned",
+        "debloat_remove_onedrive",
+    ):
+        assert by_id[not_undoable].undo_command is None, not_undoable
 
 
 def test_m13_removal_actions_never_touch_edge_onedrive_defender_or_store():

@@ -38,3 +38,42 @@ actions:
     undo_command: "$cdm = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager'; foreach ($n in 'SilentInstalledAppsEnabled','SystemPaneSuggestionsEnabled','SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-310093Enabled') { Set-ItemProperty -Path $cdm -Name $n -Value 1 -Type DWord -EA SilentlyContinue }"
     description_sk: "Vypne tiche instalovanie navrhovanych aplikacii a reklamny obsah v Start menu. Undo zapne predvolene hodnoty spat."
     description_en: "Disables silent installs of suggested apps and promo content in the Start menu. Undo re-enables the defaults."
+  - id: debloat_remove_onedrive
+    label_sk: "Odinstalovanie OneDrive"
+    label_en: "Uninstall OneDrive"
+    risk: MODERATE
+    command: "Stop-Process -Name OneDrive -Force -EA SilentlyContinue; $setup = @(\"$env:SystemRoot\\System32\\OneDriveSetup.exe\",\"$env:SystemRoot\\SysWOW64\\OneDriveSetup.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1; if ($setup) { Start-Process $setup -ArgumentList '/uninstall' -Wait; Write-Output 'OneDrive uninstaller finished.' } else { Write-Output 'OneDriveSetup.exe not found - possibly already removed.' }"
+    description_sk: "Odinstaluje klienta OneDrive. Subory v priecinku OneDrive zostavaju na disku. Da sa preinstalovat z microsoft.com alebo Store."
+    description_en: "Uninstalls the OneDrive client. Files in the OneDrive folder remain on disk. Reinstallable from microsoft.com or the Store."
+  - id: debloat_disable_web_search
+    label_sk: "Vypnutie webovych vysledkov v Starte"
+    label_en: "Disable web results in Start search"
+    risk: MODERATE
+    command: "New-Item -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer' -Name DisableSearchBoxSuggestions -Value 1 -Type DWord; Write-Output 'Web results in Start search disabled (takes effect after sign-out or Explorer restart).'"
+    undo_command: "Remove-ItemProperty -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer' -Name DisableSearchBoxSuggestions -EA SilentlyContinue"
+    description_sk: "Vyhladavanie v Starte prestane posielat dotazy na Bing a zobrazovat webove vysledky. Undo politiku odstrani."
+    description_en: "Start search stops sending queries to Bing and showing web results. Undo removes the policy."
+  - id: debloat_disable_copilot
+    label_sk: "Vypnutie Copilota"
+    label_en: "Disable Copilot"
+    risk: MODERATE
+    command: "New-Item -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsCopilot' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsCopilot' -Name TurnOffWindowsCopilot -Value 1 -Type DWord; Write-Output 'Windows Copilot disabled by policy.'"
+    undo_command: "Remove-ItemProperty -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsCopilot' -Name TurnOffWindowsCopilot -EA SilentlyContinue"
+    description_sk: "Vypne Windows Copilot politikou pre aktualneho pouzivatela. Undo politiku odstrani."
+    description_en: "Disables Windows Copilot by policy for the current user. Undo removes the policy."
+  - id: debloat_disable_widgets
+    label_sk: "Vypnutie Widgetov"
+    label_en: "Disable Widgets"
+    risk: MODERATE
+    command: "New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Name AllowNewsAndInterests -Value 0 -Type DWord; Write-Output 'Widgets disabled by policy (takes effect after restart).'"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Name AllowNewsAndInterests -EA SilentlyContinue"
+    description_sk: "Vypne panel Widgetov (spravy a zaujmy) politikou. Prejavi sa po restarte. Undo politiku odstrani."
+    description_en: "Disables the Widgets board (news and interests) by policy. Takes effect after restart. Undo removes the policy."
+  - id: debloat_disable_advertising_id
+    label_sk: "Vypnutie reklamneho ID"
+    label_en: "Disable advertising ID"
+    risk: MODERATE
+    command: "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo' -Name Enabled -Value 0 -Type DWord; Write-Output 'Advertising ID disabled.'"
+    undo_command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo' -Name Enabled -Value 1 -Type DWord -EA SilentlyContinue"
+    description_sk: "Vypne personalizovane reklamy cez reklamne ID pouzivatela. Undo ho zapne spat."
+    description_en: "Disables personalized ads via the user's advertising ID. Undo re-enables it."
