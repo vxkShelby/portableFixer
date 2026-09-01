@@ -18,8 +18,8 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 4
-    assert by_risk[RiskLevel.MODERATE] == ["sec_defender_quickscan"]
+    assert len(by_risk[RiskLevel.SAFE]) == 3
+    assert set(by_risk[RiskLevel.MODERATE]) == {"sec_defender_quickscan", "sec_defender_update"}
     assert RiskLevel.DESTRUCTIVE not in by_risk
     assert RiskLevel.REQUIRES_REBOOT not in by_risk
 

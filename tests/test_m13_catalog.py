@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m13_debloat" / "actions.yaml"
 
 
-def test_m13_catalog_loads_10_actions_in_cleanup_category():
+def test_m13_catalog_loads_11_actions_in_cleanup_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m13_debloat"
     assert module.category == ModuleCategory.CLEANUP
-    assert len(module.actions) == 10
+    assert len(module.actions) == 11
 
 
 def test_m13_catalog_risk_distribution():
@@ -28,6 +28,7 @@ def test_m13_catalog_risk_distribution():
         "debloat_disable_copilot",
         "debloat_disable_widgets",
         "debloat_disable_advertising_id",
+        "debloat_remove_xbox_identity",
     }
     assert by_risk[RiskLevel.DESTRUCTIVE] == ["debloat_remove_provisioned"]
 
@@ -49,6 +50,7 @@ def test_m13_registry_tweaks_have_undo_commands_removals_do_not():
         "debloat_remove_promo_apps",
         "debloat_remove_provisioned",
         "debloat_remove_onedrive",
+        "debloat_remove_xbox_identity",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
 

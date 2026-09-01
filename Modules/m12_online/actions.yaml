@@ -12,9 +12,9 @@ actions:
     label_sk: "Porovnanie rychlosti DNS"
     label_en: "DNS speed comparison"
     risk: SAFE
-    command: "Write-Output 'Aktualny DNS:'; (Measure-Command { Resolve-DnsName microsoft.com -ErrorAction SilentlyContinue }).TotalMilliseconds; Write-Output 'Google DNS (8.8.8.8):'; (Measure-Command { Resolve-DnsName microsoft.com -Server 8.8.8.8 -ErrorAction SilentlyContinue }).TotalMilliseconds"
-    description_sk: "Porovna rychlost odpovede aktualneho DNS servera s Google DNS (8.8.8.8), nic nemeni."
-    description_en: "Compares response time of the current DNS server against Google DNS (8.8.8.8), changes nothing."
+    command: "$dnsServer = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses } | Select-Object -First 1 -ExpandProperty ServerAddresses | Select-Object -First 1; if ($dnsServer) { Write-Output ('Current DNS (' + $dnsServer + '):'); (Measure-Command { Resolve-DnsName microsoft.com -Server $dnsServer -ErrorAction SilentlyContinue }).TotalMilliseconds } else { Write-Output 'Current DNS: none configured' }; Write-Output 'Google DNS (8.8.8.8):'; (Measure-Command { Resolve-DnsName microsoft.com -Server 8.8.8.8 -ErrorAction SilentlyContinue }).TotalMilliseconds"
+    description_sk: "Porovna rychlost odpovede aktualneho DNS servera s Google DNS (8.8.8.8) - obe merania obchadzaju lokalnu DNS cache, nic nemeni."
+    description_en: "Compares response time of the current DNS server against Google DNS (8.8.8.8) - both measurements bypass the local DNS cache, changes nothing."
   - id: online_proxy_check
     label_sk: "Kontrola proxy nastaveni"
     label_en: "Proxy settings check"

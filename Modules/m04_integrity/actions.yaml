@@ -5,21 +5,21 @@ actions:
     label_sk: "Rychla kontrola uloziska komponentov"
     label_en: "Quick component store check"
     risk: SAFE
-    command: "DISM /Online /Cleanup-Image /CheckHealth"
+    command: "DISM /Online /Cleanup-Image /CheckHealth; if ($LASTEXITCODE -eq 3010) { Write-Output 'Check completed - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     description_sk: "Rychlo overi, ci je uloziste komponentov oznacene ako poskodene."
     description_en: "Quickly checks whether the component store is flagged as corrupted."
   - id: dism_scanhealth
     label_sk: "Hlbkova kontrola uloziska komponentov"
     label_en: "Deep component store scan"
     risk: SAFE
-    command: "DISM /Online /Cleanup-Image /ScanHealth"
+    command: "DISM /Online /Cleanup-Image /ScanHealth; if ($LASTEXITCODE -eq 3010) { Write-Output 'Scan completed - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     description_sk: "Dokladnejsie skenovanie uloziska komponentov (dlhsie trva)."
     description_en: "More thorough component store scan (takes longer)."
   - id: dism_restorehealth
     label_sk: "Oprava uloziska komponentov"
     label_en: "Repair component store"
     risk: REQUIRES_REBOOT
-    command: "DISM /Online /Cleanup-Image /RestoreHealth"
+    command: "DISM /Online /Cleanup-Image /RestoreHealth; if ($LASTEXITCODE -eq 3010) { Write-Output 'Repair completed - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     description_sk: "Opravi uloziste komponentov cez Windows Update. Po dokonceni sa odporuca restart pred spustenim sfc /scannow."
     description_en: "Repairs the component store via Windows Update. A restart is recommended before running sfc /scannow afterward."
   - id: sfc_scannow
@@ -40,9 +40,9 @@ actions:
     label_sk: "Re-registracia Windows Store aplikacii"
     label_en: "Re-register Windows Store apps"
     risk: MODERATE
-    command: "Get-AppXPackage -AllUsers | Foreach {Add-AppxPackage -DisableDevelopmentMode -Register \"$($_.InstallLocation)\\AppXManifest.xml\"}"
-    description_sk: "Znova zaregistruje vsetky nainstalovane UWP aplikacie pre vsetkych pouzivatelov."
-    description_en: "Re-registers all installed UWP apps for all users."
+    command: "$pkgs = Get-AppXPackage -AllUsers | Where-Object { $_.InstallLocation }; $ok = 0; $failed = 0; foreach ($p in $pkgs) { try { Add-AppxPackage -DisableDevelopmentMode -Register \"$($p.InstallLocation)\\AppXManifest.xml\" -EA Stop } catch { $failed++; continue }; $ok++ }; Write-Output (\"Re-registered: \" + $ok + \", failed: \" + $failed)"
+    description_sk: "Znova zaregistruje vsetky nainstalovane UWP aplikacie pre vsetkych pouzivatelov. Preskakuje baliky bez instalacnej cesty."
+    description_en: "Re-registers all installed UWP apps for all users. Skips packages without an install path."
   - id: wmi_verify
     label_sk: "Overenie WMI repozitara"
     label_en: "Verify WMI repository"

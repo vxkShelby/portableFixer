@@ -33,16 +33,16 @@ actions:
     label_sk: "Optimalizacia disku (TRIM/defragmentacia)"
     label_en: "Optimize volume (TRIM/defrag)"
     risk: MODERATE
-    command: "Optimize-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Verbose"
+    command: "Optimize-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Verbose 4>&1"
     description_sk: "Automaticky zvoli TRIM pre SSD alebo defragmentaciu pre HDD."
     description_en: "Automatically applies TRIM for SSDs or defragmentation for HDDs."
   - id: disk_full_scan_reboot
     label_sk: "Plna kontrola disku pri restarte"
     label_en: "Full disk check at restart"
     risk: REQUIRES_REBOOT
-    command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r"
-    description_sk: "Naplanuje plnu kontrolu a opravu systemoveho disku pri dalsom restarte. Moze trvat dlho."
-    description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time."
+    command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r; $dirty = fsutil dirty query $env:SystemDrive; Write-Output $dirty"
+    description_sk: "Naplanuje plnu kontrolu a opravu systemoveho disku pri dalsom restarte. Moze trvat dlho. Vystup potvrdi, ci sa naplanovanie podarilo (dirty bit)."
+    description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time. Output confirms whether scheduling succeeded (dirty bit)."
   - id: disk_check_scheduled
     label_sk: "Overenie naplanovanej kontroly"
     label_en: "Verify scheduled check"

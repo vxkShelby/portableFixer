@@ -18,7 +18,7 @@ actions:
   - id: sec_defender_update
     label_sk: "Aktualizacia definicii Defendera"
     label_en: "Update Defender signatures"
-    risk: SAFE
+    risk: MODERATE
     command: "Update-MpSignature"
     description_sk: "Stiahne najnovsie definicie hrozieb pre Windows Defender. Vyzaduje internet."
     description_en: "Downloads the latest threat definitions for Windows Defender. Requires internet access."
@@ -33,6 +33,6 @@ actions:
     label_sk: "Stav kontroly pouzivatelskych uctov (UAC)"
     label_en: "User Account Control (UAC) status"
     risk: SAFE
-    command: "Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' | Select-Object EnableLUA,ConsentPromptBehaviorAdmin,PromptOnSecureDesktop | Format-List"
-    description_sk: "Zobrazi, ci je UAC zapnute a ako sa spravaju vyzvy na povolenie, nic nemeni."
-    description_en: "Shows whether UAC is enabled and how elevation prompts behave, changes nothing."
+    command: "$p = Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -EA SilentlyContinue; $enableLua = if ($null -ne $p.EnableLUA) { $p.EnableLUA } else { 1 }; $behaviorAdmin = if ($null -ne $p.ConsentPromptBehaviorAdmin) { $p.ConsentPromptBehaviorAdmin } else { 5 }; $behaviorUser = if ($null -ne $p.ConsentPromptBehaviorUser) { $p.ConsentPromptBehaviorUser } else { 3 }; $secureDesktop = if ($null -ne $p.PromptOnSecureDesktop) { $p.PromptOnSecureDesktop } else { 1 }; Write-Output \"EnableLUA: $enableLua (1=UAC on [default], 0=UAC off)\"; Write-Output \"ConsentPromptBehaviorAdmin: $behaviorAdmin (0=no prompt,1=prompt for creds on secure desktop,2=prompt for consent,5=prompt for consent for non-Windows binaries [default])\"; Write-Output \"ConsentPromptBehaviorUser: $behaviorUser (0=auto deny,1=prompt for creds on secure desktop,3=prompt for creds [default])\"; Write-Output \"PromptOnSecureDesktop: $secureDesktop (1=secure desktop on [default], 0=off)\""
+    description_sk: "Zobrazi, ci je UAC zapnute a ako sa spravaju vyzvy na povolenie (aj neuvedene hodnoty ako predvolene Windows), nic nemeni."
+    description_en: "Shows whether UAC is enabled and how elevation prompts behave (unset values shown as Windows defaults), changes nothing."

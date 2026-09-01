@@ -65,10 +65,12 @@ def test_deletion_actions_report_skipped_locked_items_and_exit_zero():
         "recycle_bin",
         "prefetch",
         "wer_reports",
+        "cbs_logs",
         "thumbnail_cache",
         "font_cache",
         "windows_update_cache",
         "windows_old_removal",
+        "stale_user_profiles",
     ):
         command = by_id[action_id].command
         assert "-ErrorVariable errs" in command, action_id

@@ -50,16 +50,16 @@ actions:
     label_sk: "Stare CBS logy"
     label_en: "Old CBS logs"
     risk: SAFE
-    command: "Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1 | Remove-Item -Force -EA SilentlyContinue"
-    preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c old CBS log(s), $mb MB (keeping newest)\""
-    description_sk: "Vymaze stare CBS logy, ponecha najnovsi."
-    description_en: "Removes old CBS logs, keeps the newest."
+    command: "$logs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1; $cabs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CbsPersist_*.cab\" -EA SilentlyContinue; $targets = @($logs) + @($cabs); $targets | Remove-Item -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed \" + $targets.Count + \" old CBS file(s), skipped/locked: \" + $errs.Count)"
+    preview_command: "$logs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1; $cabs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CbsPersist_*.cab\" -EA SilentlyContinue; $f = @($logs) + @($cabs); $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c old CBS file(s), $mb MB (keeping newest .log)\""
+    description_sk: "Vymaze stare CBS logy a archivy (CbsPersist_*.cab), ponecha najnovsi log."
+    description_en: "Removes old CBS logs and archives (CbsPersist_*.cab), keeps the newest log."
 
   - id: thumbnail_cache
     label_sk: "Cache nahladov"
     label_en: "Thumbnail cache"
     risk: SAFE
-    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Process explorer.exe; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe }; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c thumbnail cache file(s), $mb MB, and restart Explorer\""
     description_sk: "Vymaze cache nahladov a restartuje Explorer."
     description_en: "Clears the thumbnail cache and restarts Explorer."
@@ -68,7 +68,7 @@ actions:
     label_sk: "Cache pisiem"
     label_en: "Font cache"
     risk: MODERATE
-    command: "Stop-Service FontCache -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service FontCache -EA SilentlyContinue; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    command: "Stop-Service FontCache -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service FontCache -EA SilentlyContinue -ErrorVariable startErrs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; FontCache service restart: \" + $(if ($startErrs.Count -eq 0) { \"OK\" } else { \"FAILED\" }))"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\" -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would clear $c font cache file(s), $mb MB, restarting FontCache service\""
     description_sk: "Restartuje sluzbu FontCache a vymaze jej cache."
     description_en: "Restarts the FontCache service and clears its cache."
@@ -86,7 +86,7 @@ actions:
     label_sk: "Cache Windows Update"
     label_en: "Windows Update cache"
     risk: MODERATE
-    command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service wuauserv,bits -EA SilentlyContinue; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service wuauserv,bits -EA SilentlyContinue -ErrorVariable startErrs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; service restart: \" + $(if ($startErrs.Count -eq 0) { \"OK\" } else { \"FAILED\" }))"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\SoftwareDistribution\\Download\" -Recurse -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Windows Update cache\""
     description_sk: "Zastavi sluzby, vymaze stiahnute aktualizacie, spusti sluzby spat."
     description_en: "Stops services, clears downloaded updates, restarts services."
@@ -95,7 +95,7 @@ actions:
     label_sk: "Cistenie ulozista komponentov"
     label_en: "Component store cleanup"
     risk: MODERATE
-    command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup"
+    command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup; if ($LASTEXITCODE -eq 3010) { Write-Output 'Component store cleaned - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     preview_command: "Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"
     description_sk: "Vycisti ulozisko komponentov (bez ResetBase)."
     description_en: "Cleans the component store (no ResetBase)."
@@ -104,7 +104,7 @@ actions:
     label_sk: "Ulozisko komponentov - ResetBase"
     label_en: "Component store - ResetBase"
     risk: DESTRUCTIVE
-    command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase"
+    command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase; if ($LASTEXITCODE -eq 3010) { Write-Output 'Component store reset - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     preview_command: "Write-Output \"ResetBase permanently removes the ability to uninstall currently installed Windows updates. This cannot be undone.\""
     description_sk: "Znemozni odinstalovanie aktualne nainstalovanych aktualizacii. Nevratne."
     description_en: "Prevents uninstalling currently installed updates. Irreversible."
@@ -122,7 +122,7 @@ actions:
     label_sk: "Najstarsia shadow copy"
     label_en: "Oldest shadow copy"
     risk: DESTRUCTIVE
-    command: "vssadmin delete shadows /for=C: /oldest /quiet"
+    command: "$out = vssadmin delete shadows /for=C: /oldest /quiet 2>&1 | Out-String; Write-Output $out; if ($LASTEXITCODE -ne 0 -and $out -match 'No items found') { exit 0 } else { exit $LASTEXITCODE }"
     preview_command: "Get-CimInstance Win32_ShadowCopy | Select-Object ID,InstallDate,VolumeName | Format-Table"
     description_sk: "Zmaze najstarsiu shadow copy na disku C:. Nevratne."
     description_en: "Deletes the oldest shadow copy on drive C:. Irreversible."
@@ -140,7 +140,7 @@ actions:
     label_sk: "Stare pouzivatelske profily"
     label_en: "Stale user profiles"
     risk: DESTRUCTIVE
-    command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Remove-CimInstance"
+    command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + $stale.Count + \", errors: \" + $errs.Count)"
     preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
     description_sk: "Odstrani neaktivne pouzivatelske profily starsie ako 180 dni. Nevratne."
     description_en: "Removes inactive user profiles older than 180 days. Irreversible."

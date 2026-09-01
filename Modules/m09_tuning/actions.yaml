@@ -12,10 +12,10 @@ actions:
     label_sk: "Prepnutie na vysoky vykon"
     label_en: "Switch to High Performance"
     risk: MODERATE
-    command: "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+    command: "$target = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'; $exists = (powercfg /list) -match $target; if ($exists) { powercfg /setactive $target; Write-Output 'Switched to High Performance.' } else { Write-Output 'High Performance plan not available on this device (common on Modern Standby laptops) - no changes made.' }"
     undo_command: "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
-    description_sk: "Aktivuje plan napajania Vysoky vykon. Undo vrati vyvazeny (Balanced) plan, nie povodny — ak si pouzival vlastny plan, prepni si ho rucne."
-    description_en: "Activates the High Performance power plan. Undo restores the Balanced plan, not the previous one — if you used a custom plan, switch back manually."
+    description_sk: "Aktivuje plan napajania Vysoky vykon (ak je dostupny - na niektorych laptopoch s Modern Standby skryty/chybajuci). Undo vrati vyvazeny (Balanced) plan, nie povodny — ak si pouzival vlastny plan, prepni si ho rucne."
+    description_en: "Activates the High Performance power plan (if available - hidden/missing on some Modern Standby laptops). Undo restores the Balanced plan, not the previous one — if you used a custom plan, switch back manually."
   - id: tune_startup_apps_report
     label_sk: "Prehlad startovacich aplikacii"
     label_en: "Startup applications report"
@@ -27,7 +27,7 @@ actions:
     label_sk: "Vizualne efekty na vykon"
     label_en: "Visual effects for performance"
     risk: MODERATE
-    command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 2"
-    undo_command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 0"
-    description_sk: "Nastavi vizualne efekty na najlepsi vykon. Undo vrati automaticky rezim (Windows rozhodne). Prejavi sa po odhlaseni/prihlaseni."
-    description_en: "Sets visual effects to best performance. Undo restores the automatic mode (let Windows decide). Takes effect after sign-out/sign-in."
+    command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 2 -Type DWord; Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop\\WindowMetrics' -Name MinAnimate -Value '0' -Type String -EA SilentlyContinue; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarAnimations -Value 0 -Type DWord -EA SilentlyContinue; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewAlphaSelect -Value 0 -Type DWord -EA SilentlyContinue; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewShadow -Value 0 -Type DWord -EA SilentlyContinue; if (-not (Test-Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM')) { New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Force | Out-Null }; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Name EnableTransparency -Value 0 -Type DWord; Write-Output 'Visual effects set to best performance (animations, transparency, list-view effects disabled).'"
+    undo_command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 0 -Type DWord; Remove-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop\\WindowMetrics' -Name MinAnimate -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarAnimations -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewAlphaSelect -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewShadow -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Name EnableTransparency -EA SilentlyContinue"
+    description_sk: "Nastavi vizualne efekty na najlepsi vykon (vypne animacie, priehladnost okien, tiene v zoznamoch). Undo vrati automaticky rezim (Windows rozhodne). Prejavi sa po odhlaseni/prihlaseni."
+    description_en: "Sets visual effects to best performance (disables animations, window transparency, list-view shadows). Undo restores the automatic mode (let Windows decide). Takes effect after sign-out/sign-in."
