@@ -6,3 +6,8 @@ App/
 build/
 Data/SHA256SUMS
 Data/settings.json
+Backups/
+Logs/*
+!Logs/.gitkeep
+Reports/*
+!Reports/.gitkeep

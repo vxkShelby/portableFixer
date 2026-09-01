@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
             undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
-            rp_runner = restore_point.RestorePointRunner(f"PortableFix cleanup {self.run_id}", parent=self)
+            rp_runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
                 lambda success, m=module, a=action: self._on_restore_point_checked(success, m, a)
             )

@@ -1,4 +1,4 @@
-from portablefix.i18n import translate
+from portablefix.i18n import _STRINGS, translate
 
 
 def test_translate_known_key_sk():
@@ -18,3 +18,7 @@ def test_translate_unknown_language_falls_back_to_sk():
 
 def test_translate_unknown_key_returns_key_itself():
     assert translate("no_such_key", "sk") == "no_such_key"
+
+
+def test_sk_and_en_dicts_have_identical_keys():
+    assert _STRINGS["sk"].keys() == _STRINGS["en"].keys()
