@@ -1,0 +1,40 @@
+module_id: m13_debloat
+category: CLEANUP
+actions:
+  - id: debloat_list_installed
+    label_sk: "Zoznam nainstalovanych AppX balikov"
+    label_en: "List installed AppX packages"
+    risk: SAFE
+    command: "Get-AppxPackage | Where-Object { -not $_.IsFramework } | Sort-Object Name | Select-Object Name,Version | Format-Table -AutoSize"
+    description_sk: "Vypise nainstalovane aplikacie z Microsoft Store formatu (AppX), nic nemeni."
+    description_en: "Lists installed Store-format (AppX) applications, changes nothing."
+  - id: debloat_remove_promo_apps
+    label_sk: "Odstranenie predinstalovaneho balastu"
+    label_en: "Remove preinstalled bloatware"
+    risk: MODERATE
+    command: "$apps = @('Microsoft.549981C3F5F10','Microsoft.BingNews','Microsoft.BingSearch','Microsoft.BingWeather','Microsoft.GetHelp','Microsoft.Getstarted','Microsoft.Microsoft3DViewer','Microsoft.MicrosoftOfficeHub','Microsoft.MicrosoftSolitaireCollection','Microsoft.MixedReality.Portal','Microsoft.People','Microsoft.PowerAutomateDesktop','Microsoft.SkypeApp','Microsoft.Todos','Microsoft.WindowsAlarms','Microsoft.WindowsFeedbackHub','Microsoft.WindowsMaps','Microsoft.YourPhone','Microsoft.ZuneMusic','Microsoft.ZuneVideo','Microsoft.XboxApp','Microsoft.GamingApp','Microsoft.XboxGameOverlay','Microsoft.XboxGamingOverlay','Microsoft.XboxIdentityProvider','Microsoft.XboxSpeechToTextOverlay','Microsoft.Xbox.TCUI','MicrosoftTeams','MSTeams','Microsoft.OutlookForWindows','Clipchamp.Clipchamp','Microsoft.windowscommunicationsapps','king.com*','*CandyCrush*','*Spotify*','*TikTok*','*Facebook*','*Instagram*','*Twitter*','*Netflix*','*Disney*'); $removed = 0; foreach ($a in $apps) { $pkgs = Get-AppxPackage -Name $a -EA SilentlyContinue; foreach ($p in $pkgs) { $p | Remove-AppxPackage -EA SilentlyContinue -ErrorVariable +errs; $removed++ } }; Write-Output (\"Removed packages: \" + $removed + \", errors: \" + $errs.Count)"
+    description_sk: "Odstrani agresivny zoznam predinstalovanych aplikacii (Bing, Xbox, Teams, Solitaire, promo hry, socialne siete...) pre aktualneho pouzivatela. Da sa preinstalovat z Microsoft Store. Nedotyka sa Edge, OneDrive, Defenderu ani Store."
+    description_en: "Removes an aggressive list of preinstalled apps (Bing, Xbox, Teams, Solitaire, promo games, social apps...) for the current user. Reinstallable from Microsoft Store. Does not touch Edge, OneDrive, Defender or the Store."
+  - id: debloat_remove_provisioned
+    label_sk: "Odstranenie balastu z provisioningu"
+    label_en: "Remove bloatware from provisioning"
+    risk: DESTRUCTIVE
+    command: "$apps = @('Microsoft.549981C3F5F10','Microsoft.BingNews','Microsoft.BingSearch','Microsoft.BingWeather','Microsoft.GetHelp','Microsoft.Getstarted','Microsoft.Microsoft3DViewer','Microsoft.MicrosoftOfficeHub','Microsoft.MicrosoftSolitaireCollection','Microsoft.MixedReality.Portal','Microsoft.People','Microsoft.PowerAutomateDesktop','Microsoft.SkypeApp','Microsoft.Todos','Microsoft.WindowsAlarms','Microsoft.WindowsFeedbackHub','Microsoft.WindowsMaps','Microsoft.YourPhone','Microsoft.ZuneMusic','Microsoft.ZuneVideo','Microsoft.XboxApp','Microsoft.GamingApp','Microsoft.XboxGameOverlay','Microsoft.XboxGamingOverlay','Microsoft.XboxIdentityProvider','Microsoft.XboxSpeechToTextOverlay','Microsoft.Xbox.TCUI','MicrosoftTeams','MSTeams','Microsoft.OutlookForWindows','Clipchamp.Clipchamp','Microsoft.windowscommunicationsapps','king.com*','*CandyCrush*','*Spotify*','*TikTok*','*Facebook*','*Instagram*','*Twitter*','*Netflix*','*Disney*'); $removed = 0; $prov = Get-AppxProvisionedPackage -Online; foreach ($a in $apps) { foreach ($p in ($prov | Where-Object { $_.DisplayName -like $a })) { $p | Remove-AppxProvisionedPackage -Online -EA SilentlyContinue -ErrorVariable +errs | Out-Null; $removed++ } }; Write-Output (\"Removed provisioned packages: \" + $removed + \", errors: \" + $errs.Count)"
+    description_sk: "Odstrani rovnaky zoznam aj z provisioningu - aplikacie sa uz nenainstaluju ziadnemu novemu pouzivatelovi. Tazko vratne (vyzaduje reinstalaciu balikov)."
+    description_en: "Removes the same list from provisioning - the apps will no longer install for any new user. Hard to reverse (requires package reinstallation)."
+  - id: debloat_disable_telemetry
+    label_sk: "Obmedzenie telemetrie"
+    label_en: "Reduce telemetry"
+    risk: MODERATE
+    command: "New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name AllowTelemetry -Value 0 -Type DWord; Write-Output 'Telemetry policy set to 0 (Security/minimum).'"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name AllowTelemetry -EA SilentlyContinue"
+    description_sk: "Nastavi politiku telemetrie na minimum (0). Undo politiku odstrani a vrati predvoleny stav Windows."
+    description_en: "Sets the telemetry policy to minimum (0). Undo removes the policy, restoring the Windows default."
+  - id: debloat_disable_suggestions
+    label_sk: "Vypnutie navrhov a reklam v Starte"
+    label_en: "Disable Start suggestions and ads"
+    risk: MODERATE
+    command: "$cdm = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager'; foreach ($n in 'SilentInstalledAppsEnabled','SystemPaneSuggestionsEnabled','SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-310093Enabled') { Set-ItemProperty -Path $cdm -Name $n -Value 0 -Type DWord -EA SilentlyContinue }; Write-Output 'Start suggestions and promo content disabled.'"
+    undo_command: "$cdm = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager'; foreach ($n in 'SilentInstalledAppsEnabled','SystemPaneSuggestionsEnabled','SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-310093Enabled') { Set-ItemProperty -Path $cdm -Name $n -Value 1 -Type DWord -EA SilentlyContinue }"
+    description_sk: "Vypne tiche instalovanie navrhovanych aplikacii a reklamny obsah v Start menu. Undo zapne predvolene hodnoty spat."
+    description_en: "Disables silent installs of suggested apps and promo content in the Start menu. Undo re-enables the defaults."

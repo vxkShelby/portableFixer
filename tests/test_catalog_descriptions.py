@@ -7,7 +7,7 @@ MODULES_DIR = Path(__file__).resolve().parent.parent / "Modules"
 
 def test_all_catalogs_load():
     modules = load_all_modules(MODULES_DIR)
-    assert len(modules) == 11
+    assert len(modules) == 12
 
 
 def test_every_action_has_both_descriptions():
