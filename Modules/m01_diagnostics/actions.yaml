@@ -80,3 +80,43 @@ actions:
     command: "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,Id,CPU,WS,Path | Format-Table"
     description_sk: "20 procesov s najvyssou spotrebou CPU."
     description_en: "20 processes with highest CPU usage."
+
+  - id: pending_reboot
+    label_sk: "Kontrola cakajuceho restartu"
+    label_en: "Pending reboot check"
+    risk: SAFE
+    command: "$pending = @(); if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') { $pending += 'Component Based Servicing' }; if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\Auto Update\\RebootRequired') { $pending += 'Windows Update' }; if (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name PendingFileRenameOperations -EA SilentlyContinue) { $pending += 'Pending File Rename Operations' }; if ($pending.Count -gt 0) { Write-Output ('REBOOT PENDING: ' + ($pending -join ', ')) } else { Write-Output 'No reboot pending.' }"
+    description_sk: "Zisti, ci system caka na restart (Windows Update, CBS, premenovanie suborov), nic nemeni."
+    description_en: "Checks whether the system is waiting on a restart (Windows Update, CBS, pending file rename), changes nothing."
+
+  - id: eventlog_critical_7d
+    label_sk: "Kriticke chyby za poslednych 7 dni"
+    label_en: "Critical/error events (last 7 days)"
+    risk: SAFE
+    command: "$events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-7)} -MaxEvents 50 -EA SilentlyContinue; if ($events) { $events | Select-Object TimeCreated,LogName,ProviderName,Id,LevelDisplayName,Message | Format-Table -AutoSize -Wrap } else { Write-Output 'No critical/error events in the last 7 days.' }"
+    description_sk: "Vypise kriticke a chybove udalosti zo System a Application logov za poslednych 7 dni, nic nemeni."
+    description_en: "Lists critical and error events from the System and Application logs over the last 7 days, changes nothing."
+
+  - id: bsod_summary
+    label_sk: "Prehlad padov systemu (BSOD)"
+    label_en: "System crash (BSOD) summary"
+    risk: SAFE
+    command: "Write-Output '--- Minidump files ---'; Get-ChildItem -Path \"$env:SystemRoot\\Minidump\" -Filter *.dmp -EA SilentlyContinue | Select-Object Name,LastWriteTime,Length | Format-Table -AutoSize; Write-Output '--- Recent BugCheck/critical System events ---'; $events = Get-WinEvent -FilterHashtable @{LogName='System'; Id=1001,41} -MaxEvents 15 -EA SilentlyContinue; if ($events) { $events | Select-Object TimeCreated,Id,ProviderName,Message | Format-List } else { Write-Output 'No recent BugCheck events found.' }"
+    description_sk: "Zobrazi ulozene minidump subory a nedavne udalosti BugCheck, nic nemeni."
+    description_en: "Shows saved minidump files and recent BugCheck events, changes nothing."
+
+  - id: disk_reliability_counters
+    label_sk: "Spolahlivost diskov (SMART pocitadla)"
+    label_en: "Disk reliability counters (SMART)"
+    risk: SAFE
+    command: "try { $counters = Get-PhysicalDisk | Get-StorageReliabilityCounter -EA Stop | Select-Object DeviceId,Temperature,Wear,ReadErrorsTotal,ReadErrorsUncorrected,WriteErrorsTotal,WriteErrorsUncorrected,PowerOnHours; if ($counters) { $counters | Format-Table -AutoSize } else { Write-Output 'No reliability counters available for the physical disks on this system.' } } catch { Write-Output 'Storage reliability counters not supported on this system.' }"
+    description_sk: "Zobrazi teplotu, opotrebovanie a chybove pocitadla fyzickych diskov, ak su podporovane. Nic nemeni."
+    description_en: "Shows temperature, wear, and error counters for physical disks, if supported. Changes nothing."
+
+  - id: installed_software
+    label_sk: "Nainstalovany softver"
+    label_en: "Installed software"
+    risk: SAFE
+    command: "$apps = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -EA SilentlyContinue | Where-Object DisplayName | Select-Object DisplayName,DisplayVersion,Publisher,InstallDate | Sort-Object DisplayName; if ($apps) { $apps | Format-Table -AutoSize } else { Write-Output 'No installed software found in the registry uninstall keys.' }"
+    description_sk: "Vypise nainstalovane programy zo systemoveho registra, nic nemeni."
+    description_en: "Lists installed programs from the system registry, changes nothing."
