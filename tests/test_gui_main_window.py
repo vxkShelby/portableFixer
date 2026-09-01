@@ -553,6 +553,7 @@ def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot
     reports_dir = tmp_path / "Reports"
     qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
     assert "repair-ran" not in window.console.toPlainText()
+    assert "other-ran" not in window.console.toPlainText()
 
 
 def test_successful_actions_with_undo_command_accumulate_in_undo_script(qtbot, tmp_path, monkeypatch):
@@ -693,4 +694,3 @@ def test_undo_steps_reset_between_batches(qtbot, tmp_path, monkeypatch):
     window._action_checkboxes["step_one"].setChecked(False)
     window.run_selected_actions()
     assert window._undo_steps == []
-    assert "other-ran" not in window.console.toPlainText()
