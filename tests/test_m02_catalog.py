@@ -50,3 +50,27 @@ def test_stale_user_profiles_excludes_null_lastusetime_and_loaded_profiles():
 def test_m02_catalog_has_cleanup_category():
     module = load_module(CATALOG_PATH)
     assert module.category == ModuleCategory.CLEANUP
+
+
+def test_deletion_actions_report_skipped_locked_items_and_exit_zero():
+    # Locked/in-use files are normal on a live system; suppressed errors must
+    # not flip the whole action to exit 1 with no explanation. The pattern:
+    # -ErrorVariable collects suppressed errors, a trailing Write-Output
+    # reports the count and makes the last statement succeed (exit 0).
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in (
+        "user_temp",
+        "system_temp",
+        "recycle_bin",
+        "prefetch",
+        "wer_reports",
+        "thumbnail_cache",
+        "font_cache",
+        "windows_update_cache",
+        "windows_old_removal",
+    ):
+        command = by_id[action_id].command
+        assert "-ErrorVariable errs" in command, action_id
+        assert command.rstrip().endswith(")"), action_id
+        assert "Write-Output" in command.split("-ErrorVariable errs", 1)[1], action_id

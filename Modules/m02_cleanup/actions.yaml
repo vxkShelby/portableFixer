@@ -5,7 +5,7 @@ actions:
     label_sk: "Docasne subory pouzivatela"
     label_en: "User temp files"
     risk: SAFE
-    command: "Remove-Item \"$env:TEMP\\*\" -Recurse -Force -EA SilentlyContinue"
+    command: "Remove-Item \"$env:TEMP\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:TEMP\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:TEMP\""
     description_sk: "Vycisti $env:TEMP."
     description_en: "Clears $env:TEMP."
@@ -14,7 +14,7 @@ actions:
     label_sk: "Systemove docasne subory"
     label_en: "System temp files"
     risk: SAFE
-    command: "Remove-Item \"$env:WINDIR\\Temp\\*\" -Recurse -Force -EA SilentlyContinue"
+    command: "Remove-Item \"$env:WINDIR\\Temp\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Temp\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:WINDIR\\Temp\""
     description_sk: "Vycisti $env:WINDIR\\Temp."
     description_en: "Clears $env:WINDIR\\Temp."
@@ -23,7 +23,7 @@ actions:
     label_sk: "Kos"
     label_en: "Recycle Bin"
     risk: MODERATE
-    command: "Clear-RecycleBin -Force -EA SilentlyContinue"
+    command: "Clear-RecycleBin -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Recycle Bin cleared (suppressed errors: \" + $errs.Count + \")\")"
     preview_command: "$sh = New-Object -ComObject Shell.Application; $items = $sh.Namespace(0xA).Items(); Write-Output \"Recycle Bin: $($items.Count) item(s)\""
     description_sk: "Vyprazdni Kos."
     description_en: "Empties the Recycle Bin."
@@ -32,7 +32,7 @@ actions:
     label_sk: "Prefetch cache"
     label_en: "Prefetch cache"
     risk: SAFE
-    command: "Remove-Item \"$env:WINDIR\\Prefetch\\*\" -Force -EA SilentlyContinue"
+    command: "Remove-Item \"$env:WINDIR\\Prefetch\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Prefetch\" -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Prefetch\""
     description_sk: "Vymaze subory Prefetch (docasne spomali dalsi start)."
     description_en: "Removes Prefetch files (temporarily slows next boot)."
@@ -41,7 +41,7 @@ actions:
     label_sk: "Hlasenia o chybach (WER)"
     label_en: "Error reports (WER)"
     risk: SAFE
-    command: "Remove-Item \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -Force -EA SilentlyContinue"
+    command: "Remove-Item \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from WER report queues\""
     description_sk: "Vymaze frontu a archiv hlaseni o chybach."
     description_en: "Clears the WER report queue and archive."
@@ -59,7 +59,7 @@ actions:
     label_sk: "Cache nahladov"
     label_en: "Thumbnail cache"
     risk: SAFE
-    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue; Start-Process explorer.exe"
+    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Process explorer.exe; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c thumbnail cache file(s), $mb MB, and restart Explorer\""
     description_sk: "Vymaze cache nahladov a restartuje Explorer."
     description_en: "Clears the thumbnail cache and restarts Explorer."
@@ -68,7 +68,7 @@ actions:
     label_sk: "Cache pisiem"
     label_en: "Font cache"
     risk: MODERATE
-    command: "Stop-Service FontCache -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\*\" -Force -EA SilentlyContinue; Start-Service FontCache -EA SilentlyContinue"
+    command: "Stop-Service FontCache -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service FontCache -EA SilentlyContinue; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\" -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would clear $c font cache file(s), $mb MB, restarting FontCache service\""
     description_sk: "Restartuje sluzbu FontCache a vymaze jej cache."
     description_en: "Restarts the FontCache service and clears its cache."
@@ -86,7 +86,7 @@ actions:
     label_sk: "Cache Windows Update"
     label_en: "Windows Update cache"
     risk: MODERATE
-    command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue; Start-Service wuauserv,bits -EA SilentlyContinue"
+    command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service wuauserv,bits -EA SilentlyContinue; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\SoftwareDistribution\\Download\" -Recurse -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Windows Update cache\""
     description_sk: "Zastavi sluzby, vymaze stiahnute aktualizacie, spusti sluzby spat."
     description_en: "Stops services, clears downloaded updates, restarts services."
@@ -113,7 +113,7 @@ actions:
     label_sk: "Odstranenie Windows.old"
     label_en: "Remove Windows.old"
     risk: DESTRUCTIVE
-    command: "takeown /F C:\\Windows.old /R /A /D Y | Out-Null; icacls C:\\Windows.old /reset /T /C | Out-Null; Remove-Item C:\\Windows.old -Recurse -Force -EA SilentlyContinue"
+    command: "takeown /F C:\\Windows.old /R /A /D Y | Out-Null; icacls C:\\Windows.old /reset /T /C | Out-Null; Remove-Item C:\\Windows.old -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "if (Test-Path C:\\Windows.old) { $f = Get-ChildItem C:\\Windows.old -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $gb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1GB,2); Write-Output \"Would delete $c files, $gb GB from C:\\Windows.old\" } else { Write-Output \"C:\\Windows.old not present\" }"
     description_sk: "Odstrani C:\\Windows.old. Nevratne."
     description_en: "Removes C:\\Windows.old. Irreversible."
