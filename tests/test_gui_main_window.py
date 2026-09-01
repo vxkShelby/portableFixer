@@ -594,7 +594,7 @@ def test_successful_actions_with_undo_command_accumulate_in_undo_script(qtbot, t
     undo_content = (tmp_path / "Backups" / "run_undo_accum" / "undo.ps1").read_text(encoding="utf-8")
     assert "Write-Output 'undo-one'" in undo_content
     assert "Write-Output 'undo-two'" in undo_content
-    assert undo_content.index("Write-Output 'undo-one'") < undo_content.index("Write-Output 'undo-two'")
+    assert undo_content.index("Write-Output 'undo-two'") < undo_content.index("Write-Output 'undo-one'")
 
 
 def test_failed_action_with_undo_command_not_added_to_undo_script(qtbot, tmp_path, monkeypatch):
@@ -663,7 +663,7 @@ def test_dry_run_action_with_undo_command_never_creates_backups_dir(qtbot, tmp_p
     assert not (tmp_path / "Backups").exists()
 
 
-def test_undo_steps_reset_between_batches(qtbot, tmp_path, monkeypatch):
+def test_undo_steps_accumulate_across_batches_in_same_run(qtbot, tmp_path, monkeypatch):
     from portablefix import restore_point
 
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
@@ -679,18 +679,99 @@ def test_undo_steps_reset_between_batches(qtbot, tmp_path, monkeypatch):
         "    label_en: \"X\"\n"
         "    risk: SAFE\n"
         "    command: \"Write-Output 'one'\"\n"
-        "    undo_command: \"Write-Output 'undo-one'\"\n",
+        "    undo_command: \"Write-Output 'undo-one'\"\n"
+        "  - id: step_two\n"
+        "    label_sk: \"Y\"\n"
+        "    label_en: \"Y\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'two'\"\n"
+        "    undo_command: \"Write-Output 'undo-two'\"\n",
         encoding="utf-8",
     )
     settings = Settings(language="en", dry_run=False)
-    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_reset")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_accum_batches")
     qtbot.addWidget(window)
+
     window._action_checkboxes["step_one"].setChecked(True)
     window.run_selected_actions()
     reports_dir = tmp_path / "Reports"
     qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
-
     assert window._undo_steps == ["Write-Output 'undo-one'"]
+
     window._action_checkboxes["step_one"].setChecked(False)
+    window._action_checkboxes["step_two"].setChecked(True)
     window.run_selected_actions()
-    assert window._undo_steps == []
+    qtbot.waitUntil(
+        lambda: window._undo_steps == ["Write-Output 'undo-one'", "Write-Output 'undo-two'"],
+        timeout=10000,
+    )
+
+    undo_content = (tmp_path / "Backups" / "run_undo_accum_batches" / "undo.ps1").read_text(encoding="utf-8")
+    assert "Write-Output 'undo-one'" in undo_content
+    assert "Write-Output 'undo-two'" in undo_content
+    assert undo_content.index("Write-Output 'undo-two'") < undo_content.index("Write-Output 'undo-one'")
+
+
+def test_undo_order_uses_real_m05_undo_commands_in_reversed_order(qtbot, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import yaml as yaml_module
+
+    from portablefix import restore_point
+    from portablefix.module_engine import load_module
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    # MODERATE-risk actions trigger a QMessageBox.question confirmation dialog
+    # in _dispatch_action; auto-confirm so the test doesn't hang on a real modal.
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+
+    real_catalog_path = Path(__file__).resolve().parent.parent / "Modules" / "m05_windows_update" / "actions.yaml"
+    real_module = load_module(real_catalog_path)
+    real_actions = {a.id: a for a in real_module.actions}
+    stop_undo = real_actions["wu_stop_services"].undo_command
+    reset_undo = real_actions["wu_reset_cache"].undo_command
+    assert stop_undo and reset_undo  # sanity: both must exist in the real catalog
+
+    # command: fields are stubbed so this test never executes the real
+    # Stop-Service/Rename-Item commands against this machine; undo_command
+    # values are taken verbatim (loaded, not hand-typed) from the real
+    # catalog to prove the actual shipped undo strings end up correctly
+    # (reverse-) ordered.
+    fixture = {
+        "module_id": "m05_windows_update",
+        "category": "REPAIR",
+        "actions": [
+            {
+                "id": "wu_stop_services",
+                "label_sk": "X",
+                "label_en": "X",
+                "risk": "MODERATE",
+                "command": "Write-Output 'stubbed-stop'",
+                "undo_command": stop_undo,
+            },
+            {
+                "id": "wu_reset_cache",
+                "label_sk": "Y",
+                "label_en": "Y",
+                "risk": "MODERATE",
+                "command": "Write-Output 'stubbed-reset'",
+                "undo_command": reset_undo,
+            },
+        ],
+    }
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(yaml_module.safe_dump(fixture), encoding="utf-8")
+
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_real_m05_order")
+    qtbot.addWidget(window)
+    window._action_checkboxes["wu_stop_services"].setChecked(True)
+    window._action_checkboxes["wu_reset_cache"].setChecked(True)
+
+    window.run_selected_actions()
+
+    reports_dir = tmp_path / "Reports"
+    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+    undo_content = (tmp_path / "Backups" / "run_real_m05_order" / "undo.ps1").read_text(encoding="utf-8")
+    assert undo_content.index(reset_undo) < undo_content.index(stop_undo)
