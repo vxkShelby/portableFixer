@@ -1,0 +1,52 @@
+module_id: m14_printing
+category: REPAIR
+actions:
+  - id: print_installed_printers_report
+    label_sk: "Prehlad nainstalovanych tlaciarni"
+    label_en: "Installed printers report"
+    risk: SAFE
+    command: "Get-Printer | Select-Object Name,DriverName,PortName,Shared,PrinterStatus | Format-Table -AutoSize; Write-Output '--- Print jobs ---'; Get-Printer | ForEach-Object { Get-PrintJob -PrinterName $_.Name -EA SilentlyContinue } | Select-Object PrinterName,DocumentName,JobStatus,SubmittedTime,Size | Format-Table -AutoSize"
+    description_sk: "Zoznam nainstalovanych tlaciarni (port, ovladac, stav) a aktualne tlacove ulohy. Nic nemeni."
+    description_en: "Lists installed printers (port, driver, status) and current print jobs. Changes nothing."
+
+  - id: print_driver_store_report
+    label_sk: "Prehlad ovladacov tlaciarni"
+    label_en: "Printer driver store report"
+    risk: SAFE
+    command: "Get-PrinterDriver | Select-Object Name,Manufacturer,DriverVersion,PrinterEnvironment | Format-Table -AutoSize -Wrap; $inUse = (Get-Printer).DriverName; $orphaned = Get-PrinterDriver | Where-Object { $_.Name -notin $inUse }; Write-Output ('Orphaned driver packages (installed, no printer uses them): ' + $orphaned.Count); $orphaned | Select-Object Name | Format-Table -AutoSize"
+    description_sk: "Vypise nainstalovane balicky ovladacov tlaciarni a oznaci tie, ktore nepouziva ziadna tlaciaren. Nic nemeni."
+    description_en: "Lists installed printer driver packages and flags any not used by an installed printer. Changes nothing."
+
+  - id: print_offline_ghost_printers_report
+    label_sk: "Offline/chybove tlaciarne"
+    label_en: "Offline/ghost printers report"
+    risk: SAFE
+    command: "Get-Printer | Where-Object { $_.PrinterStatus -eq 'Offline' -or $_.PrinterStatus -eq 'Error' } | Select-Object Name,DriverName,PortName,PrinterStatus | Format-Table -AutoSize"
+    description_sk: "Oznaci tlaciarne v stave Offline alebo Error - casto stare/odpojene zariadenia, ktore matu pri vybere tlaciarne. Nic nemeni."
+    description_en: "Flags printers in Offline or Error state - often stale/disconnected devices that confuse the printer picker. Changes nothing."
+
+  - id: print_remove_offline_printers
+    label_sk: "Odstranenie offline/chybovych tlaciarni"
+    label_en: "Remove offline/ghost printers"
+    risk: MODERATE
+    preview_command: "$p = Get-Printer | Where-Object { $_.PrinterStatus -in @('Offline','Error') }; Write-Output ('Would remove ' + $p.Count + ' offline/error printer object(s): ' + (($p | Select-Object -ExpandProperty Name) -join ', '))"
+    command: "$bk = \"$env:ProgramData\\PortableFix\\printers_removed_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $p = Get-Printer | Where-Object { $_.PrinterStatus -in @('Offline','Error') }; $p | Select-Object Name,DriverName,PortName | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; $p | ForEach-Object { Remove-Printer -Name $_.Name -EA SilentlyContinue }; Write-Output ('Removed ' + $p.Count + ' offline/error printer(s), backup saved to ' + $bk)"
+    undo_command: "$bk = \"$env:ProgramData\\PortableFix\\printers_removed_backup.json\"; if (Test-Path $bk) { Get-Content $bk -Raw | ConvertFrom-Json | ForEach-Object { try { Add-Printer -Name $_.Name -DriverName $_.DriverName -PortName $_.PortName -EA Stop } catch { Write-Output ('Could not recreate ' + $_.Name + ': ' + $_.Exception.Message) } } } else { Write-Output 'No backup found.' }"
+    description_sk: "Odstrani vsetky tlaciarne v stave Offline/Error po zalohovani ich nazvu/ovladaca/portu. Undo sa pokusi tlaciarne znovu vytvorit (nemusi obnovit chybajuci ovladac, ak bol medzitym tiez odstraneny)."
+    description_en: "Removes all Offline/Error printers after backing up their name/driver/port. Undo attempts to recreate them (may not restore a driver that was also removed in the meantime)."
+
+  - id: print_remove_orphaned_drivers
+    label_sk: "Odstranenie nepouzivanych ovladacov tlaciarni"
+    label_en: "Remove orphaned printer drivers"
+    risk: DESTRUCTIVE
+    command: "$inUse = (Get-Printer).DriverName; Get-PrinterDriver | Where-Object { $_.Name -notin $inUse } | ForEach-Object { try { Remove-PrinterDriver -Name $_.Name -EA Stop; Write-Output ('Removed driver: ' + $_.Name) } catch { Write-Output ('Failed to remove ' + $_.Name + ': ' + $_.Exception.Message) } } "
+    description_sk: "Trvalo odstrani ovladace tlaciarni, ktore nepouziva ziadna nainstalovana tlaciaren. Nevratne - opatovna instalacia potrebuje povodny ovladac (INF), ktory tento nastroj nema."
+    description_en: "Permanently removes printer driver packages not used by any installed printer. Irreversible - reinstalling needs the original driver (INF) files, which this tool does not have."
+
+  - id: print_reset_print_system
+    label_sk: "Reset celeho tlacoveho systemu"
+    label_en: "Reset entire print system"
+    risk: DESTRUCTIVE
+    command: "Stop-Service -Name Spooler -Force -EA SilentlyContinue; Get-Printer | Remove-Printer -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\System32\\spool\\PRINTERS\\*\" -Force -Recurse -EA SilentlyContinue; Start-Service -Name Spooler -EA SilentlyContinue; Write-Output 'All printers removed and spool queue cleared. Every printer must be re-added/re-paired.'"
+    description_sk: "Posledna moznost, ak je poskodeny cely tlacovy subsystem: odstrani VSETKY tlaciarne (nielen pokazene) a vycisti frontu. Kazda tlaciaren sa musi znovu nastavit."
+    description_en: "Last resort if the whole print subsystem is corrupted: removes EVERY printer (not just broken ones) and clears the queue. Every printer must be set up again."

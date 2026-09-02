@@ -1,0 +1,42 @@
+module_id: m15_boot_platform
+category: REPAIR
+actions:
+  - id: boot_bcd_report
+    label_sk: "Prehlad zavadzacej konfiguracie (BCD)"
+    label_en: "Boot configuration (BCD) report"
+    risk: SAFE
+    command: "$out = & bcdedit.exe /enum all 2>&1; Write-Output ($out -join \"`n\")"
+    description_sk: "Vypise zavadzacie polozky, predvoleny OS, timeout a pripadne priznaky safeboot/testsigning z predchadzajucich diagnostik. Nic nemeni."
+    description_en: "Lists boot entries, default OS, timeout, and any leftover safeboot/testsigning flags from a prior troubleshooting session. Changes nothing."
+
+  - id: boot_tpm_status
+    label_sk: "Stav TPM a Secure Boot"
+    label_en: "TPM and Secure Boot status"
+    risk: SAFE
+    command: "Get-Tpm | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated | Format-List; try { Write-Output ('SecureBoot enabled: ' + (Confirm-SecureBootUEFI)) } catch { Write-Output 'SecureBoot: not supported (Legacy BIOS/CSM or firmware does not expose this check)' }"
+    description_sk: "Zobrazi stav TPM cipu a ci je zapnuty Secure Boot. Nic nemeni."
+    description_en: "Shows TPM chip status and whether Secure Boot is enabled. Changes nothing."
+
+  - id: boot_bitlocker_status
+    label_sk: "Stav sifrovania disku (BitLocker)"
+    label_en: "Disk encryption (BitLocker) status"
+    risk: SAFE
+    command: "try { Get-BitLockerVolume -EA Stop | Select-Object MountPoint,VolumeStatus,ProtectionStatus,EncryptionPercentage | Format-Table -AutoSize } catch { $v = Get-CimInstance -Namespace 'root/cimv2/security/MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -EA SilentlyContinue; if ($v) { $v | Select-Object DriveLetter,ProtectionStatus,ConversionStatus | Format-Table -AutoSize } else { Write-Output 'BitLocker/Device Encryption not available on this Windows edition.' } }"
+    description_sk: "Zobrazi stav sifrovania diskovych zvazkov (BitLocker alebo Device Encryption na Home edicii). Nic nemeni."
+    description_en: "Shows volume encryption status (BitLocker, or Device Encryption on Home edition). Changes nothing."
+
+  - id: boot_safe_mode_status
+    label_sk: "Kontrola zavodenia do Bezpecneho rezimu"
+    label_en: "Safe Mode boot check"
+    risk: SAFE
+    command: "$out = & bcdedit.exe /enum '{current}' 2>&1 | Select-String -Pattern 'safeboot'; if ($out) { Write-Output ('Machine is currently configured to boot into SAFE MODE: ' + ($out -join '; ')) } else { Write-Output 'Normal boot (no safeboot flag set).' }"
+    description_sk: "Zisti, ci je pocitac nastaveny na zavodenie do Bezpecneho rezimu (caste zabudnuty priznak po predchadzajucej diagnostike). Nic nemeni."
+    description_en: "Checks whether the machine is set to boot into Safe Mode (a commonly forgotten leftover flag from earlier troubleshooting). Changes nothing."
+
+  - id: boot_clear_safe_mode_flag
+    label_sk: "Vypnutie zavodenia do Bezpecneho rezimu"
+    label_en: "Clear Safe Mode boot flag"
+    risk: MODERATE
+    command: "& bcdedit.exe /deletevalue '{current}' safeboot | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Safe Mode flag cleared - next restart boots normally.' } else { Write-Output 'Failed to clear safeboot flag (needs administrator).' ; exit 1 }"
+    description_sk: "Odstrani priznak safeboot, aby pocitac pri dalsom starte zaviedol normalne. Bez undo - typ (minimal/network) sa po odstraneni nezachova."
+    description_en: "Removes the safeboot flag so the machine boots normally next time. No undo - which variant (minimal/network) was set is not recoverable afterward."

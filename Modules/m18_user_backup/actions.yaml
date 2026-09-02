@@ -1,0 +1,28 @@
+module_id: m18_user_backup
+category: REPAIR
+actions:
+  - id: backup_user_folders
+    label_sk: "Zaloha pouzivatelskych priecinkov"
+    label_en: "Back up user folders"
+    risk: MODERATE
+    preview_command: "$total = 0; $count = 0; foreach ($f in 'Desktop','Documents','Pictures','Favorites') { $p = Join-Path $env:USERPROFILE $f; if (Test-Path $p) { $items = Get-ChildItem $p -Recurse -File -Force -EA SilentlyContinue; $count += $items.Count; $total += ($items | Measure-Object Length -Sum).Sum } }; Write-Output ('Would back up ' + $count + ' file(s), ' + [math]::Round($total/1GB,2) + ' GB from Desktop/Documents/Pictures/Favorites')"
+    command: "$ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $dest = \"$env:ProgramData\\PortableFix\\UserFileBackup\\$ts\"; $failed = $false; foreach ($f in 'Desktop','Documents','Pictures','Favorites') { $src = Join-Path $env:USERPROFILE $f; if (Test-Path $src) { robocopy $src (Join-Path $dest $f) /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null; if ($LASTEXITCODE -ge 8) { $failed = $true } } }; if ($failed) { Write-Output ('Backup completed with errors: ' + $dest); exit 1 } else { Write-Output ('Backup complete: ' + $dest) }"
+    undo_command: "$latest = Get-ChildItem \"$env:ProgramData\\PortableFix\\UserFileBackup\" -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1; if ($latest) { $out = Join-Path $env:USERPROFILE ('Desktop\\RESTORED_' + $latest.Name); robocopy $latest.FullName $out /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null; Write-Output ('Restored to ' + $out + ' (copied next to your files, nothing overwritten).') } else { Write-Output 'No backup found.' }"
+    description_sk: "Zalohuje Desktop/Documents/Pictures/Favorites pred rizikovym zasahom do $env:ProgramData\\PortableFix (na tom istom vnutornom disku - chrani pred chybou tohto nastroja, NIE pred zlyhanim fyzickeho disku). Undo skopiruje najnovsiu zalohu spat na Plochu do noveho priecinka."
+    description_en: "Backs up Desktop/Documents/Pictures/Favorites before a risky operation to $env:ProgramData\\PortableFix (same internal drive - protects against this tool's own mistakes, NOT a failing physical disk). Undo copies the latest backup back to a new Desktop folder."
+
+  - id: backup_list_existing
+    label_sk: "Zoznam existujucich zaloh"
+    label_en: "List existing backups"
+    risk: SAFE
+    command: "$root = \"$env:ProgramData\\PortableFix\\UserFileBackup\"; if (Test-Path $root) { Get-ChildItem $root -Directory | ForEach-Object { $size = (Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum; [PSCustomObject]@{ Backup = $_.Name; SizeGB = [math]::Round($size/1GB,2) } } | Format-Table -AutoSize } else { Write-Output 'No backups found yet.' }"
+    description_sk: "Vypise vsetky doterajsie zalohy pouzivatelskych suborov vytvorene tymto nastrojom, s ich velkostou. Nic nemeni."
+    description_en: "Lists every user-file backup this tool has created so far, with size. Changes nothing."
+
+  - id: backup_restore_latest
+    label_sk: "Obnovenie poslednej zalohy"
+    label_en: "Restore latest backup"
+    risk: MODERATE
+    command: "$latest = Get-ChildItem \"$env:ProgramData\\PortableFix\\UserFileBackup\" -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1; if ($latest) { $out = Join-Path $env:USERPROFILE ('Desktop\\RESTORED_' + $latest.Name); robocopy $latest.FullName $out /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null; Write-Output ('Restored to ' + $out + ' (copied next to your files, nothing overwritten).') } else { Write-Output 'No backup found.' }"
+    description_sk: "Samostatna akcia na obnovenie poslednej zalohy - pouzitelna aj bez undo.ps1 z konkretnej davky (napr. pri inej navsteve u toho isteho klienta)."
+    description_en: "Standalone restore of the latest backup - usable even without that run's own undo.ps1 (e.g. on a different visit to the same client)."

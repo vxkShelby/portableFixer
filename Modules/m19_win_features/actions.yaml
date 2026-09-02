@@ -1,0 +1,43 @@
+module_id: m19_win_features
+category: REPAIR
+actions:
+  - id: feature_list_report
+    label_sk: "Prehlad volitelnych funkcii Windows"
+    label_en: "Windows optional features report"
+    risk: SAFE
+    command: "try { Get-WindowsOptionalFeature -Online -EA Stop | Select-Object FeatureName,State | Sort-Object State -Descending | Format-Table -AutoSize } catch { Write-Output ('Could not read optional features: ' + $_.Exception.Message + ' (needs administrator).') }"
+    description_sk: "Vypise vsetky volitelne funkcie Windows (DISM) a ich stav (zapnute/vypnute). Nic nemeni."
+    description_en: "Lists every Windows optional feature (DISM) and its state (enabled/disabled). Changes nothing."
+
+  - id: feature_legacy_insecure_report
+    label_sk: "Zastarale/nebezpecne funkcie (SMB1, PowerShell v2...)"
+    label_en: "Legacy/insecure features report (SMB1, PowerShell v2...)"
+    risk: SAFE
+    command: "$watch = 'MicrosoftWindowsPowerShellV2Root','MicrosoftWindowsPowerShellV2','SMB1Protocol','TelnetClient','TFTP'; try { Get-WindowsOptionalFeature -Online -EA Stop | Where-Object { $_.FeatureName -in $watch -and $_.State -eq 'Enabled' } | Select-Object FeatureName,State | Format-Table -AutoSize } catch { Write-Output ('Could not read optional features: ' + $_.Exception.Message + ' (needs administrator).') }"
+    description_sk: "Oznaci zapnute zastarale/rizikove funkcie: SMB1, PowerShell v2 (chyba AMSI/logovanie), Telnet a TFTP klienti (nesifrovane protokoly). Nic nemeni."
+    description_en: "Flags enabled legacy/risky features: SMB1, PowerShell v2 (lacks AMSI/script-block logging), Telnet and TFTP clients (plaintext protocols). Changes nothing."
+
+  - id: feature_enable_dotnet35
+    label_sk: "Zapnutie .NET Framework 3.5"
+    label_en: "Enable .NET Framework 3.5"
+    risk: REQUIRES_REBOOT
+    command: "Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart"
+    description_sk: "Zapne .NET Framework 3.5 (potrebuje ho niektory starsi/hobby softver). Casto zlyha chybou 0x800f0950, ak je zakazane stahovanie funkcii cez Windows Update alebo nie je internet - vtedy treba instalacne medium Windows."
+    description_en: "Enables .NET Framework 3.5 (needed by some older/hobby software). Frequently fails with error 0x800f0950 if feature restoration via Windows Update is disabled by policy or there's no internet - Windows installation media is then needed."
+
+  - id: feature_disable_powershell_v2
+    label_sk: "Vypnutie PowerShell v2"
+    label_en: "Disable PowerShell v2"
+    risk: MODERATE
+    command: "Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -NoRestart"
+    undo_command: "Enable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -All -NoRestart"
+    description_sk: "Vypne zastaralu vetvu PowerShell v2 (bez AMSI/logovania, zname zneuzitie na obchadzanie detekcie). Vyzaduje restart pre plne uplatnenie."
+    description_en: "Disables the legacy PowerShell v2 engine (no AMSI/logging, a known detection-evasion downgrade vector). Requires a restart to fully apply."
+
+  - id: feature_enable_sandbox
+    label_sk: "Zapnutie Windows Sandbox"
+    label_en: "Enable Windows Sandbox"
+    risk: REQUIRES_REBOOT
+    command: "try { Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM' -All -NoRestart -EA Stop; Write-Output 'Windows Sandbox enabled - restart required.' } catch { Write-Output ('Could not enable Windows Sandbox: ' + $_.Exception.Message + ' (needs Windows 10/11 Pro or Enterprise, and virtualization enabled in firmware.)') }"
+    description_sk: "Zapne Windows Sandbox (jednorazove izolovane prostredie na otestovanie podozriveho suboru/instalatora). Potrebuje Pro/Enterprise edicu a zapnutu virtualizaciu vo firmwari."
+    description_en: "Enables Windows Sandbox (a disposable isolated environment for testing a suspicious file/installer). Needs a Pro/Enterprise edition and virtualization enabled in firmware."

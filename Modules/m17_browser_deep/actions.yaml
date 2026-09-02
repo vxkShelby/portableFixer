@@ -1,0 +1,51 @@
+module_id: m17_browser_deep
+category: REPAIR
+actions:
+  - id: browser_extensions_report
+    label_sk: "Prehlad rozsireni prehliadacov"
+    label_en: "Browser extensions report"
+    risk: SAFE
+    command: "foreach ($b in @(@{N='Chrome';P=\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\"},@{N='Edge';P=\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\"})) { $pref = Join-Path $b.P 'Default\\Secure Preferences'; if (-not (Test-Path $pref)) { $pref = Join-Path $b.P 'Default\\Preferences' }; if (Test-Path $pref) { try { $j = Get-Content $pref -Raw | ConvertFrom-Json; $ext = $j.extensions.settings.PSObject.Properties | ForEach-Object { [PSCustomObject]@{ Name = $_.Value.manifest.name; Enabled = ($_.Value.state -eq 1) } }; Write-Output ('--- ' + $b.N + ' (' + $ext.Count + ' extensions) ---'); $ext | Format-Table -AutoSize } catch { Write-Output ($b.N + ': could not parse preferences file.') } } }; $ffDir = \"$env:APPDATA\\Mozilla\\Firefox\\Profiles\"; if (Test-Path $ffDir) { $ffProfile = Get-ChildItem $ffDir -Filter *.default* -Directory -EA SilentlyContinue | Select-Object -First 1 } else { $ffProfile = $null }; if ($ffProfile) { $extJson = Join-Path $ffProfile.FullName 'extensions.json'; if (Test-Path $extJson) { try { $j = Get-Content $extJson -Raw | ConvertFrom-Json; Write-Output ('--- Firefox (' + $j.addons.Count + ' extensions) ---'); $j.addons | Select-Object @{N='Name';E={$_.defaultLocale.name}},active | Format-Table -AutoSize } catch { Write-Output 'Firefox: could not parse extensions.json.' } } }"
+    description_sk: "Vypise nainstalovane rozsirenia v Chrome/Edge/Firefox (len profil Default). Format interneho konfiguracneho suboru sa medzi verziami prehliadaca meni, beri ako orientacny prehlad. Nic nemeni."
+    description_en: "Lists installed extensions in Chrome/Edge/Firefox (Default profile only). The internal config file format shifts between browser versions, treat as best-effort. Changes nothing."
+
+  - id: browser_policy_report
+    label_sk: "Firemne pravidla prehliadacov (policy)"
+    label_en: "Browser enterprise policy report"
+    risk: SAFE
+    command: "Write-Output '--- Chrome policy (HKLM) ---'; Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Google\\Chrome' -EA SilentlyContinue | Format-List; Write-Output '--- Chrome policy (HKCU) ---'; Get-ItemProperty 'HKCU:\\SOFTWARE\\Policies\\Google\\Chrome' -EA SilentlyContinue | Format-List; Write-Output '--- Edge policy (HKLM) ---'; Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge' -EA SilentlyContinue | Format-List; Write-Output '--- Edge policy (HKCU) ---'; Get-ItemProperty 'HKCU:\\SOFTWARE\\Policies\\Microsoft\\Edge' -EA SilentlyContinue | Format-List; Write-Output '--- End ---'"
+    description_sk: "Zobrazi vynutene policy nastavenia Chrome/Edge (forsovane rozsirenie, homepage a pod.) - v UI prehliadaca sa zobrazuju len ako 'spravovane organizaciou', bez moznosti zmeny. Nic nemeni."
+    description_en: "Shows enforced Chrome/Edge policy settings (forced extension, homepage, etc.) - the browser UI only shows these as 'managed by your organization' with no way to change them. Changes nothing."
+
+  - id: browser_homepage_search_report
+    label_sk: "Kontrola domovskej stranky a vyhladavania"
+    label_en: "Homepage/search hijack check"
+    risk: SAFE
+    command: "$goodHosts = @('google.com','bing.com','duckduckgo.com','msn.com'); $c = Get-Content \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Preferences\" -Raw -EA SilentlyContinue | ConvertFrom-Json -EA SilentlyContinue; if ($c) { $hp = $c.homepage; $sp = $c.default_search_provider.name; Write-Output (\"Chrome homepage: $hp\"); Write-Output (\"Chrome default search: $sp\") }; $e = Get-Content \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Preferences\" -Raw -EA SilentlyContinue | ConvertFrom-Json -EA SilentlyContinue; if ($e) { Write-Output (\"Edge homepage: \" + $e.homepage); Write-Output (\"Edge default search: \" + $e.default_search_provider.name) }; Write-Output '--- End ---'"
+    description_sk: "Zobrazi aktualnu domovsku stranku a predvoleny vyhladavac Chrome/Edge - klasicky priznak unosu prehliadaca (adware/PUA). Nic nemeni."
+    description_en: "Shows the current homepage and default search provider for Chrome/Edge - a classic browser-hijack (adware/PUA) signal. Changes nothing."
+
+  - id: browser_reset_chrome_profile
+    label_sk: "Reset profilu Chrome"
+    label_en: "Reset Chrome profile"
+    risk: MODERATE
+    command: "Stop-Process -Name chrome -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $src = \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\"; $dst = \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default.bak-$ts\"; if (Test-Path $src) { Rename-Item -Path $src -NewName (Split-Path $dst -Leaf); Write-Output ('Chrome profile reset. Old profile saved as ' + $dst) } else { Write-Output 'Chrome default profile not found.' }"
+    description_sk: "Zatvori Chrome bez varovania a premenuje jeho profil (nastavenia, rozsirenia, hesla) nabok - Chrome si pri dalsom starte vytvori novy. Zaloha ostane na disku, ale nema automaticke undo (bezpecne vratit sa da len pred prvym dalsim spustenim Chrome)."
+    description_en: "Closes Chrome without asking and renames its profile (settings, extensions, saved passwords) aside - Chrome creates a fresh one on next launch. The old profile stays on disk but there's no automatic undo (only safely reversible before Chrome is relaunched)."
+
+  - id: browser_reset_edge_profile
+    label_sk: "Reset profilu Edge"
+    label_en: "Reset Edge profile"
+    risk: MODERATE
+    command: "Stop-Process -Name msedge -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $src = \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\"; $dst = \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default.bak-$ts\"; if (Test-Path $src) { Rename-Item -Path $src -NewName (Split-Path $dst -Leaf); Write-Output ('Edge profile reset. Old profile saved as ' + $dst) } else { Write-Output 'Edge default profile not found.' }"
+    description_sk: "Rovnaky princip ako reset Chrome, ale pre Edge (proces msedge). Zaloha bez automatickeho undo."
+    description_en: "Same approach as the Chrome reset, targeting Edge (msedge process). Backup kept, no automatic undo."
+
+  - id: browser_clear_policy_keys
+    label_sk: "Vymazanie policy klucov Chrome/Edge"
+    label_en: "Clear Chrome/Edge policy keys"
+    risk: DESTRUCTIVE
+    command: "$bk = \"$env:ProgramData\\PortableFix\\browser_policy_backup.reg\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; reg export 'HKLM\\SOFTWARE\\Policies\\Google\\Chrome' $bk /y 2>$null | Out-Null; reg export 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge' \"$bk.edge\" /y 2>$null | Out-Null; Remove-Item 'HKLM:\\SOFTWARE\\Policies\\Google\\Chrome' -Recurse -Force -EA SilentlyContinue; Remove-Item 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge' -Recurse -Force -EA SilentlyContinue; Write-Output 'Chrome/Edge policy keys removed (backups exported as .reg files).'"
+    undo_command: "reg import \"$env:ProgramData\\PortableFix\\browser_policy_backup.reg\"; reg import \"$env:ProgramData\\PortableFix\\browser_policy_backup.reg.edge\""
+    description_sk: "POZOR: odstrani policy kluce Chrome/Edge z registra (adware ich casto zneuziva, ale na firemnom/spravovanom PC mozu byt legitimne). Pouzivaj len na pocitacoch, ktore NIE su centralne spravovane (domena/MDM). Zaloha ako .reg subory, undo ich importuje spat."
+    description_en: "WARNING: removes Chrome/Edge policy registry keys (often abused by adware, but can be legitimate on a domain/MDM-managed machine). Only use on machines that are NOT centrally managed. Backed up as .reg files, undo re-imports them."
