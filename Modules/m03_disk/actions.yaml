@@ -26,9 +26,9 @@ actions:
     label_sk: "Rychla oprava disku (SpotFix)"
     label_en: "Quick disk repair (SpotFix)"
     risk: MODERATE
-    command: "Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -SpotFix"
-    description_sk: "Opravi zname NTFS chyby online, bez restartu."
-    description_en: "Repairs known NTFS errors online, without a restart."
+    command: "$r = Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -SpotFix -EA SilentlyContinue; $status = if ($r) { $r.HealthStatus } else { 'Unknown' }; Write-Output ('HealthStatus after SpotFix: ' + $status); if ($status -ne 'Healthy') { Write-Output 'Some errors could not be fixed online - run \"Full disk check at restart\" for a complete repair.' }"
+    description_sk: "Opravi zname NTFS chyby online, bez restartu. Ak nieco nedokaze opravit online, odporuci plnu kontrolu pri restarte."
+    description_en: "Repairs known NTFS errors online, without a restart. Points to the full restart-time scan if it can't fix everything online."
   - id: disk_optimize_volume
     label_sk: "Optimalizacia disku (TRIM/defragmentacia)"
     label_en: "Optimize volume (TRIM/defrag)"

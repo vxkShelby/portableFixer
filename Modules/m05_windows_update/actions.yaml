@@ -13,14 +13,14 @@ actions:
     label_en: "Stop Windows Update services"
     risk: MODERATE
     command: "Stop-Service -Name wuauserv,bits,cryptsvc,msiserver -Force -ErrorAction SilentlyContinue"
-    undo_command: "Start-Service -Name wuauserv,bits,cryptsvc,msiserver -ErrorAction SilentlyContinue"
+    undo_command: "foreach ($svc in 'wuauserv','bits','cryptsvc','msiserver') { try { Start-Service -Name $svc -EA Stop } catch { Write-Output ('Could not restart ' + $svc + ': ' + $_.Exception.Message) } }"
     description_sk: "Docasne zastavi sluzby Windows Update pred resetom cache. Potrebne pred dalsim krokom."
     description_en: "Temporarily stops Windows Update services before resetting the cache. Required before the next step."
   - id: wu_reset_cache
     label_sk: "Reset cache Windows Update"
     label_en: "Reset Windows Update cache"
     risk: MODERATE
-    command: "if (Test-Path \"$env:WINDIR\\SoftwareDistribution\") { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution\" -NewName \"SoftwareDistribution.bak\" -Force -ErrorAction SilentlyContinue }; if (Test-Path \"$env:WINDIR\\System32\\catroot2\") { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2\" -NewName \"catroot2.bak\" -Force -ErrorAction SilentlyContinue }"
+    command: "if (Test-Path \"$env:WINDIR\\SoftwareDistribution\") { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution\" -NewName \"SoftwareDistribution.bak\" -Force -ErrorAction SilentlyContinue }; if (Test-Path \"$env:WINDIR\\System32\\catroot2\") { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2\" -NewName \"catroot2.bak\" -Force -ErrorAction SilentlyContinue }; $sdOk = -not (Test-Path \"$env:WINDIR\\SoftwareDistribution\"); $crOk = -not (Test-Path \"$env:WINDIR\\System32\\catroot2\"); if ($sdOk -and $crOk) { Write-Output 'SoftwareDistribution and catroot2 reset.' } else { Write-Output ('WARNING: ' + $(if (-not $sdOk) { 'SoftwareDistribution still in use, not reset. ' } else { '' }) + $(if (-not $crOk) { 'catroot2 still in use, not reset.' } else { '' })) }"
     undo_command: "if ((Test-Path \"$env:WINDIR\\SoftwareDistribution.bak\") -and -not (Test-Path \"$env:WINDIR\\SoftwareDistribution\")) { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution.bak\" -NewName \"SoftwareDistribution\" -Force }; if ((Test-Path \"$env:WINDIR\\System32\\catroot2.bak\") -and -not (Test-Path \"$env:WINDIR\\System32\\catroot2\")) { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2.bak\" -NewName \"catroot2\" -Force }"
     description_sk: "Premenuje priecinky SoftwareDistribution a catroot2 na .bak, Windows si vytvori nove pri dalsom starte sluzieb. Undo funguje spolahlivo len ak sa medzitym nespustil krok Restart sluzieb Windows Update."
     description_en: "Renames the SoftwareDistribution and catroot2 folders to .bak; Windows recreates them fresh when services restart. Undo only works reliably if the Restart Windows Update services step hasn't run yet."

@@ -28,8 +28,8 @@ actions:
     risk: MODERATE
     command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (-not (Test-Path \"$hostsPath.bak\")) { Copy-Item -Path $hostsPath -Destination \"$hostsPath.bak\" -Force }; Set-Content -Path $hostsPath -Value \"# Copyright (c) 1993-2009 Microsoft Corp.`r`n#`r`n127.0.0.1 localhost`r`n::1 localhost`r`n\" -Encoding ASCII"
     undo_command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (Test-Path \"$hostsPath.bak\") { Copy-Item -Path \"$hostsPath.bak\" -Destination $hostsPath -Force }"
-    description_sk: "Zalohuje aktualny hosts subor (len pri prvom behu) a nahradi ho predvolenym obsahom bez ceph presmerovani. Caste malware presmerovava domeny cez tento subor."
-    description_en: "Backs up the current hosts file (only on first run) and replaces it with default content with no redirects. Malware commonly hijacks domains via this file."
+    description_sk: "Zalohuje aktualny hosts subor (len pri prvom behu) a nahradi ho predvolenym obsahom bez ceph presmerovani. Caste malware presmerovava domeny cez tento subor. Undo funguje spolahlivo len ak sa medzitym nespustila tato akcia druhy krat (zaloha je len jedna, z prveho behu)."
+    description_en: "Backs up the current hosts file (only on first run) and replaces it with default content with no redirects. Malware commonly hijacks domains via this file. Undo only works reliably if this action hasn't run a second time since (there's only one backup, from the first run)."
   - id: net_dhcp_renew
     label_sk: "Obnovenie DHCP adresy"
     label_en: "Renew DHCP address"
