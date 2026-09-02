@@ -962,3 +962,209 @@ def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
 
     window._action_checkboxes["firewall_check"].setChecked(True)
     assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: MODERATE"
+
+
+def test_update_banner_hidden_by_default(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_update1")
+    qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
+    assert window.update_banner.isVisible() is False
+
+
+def test_update_banner_shows_when_check_finds_newer_version(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update2")
+    qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
+
+    info = UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes="")
+    window._on_update_check_finished(info)
+
+    assert window.update_banner.isVisible() is True
+    assert "9.9.9" in window.update_banner_label.text()
+
+
+def test_update_banner_check_finished_with_none_stays_hidden(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update3")
+    qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
+
+    window._on_update_check_finished(None)
+
+    assert window.update_banner.isVisible() is False
+
+
+def test_update_banner_dismiss_hides_it(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update4")
+    qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
+
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window.update_dismiss_button.click()
+
+    assert window.update_banner.isVisible() is False
+
+
+def test_update_check_skipped_when_not_frozen(qtbot, tmp_path):
+    # pytest never runs as a frozen PyInstaller build, so sys.frozen is
+    # always falsy here - this proves _start_update_check's own guard,
+    # not a monkeypatched substitute for it.
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_update5")
+    qtbot.addWidget(window)
+    assert window._update_check_runner is None
+
+
+def test_update_button_click_declined_confirm_does_not_start_download(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update6")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    assert window._update_download_runner is None
+
+
+def test_update_button_click_confirmed_downloads_and_applies_update(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update7")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: applied.get("called") is True, timeout=5000)
+    assert applied.get("quit_called") is True
+
+
+def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+
+    def raise_it(info, dest):
+        raise Exception("boom")
+
+    monkeypatch.setattr(mw_module.updater, "download_update", raise_it)
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update8")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.update_button.isEnabled() is True, timeout=5000)
+    assert window.update_banner_label.text() == "Downloading the update failed. Try again later."
+
+
+def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update9")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.update_banner_label.text() == "The app folder is not writable, the update cannot be applied.", timeout=5000)
+    assert applied.get("called") is None
+
+
+def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_toggle_mid_dl")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    # Simulate a download in progress (mirrors what _on_update_button_clicked
+    # sets before starting the QThread) without actually starting one.
+    window._update_in_progress = True
+    window.update_button.setEnabled(False)
+    window.update_dismiss_button.setEnabled(False)
+
+    window._on_toggle_language()
+
+    assert window.update_button.isEnabled() is False
+    assert window.update_dismiss_button.isEnabled() is False
+
+
+def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_batch_guard")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._batch_active = True
+
+    window.update_button.click()
+
+    assert window._update_download_runner is None
+
+
+def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    calls = {"n": 0}
+
+    def fake_question(*a, **k):
+        calls["n"] += 1
+        return QMessageBox.Yes if calls["n"] == 1 else QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update10")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.update_banner_label.text() == "Version 9.9.9 is available", timeout=5000)
+    assert applied.get("called") is None
+    assert applied.get("quit_called") is None
