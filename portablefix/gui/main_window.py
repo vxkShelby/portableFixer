@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QFrame,
@@ -456,6 +457,47 @@ class MainWindow(QMainWindow):
     def _on_update_dismiss_clicked(self) -> None:
         self._pending_update_info = None
         self.update_banner.setVisible(False)
+
+    def _quit_app(self) -> None:
+        QApplication.instance().quit()
+
+    def _on_update_button_clicked(self) -> None:
+        if self._pending_update_info is None:
+            return
+        confirmed = QMessageBox.question(
+            self, self._t("app_title"),
+            self._t("update_confirm_download").format(version=self._pending_update_info.version),
+        )
+        if confirmed != QMessageBox.Yes:
+            return
+        dest_dir = Path(tempfile.gettempdir()) / "PortableFixUpdate"
+        self.update_banner_label.setText(self._t("update_downloading"))
+        self.update_button.setEnabled(False)
+        self._update_download_runner = updater.UpdateDownloadRunner(self._pending_update_info, dest_dir, parent=self)
+        self._update_download_runner.download_finished.connect(self._on_update_download_finished)
+        self._update_download_runner.start()
+
+    def _on_update_download_finished(self, new_exe_path, error: str) -> None:
+        self.update_button.setEnabled(True)
+        if not new_exe_path:
+            self.update_banner_label.setText(self._t("update_download_failed"))
+            return
+        current_exe = Path(sys.executable)
+        if not updater.is_writable(current_exe.parent):
+            self.update_banner_label.setText(self._t("update_not_writable"))
+            return
+        confirmed = QMessageBox.question(
+            self, self._t("app_title"),
+            self._t("update_confirm_restart").format(version=self._pending_update_info.version),
+        )
+        if confirmed != QMessageBox.Yes:
+            self.update_banner_label.setText(
+                self._t("update_available_banner").format(version=self._pending_update_info.version)
+            )
+            return
+        sums_path = paths.get_base_dir() / "Data" / "SHA256SUMS"
+        updater.apply_update(new_exe_path, current_exe, sums_path)
+        self._quit_app()
 
     def _on_restart_as_admin(self) -> None:
         result = elevation.relaunch_as_admin(sys.executable)

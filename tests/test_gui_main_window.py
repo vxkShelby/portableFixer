@@ -1020,3 +1020,86 @@ def test_update_check_skipped_when_not_frozen(qtbot, tmp_path):
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_update5")
     qtbot.addWidget(window)
     assert window._update_check_runner is None
+
+
+def test_update_button_click_declined_confirm_does_not_start_download(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update6")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    assert window._update_download_runner is None
+
+
+def test_update_button_click_confirmed_downloads_and_applies_update(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update7")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: applied.get("called") is True, timeout=5000)
+    assert applied.get("quit_called") is True
+
+
+def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+
+    def raise_it(info, dest):
+        raise Exception("boom")
+
+    monkeypatch.setattr(mw_module.updater, "download_update", raise_it)
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update8")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.update_button.isEnabled() is True, timeout=5000)
+    assert window.update_banner_label.text() == "Downloading the update failed. Try again later."
+
+
+def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update9")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.update_banner_label.text() == "The app folder is not writable, the update cannot be applied.", timeout=5000)
+    assert applied.get("called") is None
