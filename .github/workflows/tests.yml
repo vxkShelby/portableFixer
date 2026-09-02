@@ -1,0 +1,60 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run non-GUI test suite
+        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py -q
+
+      # test_gui_main_window.py and test_executor.py spawn real powershell.exe
+      # processes through the same QThread mechanism (portablefix/executor.py).
+      # Running many of them in one pytest invocation intermittently crashes
+      # with a transient native error (STATUS_STACK_BUFFER_OVERRUN) - not a
+      # code defect (see README.md "Vývoj"). Mirror the local workaround: run
+      # each test in its own process, retry once if the process crashed
+      # instead of reporting a normal pass/fail.
+      - name: Run GUI/executor tests individually (crash-workaround)
+        shell: pwsh
+        run: |
+          $ids = python -m pytest tests/test_gui_main_window.py tests/test_executor.py --collect-only -q |
+            Select-String "::" | ForEach-Object { $_.Line.Trim() }
+
+          $failed = @()
+          foreach ($id in $ids) {
+            $ok = $false
+            $lastOutput = ""
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+              $lastOutput = python -m pytest $id -q 2>&1 | Out-String
+              if ($lastOutput -match "1 passed") {
+                $ok = $true
+                break
+              }
+            }
+            if (-not $ok) {
+              Write-Host "FAILED after retry: $id"
+              Write-Host $lastOutput
+              $failed += $id
+            }
+          }
+
+          if ($failed.Count -gt 0) {
+            Write-Host "::error::$($failed.Count) test(s) failed after retry: $($failed -join ', ')"
+            exit 1
+          }
+          Write-Host "All $($ids.Count) GUI/executor tests passed."

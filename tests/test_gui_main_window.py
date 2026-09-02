@@ -117,14 +117,19 @@ def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_focus")
     qtbot.addWidget(window)
     window.show()
+    window.activateWindow()
+    qtbot.waitActive(window, timeout=5000)
 
     window.category_list.setCurrentRow(1)
     window._action_checkboxes["clean_action"].setFocus()
+    # hasFocus() only reflects reality once the OS has actually handed this
+    # window keyboard focus, which is asynchronous even after activateWindow().
+    qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
 
     window._on_toggle_language()
 
     assert window.category_list.currentRow() == 1
-    assert window._action_checkboxes["clean_action"].hasFocus()
+    qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
 
 
 def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
