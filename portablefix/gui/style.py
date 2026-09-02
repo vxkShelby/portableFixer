@@ -201,6 +201,11 @@ QLineEdit#searchBox:focus {
 QDialog {
     background-color: #1a1b26;
 }
+QWidget#updateBanner {
+    background-color: #24283b;
+    border: 1px solid #7aa2f7;
+    border-radius: 8px;
+}
 QLabel#summaryHeader {
     font-size: 12pt;
     font-weight: bold;

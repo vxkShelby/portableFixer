@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -25,12 +26,13 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import elevation, i18n, report, restore_point, undo
+from .. import elevation, i18n, paths, report, restore_point, undo, updater
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
 from ..settings import Settings
+from ..version import APP_VERSION
 
 PRESETS: dict[str, list[str]] = {
     "quick_clean": [
@@ -86,7 +88,11 @@ class MainWindow(QMainWindow):
         self._summary_dialog: QDialog | None = None
         self._closed = False
         self._cancel_requested = False
+        self._pending_update_info = None
+        self._update_check_runner = None
+        self._update_download_runner = None
         self._build_ui()
+        self._start_update_check()
 
     def closeEvent(self, event) -> None:
         # ponytail: plain-Python flag (safe even if a delayed cross-thread
@@ -131,6 +137,23 @@ class MainWindow(QMainWindow):
         self.language_button.clicked.connect(self._on_toggle_language)
         top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
+
+        self.update_banner = QWidget()
+        self.update_banner.setObjectName("updateBanner")
+        update_banner_layout = QHBoxLayout(self.update_banner)
+        update_banner_layout.setContentsMargins(10, 6, 10, 6)
+        self.update_banner_label = QLabel("")
+        update_banner_layout.addWidget(self.update_banner_label, 1)
+        self.update_button = QPushButton(self._t("update_button"))
+        self.update_button.setObjectName("runButton")
+        self.update_button.clicked.connect(lambda _checked=False: self._on_update_button_clicked())
+        update_banner_layout.addWidget(self.update_button)
+        self.update_dismiss_button = QPushButton(self._t("update_dismiss"))
+        self.update_dismiss_button.setObjectName("selectionBtn")
+        self.update_dismiss_button.clicked.connect(lambda _checked=False: self._on_update_dismiss_clicked())
+        update_banner_layout.addWidget(self.update_dismiss_button)
+        self.update_banner.setVisible(False)
+        root_layout.addWidget(self.update_banner)
 
         category_i18n_keys = {
             ModuleCategory.DIAGNOSTICS: "category_diagnostics",
@@ -290,6 +313,11 @@ class MainWindow(QMainWindow):
         if self._categories_order:
             self.category_list.setCurrentRow(0)
         self._update_status_bar()
+        if self._pending_update_info is not None:
+            self.update_banner_label.setText(
+                self._t("update_available_banner").format(version=self._pending_update_info.version)
+            )
+            self.update_banner.setVisible(True)
 
     def _on_category_changed(self, row: int) -> None:
         for index, category in enumerate(self._categories_order):
@@ -410,6 +438,23 @@ class MainWindow(QMainWindow):
         self._build_ui()
         if old_central is not None:
             old_central.deleteLater()
+
+    def _start_update_check(self) -> None:
+        if not getattr(sys, "frozen", False):
+            return
+        self._update_check_runner = updater.UpdateCheckRunner(APP_VERSION, parent=self)
+        self._update_check_runner.check_finished.connect(self._on_update_check_finished)
+        self._update_check_runner.start()
+
+    def _on_update_check_finished(self, info) -> None:
+        if info is None:
+            return
+        self._pending_update_info = info
+        self.update_banner_label.setText(self._t("update_available_banner").format(version=info.version))
+        self.update_banner.setVisible(True)
+
+    def _on_update_dismiss_clicked(self) -> None:
+        self.update_banner.setVisible(False)
 
     def _on_restart_as_admin(self) -> None:
         result = elevation.relaunch_as_admin(sys.executable)
