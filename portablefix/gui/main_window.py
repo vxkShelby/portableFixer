@@ -454,6 +454,7 @@ class MainWindow(QMainWindow):
         self.update_banner.setVisible(True)
 
     def _on_update_dismiss_clicked(self) -> None:
+        self._pending_update_info = None
         self.update_banner.setVisible(False)
 
     def _on_restart_as_admin(self) -> None:

@@ -968,6 +968,7 @@ def test_update_banner_hidden_by_default(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_update1")
     qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
     assert window.update_banner.isVisible() is False
 
 
@@ -990,6 +991,7 @@ def test_update_banner_check_finished_with_none_stays_hidden(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update3")
     qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
 
     window._on_update_check_finished(None)
 
@@ -1002,6 +1004,7 @@ def test_update_banner_dismiss_hides_it(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update4")
     qtbot.addWidget(window)
+    window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
 
     window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
     window.update_dismiss_button.click()
