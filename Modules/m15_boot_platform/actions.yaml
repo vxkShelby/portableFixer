@@ -40,3 +40,12 @@ actions:
     command: "& bcdedit.exe /deletevalue '{current}' safeboot | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Safe Mode flag cleared - next restart boots normally.' } else { Write-Output 'Failed to clear safeboot flag (needs administrator).' ; exit 1 }"
     description_sk: "Odstrani priznak safeboot, aby pocitac pri dalsom starte zaviedol normalne. Bez undo - typ (minimal/network) sa po odstraneni nezachova."
     description_en: "Removes the safeboot flag so the machine boots normally next time. No undo - which variant (minimal/network) was set is not recoverable afterward."
+
+  - id: boot_enable_f8_legacy_recovery
+    label_sk: "Zapnutie F8 menu pokrocilych moznosti spustenia"
+    label_en: "Enable F8 Advanced Boot Options menu"
+    risk: MODERATE
+    command: "& bcdedit.exe /set '{current}' bootmenupolicy legacy | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Legacy F8 boot recovery enabled - hold F8 during boot to reach Advanced Boot Options.' } else { Write-Output 'Failed to set bootmenupolicy (needs administrator).'; exit 1 }"
+    undo_command: "& bcdedit.exe /set '{current}' bootmenupolicy standard | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Boot menu policy restored to standard (Windows 11 default).' } else { Write-Output 'Failed to restore bootmenupolicy (needs administrator).'; exit 1 }"
+    description_sk: "Zapne stary F8 zavadzaci mechanizmus (Pokrocile moznosti spustenia) odstraneny vo Windows 8+. Uzitocne pri opakovanych problemoch so spustanim, kedy Windows sa dostat do WinRE automaticky nestiha. Undo vrati standardne (Windows 11 predvolene) spravanie."
+    description_en: "Enables the legacy F8 boot mechanism (Advanced Boot Options) removed since Windows 8. Useful for recurring startup problems where Windows doesn't reliably drop into WinRE on its own. Undo restores the standard (Windows 11 default) behavior."

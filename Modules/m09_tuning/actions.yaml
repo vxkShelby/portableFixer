@@ -31,3 +31,30 @@ actions:
     undo_command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 0 -Type DWord; Remove-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop\\WindowMetrics' -Name MinAnimate -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarAnimations -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewAlphaSelect -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewShadow -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Name EnableTransparency -EA SilentlyContinue"
     description_sk: "Nastavi vizualne efekty na najlepsi vykon (vypne animacie, priehladnost okien, tiene v zoznamoch). Undo vrati automaticky rezim (Windows rozhodne). Prejavi sa po odhlaseni/prihlaseni."
     description_en: "Sets visual effects to best performance (disables animations, window transparency, list-view shadows). Undo restores the automatic mode (let Windows decide). Takes effect after sign-out/sign-in."
+
+  - id: tune_end_task_taskbar
+    label_sk: "Ukoncenie procesu pravym klikom na taskbare"
+    label_en: "End Task with taskbar right-click"
+    risk: MODERATE
+    command: "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings' -Force -EA SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings' -Name TaskbarEndTask -Value 1 -Type DWord; Write-Output 'End Task added to taskbar right-click menu (takes effect after Explorer restart/sign-in).'"
+    undo_command: "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings' -Name TaskbarEndTask -EA SilentlyContinue; Write-Output 'End Task removed from taskbar right-click menu.'"
+    description_sk: "Prida polozku 'Ukoncit ulohu' do kontextoveho menu po pravom kliku na aplikaciu na taskbare - rychly sposob zabit zamrznutu appku bez Task Manageru. Prejavi sa po restarte Prieskumnika/odhlaseni. Undo nastavenie odstrani."
+    description_en: "Adds an 'End Task' item to the taskbar's right-click menu - a quick way to kill a frozen app without opening Task Manager. Takes effect after an Explorer restart/sign-in. Undo removes the setting."
+
+  - id: tune_sticky_keys_disable
+    label_sk: "Vypnutie vyzvy Sticky Keys (5x Shift)"
+    label_en: "Disable Sticky Keys prompt (5x Shift)"
+    risk: MODERATE
+    command: "Set-ItemProperty -Path 'HKCU:\\Control Panel\\Accessibility\\StickyKeys' -Name Flags -Value '506' -Type String; Write-Output 'Sticky Keys 5x-Shift prompt disabled.'"
+    undo_command: "Set-ItemProperty -Path 'HKCU:\\Control Panel\\Accessibility\\StickyKeys' -Name Flags -Value '58' -Type String; Write-Output 'Sticky Keys prompt restored to Windows default.'"
+    description_sk: "Vypne otravne vyskakovacie okno Sticky Keys, ktore sa spusti pri rychlom 5x stlaceni Shift (caste pri hrani hier). Nemeni fyzicku funkciu Sticky Keys, len vypnute automaticke ponuknutie. Undo vrati povodnu hodnotu."
+    description_en: "Disables the annoying Sticky Keys popup triggered by pressing Shift 5 times quickly (common during gaming). Does not change Sticky Keys functionality itself, only the auto-prompt. Undo restores the original value."
+
+  - id: tune_classic_context_menu
+    label_sk: "Obnovenie klasickeho kontextoveho menu (Windows 10 styl)"
+    label_en: "Restore classic context menu (Windows 10 style)"
+    risk: MODERATE
+    command: "New-Item -Path 'HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32' -Name '(default)' -Value '' -Type String; Write-Output 'Classic full context menu restored (takes effect after Explorer restart/sign-in).'"
+    undo_command: "Remove-Item -Path 'HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}' -Recurse -Force -EA SilentlyContinue; Write-Output 'Windows 11 compact context menu restored.'"
+    description_sk: "Vrati plne (Windows 10-style) kontextove menu po pravom kliku namiesto skrateneho Windows 11 menu s 'Zobrazit dalsie moznosti'. Prejavi sa po restarte Prieskumnika/odhlaseni. Undo kluc odstrani a vrati Windows 11 spravanie."
+    description_en: "Restores the full (Windows 10-style) right-click context menu instead of Windows 11's shortened menu with 'Show more options'. Takes effect after an Explorer restart/sign-in. Undo removes the key, restoring Windows 11 behavior."

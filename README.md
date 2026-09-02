@@ -23,18 +23,19 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M05 | Oprava | Windows Update: reset služieb a cache, DLL, detekcia |
 | M06 | Oprava | Sieť: DNS, hosts, DHCP, Winsock, TCP/IP |
 | M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby |
-| M08 | Zabezpečenie | Defender, firewall, UAC audit + rýchly sken |
-| M09 | Oprava | Tuning: plán napájania, vizuálne efekty |
+| M08 | Zabezpečenie | Defender, firewall, UAC audit + rýchly sken, WPBT disable |
+| M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu |
 | M10 | Diagnostika | Drivery: problémové zariadenia, ovládače tretích strán |
 | M11 | — | Reporting (HTML report po každej dávke, nie katalóg) |
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
-| M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri |
+| M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri, Recall/Click to Do |
 | M14 | Oprava | Tlač: tlačiarne, ovládače, offline/ghost tlačiarne, reset spooleru |
-| M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, BitLocker, Bezpečný režim |
+| M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, BitLocker, Bezpečný režim, F8 recovery |
 | M16 | Oprava | Office: verzia/kanál, doplnky Outlooku, OST/PST, rýchla/úplná oprava |
 | M17 | Oprava | Prehliadače: rozšírenia, policy, únos domovskej stránky, reset profilu |
 | M18 | Oprava | Záloha používateľských priečinkov (Desktop/Documents/Pictures/Favorites) |
 | M19 | Oprava | Voliteľné funkcie Windows: prehľad, .NET 3.5, PowerShell v2, Sandbox |
+| M20 | Oprava | Aktualizácia softvéru cez winget: zoznam, zastaraný softvér, update all |
 
 ## Bezpečnostné mechanizmy
 

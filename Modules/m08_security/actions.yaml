@@ -78,3 +78,12 @@ actions:
     undo_command: "$k = 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'; $bk = \"$env:ProgramData\\PortableFix\\uac_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; if ($null -ne $b.EnableLUA) { Set-ItemProperty -Path $k -Name EnableLUA -Value $b.EnableLUA -Type DWord }; if ($null -ne $b.ConsentPromptBehaviorAdmin) { Set-ItemProperty -Path $k -Name ConsentPromptBehaviorAdmin -Value $b.ConsentPromptBehaviorAdmin -Type DWord }; if ($null -ne $b.PromptOnSecureDesktop) { Set-ItemProperty -Path $k -Name PromptOnSecureDesktop -Value $b.PromptOnSecureDesktop -Type DWord }; Write-Output 'UAC settings restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
     description_sk: "Nastavi UAC na standardne hodnoty Windows (zapnute, predvolene spravanie vyziev) po zalohe aktualneho stavu. Undo vrati povodne hodnoty."
     description_en: "Sets UAC to standard Windows defaults (enabled, default prompt behavior) after backing up the current state. Undo restores the original values."
+
+  - id: sec_wpbt_disable
+    label_sk: "Vypnutie WPBT (Windows Platform Binary Table)"
+    label_en: "Disable WPBT (Windows Platform Binary Table)"
+    risk: MODERATE
+    command: "try { Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name DisableWpbtExecution -Value 1 -Type DWord -EA Stop; Write-Output 'WPBT execution disabled.' } catch { Write-Output ('Could not disable WPBT: ' + $_.Exception.Message + ' (needs administrator).'); exit 1 }"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name DisableWpbtExecution -EA SilentlyContinue; Write-Output 'WPBT setting removed (back to Windows default).'"
+    description_sk: "Vypne WPBT (Windows Platform Binary Table) - mechanizmus, cez ktory vyrobca notebooku/PC moze spustit program hned pri starte Windows (napr. anti-theft softver), niekedy aj bez suhlasu pouzivatela. Znama cesta zneuzitia predinstalovanym OEM softverom. Undo nastavenie odstrani."
+    description_en: "Disables WPBT (Windows Platform Binary Table) - the mechanism that lets a PC/laptop vendor auto-run a program at Windows boot (e.g. anti-theft software), sometimes without user consent. A known abuse vector for preinstalled OEM software. Undo removes the setting."

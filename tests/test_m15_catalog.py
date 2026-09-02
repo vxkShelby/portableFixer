@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m15_boot_platform" / "actions.yaml"
 
 
-def test_m15_catalog_loads_5_actions_in_repair_category():
+def test_m15_catalog_loads_6_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m15_boot_platform"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 5
+    assert len(module.actions) == 6
 
 
 def test_m15_catalog_risk_distribution():
@@ -24,15 +24,26 @@ def test_m15_catalog_risk_distribution():
         "boot_bitlocker_status",
         "boot_safe_mode_status",
     }
-    assert set(by_risk[RiskLevel.MODERATE]) == {"boot_clear_safe_mode_flag"}
+    assert set(by_risk[RiskLevel.MODERATE]) == {
+        "boot_clear_safe_mode_flag",
+        "boot_enable_f8_legacy_recovery",
+    }
     assert RiskLevel.DESTRUCTIVE not in by_risk
     assert RiskLevel.REQUIRES_REBOOT not in by_risk
 
 
-def test_m15_catalog_no_action_has_undo():
+def test_m15_catalog_only_f8_recovery_has_undo():
     module = load_module(CATALOG_PATH)
-    for action in module.actions:
-        assert action.undo_command is None, action.id
+    by_id = {a.id: a for a in module.actions}
+    assert by_id["boot_enable_f8_legacy_recovery"].undo_command is not None
+    for not_undoable in (
+        "boot_bcd_report",
+        "boot_tpm_status",
+        "boot_bitlocker_status",
+        "boot_safe_mode_status",
+        "boot_clear_safe_mode_flag",
+    ):
+        assert by_id[not_undoable].undo_command is None, not_undoable
 
 
 def test_m15_catalog_covers_expected_ids():
@@ -44,6 +55,7 @@ def test_m15_catalog_covers_expected_ids():
         "boot_bitlocker_status",
         "boot_safe_mode_status",
         "boot_clear_safe_mode_flag",
+        "boot_enable_f8_legacy_recovery",
     }
 
 

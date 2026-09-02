@@ -1,0 +1,26 @@
+module_id: m20_software_updates
+category: REPAIR
+actions:
+  - id: winget_list_installed
+    label_sk: "Zoznam nainstalovaneho softveru (winget)"
+    label_en: "List installed software (winget)"
+    risk: SAFE
+    command: "if (Get-Command winget -EA SilentlyContinue) { winget list --accept-source-agreements } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
+    description_sk: "Vypise vsetok softver, ktory pozna winget (nainstalovany cez winget, MSI/EXE aj Microsoft Store). Nic nemeni."
+    description_en: "Lists all software winget can see (installed via winget, MSI/EXE, and Microsoft Store). Changes nothing."
+
+  - id: winget_list_outdated
+    label_sk: "Zoznam zastaraleho softveru (winget)"
+    label_en: "List outdated software (winget)"
+    risk: SAFE
+    command: "if (Get-Command winget -EA SilentlyContinue) { winget upgrade --accept-source-agreements } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
+    description_sk: "Vypise softver s dostupnou aktualizaciou cez winget. Nic nemeni."
+    description_en: "Lists software with an update available via winget. Changes nothing."
+
+  - id: winget_update_all
+    label_sk: "Aktualizacia vsetkeho softveru (winget)"
+    label_en: "Update all software (winget)"
+    risk: MODERATE
+    command: "if (Get-Command winget -EA SilentlyContinue) { winget upgrade --all --silent --disable-interactivity --accept-source-agreements --accept-package-agreements; Write-Output 'winget upgrade --all finished.' } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
+    description_sk: "Potichu aktualizuje vsetok softver, ktory winget pozna. Moze trvat dlho pri viacerych balikoch. Bez univerzalneho undo (nie je genericky sposob znizit verziu) - pred spustenim sa vytvori bod obnovenia."
+    description_en: "Silently updates all software winget knows about. Can take a while with many packages. No generic undo (there's no universal downgrade path) - a restore point is created before running."
