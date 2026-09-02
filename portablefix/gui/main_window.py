@@ -72,7 +72,15 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.is_admin = is_admin
         self.run_id = run_id
-        self.modules: list[ModuleDef] = load_all_modules(assets_dir / "Modules")
+        self.modules, module_load_errors = load_all_modules(assets_dir / "Modules")
+        if module_load_errors:
+            QMessageBox.warning(
+                self,
+                self._t("app_title"),
+                self._t("module_load_warning") + "\n" + "\n".join(module_load_errors),
+            )
+        elif not self.modules:
+            QMessageBox.warning(self, self._t("app_title"), self._t("no_modules_warning"))
         self._action_checkboxes: dict[str, QCheckBox] = {}
         self._action_rows: dict[str, QWidget] = {}
         self._action_status_labels: dict[str, QLabel] = {}
@@ -271,6 +279,8 @@ class MainWindow(QMainWindow):
                     row.setSpacing(8)
                     checkbox = QCheckBox(action.label(self.settings.language))
                     checkbox.setToolTip(action.description(self.settings.language))
+                    checkbox.setAccessibleDescription(action.description(self.settings.language))
+                    checkbox.setAccessibleName(self._action_accessible_name(action))
                     checkbox.stateChanged.connect(lambda _state=0: self._update_status_bar())
                     self._action_checkboxes[action.id] = checkbox
                     row.addWidget(checkbox)
@@ -439,12 +449,25 @@ class MainWindow(QMainWindow):
         self.settings.dry_run = checked
 
     def _on_toggle_language(self) -> None:
+        # ponytail: keyboard-only/screen-reader users lose their place if a
+        # full UI rebuild silently resets category and focus - remember and
+        # restore both so a language switch doesn't strand them at the top.
+        saved_category_row = self.category_list.currentRow()
+        saved_focused_action_id = next(
+            (aid for aid, cb in self._action_checkboxes.items() if cb.hasFocus()), None
+        )
         self.settings.language = "en" if self.settings.language == "sk" else "sk"
         old_central = self.centralWidget()
         self._action_checkboxes = {}
         self._build_ui()
         if old_central is not None:
             old_central.deleteLater()
+        if 0 <= saved_category_row < self.category_list.count():
+            self.category_list.setCurrentRow(saved_category_row)
+        if saved_focused_action_id is not None:
+            checkbox = self._action_checkboxes.get(saved_focused_action_id)
+            if checkbox is not None:
+                checkbox.setFocus()
 
     def _start_update_check(self) -> None:
         if not getattr(sys, "frozen", False):
@@ -509,7 +532,9 @@ class MainWindow(QMainWindow):
             )
             return
         sums_path = paths.get_base_dir() / "Data" / "SHA256SUMS"
-        updater.apply_update(new_exe_path, current_exe, sums_path)
+        if not updater.apply_update(new_exe_path, current_exe, sums_path):
+            self.update_banner_label.setText(self._t("update_apply_failed"))
+            return
         self._quit_app()
 
     def _on_restart_as_admin(self) -> None:
@@ -555,14 +580,23 @@ class MainWindow(QMainWindow):
         if self._runner is not None:
             self._runner.cancel()
 
+    def _action_accessible_name(self, action: ActionDef, status_text: str = "") -> str:
+        name = f"{action.label(self.settings.language)} — risk: {action.risk.value}"
+        if status_text:
+            name += f", {status_text}"
+        return name
+
     def _set_action_status(self, action_id: str, state: str, text: str) -> None:
         label = self._action_status_labels.get(action_id)
-        if label is None:
-            return
-        label.setText(text)
-        label.setProperty("state", state)
-        label.style().unpolish(label)
-        label.style().polish(label)
+        if label is not None:
+            label.setText(text)
+            label.setProperty("state", state)
+            label.style().unpolish(label)
+            label.style().polish(label)
+        checkbox = self._action_checkboxes.get(action_id)
+        if checkbox is not None:
+            _, action = self._find_action(action_id)
+            checkbox.setAccessibleName(self._action_accessible_name(action, text))
 
     def run_selected_actions(self) -> None:
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
@@ -589,15 +623,20 @@ class MainWindow(QMainWindow):
                     self.cancel_button.setEnabled(False)
                     self._update_status_bar()
                 snapshot_after = self._take_snapshot()
-                html_path, _ = report.generate_report(
-                    self.state_dir,
-                    self.run_id,
-                    self.modules,
-                    self.settings.language,
-                    self._snapshot_before,
-                    snapshot_after,
-                )
-                if not self._closed:
+                try:
+                    html_path, _ = report.generate_report(
+                        self.state_dir,
+                        self.run_id,
+                        self.modules,
+                        self.settings.language,
+                        self._snapshot_before,
+                        snapshot_after,
+                    )
+                except OSError:
+                    html_path = None
+                    if not self._closed:
+                        self.console.appendPlainText(self._t("disk_write_failed"))
+                if html_path is not None and not self._closed:
                     self._show_batch_summary(html_path)
             return
         action_id = self._queue.pop(0)
@@ -616,10 +655,14 @@ class MainWindow(QMainWindow):
         )
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
-            undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
+            try:
+                undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
+            except OSError:
+                if not self._closed:
+                    self.console.appendPlainText(self._t("disk_write_failed"))
             rp_runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
-                lambda success, m=module, a=action: self._on_restore_point_checked(success, m, a)
+                lambda success, detail, m=module, a=action: self._on_restore_point_checked(success, detail, m, a)
             )
             self._pending_restore_point_runner = rp_runner
             rp_runner.start()
@@ -627,7 +670,25 @@ class MainWindow(QMainWindow):
 
         self._dispatch_action(module, action)
 
-    def _on_restore_point_checked(self, success: bool, module: ModuleDef, action: ActionDef) -> None:
+    def _on_restore_point_checked(self, success: bool, detail: str, module: ModuleDef, action: ActionDef) -> None:
+        output = "System Restore Point created." if success else (
+            f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
+        )
+        entry = make_entry(
+            "_system",
+            "restore_point",
+            f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
+            0 if success else 1,
+            output,
+            self.settings.dry_run,
+            self.run_id,
+            elevated=self.is_admin,
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
         if not success:
             proceed = QMessageBox.warning(
                 self,
@@ -683,15 +744,26 @@ class MainWindow(QMainWindow):
         self, module_id: str, action_id: str, command: str, exit_code: int, runner: ActionRunner
     ) -> None:
         output = "\n".join(runner.captured_output)
-        entry = make_entry(module_id, action_id, command, exit_code, output, self.settings.dry_run)
-        append_entry(self.state_dir, self.run_id, entry)
+        _, action = self._find_action(action_id)
+        entry = make_entry(
+            module_id, action_id, command, exit_code, output, self.settings.dry_run, self.run_id,
+            risk=action.risk.value, warned=action.risk != RiskLevel.SAFE, elevated=self.is_admin,
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
         self._batch_results.append((action_id, exit_code))
         elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
         if not self.settings.dry_run and exit_code == 0:
-            _, action = self._find_action(action_id)
             if action.undo_command:
                 self._undo_steps.append(action.undo_command)
-                undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
+                try:
+                    undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
+                except OSError:
+                    if not self._closed:
+                        self.console.appendPlainText(self._t("disk_write_failed"))
         self._run_next()

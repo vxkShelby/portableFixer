@@ -85,6 +85,46 @@ def test_action_checkbox_shows_description_as_tooltip(qtbot, tmp_path):
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_tooltip")
     qtbot.addWidget(window)
     assert window._action_checkboxes["described_action"].toolTip() == "Description EN"
+    assert window._action_checkboxes["described_action"].accessibleDescription() == "Description EN"
+
+
+def test_action_checkbox_accessible_name_includes_risk_level(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_a11y_name")
+    qtbot.addWidget(window)
+
+    name = window._action_checkboxes["first_action"].accessibleName()
+    assert "First action" in name
+    assert "SAFE" in name
+
+
+def test_action_status_update_appends_status_to_accessible_name(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_a11y_status")
+    qtbot.addWidget(window)
+
+    window._set_action_status("first_action", "ok", "OK (1.2s)")
+
+    name = window._action_checkboxes["first_action"].accessibleName()
+    assert "SAFE" in name
+    assert "OK (1.2s)" in name
+
+
+def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path):
+    base_dir = tmp_path
+    _write_module(base_dir, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(base_dir, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_focus")
+    qtbot.addWidget(window)
+    window.show()
+
+    window.category_list.setCurrentRow(1)
+    window._action_checkboxes["clean_action"].setFocus()
+
+    window._on_toggle_language()
+
+    assert window.category_list.currentRow() == 1
+    assert window._action_checkboxes["clean_action"].hasFocus()
 
 
 def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
@@ -104,6 +144,75 @@ def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
     entry = json.loads(line)
     assert entry["action_id"] == "hello"
     assert entry["exit_code"] == 0
+
+
+_TWO_SAFE_ACTIONS_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: first_action
+    label_sk: "X"
+    label_en: "First action"
+    risk: SAFE
+    command: "Write-Output 'first-ran'"
+  - id: second_action
+    label_sk: "X"
+    label_en: "Second action"
+    risk: SAFE
+    command: "Write-Output 'second-ran'"
+"""
+
+
+def test_batch_continues_past_disk_write_failure_instead_of_stalling(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import main_window as mw_module
+
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_diskfail")
+    qtbot.addWidget(window)
+    window._action_checkboxes["first_action"].setChecked(True)
+    window._action_checkboxes["second_action"].setChecked(True)
+
+    def raise_oserror(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mw_module, "append_entry", raise_oserror)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
+
+    assert "second-ran" in window.console.toPlainText()
+    assert window.console.toPlainText().count("Disk write failed") == 2
+
+
+def test_main_window_warns_but_still_opens_when_one_module_is_broken(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_base_dir(tmp_path)
+    broken_dir = base_dir / "Modules" / "m02_cleanup"
+    broken_dir.mkdir(parents=True)
+    (broken_dir / "actions.yaml").write_text("module_id: [unclosed\n  bad: yaml:\n", encoding="utf-8")
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a) or QMessageBox.Ok)
+
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_broken_module")
+    qtbot.addWidget(window)
+
+    assert len(warnings) == 1
+    assert any("m02_cleanup" in str(arg) for arg in warnings[0])
+    assert [m.module_id for m in window.modules] == ["m01_diagnostics"]
+
+
+def test_main_window_warns_when_no_modules_found(qtbot, tmp_path, monkeypatch):
+    (tmp_path / "Modules").mkdir()
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a) or QMessageBox.Ok)
+
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(), is_admin=True, run_id="run_no_modules")
+    qtbot.addWidget(window)
+
+    assert len(warnings) == 1
+    assert window.modules == []
 
 
 def test_restart_as_admin_button_visibility(qtbot, tmp_path):
@@ -278,7 +387,7 @@ def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path,
 
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
 
     base_dir = _make_destructive_base_dir(tmp_path)
@@ -294,7 +403,12 @@ def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path,
 
     from portablefix.audit_log import audit_log_path
     log_path = audit_log_path(base_dir, "run_decline")
-    qtbot.waitUntil(lambda: log_path.exists() and log_path.read_text(encoding="utf-8").strip() != "", timeout=10000)
+    # A synthetic restore_point entry is written first (real execution
+    # order), so waiting for "non-empty" alone would resolve before
+    # safe_thing has actually run - wait for its specific entry instead.
+    qtbot.waitUntil(
+        lambda: log_path.exists() and "safe_thing" in log_path.read_text(encoding="utf-8"), timeout=10000
+    )
 
     log_content = log_path.read_text(encoding="utf-8")
     assert "risky_thing" not in log_content
@@ -397,7 +511,7 @@ def test_destructive_action_accepted_runs_normally(qtbot, tmp_path, monkeypatch)
 
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.Yes))
 
     base_dir = _make_destructive_base_dir(tmp_path)
@@ -421,7 +535,7 @@ def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_saf
 
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: False)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (False, "restore point failed"))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
 
     base_dir = _make_destructive_base_dir(tmp_path)
@@ -585,7 +699,7 @@ def test_repair_category_safe_action_triggers_restore_point_and_undo_script(qtbo
 
     def fake_create_restore_point(description):
         captured["called"] = True
-        return True
+        return True, ""
 
     monkeypatch.setattr(restore_point, "create_restore_point", fake_create_restore_point)
     _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action")
@@ -637,7 +751,7 @@ def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot
     from PySide6.QtWidgets import QMessageBox
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: False)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (False, "restore point failed"))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
 
     module_dir = tmp_path / "Modules" / "m04_integrity"
@@ -675,7 +789,7 @@ def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot
 def test_successful_actions_with_undo_command_accumulate_in_undo_script(qtbot, tmp_path, monkeypatch):
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
 
     module_dir = tmp_path / "Modules" / "m05_windows_update"
     module_dir.mkdir(parents=True)
@@ -716,7 +830,7 @@ def test_successful_actions_with_undo_command_accumulate_in_undo_script(qtbot, t
 def test_failed_action_with_undo_command_not_added_to_undo_script(qtbot, tmp_path, monkeypatch):
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
 
     module_dir = tmp_path / "Modules" / "m05_windows_update"
     module_dir.mkdir(parents=True)
@@ -782,7 +896,7 @@ def test_dry_run_action_with_undo_command_never_creates_backups_dir(qtbot, tmp_p
 def test_undo_steps_accumulate_across_batches_in_same_run(qtbot, tmp_path, monkeypatch):
     from portablefix import restore_point
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
 
     module_dir = tmp_path / "Modules" / "m05_windows_update"
     module_dir.mkdir(parents=True)
@@ -836,7 +950,7 @@ def test_undo_order_uses_real_m05_undo_commands_in_reversed_order(qtbot, tmp_pat
     from portablefix import restore_point
     from portablefix.module_engine import load_module
 
-    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: True)
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     # MODERATE-risk actions trigger a QMessageBox.question confirmation dialog
     # in _dispatch_action; auto-confirm so the test doesn't hang on a real modal.
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
