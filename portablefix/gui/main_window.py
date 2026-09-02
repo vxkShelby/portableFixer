@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self._pending_update_info = None
         self._update_check_runner = None
         self._update_download_runner = None
+        self._update_in_progress = False
         self._build_ui()
         self._start_update_check()
 
@@ -315,9 +316,14 @@ class MainWindow(QMainWindow):
             self.category_list.setCurrentRow(0)
         self._update_status_bar()
         if self._pending_update_info is not None:
-            self.update_banner_label.setText(
-                self._t("update_available_banner").format(version=self._pending_update_info.version)
-            )
+            if self._update_in_progress:
+                self.update_banner_label.setText(self._t("update_downloading"))
+                self.update_button.setEnabled(False)
+                self.update_dismiss_button.setEnabled(False)
+            else:
+                self.update_banner_label.setText(
+                    self._t("update_available_banner").format(version=self._pending_update_info.version)
+                )
             self.update_banner.setVisible(True)
 
     def _on_category_changed(self, row: int) -> None:
@@ -462,6 +468,8 @@ class MainWindow(QMainWindow):
         QApplication.instance().quit()
 
     def _on_update_button_clicked(self) -> None:
+        if self._batch_active:
+            return
         if self._pending_update_info is None:
             return
         confirmed = QMessageBox.question(
@@ -474,11 +482,14 @@ class MainWindow(QMainWindow):
         self.update_banner_label.setText(self._t("update_downloading"))
         self.update_button.setEnabled(False)
         self.update_dismiss_button.setEnabled(False)
+        self._update_in_progress = True
         self._update_download_runner = updater.UpdateDownloadRunner(self._pending_update_info, dest_dir, parent=self)
         self._update_download_runner.download_finished.connect(self._on_update_download_finished)
         self._update_download_runner.start()
 
     def _on_update_download_finished(self, new_exe_path, error: str) -> None:
+        info = self._pending_update_info
+        self._update_in_progress = False
         self.update_button.setEnabled(True)
         self.update_dismiss_button.setEnabled(True)
         if not new_exe_path:
@@ -490,11 +501,11 @@ class MainWindow(QMainWindow):
             return
         confirmed = QMessageBox.question(
             self, self._t("app_title"),
-            self._t("update_confirm_restart").format(version=self._pending_update_info.version),
+            self._t("update_confirm_restart").format(version=info.version),
         )
         if confirmed != QMessageBox.Yes:
             self.update_banner_label.setText(
-                self._t("update_available_banner").format(version=self._pending_update_info.version)
+                self._t("update_available_banner").format(version=info.version)
             )
             return
         sums_path = paths.get_base_dir() / "Data" / "SHA256SUMS"

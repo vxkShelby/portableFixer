@@ -6,9 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from portablefix import updater as updater_module
 from portablefix.updater import (
     UpdateInfo,
     UpdateVerificationError,
+    apply_update,
     build_swap_script,
     check_for_update,
     download_update,
@@ -139,6 +141,21 @@ def test_download_update_skips_verification_when_no_sha256_asset(tmp_path):
     assert result_path.read_bytes() == b"anything"
 
 
+def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
+
+    apply_update(
+        new_exe_path=tmp_path / "PortableFix.new.exe",
+        current_exe_path=tmp_path / "PortableFix.exe",
+        sums_path=tmp_path / "SHA256SUMS",
+    )
+
+    scripts = list(tmp_path.glob("portablefix_update_*.ps1"))
+    assert len(scripts) == 1
+    assert scripts[0].read_bytes()[:3] == b"\xef\xbb\xbf"
+
+
 def test_is_writable_true_for_writable_directory(tmp_path):
     assert is_writable(tmp_path) is True
 
@@ -175,6 +192,37 @@ def test_build_swap_script_quotes_paths_with_spaces():
         sums_path=Path(r"C:\Users\test\USB Fixer\Data\SHA256SUMS"),
     )
     assert '"C:\\Users\\test\\USB Fixer\\App\\PortableFix.exe"' in script
+
+
+def test_build_swap_script_restores_backup_if_swap_fails_to_verify():
+    script = build_swap_script(
+        current_pid=1,
+        old_exe=Path(r"C:\App\PortableFix.exe"),
+        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
+        sums_path=Path(r"C:\App\SHA256SUMS"),
+    )
+    assert (
+        'if (Test-Path "C:\\App\\PortableFix.exe") { Remove-Item -Path "C:\\App\\PortableFix.exe.old" '
+        '-Force -EA SilentlyContinue }' in script
+    )
+    assert 'else { Move-Item -Path "C:\\App\\PortableFix.exe.old" -Destination "C:\\App\\PortableFix.exe" -Force }' in script
+
+
+def test_build_swap_script_handles_non_ascii_path_component():
+    # Proves the non-ASCII path embeds correctly into the generated script
+    # text (string-level round trip). This does NOT prove PowerShell's own
+    # ANSI/UTF-8 decoding of the .ps1 file on disk - that depends on the
+    # system codepage and isn't testable from here; the BOM added in
+    # apply_update (utf-8-sig) is what makes powershell.exe -File decode it
+    # as UTF-8 regardless of codepage.
+    old_exe = Path(r"C:\Users\Ondřej Čučko\App\PortableFix.exe")
+    script = build_swap_script(
+        current_pid=1,
+        old_exe=old_exe,
+        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
+        sums_path=Path(r"C:\App\SHA256SUMS"),
+    )
+    assert str(old_exe) in script
 
 
 def test_build_swap_script_contains_pid_wait_loop():

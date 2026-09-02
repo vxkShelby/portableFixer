@@ -104,7 +104,8 @@ def build_swap_script(current_pid: int, old_exe: Path, new_exe: Path, sums_path:
         "Start-Sleep -Milliseconds 300\n"
         f'Move-Item -Path "{old}" -Destination "{old}.old" -Force\n'
         f'Move-Item -Path "{new}" -Destination "{old}" -Force\n'
-        f'Remove-Item -Path "{old}.old" -Force -EA SilentlyContinue\n'
+        f'if (Test-Path "{old}") {{ Remove-Item -Path "{old}.old" -Force -EA SilentlyContinue }}\n'
+        f'else {{ Move-Item -Path "{old}.old" -Destination "{old}" -Force }}\n'
         "try {\n"
         f'    $hash = (Get-FileHash -Path "{old}" -Algorithm SHA256).Hash.ToLower()\n'
         f'    if (Test-Path "{sums}") {{\n'
@@ -131,7 +132,7 @@ def apply_update(new_exe_path: Path, current_exe_path: Path, sums_path: Path) ->
     current_pid = os.getpid()
     script_text = build_swap_script(current_pid, current_exe_path, new_exe_path, sums_path)
     script_path = Path(tempfile.gettempdir()) / f"portablefix_update_{current_pid}.ps1"
-    script_path.write_text(script_text, encoding="utf-8")
+    script_path.write_text(script_text, encoding="utf-8-sig")
     subprocess.Popen(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,

@@ -73,7 +73,8 @@ Ak USB nie je zapisovateľné, runtime priečinky sa presunú do
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-Výstup: `App/` (PyInstaller onedir). Po buildе vygeneruj kontrolné
+Výstup: `App/PortableFix.exe` (PyInstaller onefile, jeden spustiteľný
+súbor, žiadny `_internal` podpriečinok). Po buildе vygeneruj kontrolné
 súčty: `python scripts/generate_sha256sums.py`.
 
 ## Manuálne kroky pred distribúciou

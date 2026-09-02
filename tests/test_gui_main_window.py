@@ -1105,6 +1105,40 @@ def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monke
     assert applied.get("called") is None
 
 
+def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_toggle_mid_dl")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    # Simulate a download in progress (mirrors what _on_update_button_clicked
+    # sets before starting the QThread) without actually starting one.
+    window._update_in_progress = True
+    window.update_button.setEnabled(False)
+    window.update_dismiss_button.setEnabled(False)
+
+    window._on_toggle_language()
+
+    assert window.update_button.isEnabled() is False
+    assert window.update_dismiss_button.isEnabled() is False
+
+
+def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_batch_guard")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._batch_active = True
+
+    window.update_button.click()
+
+    assert window._update_download_runner is None
+
+
 def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path, monkeypatch):
     from portablefix.updater import UpdateInfo
     from portablefix.gui import main_window as mw_module
