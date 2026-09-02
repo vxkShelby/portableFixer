@@ -48,6 +48,12 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 - **Audit log + report:** každá akcia sa zapisuje do
   `Logs/<run-id>/audit.jsonl` a po každej dávke sa generuje HTML report
   do `Reports/`.
+- **Auto-update:** pri behu ako zbalený `.exe` appka pri štarte ticho
+  skontroluje GitHub Releases (`vxkShelby/portableFixer`); ak existuje
+  novšia verzia, zobrazí dismissovateľný banner s ponukou stiahnuť a
+  aplikovať. Sťahovanie beží na pozadí, aktualizuje sa výhradne
+  `App/PortableFix.exe` (nikdy `Modules/`/`Data/`/vlastné úpravy
+  katalógov). Pri zlyhaní (offline, timeout) je ticho — nič nevypíše.
 
 ## Štruktúra priečinkov
 
@@ -100,18 +106,49 @@ Tieto kroky vyžadujú zdroje mimo repozitára a robia sa ručne:
    (bez admin práv aj s nimi): štart aplikácie, DRY-RUN dávka,
    ostrá SAFE dávka, kontrola vygenerovaného reportu a undo.ps1.
 
+## Release proces (nová verzia s auto-update)
+
+Ručný postup, nič z toho nie je automatizované:
+
+1. Zvýš `APP_VERSION` v `portablefix/version.py`.
+2. `powershell -ExecutionPolicy Bypass -File scripts\build.ps1` →
+   `App/PortableFix.exe` (onefile).
+3. Podpíš (`signtool sign ...`, viď vyššie).
+4. `python scripts/generate_sha256sums.py .` — aktualizuje
+   `Data/SHA256SUMS`.
+5. Vypočítaj samostatný hash pre auto-update mechanizmus a ulož ho ako
+   jednoriadkový text do `App/PortableFix.exe.sha256` (lokálny súbor,
+   `App/` je celé v `.gitignore`, netreba nový záznam):
+   ```powershell
+   (Get-FileHash App\PortableFix.exe -Algorithm SHA256).Hash | Out-File App\PortableFix.exe.sha256 -Encoding ascii -NoNewline
+   ```
+6. Vytvor GitHub Release s tagom `v<verzia>` (napr. `v1.1.0`), nahraj
+   **oba** súbory — `App/PortableFix.exe` aj
+   `App/PortableFix.exe.sha256` — ako assety.
+
+**Dôležité:** ak sa release vytvorí bez `.sha256` assetu, auto-update
+si to nevšimne a stiahnutý `.exe` sa aplikuje **bez overenia hashu**
+(žiadne varovanie v UI) — krok 5 nikdy nevynechaj.
+
 ## Vývoj
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest tests/ --ignore=tests/test_gui_main_window.py
+python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py
 python -m pytest tests/test_gui_main_window.py
+python -m pytest tests/test_executor.py
+python -m pytest tests/test_updater.py
 ```
 
-GUI testy spúšťajú reálne PowerShell procesy; pri behu celého súboru
-naraz sa môže objaviť prechodný natívny crash prostredia
-(STATUS_STACK_BUFFER_OVERRUN) — nie je to chyba kódu, beh stačí
-zopakovať alebo rozdeliť na menšie dávky.
+`tests/test_gui_main_window.py`, `tests/test_executor.py` a
+`tests/test_updater.py` (jeho `UpdateCheckRunner`/`UpdateDownloadRunner`
+testy) spúšťajú reálne PowerShell procesy cez rovnaký `QThread`
+mechanizmus (`portablefix/executor.py`); pri behu viacerých takýchto
+súborov naraz v jednej pytest session sa môže objaviť prechodný
+natívny crash prostredia (STATUS_STACK_BUFFER_OVERRUN) — nie je to
+chyba kódu. Ak sa to stane, spusti postihnuté testy jednotlivo
+(`python -m pytest tests/test_gui_main_window.py::test_name`) s jedným
+opakovaním pri zlyhaní, namiesto celého súboru naraz.
 
 ## Známe obmedzenia
 
