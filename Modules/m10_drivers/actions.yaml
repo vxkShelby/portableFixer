@@ -5,9 +5,9 @@ actions:
     label_sk: "Zariadenia s problemami"
     label_en: "Problem devices"
     risk: SAFE
-    command: "Get-PnpDevice | Where-Object { $_.Status -ne 'OK' } | Select-Object Status,Class,FriendlyName,InstanceId | Format-Table -AutoSize"
-    description_sk: "Vypise zariadenia, ktore nehlasia stav OK (chybajuce alebo zlyhavajuce ovladace), nic nemeni."
-    description_en: "Lists devices not reporting OK status (missing or failing drivers), changes nothing."
+    command: "Get-PnpDevice -PresentOnly | Where-Object { $_.Status -ne 'OK' } | ForEach-Object { $_ | Add-Member -NotePropertyName ProblemCode -NotePropertyValue (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -EA SilentlyContinue).Data -PassThru } | Select-Object Status,Class,FriendlyName,ProblemCode,InstanceId | Format-Table -AutoSize -Wrap"
+    description_sk: "Vypise pripojene zariadenia, ktore nehlasia stav OK, vratane kodu problemu (napr. 28=chybaju ovladace, 43=zlyhanie zariadenia), nic nemeni."
+    description_en: "Lists currently connected devices not reporting OK status, including the problem code (e.g. 28=drivers missing, 43=device failure), changes nothing."
   - id: drv_third_party_list
     label_sk: "Ovladace tretich stran"
     label_en: "Third-party drivers"

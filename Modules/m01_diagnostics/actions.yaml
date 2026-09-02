@@ -5,57 +5,57 @@ actions:
     label_sk: "Informacie o operacnom systeme"
     label_en: "Operating system information"
     risk: SAFE
-    command: "Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,InstallDate,LastBootUpTime | Format-List"
-    description_sk: "Verzia, build, cas instalacie a posledny start."
-    description_en: "Version, build, install date, last boot."
+    command: "$os = Get-CimInstance Win32_OperatingSystem; $os | Select-Object Caption,Version,BuildNumber,InstallDate,LastBootUpTime | Format-List; Write-Output ('Uptime: ' + ((Get-Date) - $os.LastBootUpTime))"
+    description_sk: "Verzia, build, cas instalacie, posledny start a doba behu."
+    description_en: "Version, build, install date, last boot, and uptime."
 
   - id: computer_info
     label_sk: "Informacie o pocitaci"
     label_en: "Computer information"
     risk: SAFE
-    command: "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,TotalPhysicalMemory,Domain | Format-List"
-    description_sk: "Vyrobca, model, celkova RAM, domena."
-    description_en: "Manufacturer, model, total RAM, domain."
+    command: "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,@{N='TotalPhysicalMemoryGB';E={[math]::Round($_.TotalPhysicalMemory/1GB,2)}},Domain | Format-List; Get-CimInstance Win32_Battery -EA SilentlyContinue | Select-Object Name,BatteryStatus,EstimatedChargeRemaining | Format-List"
+    description_sk: "Vyrobca, model, celkova RAM (GB), domena a stav baterie (ak je notebook)."
+    description_en: "Manufacturer, model, total RAM (GB), domain, and battery status (if a laptop)."
 
   - id: bios_info
     label_sk: "Informacie o BIOSe"
     label_en: "BIOS information"
     risk: SAFE
-    command: "Get-CimInstance Win32_BIOS | Format-List"
-    description_sk: "Vyrobca a verzia BIOSu."
-    description_en: "BIOS manufacturer and version."
+    command: "Get-CimInstance Win32_BIOS | Select-Object Manufacturer,Name,SMBIOSBIOSVersion,ReleaseDate,SerialNumber | Format-List"
+    description_sk: "Vyrobca, verzia, datum vydania a seriove cislo BIOSu."
+    description_en: "BIOS manufacturer, version, release date, and serial number."
 
   - id: cpu_info
     label_sk: "Procesor"
     label_en: "Processor"
     risk: SAFE
-    command: "Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,MaxClockSpeed | Format-List"
-    description_sk: "Nazov, pocet jadier, frekvencia."
-    description_en: "Name, core count, clock speed."
+    command: "Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,CurrentClockSpeed,LoadPercentage | Format-List"
+    description_sk: "Nazov, pocet jadier/vlakien, frekvencia (nominalna aj aktualna) a zataz."
+    description_en: "Name, core/thread count, clock speed (nominal and current), and load."
 
   - id: memory_info
     label_sk: "Pamatove moduly"
     label_en: "Memory modules"
     risk: SAFE
-    command: "Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel,Capacity,Speed,Manufacturer | Format-Table"
-    description_sk: "Kapacita a rychlost RAM modulov."
-    description_en: "Capacity and speed of installed RAM modules."
+    command: "Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel,DeviceLocator,@{N='CapacityGB';E={[math]::Round($_.Capacity/1GB,2)}},Speed,ConfiguredClockSpeed,Manufacturer | Format-Table -AutoSize"
+    description_sk: "Kapacita (GB) a rychlost RAM modulov."
+    description_en: "Capacity (GB) and speed of installed RAM modules."
 
   - id: volumes
     label_sk: "Diskove oddiely"
     label_en: "Volumes"
     risk: SAFE
-    command: "Get-Volume | Select-Object DriveLetter,FileSystem,HealthStatus,SizeRemaining,Size | Format-Table"
-    description_sk: "Stav a volne miesto na zvazkoch."
-    description_en: "Health and free space per volume."
+    command: "Get-Volume | Select-Object DriveLetter,FileSystem,HealthStatus,@{N='SizeRemainingGB';E={[math]::Round($_.SizeRemaining/1GB,2)}},@{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | Format-Table -AutoSize"
+    description_sk: "Stav a volne miesto na zvazkoch (GB)."
+    description_en: "Health and free space per volume (GB)."
 
   - id: physical_disks
     label_sk: "Fyzicke disky"
     label_en: "Physical disks"
     risk: SAFE
-    command: "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,OperationalStatus,Size | Format-Table"
-    description_sk: "Typ media (SSD/HDD) a stav disku."
-    description_en: "Media type (SSD/HDD) and disk health."
+    command: "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,OperationalStatus,@{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | Format-Table -AutoSize"
+    description_sk: "Typ media (SSD/HDD) a stav disku (GB)."
+    description_en: "Media type (SSD/HDD) and disk health (GB)."
 
   - id: recent_hotfixes
     label_sk: "Posledne aktualizacie"
@@ -69,17 +69,17 @@ actions:
     label_sk: "Stav Windows Defenderu"
     label_en: "Windows Defender status"
     risk: SAFE
-    command: "Get-MpComputerStatus | Format-List"
-    description_sk: "Realtime ochrana, tamper protection, signatury."
-    description_en: "Real-time protection, tamper protection, signatures."
+    command: "try { Get-MpComputerStatus -EA Stop | Format-List } catch { Write-Output ('Windows Defender status unavailable: ' + $_.Exception.Message) }; Get-CimInstance -Namespace root\\SecurityCenter2 -ClassName AntiVirusProduct -EA SilentlyContinue | Select-Object displayName,productState | Format-Table -AutoSize"
+    description_sk: "Realtime ochrana, tamper protection, signatury Defenderu a zoznam registrovanych antivirusov (aj tretich stran)."
+    description_en: "Real-time protection, tamper protection, Defender signatures, and registered antivirus products (including third-party)."
 
   - id: top_cpu_processes
-    label_sk: "Najvytazenejsie procesy (CPU)"
-    label_en: "Top CPU-consuming processes"
+    label_sk: "Najvytazenejsie procesy (CPU cas)"
+    label_en: "Top CPU-consuming processes (cumulative CPU time)"
     risk: SAFE
-    command: "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,Id,CPU,WS,Path | Format-Table"
-    description_sk: "20 procesov s najvyssou spotrebou CPU."
-    description_en: "20 processes with highest CPU usage."
+    command: "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,Id,CPU,@{N='WorkingSetMB';E={[math]::Round($_.WS/1MB,1)}},Path | Format-Table -AutoSize -Wrap"
+    description_sk: "20 procesov s najvyssim kumulativnym CPU casom od spustenia (nie okamzita zataz)."
+    description_en: "20 processes with the highest cumulative CPU time since launch (not live/current load)."
 
   - id: pending_reboot
     label_sk: "Kontrola cakajuceho restartu"

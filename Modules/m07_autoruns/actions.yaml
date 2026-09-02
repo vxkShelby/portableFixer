@@ -5,9 +5,9 @@ actions:
     label_sk: "Programy spustane z registrov (Run)"
     label_en: "Registry autostart entries (Run)"
     risk: SAFE
-    command: "foreach ($path in 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce') { Write-Output ('=== ' + $path + ' ==='); Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | Format-List }"
-    description_sk: "Vypise programy naplanovane na spustenie cez registrove kluce Run/RunOnce (HKLM aj HKCU), nic nemeni."
-    description_en: "Lists programs scheduled to start via the Run/RunOnce registry keys (HKLM and HKCU), changes nothing."
+    command: "foreach ($path in 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnce','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce') { Write-Output ('=== ' + $path + ' ==='); Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | Select-Object * -ExcludeProperty PS* | Format-List }"
+    description_sk: "Vypise programy naplanovane na spustenie cez registrove kluce Run/RunOnce (HKLM, WOW6432Node aj HKCU), nic nemeni."
+    description_en: "Lists programs scheduled to start via the Run/RunOnce registry keys (HKLM, WOW6432Node, and HKCU), changes nothing."
   - id: autoruns_startup_folder
     label_sk: "Polozky v priecinku Startup"
     label_en: "Startup folder items"
@@ -19,13 +19,13 @@ actions:
     label_sk: "Aktivne naplanovane ulohy"
     label_en: "Active scheduled tasks"
     risk: SAFE
-    command: "Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' } | Select-Object TaskName,TaskPath,State | Format-Table -AutoSize"
-    description_sk: "Vypise vsetky nezakazane naplanovane ulohy, nic nemeni."
-    description_en: "Lists all non-disabled scheduled tasks, changes nothing."
+    command: "Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' } | Select-Object TaskName,TaskPath,State,@{N='Action';E={($_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }) -join '; '}} | Format-Table -AutoSize -Wrap"
+    description_sk: "Vypise vsetky nezakazane naplanovane ulohy vratane toho, co spustaju, nic nemeni."
+    description_en: "Lists all non-disabled scheduled tasks including what they actually run, changes nothing."
   - id: autoruns_autostart_services
     label_sk: "Automaticky spustane sluzby"
     label_en: "Automatic-start services"
     risk: SAFE
-    command: "Get-Service | Where-Object { $_.StartType -eq 'Automatic' } | Select-Object Name,DisplayName,Status | Format-Table -AutoSize"
-    description_sk: "Vypise sluzby nastavene na automaticke spustenie, nic nemeni."
-    description_en: "Lists services set to start automatically, changes nothing."
+    command: "Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' } | Select-Object Name,DisplayName,State,StartName,PathName | Format-Table -AutoSize -Wrap"
+    description_sk: "Vypise sluzby nastavene na automaticke spustenie vratane cesty k binarke a uctu, nic nemeni."
+    description_en: "Lists services set to start automatically including their binary path and account, changes nothing."
