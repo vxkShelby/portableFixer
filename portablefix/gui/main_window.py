@@ -473,12 +473,14 @@ class MainWindow(QMainWindow):
         dest_dir = Path(tempfile.gettempdir()) / "PortableFixUpdate"
         self.update_banner_label.setText(self._t("update_downloading"))
         self.update_button.setEnabled(False)
+        self.update_dismiss_button.setEnabled(False)
         self._update_download_runner = updater.UpdateDownloadRunner(self._pending_update_info, dest_dir, parent=self)
         self._update_download_runner.download_finished.connect(self._on_update_download_finished)
         self._update_download_runner.start()
 
     def _on_update_download_finished(self, new_exe_path, error: str) -> None:
         self.update_button.setEnabled(True)
+        self.update_dismiss_button.setEnabled(True)
         if not new_exe_path:
             self.update_banner_label.setText(self._t("update_download_failed"))
             return

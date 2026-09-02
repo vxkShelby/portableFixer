@@ -1103,3 +1103,34 @@ def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monke
 
     qtbot.waitUntil(lambda: window.update_banner_label.text() == "The app folder is not writable, the update cannot be applied.", timeout=5000)
     assert applied.get("called") is None
+
+
+def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    calls = {"n": 0}
+
+    def fake_question(*a, **k):
+        calls["n"] += 1
+        return QMessageBox.Yes if calls["n"] == 1 else QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update10")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.update_banner_label.text() == "Version 9.9.9 is available", timeout=5000)
+    assert applied.get("called") is None
+    assert applied.get("quit_called") is None
