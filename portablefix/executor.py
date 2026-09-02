@@ -71,6 +71,7 @@ class ActionRunner(QThread):
 
     TIMEOUT_EXIT_CODE = -2
     CANCELLED_EXIT_CODE = -3
+    POWERSHELL_NOT_FOUND_EXIT_CODE = -4
 
     def __init__(self, plan: ExecutionPlan, parent=None):
         super().__init__(parent)
@@ -112,12 +113,17 @@ class ActionRunner(QThread):
             self.finished_with_code.emit(0)
             return
 
-        process = subprocess.Popen(
-            self._plan.argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        try:
+            process = subprocess.Popen(
+                self._plan.argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except OSError:
+            self.output_line.emit("[PortableFix] PowerShell was not found on this system.")
+            self.finished_with_code.emit(self.POWERSHELL_NOT_FOUND_EXIT_CODE)
+            return
         self._process = process
         watchdog = threading.Thread(target=self._watchdog, daemon=True)
         watchdog.start()

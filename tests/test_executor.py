@@ -127,6 +127,18 @@ def test_action_runner_cancel_kills_process_and_reports_cancelled_code(qtbot):
     assert results[0] == ActionRunner.CANCELLED_EXIT_CODE
 
 
+def test_action_runner_reports_sentinel_code_when_powershell_not_found(qtbot):
+    plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
+    runner = ActionRunner(plan)
+    lines = []
+    runner.output_line.connect(lines.append)
+    with patch("portablefix.executor.subprocess.Popen", side_effect=FileNotFoundError("no powershell")):
+        with qtbot.waitSignal(runner.finished_with_code, timeout=2000) as blocker:
+            runner.start()
+    assert blocker.args == [ActionRunner.POWERSHELL_NOT_FOUND_EXIT_CODE]
+    assert any("PowerShell was not found" in line for line in lines)
+
+
 def test_action_runner_watchdog_kills_process_after_inactivity_timeout(qtbot):
     plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
     runner = ActionRunner(plan)

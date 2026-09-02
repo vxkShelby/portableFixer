@@ -48,5 +48,12 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
     return ModuleDef(module_id=module_id, actions=actions, category=category)
 
 
-def load_all_modules(modules_dir: Path) -> list[ModuleDef]:
-    return [load_module(p) for p in sorted(modules_dir.glob("*/actions.yaml"))]
+def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
+    modules: list[ModuleDef] = []
+    errors: list[str] = []
+    for path in sorted(modules_dir.glob("*/actions.yaml")):
+        try:
+            modules.append(load_module(path))
+        except (ModuleLoadError, yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: {exc}")
+    return modules, errors

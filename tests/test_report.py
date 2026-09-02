@@ -18,7 +18,7 @@ def _fixture_modules():
 
 def test_build_report_data_joins_audit_entries_with_catalog(tmp_path):
     modules = _fixture_modules()
-    entry = make_entry("m02_cleanup", "user_temp", "Remove-Item $env:TEMP", 0, "done", False)
+    entry = make_entry("m02_cleanup", "user_temp", "Remove-Item $env:TEMP", 0, "done", False, "run1")
     append_entry(tmp_path, "run1", entry)
 
     data = build_report_data(
@@ -33,10 +33,11 @@ def test_build_report_data_joins_audit_entries_with_catalog(tmp_path):
     assert data["actions"][0]["label"] == "Temp files"
     assert data["actions"][0]["risk"] == "SAFE"
     assert data["actions"][0]["exit_code"] == 0
+    assert data["generated_at"]
 
 
 def test_build_report_data_unknown_action_falls_back_to_id(tmp_path):
-    entry = make_entry("m02_cleanup", "not_in_catalog", "cmd", 0, "out", False)
+    entry = make_entry("m02_cleanup", "not_in_catalog", "cmd", 0, "out", False, "run2")
     append_entry(tmp_path, "run2", entry)
     data = build_report_data(tmp_path, "run2", [], "en", {}, {})
     assert data["actions"][0]["label"] == "not_in_catalog"
@@ -45,7 +46,7 @@ def test_build_report_data_unknown_action_falls_back_to_id(tmp_path):
 
 def test_generate_report_writes_html_and_json(tmp_path):
     modules = _fixture_modules()
-    entry = make_entry("m02_cleanup", "user_temp", "Remove-Item $env:TEMP", 0, "done", False)
+    entry = make_entry("m02_cleanup", "user_temp", "Remove-Item $env:TEMP", 0, "done", False, "run3")
     append_entry(tmp_path, "run3", entry)
 
     html_path, json_path = generate_report(
@@ -59,6 +60,7 @@ def test_generate_report_writes_html_and_json(tmp_path):
     html_content = html_path.read_text(encoding="utf-8")
     assert "Temp files" in html_content
     assert "SAFE" in html_content
+    assert "Generated:" in html_content
 
     json_data = json.loads(json_path.read_text(encoding="utf-8"))
     assert json_data["run_id"] == "run3"
@@ -68,7 +70,7 @@ def test_generate_report_writes_html_and_json(tmp_path):
 def test_render_html_escapes_unsafe_characters(tmp_path):
     from portablefix.audit_log import append_entry, make_entry
 
-    entry = make_entry("m02_cleanup", "<script>alert(1)</script>", "cmd", 0, "out", False)
+    entry = make_entry("m02_cleanup", "<script>alert(1)</script>", "cmd", 0, "out", False, "run_xss")
     append_entry(tmp_path, "run_xss", entry)
 
     html_path, _ = generate_report(tmp_path, "run_xss", [], "en", {}, {})
@@ -80,7 +82,7 @@ def test_render_html_escapes_unsafe_characters(tmp_path):
 
 def test_build_report_data_includes_captured_output(tmp_path):
     modules = _fixture_modules()
-    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "Skipped locked items: 3", False)
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "Skipped locked items: 3", False, "run_out")
     append_entry(tmp_path, "run_out", entry)
 
     data = build_report_data(
@@ -93,8 +95,8 @@ def test_build_report_data_includes_captured_output(tmp_path):
 
 def test_html_report_has_collapsible_escaped_output_and_failure_marker(tmp_path):
     modules = _fixture_modules()
-    append_entry(tmp_path, "run_html", make_entry("m02_cleanup", "user_temp", "cmd", 0, "<b>raw & output</b>", False))
-    append_entry(tmp_path, "run_html", make_entry("m02_cleanup", "user_temp", "cmd", 1, "boom", False))
+    append_entry(tmp_path, "run_html", make_entry("m02_cleanup", "user_temp", "cmd", 0, "<b>raw & output</b>", False, "run_html"))
+    append_entry(tmp_path, "run_html", make_entry("m02_cleanup", "user_temp", "cmd", 1, "boom", False, "run_html"))
 
     html_path, _ = generate_report(
         tmp_path, "run_html", modules, "en",

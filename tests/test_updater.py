@@ -127,6 +127,23 @@ def test_download_update_raises_and_cleans_up_on_hash_mismatch(tmp_path):
     assert not (dest / "PortableFix.new.exe").exists()
 
 
+def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path):
+    info = UpdateInfo(
+        version="1.1.0", download_url="https://example.com/PortableFix.exe", sha256_url=None, notes="",
+    )
+    dest = tmp_path / "dest"
+
+    def fake_urlretrieve(url, path):
+        Path(path).write_bytes(b"partial")
+        raise ConnectionError("connection dropped")
+
+    with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+        with pytest.raises(ConnectionError):
+            download_update(info, dest)
+
+    assert not (dest / "PortableFix.new.exe").exists()
+
+
 def test_download_update_skips_verification_when_no_sha256_asset(tmp_path):
     info = UpdateInfo(
         version="1.1.0", download_url="https://example.com/PortableFix.exe", sha256_url=None, notes="",
@@ -154,6 +171,50 @@ def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
     scripts = list(tmp_path.glob("portablefix_update_*.ps1"))
     assert len(scripts) == 1
     assert scripts[0].read_bytes()[:3] == b"\xef\xbb\xbf"
+
+
+def test_apply_update_returns_true_on_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
+
+    result = apply_update(
+        new_exe_path=tmp_path / "PortableFix.new.exe",
+        current_exe_path=tmp_path / "PortableFix.exe",
+        sums_path=tmp_path / "SHA256SUMS",
+    )
+
+    assert result is True
+
+
+def test_apply_update_returns_false_without_spawning_when_not_writable(tmp_path, monkeypatch):
+    popen_calls = []
+    monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: popen_calls.append(1))
+
+    result = apply_update(
+        new_exe_path=tmp_path / "PortableFix.new.exe",
+        current_exe_path=tmp_path / "missing_dir" / "PortableFix.exe",
+        sums_path=tmp_path / "SHA256SUMS",
+    )
+
+    assert result is False
+    assert popen_calls == []
+
+
+def test_apply_update_returns_false_when_popen_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    def raise_oserror(*a, **k):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(updater_module.subprocess, "Popen", raise_oserror)
+
+    result = apply_update(
+        new_exe_path=tmp_path / "PortableFix.new.exe",
+        current_exe_path=tmp_path / "PortableFix.exe",
+        sums_path=tmp_path / "SHA256SUMS",
+    )
+
+    assert result is False
 
 
 def test_is_writable_true_for_writable_directory(tmp_path):
@@ -191,7 +252,47 @@ def test_build_swap_script_quotes_paths_with_spaces():
         new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
         sums_path=Path(r"C:\Users\test\USB Fixer\Data\SHA256SUMS"),
     )
-    assert '"C:\\Users\\test\\USB Fixer\\App\\PortableFix.exe"' in script
+    assert "'C:\\Users\\test\\USB Fixer\\App\\PortableFix.exe'" in script
+
+
+def test_build_swap_script_single_quotes_do_not_interpolate_dollar_sign():
+    # PowerShell interpolates $variables inside double-quoted strings but
+    # never inside single-quoted ones - a literal '$' is a legal NTFS path
+    # character (e.g. a username) that would otherwise silently truncate
+    # the path. Verified two ways: the raw script text uses single quotes
+    # around the $-containing path, and the script actually parses.
+    import os
+    import subprocess
+
+    old_exe = Path(r"C:\Users\Jane$Doe\App\PortableFix.exe")
+    script = build_swap_script(
+        current_pid=1,
+        old_exe=old_exe,
+        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
+        sums_path=Path(r"C:\App\SHA256SUMS"),
+    )
+    assert "'C:\\Users\\Jane$Doe\\App\\PortableFix.exe'" in script
+    assert '"C:\\Users\\Jane$Doe' not in script
+
+    env = os.environ.copy()
+    env["PFCMD"] = script
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "[scriptblock]::Create($env:PFCMD) | Out-Null; Write-Output OK"],
+        env=env, capture_output=True, text=True,
+    )
+    assert "OK" in result.stdout, result.stderr
+
+
+def test_build_swap_script_escapes_embedded_single_quote_in_path():
+    old_exe = Path(r"C:\Users\O'Brien\App\PortableFix.exe")
+    script = build_swap_script(
+        current_pid=1,
+        old_exe=old_exe,
+        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
+        sums_path=Path(r"C:\App\SHA256SUMS"),
+    )
+    assert "O''Brien" in script
 
 
 def test_build_swap_script_restores_backup_if_swap_fails_to_verify():
@@ -202,10 +303,10 @@ def test_build_swap_script_restores_backup_if_swap_fails_to_verify():
         sums_path=Path(r"C:\App\SHA256SUMS"),
     )
     assert (
-        'if (Test-Path "C:\\App\\PortableFix.exe") { Remove-Item -Path "C:\\App\\PortableFix.exe.old" '
-        '-Force -EA SilentlyContinue }' in script
+        "if (Test-Path 'C:\\App\\PortableFix.exe') { Remove-Item -Path 'C:\\App\\PortableFix.exe.old' "
+        "-Force -EA SilentlyContinue }" in script
     )
-    assert 'else { Move-Item -Path "C:\\App\\PortableFix.exe.old" -Destination "C:\\App\\PortableFix.exe" -Force }' in script
+    assert "else { Move-Item -Path 'C:\\App\\PortableFix.exe.old' -Destination 'C:\\App\\PortableFix.exe' -Force }" in script
 
 
 def test_build_swap_script_handles_non_ascii_path_component():

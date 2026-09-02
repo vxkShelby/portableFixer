@@ -1,5 +1,5 @@
-import hashlib
 import json
+import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,12 +13,25 @@ class AuditEntry:
     command: str
     exit_code: int | None
     output: str
-    output_hash: str
     dry_run: bool
+    hostname: str
+    run_id: str
+    risk: str = ""
+    warned: bool = False
+    elevated: bool = False
 
 
 def make_entry(
-    module_id: str, action_id: str, command: str, exit_code: int | None, output: str, dry_run: bool
+    module_id: str,
+    action_id: str,
+    command: str,
+    exit_code: int | None,
+    output: str,
+    dry_run: bool,
+    run_id: str,
+    risk: str = "",
+    warned: bool = False,
+    elevated: bool = False,
 ) -> AuditEntry:
     return AuditEntry(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -27,8 +40,12 @@ def make_entry(
         command=command,
         exit_code=exit_code,
         output=output,
-        output_hash=hashlib.sha256(output.encode("utf-8")).hexdigest(),
         dry_run=dry_run,
+        hostname=socket.gethostname(),
+        run_id=run_id,
+        risk=risk,
+        warned=warned,
+        elevated=elevated,
     )
 
 

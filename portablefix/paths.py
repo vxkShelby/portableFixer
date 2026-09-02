@@ -18,5 +18,11 @@ def resolve_writable_base_dir(base_dir: Path) -> tuple[Path, bool]:
         return base_dir, False
     except OSError:
         fallback = Path(tempfile.gettempdir()) / "PortableFix"
-        fallback.mkdir(parents=True, exist_ok=True)
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Neither {base_dir} nor the %TEMP% fallback ({fallback}) is writable. "
+                "Check the TEMP environment variable."
+            ) from exc
         return fallback, True

@@ -68,7 +68,11 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
 def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     exe_path = dest_dir / "PortableFix.new.exe"
-    urllib.request.urlretrieve(info.download_url, exe_path)
+    try:
+        urllib.request.urlretrieve(info.download_url, exe_path)
+    except Exception:
+        exe_path.unlink(missing_ok=True)
+        raise
     if info.sha256_url:
         with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
             expected = resp.read().decode("utf-8").strip().split()[0].lower()
@@ -91,10 +95,19 @@ def is_writable(directory: Path) -> bool:
         return False
 
 
+def _ps_quote(value: str) -> str:
+    # Single-quoted PowerShell strings never interpolate $variables, unlike
+    # the double-quoted strings this previously used - a literal '$' in a
+    # path (a legal NTFS character, e.g. a username) would otherwise be
+    # misread as a variable reference and silently truncate the path.
+    return "'" + value.replace("'", "''") + "'"
+
+
 def build_swap_script(current_pid: int, old_exe: Path, new_exe: Path, sums_path: Path) -> str:
-    old = str(old_exe)
-    new = str(new_exe)
-    sums = str(sums_path)
+    old = _ps_quote(str(old_exe))
+    old_bak = _ps_quote(str(old_exe) + ".old")
+    new = _ps_quote(str(new_exe))
+    sums = _ps_quote(str(sums_path))
     return (
         '$ErrorActionPreference = "SilentlyContinue"\n'
         f"for ($i = 0; $i -lt 30; $i++) {{\n"
@@ -102,14 +115,14 @@ def build_swap_script(current_pid: int, old_exe: Path, new_exe: Path, sums_path:
         "    Start-Sleep -Milliseconds 500\n"
         "}\n"
         "Start-Sleep -Milliseconds 300\n"
-        f'Move-Item -Path "{old}" -Destination "{old}.old" -Force\n'
-        f'Move-Item -Path "{new}" -Destination "{old}" -Force\n'
-        f'if (Test-Path "{old}") {{ Remove-Item -Path "{old}.old" -Force -EA SilentlyContinue }}\n'
-        f'else {{ Move-Item -Path "{old}.old" -Destination "{old}" -Force }}\n'
+        f"Move-Item -Path {old} -Destination {old_bak} -Force\n"
+        f"Move-Item -Path {new} -Destination {old} -Force\n"
+        f"if (Test-Path {old}) {{ Remove-Item -Path {old_bak} -Force -EA SilentlyContinue }}\n"
+        f"else {{ Move-Item -Path {old_bak} -Destination {old} -Force }}\n"
         "try {\n"
-        f'    $hash = (Get-FileHash -Path "{old}" -Algorithm SHA256).Hash.ToLower()\n'
-        f'    if (Test-Path "{sums}") {{\n'
-        f'        $lines = Get-Content "{sums}"\n'
+        f"    $hash = (Get-FileHash -Path {old} -Algorithm SHA256).Hash.ToLower()\n"
+        f"    if (Test-Path {sums}) {{\n"
+        f"        $lines = Get-Content {sums}\n"
         "        $newLines = @()\n"
         "        $found = $false\n"
         "        foreach ($line in $lines) {\n"
@@ -121,23 +134,29 @@ def build_swap_script(current_pid: int, old_exe: Path, new_exe: Path, sums_path:
         "            }\n"
         "        }\n"
         '        if (-not $found) { $newLines += "$hash  App/PortableFix.exe" }\n'
-        f'        Set-Content -Path "{sums}" -Value $newLines -Encoding ASCII\n'
+        f"        Set-Content -Path {sums} -Value $newLines -Encoding ASCII\n"
         "    }\n"
         "} catch {}\n"
-        f'Start-Process -FilePath "{old}"\n'
+        f"Start-Process -FilePath {old}\n"
     )
 
 
-def apply_update(new_exe_path: Path, current_exe_path: Path, sums_path: Path) -> None:
+def apply_update(new_exe_path: Path, current_exe_path: Path, sums_path: Path) -> bool:
+    if not is_writable(current_exe_path.parent):
+        return False
     current_pid = os.getpid()
     script_text = build_swap_script(current_pid, current_exe_path, new_exe_path, sums_path)
     script_path = Path(tempfile.gettempdir()) / f"portablefix_update_{current_pid}.ps1"
-    script_path.write_text(script_text, encoding="utf-8-sig")
-    subprocess.Popen(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
+    try:
+        script_path.write_text(script_text, encoding="utf-8-sig")
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+        return True
+    except OSError:
+        return False
 
 
 class UpdateCheckRunner(QThread):

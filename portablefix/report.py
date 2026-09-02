@@ -2,6 +2,7 @@ import html
 import json
 import platform
 import socket
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .audit_log import audit_log_path
@@ -57,6 +58,7 @@ def build_report_data(
     return {
         "run_id": run_id,
         "hostname": socket.gethostname(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "os": platform.platform(),
         "snapshot_before": snapshot_before,
         "snapshot_after": snapshot_after,
@@ -158,6 +160,7 @@ def _render_html(data: dict) -> str:
 <body><div class="wrap">
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 <div class="meta">Run {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
+Generated: {html.escape(data['generated_at'])}<br>
 Free space: {free_before} GB &rarr; {free_after} GB{delta}</div>
 <div class="chips">
 <div class="chip"><span class="num">{len(actions)}</span><span class="lbl">Actions</span></div>

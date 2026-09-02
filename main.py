@@ -1,5 +1,6 @@
 import sys
 import uuid
+from datetime import datetime, timezone
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -40,7 +41,10 @@ def main() -> int:
                 i18n.translate("integrity_warning", settings.language) + "\n" + "\n".join(mismatches),
             )
 
-        run_id = uuid.uuid4().hex[:12]
+        # Timestamp prefix makes Reports/Logs/Backups filenames sort
+        # chronologically - a bare random id doesn't, which breaks the
+        # "same technician, same machine, multiple visits" use case.
+        run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
         window = MainWindow(
             assets_dir=raw_base_dir,
             state_dir=base_dir,
@@ -50,7 +54,14 @@ def main() -> int:
         )
         window.show()
         exit_code = app.exec()
-        save_settings(base_dir, settings)
+        try:
+            save_settings(base_dir, settings)
+        except OSError:
+            # Losing a language/dry-run preference is harmless; a write
+            # failure here (e.g. the USB drive was pulled right at exit)
+            # must not be reported as "Startup failed" for a session that
+            # actually completed successfully.
+            pass
         return exit_code
     except Exception as exc:
         QMessageBox.critical(None, "PortableFix", f"Startup failed:\n{exc}")

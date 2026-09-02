@@ -32,3 +32,16 @@ def test_resolve_writable_base_dir_fallback(monkeypatch, tmp_path):
     result, used_fallback = resolve_writable_base_dir(tmp_path)
     assert used_fallback is True
     assert result == Path(tempfile.gettempdir()) / "PortableFix"
+
+
+def test_resolve_writable_base_dir_raises_actionable_error_when_temp_also_unwritable(monkeypatch, tmp_path):
+    import pytest
+
+    def raise_oserror(self, *args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(Path, "write_text", raise_oserror)
+    monkeypatch.setattr(Path, "mkdir", raise_oserror)
+
+    with pytest.raises(RuntimeError, match="TEMP"):
+        resolve_writable_base_dir(tmp_path)

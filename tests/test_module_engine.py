@@ -66,8 +66,28 @@ def test_load_all_modules_finds_m01(tmp_path):
     (tmp_path / "m02_cleanup" / "actions.yaml").write_text(
         VALID_YAML.replace("m_test", "m02_cleanup"), encoding="utf-8"
     )
-    modules = load_all_modules(tmp_path)
+    modules, errors = load_all_modules(tmp_path)
     assert [m.module_id for m in modules] == ["m_test", "m02_cleanup"]
+    assert errors == []
+
+
+def test_load_all_modules_skips_broken_file_and_reports_error(tmp_path):
+    (tmp_path / "m01_diagnostics").mkdir()
+    (tmp_path / "m01_diagnostics" / "actions.yaml").write_text(VALID_YAML, encoding="utf-8")
+    (tmp_path / "m02_cleanup").mkdir()
+    (tmp_path / "m02_cleanup" / "actions.yaml").write_text(
+        "module_id: [unclosed\n  bad: yaml: syntax:\n", encoding="utf-8"
+    )
+    (tmp_path / "m03_disk").mkdir()
+    (tmp_path / "m03_disk" / "actions.yaml").write_text(
+        VALID_YAML.replace("m_test", "m03_disk"), encoding="utf-8"
+    )
+
+    modules, errors = load_all_modules(tmp_path)
+
+    assert [m.module_id for m in modules] == ["m_test", "m03_disk"]
+    assert len(errors) == 1
+    assert "m02_cleanup" in errors[0]
 
 
 def test_m01_actions_yaml_loads():

@@ -52,3 +52,9 @@ def test_check_integrity_detects_missing_file(tmp_path):
     (tmp_path / "Data").mkdir()
     (tmp_path / "Data" / "SHA256SUMS").write_text("aaaa  App/missing.txt\n", encoding="utf-8")
     assert check_integrity(tmp_path) == ["App/missing.txt"]
+
+
+def test_check_integrity_unreadable_manifest_degrades_to_empty_instead_of_raising(tmp_path):
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_bytes(b"\xff\xfe\x00\xff not valid utf-8")
+    assert check_integrity(tmp_path) == []

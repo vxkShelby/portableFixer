@@ -28,7 +28,12 @@ def check_integrity(base_dir: Path) -> list[str]:
     sums_path = base_dir / "Data" / "SHA256SUMS"
     if not sums_path.exists():
         return []
-    expected = parse_sha256sums(sums_path)
+    try:
+        expected = parse_sha256sums(sums_path)
+    except (OSError, UnicodeDecodeError):
+        # An unreadable/corrupted manifest is a failure of this optional,
+        # best-effort tamper check itself - it must not take down the app.
+        return []
     mismatches = []
     for rel_path, expected_hash in expected.items():
         file_path = base_dir / rel_path
