@@ -41,10 +41,10 @@ actions:
     label_sk: "Hlasenia o chybach (WER)"
     label_en: "Error reports (WER)"
     risk: SAFE
-    command: "Remove-Item \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
-    preview_command: "$f = Get-ChildItem \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from WER report queues\""
-    description_sk: "Vymaze frontu a archiv hlaseni o chybach."
-    description_en: "Clears the WER report queue and archive."
+    command: "Remove-Item \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    preview_command: "$f = Get-ChildItem \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from WER report queues\""
+    description_sk: "Vymaze frontu a archiv hlaseni o chybach (systemove aj pouzivatelske)."
+    description_en: "Clears the WER report queue and archive (both machine-wide and per-user)."
 
   - id: cbs_logs
     label_sk: "Stare CBS logy"
@@ -77,8 +77,8 @@ actions:
     label_sk: "Delivery Optimization cache"
     label_en: "Delivery Optimization cache"
     risk: SAFE
-    command: "Delete-DeliveryOptimizationCache -Force"
-    preview_command: "Write-Output \"Would clear Delivery Optimization cache (size not queryable without deleting)\""
+    command: "try { Delete-DeliveryOptimizationCache -Force -EA Stop; Write-Output 'Delivery Optimization cache cleared.' } catch { Write-Output ('Delivery Optimization cache clear skipped: ' + $_.Exception.Message) }"
+    preview_command: "$f = Get-ChildItem \"$env:WINDIR\\SoftwareDistribution\\DeliveryOptimization\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would clear $c files, $mb MB of Delivery Optimization cache\""
     description_sk: "Vymaze cache Delivery Optimization."
     description_en: "Clears the Delivery Optimization cache."
 
@@ -105,7 +105,7 @@ actions:
     label_en: "Component store - ResetBase"
     risk: DESTRUCTIVE
     command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase; if ($LASTEXITCODE -eq 3010) { Write-Output 'Component store reset - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
-    preview_command: "Write-Output \"ResetBase permanently removes the ability to uninstall currently installed Windows updates. This cannot be undone.\""
+    preview_command: "Write-Output \"ResetBase permanently removes the ability to uninstall currently installed Windows updates. This cannot be undone.\"; Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"
     description_sk: "Znemozni odinstalovanie aktualne nainstalovanych aktualizacii. Nevratne."
     description_en: "Prevents uninstalling currently installed updates. Irreversible."
 
@@ -114,7 +114,7 @@ actions:
     label_en: "Remove Windows.old"
     risk: DESTRUCTIVE
     command: "takeown /F C:\\Windows.old /R /A /D Y | Out-Null; icacls C:\\Windows.old /reset /T /C | Out-Null; Remove-Item C:\\Windows.old -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
-    preview_command: "if (Test-Path C:\\Windows.old) { $f = Get-ChildItem C:\\Windows.old -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $gb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1GB,2); Write-Output \"Would delete $c files, $gb GB from C:\\Windows.old\" } else { Write-Output \"C:\\Windows.old not present\" }"
+    preview_command: "if (Test-Path C:\\Windows.old) { $f = Get-ChildItem C:\\Windows.old -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $gb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1GB,2); Write-Output \"Would delete $c files, $gb GB from C:\\Windows.old (ownership/ACL reset may take several minutes on large Windows.old folders)\" } else { Write-Output \"C:\\Windows.old not present\" }"
     description_sk: "Odstrani C:\\Windows.old. Nevratne."
     description_en: "Removes C:\\Windows.old. Irreversible."
 
@@ -123,7 +123,7 @@ actions:
     label_en: "Oldest shadow copy"
     risk: DESTRUCTIVE
     command: "$out = vssadmin delete shadows /for=C: /oldest /quiet 2>&1 | Out-String; Write-Output $out; if ($LASTEXITCODE -ne 0 -and $out -match 'No items found') { exit 0 } else { exit $LASTEXITCODE }"
-    preview_command: "Get-CimInstance Win32_ShadowCopy | Select-Object ID,InstallDate,VolumeName | Format-Table"
+    preview_command: "$vol = (Get-CimInstance Win32_Volume -Filter \"DriveLetter='C:'\" -EA SilentlyContinue).DeviceID; $shadows = Get-CimInstance Win32_ShadowCopy -EA SilentlyContinue | Where-Object { $_.VolumeName -eq $vol } | Sort-Object InstallDate; if ($shadows) { $shadows | Select-Object ID,InstallDate,VolumeName | Format-Table -AutoSize } else { Write-Output 'No shadow copies exist on C: (or insufficient privileges to query them).' }"
     description_sk: "Zmaze najstarsiu shadow copy na disku C:. Nevratne."
     description_en: "Deletes the oldest shadow copy on drive C:. Irreversible."
 
@@ -133,8 +133,8 @@ actions:
     risk: MODERATE
     command: "powercfg /h off"
     preview_command: "if (Test-Path \"$env:SystemDrive\\hiberfil.sys\") { $mb = [math]::Round((Get-Item \"$env:SystemDrive\\hiberfil.sys\" -Force).Length/1MB,2); Write-Output \"Would free approximately $mb MB by disabling hibernation\" } else { Write-Output \"Hibernation already disabled\" }"
-    description_sk: "Vypne hibernaciu a uvolni miesto zabrane hiberfil.sys."
-    description_en: "Disables hibernation and frees the space used by hiberfil.sys."
+    description_sk: "Vypne hibernaciu a uvolni miesto zabrane hiberfil.sys. Tiez vypne rychle spustenie (Fast Startup), kedze na hibernacii zavisi."
+    description_en: "Disables hibernation and frees the space used by hiberfil.sys. Also disables Fast Startup, since it depends on hibernation."
 
   - id: stale_user_profiles
     label_sk: "Stare pouzivatelske profily"
@@ -142,8 +142,8 @@ actions:
     risk: DESTRUCTIVE
     command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + $stale.Count + \", errors: \" + $errs.Count)"
     preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
-    description_sk: "Odstrani neaktivne pouzivatelske profily starsie ako 180 dni. Nevratne."
-    description_en: "Removes inactive user profiles older than 180 days. Irreversible."
+    description_sk: "Odstrani neaktivne pouzivatelske profily starsie ako 180 dni. Nevratne. Poznamka: pri roamingovych profiloch/fast user switching nemusi byt LastUseTime vzdy presny."
+    description_en: "Removes inactive user profiles older than 180 days. Irreversible. Note: LastUseTime may not always be accurate for roaming profiles/fast user switching."
 
   - id: browser_cache_sweep
     label_sk: "Cache prehliadacov (Chrome/Edge/Firefox)"
