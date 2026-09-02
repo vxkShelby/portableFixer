@@ -7,6 +7,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from PySide6.QtCore import QThread, Signal
+
 from .integrity import compute_sha256
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
@@ -135,3 +137,33 @@ def apply_update(new_exe_path: Path, current_exe_path: Path, sums_path: Path) ->
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         close_fds=True,
     )
+
+
+class UpdateCheckRunner(QThread):
+    check_finished = Signal(object)
+
+    def __init__(self, current_version: str, parent=None):
+        super().__init__(parent)
+        self._current_version = current_version
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        info = check_for_update(self._current_version)
+        self.check_finished.emit(info)
+
+
+class UpdateDownloadRunner(QThread):
+    download_finished = Signal(object, str)
+
+    def __init__(self, info: UpdateInfo, dest_dir: Path, parent=None):
+        super().__init__(parent)
+        self._info = info
+        self._dest_dir = dest_dir
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        try:
+            path = download_update(self._info, self._dest_dir)
+            self.download_finished.emit(path, "")
+        except Exception as exc:
+            self.download_finished.emit(None, str(exc))

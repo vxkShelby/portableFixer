@@ -186,3 +186,43 @@ def test_build_swap_script_contains_pid_wait_loop():
     )
     assert "54321" in script
     assert "Get-Process" in script
+
+
+from portablefix.updater import UpdateCheckRunner, UpdateDownloadRunner
+
+
+def test_update_check_runner_emits_none_when_no_update(qtbot):
+    with patch("portablefix.updater.check_for_update", return_value=None):
+        runner = UpdateCheckRunner("1.0.0")
+        with qtbot.waitSignal(runner.check_finished, timeout=2000) as blocker:
+            runner.start()
+    assert blocker.args == [None]
+
+
+def test_update_check_runner_emits_update_info(qtbot):
+    info = UpdateInfo(version="1.1.0", download_url="https://x", sha256_url=None, notes="")
+    with patch("portablefix.updater.check_for_update", return_value=info):
+        runner = UpdateCheckRunner("1.0.0")
+        with qtbot.waitSignal(runner.check_finished, timeout=2000) as blocker:
+            runner.start()
+    assert blocker.args == [info]
+
+
+def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
+    info = UpdateInfo(version="1.1.0", download_url="https://x", sha256_url=None, notes="")
+    fake_path = tmp_path / "PortableFix.new.exe"
+    fake_path.write_bytes(b"x")
+    with patch("portablefix.updater.download_update", return_value=fake_path):
+        runner = UpdateDownloadRunner(info, tmp_path)
+        with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
+            runner.start()
+    assert blocker.args == [fake_path, ""]
+
+
+def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
+    info = UpdateInfo(version="1.1.0", download_url="https://x", sha256_url=None, notes="")
+    with patch("portablefix.updater.download_update", side_effect=UpdateVerificationError("bad hash")):
+        runner = UpdateDownloadRunner(info, tmp_path)
+        with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
+            runner.start()
+    assert blocker.args == [None, "bad hash"]
