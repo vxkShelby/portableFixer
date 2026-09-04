@@ -5,13 +5,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLineEdit,
     QListWidget,
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import elevation, i18n, paths, report, restore_point, undo, updater
+from .. import elevation, i18n, paths, report, restore_point, sysinfo, undo, updater
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -101,14 +102,48 @@ class MainWindow(QMainWindow):
         self._update_check_runner = None
         self._update_download_runner = None
         self._update_in_progress = False
+        self._cpu_load_sampler = sysinfo.CpuLoadSampler()
+        self._static_info_runner = None
+        self._ping_runner = None
+        self._speed_test_runner = None
+        self._hw_sensor_runner = None
+        self._ping_busy = False
+        self._speed_test_busy = False
+        self._hw_sensor_busy = False
+        self._sysinfo_timer = None
+        self._hw_sensor_timer = None
+        self._ping_timer = None
         self._build_ui()
         self._start_update_check()
+        self._start_sysinfo_polling()
 
     def closeEvent(self, event) -> None:
         # ponytail: plain-Python flag (safe even if a delayed cross-thread
         # callback fires after the C++ widgets are gone) so async batch-completion
         # handlers know not to touch self.run_button once the window is closing.
         self._closed = True
+        if self._sysinfo_timer is not None:
+            self._sysinfo_timer.stop()
+        if self._hw_sensor_timer is not None:
+            self._hw_sensor_timer.stop()
+        if self._ping_timer is not None:
+            self._ping_timer.stop()
+        # Destroying self while a runner's native thread is still mid-flight
+        # is a use-after-free risk - wait for each to actually finish first.
+        # A one-shot runner may already be auto-deleted by Qt once its thread
+        # ended; that RuntimeError just means there's nothing left to wait for.
+        for runner in (
+            self._static_info_runner,
+            self._hw_sensor_runner,
+            self._ping_runner,
+            self._speed_test_runner,
+        ):
+            if runner is None:
+                continue
+            try:
+                runner.wait(5000)
+            except RuntimeError:
+                pass
         super().closeEvent(event)
 
     def _t(self, key: str) -> str:
@@ -176,6 +211,13 @@ class MainWindow(QMainWindow):
             if module.category not in self._categories_order:
                 self._categories_order.append(module.category)
 
+        risk_tab_order = [RiskLevel.SAFE, RiskLevel.MODERATE, RiskLevel.DESTRUCTIVE, RiskLevel.REQUIRES_REBOOT]
+        self._risk_action_ids: dict[RiskLevel, list[str]] = {r: [] for r in risk_tab_order}
+        for module in self.modules:
+            for action in module.actions:
+                self._risk_action_ids[action.risk].append(action.id)
+        self._risk_tabs_order = [r for r in risk_tab_order if self._risk_action_ids[r]]
+
         body_layout = QHBoxLayout()
         body_layout.setSpacing(10)
         self.category_list = QListWidget()
@@ -183,6 +225,8 @@ class MainWindow(QMainWindow):
         self.category_list.setFixedWidth(190)
         for category in self._categories_order:
             self.category_list.addItem(QListWidgetItem(self._t(category_i18n_keys[category])))
+        for risk in self._risk_tabs_order:
+            self.category_list.addItem(QListWidgetItem(f"{self._t('risk_tab_prefix')} {risk.value}"))
         body_layout.addWidget(self.category_list)
 
         center_layout = QVBoxLayout()
@@ -198,9 +242,25 @@ class MainWindow(QMainWindow):
         )
         global_select_row.addWidget(self.global_select_all_button)
         self.global_select_safe_button = self._make_selection_button(
-            self._t("select_safe_only"), lambda: self._apply_selection(list(self._action_checkboxes), "safe")
+            self._t("select_safe_only"),
+            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.SAFE.value),
         )
         global_select_row.addWidget(self.global_select_safe_button)
+        self.global_select_moderate_button = self._make_selection_button(
+            self._t("select_moderate_only"),
+            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.MODERATE.value),
+        )
+        global_select_row.addWidget(self.global_select_moderate_button)
+        self.global_select_destructive_button = self._make_selection_button(
+            self._t("select_destructive_only"),
+            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.DESTRUCTIVE.value),
+        )
+        global_select_row.addWidget(self.global_select_destructive_button)
+        self.global_select_reboot_button = self._make_selection_button(
+            self._t("select_reboot_only"),
+            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.REQUIRES_REBOOT.value),
+        )
+        global_select_row.addWidget(self.global_select_reboot_button)
         self.global_select_none_button = self._make_selection_button(
             self._t("select_none"), lambda: self._apply_selection(list(self._action_checkboxes), "none")
         )
@@ -258,7 +318,8 @@ class MainWindow(QMainWindow):
             )
             heading_row.addWidget(cat_all)
             cat_safe = self._make_selection_button(
-                self._t("select_safe_only"), lambda c=category: self._apply_selection(self._category_action_ids[c], "safe")
+                self._t("select_safe_only"),
+                lambda c=category: self._apply_selection(self._category_action_ids[c], RiskLevel.SAFE.value),
             )
             heading_row.addWidget(cat_safe)
             cat_none = self._make_selection_button(
@@ -297,6 +358,59 @@ class MainWindow(QMainWindow):
                     self._action_rows[action.id] = row_widget
             self._category_groups[category] = card
             scroll_layout.addWidget(card)
+        self._nav_row_order: list[QWidget] = [self._category_groups[c] for c in self._categories_order]
+
+        self._risk_view_checkboxes: dict[str, QCheckBox] = {}
+        for risk in self._risk_tabs_order:
+            card = QFrame()
+            card.setObjectName("actionCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 10, 14, 10)
+            card_layout.setSpacing(2)
+            heading_row = QHBoxLayout()
+            heading_row.setSpacing(6)
+            heading = QLabel(f"{self._t('risk_tab_prefix')} {risk.value}")
+            heading.setObjectName("cardHeading")
+            heading_row.addWidget(heading)
+            heading_row.addStretch(1)
+            heading_row.addWidget(self._make_selection_button(
+                self._t("select_all"), lambda r=risk: self._apply_selection(self._risk_action_ids[r], "all")
+            ))
+            heading_row.addWidget(self._make_selection_button(
+                self._t("select_none"), lambda r=risk: self._apply_selection(self._risk_action_ids[r], "none")
+            ))
+            card_layout.addLayout(heading_row)
+            for action_id in self._risk_action_ids[risk]:
+                module, action = self._find_action(action_id)
+                row_widget = QWidget()
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(8)
+                mirror_checkbox = QCheckBox(action.label(self.settings.language))
+                mirror_checkbox.setToolTip(action.description(self.settings.language))
+                mirror_checkbox.setAccessibleDescription(action.description(self.settings.language))
+                canonical_checkbox = self._action_checkboxes[action_id]
+                mirror_checkbox.setChecked(canonical_checkbox.isChecked())
+                # Two views, one source of truth: setChecked() only emits
+                # stateChanged on an actual value change, so this pair never
+                # loops - whichever view the user clicks, the other follows.
+                mirror_checkbox.stateChanged.connect(
+                    lambda state, c=canonical_checkbox: c.setChecked(state != 0)
+                )
+                canonical_checkbox.stateChanged.connect(
+                    lambda state, m=mirror_checkbox: m.setChecked(state != 0)
+                )
+                self._risk_view_checkboxes[action_id] = mirror_checkbox
+                row.addWidget(mirror_checkbox)
+                category_label = QLabel(self._t(category_i18n_keys[module.category]))
+                category_label.setObjectName("actionStatus")
+                row.addWidget(category_label)
+                row.addStretch(1)
+                card_layout.addWidget(row_widget)
+            scroll_layout.addWidget(card)
+            card.setHidden(True)
+            self._nav_row_order.append(card)
+
         scroll_layout.addStretch(1)
         scroll.setWidget(scroll_content)
         center_layout.addWidget(scroll, 1)
@@ -314,6 +428,7 @@ class MainWindow(QMainWindow):
         run_row.addWidget(self.cancel_button)
         center_layout.addLayout(run_row)
         body_layout.addLayout(center_layout, 1)
+        body_layout.addWidget(self._build_sysinfo_panel())
         root_layout.addLayout(body_layout, 3)
 
         self.console = QPlainTextEdit()
@@ -337,8 +452,8 @@ class MainWindow(QMainWindow):
             self.update_banner.setVisible(True)
 
     def _on_category_changed(self, row: int) -> None:
-        for index, category in enumerate(self._categories_order):
-            self._category_groups[category].setHidden(index != row)
+        for index, widget in enumerate(self._nav_row_order):
+            widget.setHidden(index != row)
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
@@ -381,6 +496,8 @@ class MainWindow(QMainWindow):
         return button
 
     def _apply_selection(self, action_ids: list[str], mode: str) -> None:
+        # mode is "all", "none", or a RiskLevel value (e.g. "SAFE") meaning
+        # "check only actions at exactly this risk level".
         for action_id in action_ids:
             if mode == "all":
                 checked = True
@@ -388,7 +505,7 @@ class MainWindow(QMainWindow):
                 checked = False
             else:
                 _, action = self._find_action(action_id)
-                checked = action.risk == RiskLevel.SAFE
+                checked = action.risk.value == mode
             self._action_checkboxes[action_id].setChecked(checked)
 
     def _show_batch_summary(self, html_path: Path) -> None:
@@ -766,3 +883,153 @@ class MainWindow(QMainWindow):
                     if not self._closed:
                         self.console.appendPlainText(self._t("disk_write_failed"))
         self._run_next()
+
+    def _build_sysinfo_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("actionCard")
+        panel.setFixedWidth(230)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(4)
+
+        title = QLabel(self._t("sysinfo_title"))
+        title.setObjectName("cardHeading")
+        layout.addWidget(title)
+
+        self._sysinfo_labels: dict[str, QLabel] = {}
+
+        def add_row(key: str, label_key: str) -> None:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            caption = QLabel(self._t(label_key))
+            caption.setObjectName("selectionScope")
+            row.addWidget(caption)
+            row.addStretch(1)
+            value = QLabel(self._t("sysinfo_loading"))
+            value.setWordWrap(True)
+            self._sysinfo_labels[key] = value
+            row.addWidget(value)
+            layout.addLayout(row)
+
+        add_row("os", "sysinfo_os")
+        add_row("cpu_name", "sysinfo_cpu")
+        add_row("cpu_load", "sysinfo_cpu_load")
+        add_row("cpu_clock", "sysinfo_cpu_clock")
+        add_row("ram", "sysinfo_ram")
+        add_row("ram_speed", "sysinfo_ram_speed")
+        add_row("gpu_name", "sysinfo_gpu")
+        add_row("gpu_load", "sysinfo_gpu_load")
+        add_row("gpu_temp", "sysinfo_gpu_temp")
+        add_row("gpu_clock", "sysinfo_gpu_clock")
+        add_row("gpu_vram", "sysinfo_gpu_vram")
+        add_row("ip", "sysinfo_ip")
+        add_row("ping", "sysinfo_ping")
+
+        self.speed_test_button = self._make_selection_button(
+            self._t("sysinfo_speed_test_button"), self._on_speed_test_clicked
+        )
+        layout.addWidget(self.speed_test_button)
+        self.speed_test_result_label = QLabel("")
+        self.speed_test_result_label.setWordWrap(True)
+        layout.addWidget(self.speed_test_result_label)
+        layout.addStretch(1)
+        return panel
+
+    def _start_sysinfo_polling(self) -> None:
+        self._static_info_runner = sysinfo.StaticInfoRunner(parent=self)
+        self._static_info_runner.static_info_ready.connect(self._on_static_info_ready)
+        self._static_info_runner.start()
+
+        self._sysinfo_timer = QTimer(self)
+        self._sysinfo_timer.timeout.connect(self._on_sysinfo_tick)
+        self._sysinfo_timer.start(2000)
+        self._on_sysinfo_tick()
+
+        self._hw_sensor_timer = QTimer(self)
+        self._hw_sensor_timer.timeout.connect(self._on_hw_sensor_tick)
+        self._hw_sensor_timer.start(2500)
+        self._on_hw_sensor_tick()
+
+        self._ping_timer = QTimer(self)
+        self._ping_timer.timeout.connect(self._on_ping_tick)
+        self._ping_timer.start(4000)
+        self._on_ping_tick()
+
+    def _on_static_info_ready(self, info: sysinfo.StaticInfo) -> None:
+        if self._closed:
+            return
+        self._sysinfo_labels["os"].setText(info.os_name)
+        self._sysinfo_labels["cpu_name"].setText(f"{info.cpu_name} ({info.cpu_cores} cores)")
+        self._sysinfo_labels["ram_speed"].setText(
+            f"{info.ram_speed_mhz} MHz" if info.ram_speed_mhz else self._t("sysinfo_na")
+        )
+        self._sysinfo_labels["ip"].setText(info.local_ip)
+
+    def _on_sysinfo_tick(self) -> None:
+        if self._closed:
+            return
+        cpu_load = self._cpu_load_sampler.sample()
+        self._sysinfo_labels["cpu_load"].setText(f"{cpu_load:.0f}%" if cpu_load is not None else self._t("sysinfo_na"))
+        used_gb, total_gb = sysinfo.get_ram_usage_gb()
+        self._sysinfo_labels["ram"].setText(f"{used_gb} / {total_gb} GB")
+
+    def _on_hw_sensor_tick(self) -> None:
+        if self._closed or self._hw_sensor_busy:
+            return
+        self._hw_sensor_busy = True
+        self._hw_sensor_runner = sysinfo.HardwareSensorRunner(self.assets_dir, parent=self)
+        self._hw_sensor_runner.sensors_ready.connect(self._on_hw_sensors_ready)
+        self._hw_sensor_runner.start()
+
+    def _on_hw_sensors_ready(self, hw: dict) -> None:
+        self._hw_sensor_busy = False
+        if self._closed:
+            return
+        self._sysinfo_labels["cpu_clock"].setText(
+            f"{hw['cpu_clock_mhz']:.0f} MHz" if hw["cpu_clock_mhz"] is not None else self._t("sysinfo_na")
+        )
+        self._sysinfo_labels["gpu_name"].setText(hw["gpu_name"] or self._t("sysinfo_na"))
+        self._sysinfo_labels["gpu_load"].setText(
+            f"{hw['gpu_load_percent']:.0f}%" if hw["gpu_load_percent"] is not None else self._t("sysinfo_na")
+        )
+        self._sysinfo_labels["gpu_temp"].setText(
+            f"{hw['gpu_temp_c']:.0f}°C" if hw["gpu_temp_c"] is not None else self._t("sysinfo_na")
+        )
+        self._sysinfo_labels["gpu_clock"].setText(
+            f"{hw['gpu_clock_mhz']:.0f} MHz" if hw["gpu_clock_mhz"] is not None else self._t("sysinfo_na")
+        )
+        if hw["gpu_vram_used_gb"] is not None and hw["gpu_vram_total_gb"] is not None:
+            self._sysinfo_labels["gpu_vram"].setText(f"{hw['gpu_vram_used_gb']} / {hw['gpu_vram_total_gb']} GB")
+        else:
+            self._sysinfo_labels["gpu_vram"].setText(self._t("sysinfo_na"))
+
+    def _on_ping_tick(self) -> None:
+        if self._closed or self._ping_busy:
+            return
+        self._ping_busy = True
+        self._ping_runner = sysinfo.PingRunner(parent=self)
+        self._ping_runner.ping_ready.connect(self._on_ping_ready)
+        self._ping_runner.start()
+
+    def _on_ping_ready(self, latency_ms: float | None) -> None:
+        self._ping_busy = False
+        if self._closed:
+            return
+        self._sysinfo_labels["ping"].setText(f"{latency_ms:.0f} ms" if latency_ms is not None else self._t("sysinfo_na"))
+
+    def _on_speed_test_clicked(self) -> None:
+        if self._speed_test_busy:
+            return
+        self._speed_test_busy = True
+        self.speed_test_button.setEnabled(False)
+        self.speed_test_result_label.setText(self._t("sysinfo_speed_testing"))
+        self._speed_test_runner = sysinfo.SpeedTestRunner(parent=self)
+        self._speed_test_runner.speed_test_ready.connect(self._on_speed_test_ready)
+        self._speed_test_runner.start()
+
+    def _on_speed_test_ready(self, mbps: float | None) -> None:
+        self._speed_test_busy = False
+        if self._closed:
+            return
+        self.speed_test_button.setEnabled(True)
+        self.speed_test_result_label.setText(f"{mbps:.1f} Mbps" if mbps is not None else self._t("sysinfo_na"))

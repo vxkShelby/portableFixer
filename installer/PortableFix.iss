@@ -44,6 +44,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "{#RepoRoot}\App\*"; DestDir: "{app}\App"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\Data\*"; DestDir: "{app}\Data"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\Modules\*"; DestDir: "{app}\Modules"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepoRoot}\Vendor\*"; DestDir: "{app}\Vendor"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\PortableFix.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\portablefix.ico"; DestDir: "{app}"; Flags: ignoreversion
 

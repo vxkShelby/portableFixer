@@ -107,12 +107,15 @@ def _ps_quote(value: str) -> str:
 
 def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> str:
     # The downloaded zip's contract (produced by scripts/build_release_zip.ps1):
-    # exactly one top-level folder containing App/, Data/, Modules/, PortableFix.cmd.
+    # exactly one top-level folder containing App/, Data/, Modules/, Vendor/,
+    # PortableFix.cmd.
     app_dir = _ps_quote(str(install_dir / "App"))
     app_bak = _ps_quote(str(install_dir / "App.old"))
     app_exe = _ps_quote(str(install_dir / "App" / "PortableFix.exe"))
     modules_dir = _ps_quote(str(install_dir / "Modules"))
     modules_bak = _ps_quote(str(install_dir / "Modules.old"))
+    vendor_dir = _ps_quote(str(install_dir / "Vendor"))
+    vendor_bak = _ps_quote(str(install_dir / "Vendor.old"))
     data_dir = _ps_quote(str(install_dir / "Data"))
     settings_json = _ps_quote(str(install_dir / "Data" / "settings.json"))
     cmd_path = _ps_quote(str(install_dir / "PortableFix.cmd"))
@@ -131,19 +134,24 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"$stagedRoot = (Get-ChildItem -Path {stage} -Directory | Select-Object -First 1).FullName\n"
         f"if (Test-Path {app_dir}) {{ Move-Item -Path {app_dir} -Destination {app_bak} -Force }}\n"
         f"if (Test-Path {modules_dir}) {{ Move-Item -Path {modules_dir} -Destination {modules_bak} -Force }}\n"
+        f"if (Test-Path {vendor_dir}) {{ Move-Item -Path {vendor_dir} -Destination {vendor_bak} -Force }}\n"
         f"Move-Item -Path \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
         f"Move-Item -Path \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
+        f"if (Test-Path \"$stagedRoot\\Vendor\") {{ Move-Item -Path \"$stagedRoot\\Vendor\" -Destination {vendor_dir} -Force }}\n"
         f"Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
         f"Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
         f"if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
         f"if (Test-Path {app_exe}) {{\n"
         f"    Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
+        f"    Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
         "} else {\n"
         f"    Remove-Item -Path {app_dir} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
+        f"    Remove-Item -Path {vendor_dir} -Recurse -Force -EA SilentlyContinue\n"
         f"    if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
         f"    if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
+        f"    if (Test-Path {vendor_bak}) {{ Move-Item -Path {vendor_bak} -Destination {vendor_dir} -Force }}\n"
         "}\n"
         # Relaunch first, then clean up temp files - a freshly-downloaded
         # zip can sit under active AV scanning for many seconds, and that

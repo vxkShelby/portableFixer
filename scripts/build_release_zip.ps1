@@ -17,6 +17,7 @@ Copy-Item "$root\PortableFix.cmd" -Destination $stage
 Copy-Item "$root\App" -Destination "$stage\App" -Recurse
 Copy-Item "$root\Data" -Destination "$stage\Data" -Recurse
 Copy-Item "$root\Modules" -Destination "$stage\Modules" -Recurse
+Copy-Item "$root\Vendor" -Destination "$stage\Vendor" -Recurse
 
 $zip = "$outDir\PortableFix-Portable.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

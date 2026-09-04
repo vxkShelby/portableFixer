@@ -291,6 +291,17 @@ def test_build_swap_script_restores_backup_folders_if_swap_fails_to_verify():
     assert "if (Test-Path 'C:\\App\\App\\PortableFix.exe') {" in script
     assert "Move-Item -Path 'C:\\App\\App.old' -Destination 'C:\\App\\App' -Force" in script
     assert "Move-Item -Path 'C:\\App\\Modules.old' -Destination 'C:\\App\\Modules' -Force" in script
+    assert "Move-Item -Path 'C:\\App\\Vendor.old' -Destination 'C:\\App\\Vendor' -Force" in script
+
+
+def test_build_swap_script_swaps_vendor_folder_with_backup(tmp_path):
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert "if (Test-Path 'C:\\App\\Vendor') { Move-Item -Path 'C:\\App\\Vendor' -Destination 'C:\\App\\Vendor.old' -Force }" in script
+    assert 'if (Test-Path "$stagedRoot\\Vendor") { Move-Item -Path "$stagedRoot\\Vendor" -Destination \'C:\\App\\Vendor\' -Force }' in script
 
 
 def test_build_swap_script_preserves_settings_json_across_the_swap():

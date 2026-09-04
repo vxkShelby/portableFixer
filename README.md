@@ -36,6 +36,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M18 | Oprava | Záloha používateľských priečinkov (Desktop/Documents/Pictures/Favorites) |
 | M19 | Oprava | Voliteľné funkcie Windows: prehľad, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Oprava | Aktualizácia softvéru cez winget: zoznam, zastaraný softvér, update all |
+| M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor) |
 
 ## Bezpečnostné mechanizmy
 
@@ -59,9 +60,10 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 - **Auto-update:** pri behu ako zbalený `.exe` appka pri štarte ticho
   skontroluje GitHub Releases (`vxkShelby/portableFixer`); ak existuje
   novšia verzia, zobrazí dismissovateľný banner s ponukou stiahnuť a
-  aplikovať. Sťahovanie beží na pozadí, aktualizuje sa výhradne
-  `App/PortableFix.exe` (nikdy `Modules/`/`Data/`/vlastné úpravy
-  katalógov). Pri zlyhaní (offline, timeout) je ticho — nič nevypíše.
+  aplikovať. Sťahovanie beží na pozadí a nahradí celý balík (`App/`,
+  `Modules/`, `Vendor/`, `PortableFix.cmd`) - `Data/settings.json`
+  (jazyk, dry-run) sa zachová. Pri zlyhaní (offline, timeout) je ticho
+  — nič nevypíše.
 
 ## Štruktúra priečinkov
 
@@ -71,6 +73,7 @@ PortableFix/
   main.py                vstupný bod
   portablefix/           aplikačný kód
   Modules/<id>/actions.yaml   deklaratívne katalógy akcií
+  Vendor/                 LibreHardwareMonitorLib (voliteľné HW senzory)
   Data/                  settings.json, SHA256SUMS (runtime)
   Logs/                  audit logy (runtime)
   Reports/               HTML reporty (runtime)

@@ -566,7 +566,9 @@ def test_category_list_deduplicates_same_category_across_modules(qtbot, tmp_path
     settings = Settings(language="en", dry_run=True)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat1")
     qtbot.addWidget(window)
-    assert window.category_list.count() == 1
+    # +1 for the "Risk: SAFE" tab appended after the categories (both test
+    # actions are risk SAFE).
+    assert window.category_list.count() == 2
     assert window.category_list.item(0).text() == "Diagnostics"
 
 
@@ -576,9 +578,11 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     settings = Settings(language="en", dry_run=True)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat2")
     qtbot.addWidget(window)
-    assert window.category_list.count() == 2
+    # +1 for the "Risk: SAFE" tab appended after the categories (both test
+    # actions are risk SAFE).
+    assert window.category_list.count() == 3
     labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
-    assert labels == {"Diagnostics", "System repair"}
+    assert labels == {"Diagnostics", "System repair", "Risk: SAFE"}
 
 
 def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
@@ -1287,3 +1291,174 @@ def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path
     qtbot.waitUntil(lambda: window.update_banner_label.text() == "Version 9.9.9 is available", timeout=5000)
     assert applied.get("called") is None
     assert applied.get("quit_called") is None
+
+
+MIXED_RISK_ACTIONS_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: safe_one
+    label_sk: "Bezpecna"
+    label_en: "Safe one"
+    risk: SAFE
+    command: "Write-Output 'safe'"
+    description_sk: "Test"
+    description_en: "Test"
+  - id: moderate_one
+    label_sk: "Riskantna"
+    label_en: "Moderate one"
+    risk: MODERATE
+    command: "Write-Output 'moderate'"
+    description_sk: "Test"
+    description_en: "Test"
+  - id: destructive_one
+    label_sk: "Nevratna"
+    label_en: "Destructive one"
+    risk: DESTRUCTIVE
+    command: "Write-Output 'destructive'"
+    description_sk: "Test"
+    description_en: "Test"
+  - id: reboot_one
+    label_sk: "Restart"
+    label_en: "Reboot one"
+    risk: REQUIRES_REBOOT
+    command: "Write-Output 'reboot'"
+    description_sk: "Test"
+    description_en: "Test"
+"""
+
+
+def test_global_select_moderate_destructive_reboot_buttons_select_only_that_risk(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_select")
+    qtbot.addWidget(window)
+
+    window.global_select_moderate_button.click()
+    assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["moderate_one"]
+
+    window.global_select_destructive_button.click()
+    assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["destructive_one"]
+
+    window.global_select_reboot_button.click()
+    assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["reboot_one"]
+
+
+def test_risk_tabs_are_appended_after_categories_in_nav_list(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_tabs")
+    qtbot.addWidget(window)
+
+    # 1 category (all four test actions default to the same category) + one
+    # risk tab per distinct risk level actually present (4 here).
+    labels = [window.category_list.item(i).text() for i in range(window.category_list.count())]
+    assert labels[-4:] == ["Risk: SAFE", "Risk: MODERATE", "Risk: DESTRUCTIVE", "Risk: REQUIRES_REBOOT"]
+
+
+def test_clicking_a_risk_tab_shows_only_that_risk_card(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_click")
+    qtbot.addWidget(window)
+
+    category_row_count = window.category_list.count() - 4
+    safe_tab_row = category_row_count
+    window.category_list.setCurrentRow(safe_tab_row)
+
+    for index, widget in enumerate(window._nav_row_order):
+        assert widget.isHidden() == (index != safe_tab_row)
+
+
+def test_risk_tab_mirror_checkbox_syncs_bidirectionally_with_canonical(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_mirror")
+    qtbot.addWidget(window)
+
+    canonical = window._action_checkboxes["moderate_one"]
+    mirror = window._risk_view_checkboxes["moderate_one"]
+    assert mirror.isChecked() is False
+
+    canonical.setChecked(True)
+    assert mirror.isChecked() is True
+
+    mirror.setChecked(False)
+    assert canonical.isChecked() is False
+
+
+def test_sysinfo_panel_has_a_label_for_every_expected_field(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_sysinfo_labels")
+    qtbot.addWidget(window)
+
+    expected_keys = {
+        "os", "cpu_name", "cpu_load", "cpu_clock", "ram", "ram_speed",
+        "gpu_name", "gpu_load", "gpu_temp", "gpu_clock", "gpu_vram", "ip", "ping",
+    }
+    assert expected_keys <= set(window._sysinfo_labels.keys())
+    assert window.speed_test_button is not None
+    assert window.speed_test_result_label is not None
+
+
+def test_static_info_ready_updates_os_cpu_ip_labels(qtbot, tmp_path):
+    from portablefix import sysinfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_static_info")
+    qtbot.addWidget(window)
+
+    window._on_static_info_ready(sysinfo.StaticInfo(
+        os_name="Windows 11 Pro", cpu_name="Test CPU", cpu_cores=8,
+        local_ip="10.0.0.5", ram_speed_mhz=3200,
+    ))
+
+    assert window._sysinfo_labels["os"].text() == "Windows 11 Pro"
+    assert window._sysinfo_labels["cpu_name"].text() == "Test CPU (8 cores)"
+    assert window._sysinfo_labels["ram_speed"].text() == "3200 MHz"
+    assert window._sysinfo_labels["ip"].text() == "10.0.0.5"
+
+
+def test_hw_sensors_ready_updates_cpu_and_gpu_labels(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_hw_sensors")
+    qtbot.addWidget(window)
+
+    window._on_hw_sensors_ready({
+        "cpu_clock_mhz": 4200.0,
+        "gpu_name": "Test GPU",
+        "gpu_load_percent": 12.0,
+        "gpu_temp_c": 55.0,
+        "gpu_clock_mhz": 1800.0,
+        "gpu_vram_used_gb": 2.0,
+        "gpu_vram_total_gb": 8.0,
+    })
+
+    assert window._sysinfo_labels["cpu_clock"].text() == "4200 MHz"
+    assert window._sysinfo_labels["gpu_name"].text() == "Test GPU"
+    assert window._sysinfo_labels["gpu_load"].text() == "12%"
+    assert window._sysinfo_labels["gpu_temp"].text() == "55°C"
+    assert window._sysinfo_labels["gpu_clock"].text() == "1800 MHz"
+    assert window._sysinfo_labels["gpu_vram"].text() == "2.0 / 8.0 GB"
+
+
+def test_hw_sensors_ready_shows_na_when_sensor_unavailable(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_hw_sensors_na")
+    qtbot.addWidget(window)
+
+    window._on_hw_sensors_ready({
+        "cpu_clock_mhz": None, "gpu_name": None, "gpu_load_percent": None,
+        "gpu_temp_c": None, "gpu_clock_mhz": None, "gpu_vram_used_gb": None, "gpu_vram_total_gb": None,
+    })
+
+    assert window._sysinfo_labels["cpu_clock"].text() == "N/A"
+    assert window._sysinfo_labels["gpu_name"].text() == "N/A"
+    assert window._sysinfo_labels["gpu_vram"].text() == "N/A"
+
+
+def test_ping_ready_updates_ping_label(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_ping")
+    qtbot.addWidget(window)
+
+    window._on_ping_ready(23.0)
+    assert window._sysinfo_labels["ping"].text() == "23 ms"
+
+    window._on_ping_ready(None)
+    assert window._sysinfo_labels["ping"].text() == "N/A"
