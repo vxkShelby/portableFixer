@@ -21,7 +21,7 @@ class UpdateVerificationError(Exception):
 @dataclass
 class UpdateInfo:
     version: str
-    download_url: str
+    package_url: str
     sha256_url: str | None
     notes: str
 
@@ -51,13 +51,15 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
         if not tag or not is_newer(tag, current_version):
             return None
         assets = data.get("assets", [])
-        exe_asset = next((a for a in assets if a.get("name", "").lower() == "portablefix.exe"), None)
-        if not exe_asset:
+        zip_asset = next((a for a in assets if a.get("name", "").lower() == "portablefix-portable.zip"), None)
+        if not zip_asset:
             return None
-        sha_asset = next((a for a in assets if a.get("name", "").lower() == "portablefix.exe.sha256"), None)
+        sha_asset = next(
+            (a for a in assets if a.get("name", "").lower() == "portablefix-portable.zip.sha256"), None
+        )
         return UpdateInfo(
             version=tag.lstrip("vV"),
-            download_url=exe_asset["browser_download_url"],
+            package_url=zip_asset["browser_download_url"],
             sha256_url=sha_asset["browser_download_url"] if sha_asset else None,
             notes=data.get("body", ""),
         )
@@ -67,20 +69,20 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
 
 def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    exe_path = dest_dir / "PortableFix.new.exe"
+    zip_path = dest_dir / "PortableFix-update.zip"
     try:
-        urllib.request.urlretrieve(info.download_url, exe_path)
+        urllib.request.urlretrieve(info.package_url, zip_path)
     except Exception:
-        exe_path.unlink(missing_ok=True)
+        zip_path.unlink(missing_ok=True)
         raise
     if info.sha256_url:
         with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
             expected = resp.read().decode("utf-8").strip().split()[0].lower()
-        actual = compute_sha256(exe_path)
+        actual = compute_sha256(zip_path)
         if actual.lower() != expected:
-            exe_path.unlink(missing_ok=True)
-            raise UpdateVerificationError("Downloaded file does not match expected SHA256.")
-    return exe_path
+            zip_path.unlink(missing_ok=True)
+            raise UpdateVerificationError("Downloaded package does not match expected SHA256.")
+    return zip_path
 
 
 def is_writable(directory: Path) -> bool:
@@ -103,11 +105,20 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def build_swap_script(current_pid: int, old_exe: Path, new_exe: Path, sums_path: Path) -> str:
-    old = _ps_quote(str(old_exe))
-    old_bak = _ps_quote(str(old_exe) + ".old")
-    new = _ps_quote(str(new_exe))
-    sums = _ps_quote(str(sums_path))
+def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> str:
+    # The downloaded zip's contract (produced by scripts/build_release_zip.ps1):
+    # exactly one top-level folder containing App/, Data/, Modules/, PortableFix.cmd.
+    app_dir = _ps_quote(str(install_dir / "App"))
+    app_bak = _ps_quote(str(install_dir / "App.old"))
+    app_exe = _ps_quote(str(install_dir / "App" / "PortableFix.exe"))
+    modules_dir = _ps_quote(str(install_dir / "Modules"))
+    modules_bak = _ps_quote(str(install_dir / "Modules.old"))
+    data_dir = _ps_quote(str(install_dir / "Data"))
+    settings_json = _ps_quote(str(install_dir / "Data" / "settings.json"))
+    cmd_path = _ps_quote(str(install_dir / "PortableFix.cmd"))
+    zip_p = _ps_quote(str(zip_path))
+    stage = _ps_quote(str(zip_path.parent / "PortableFixUpdateStage"))
+    settings_bak = _ps_quote(str(zip_path.parent / "settings.json.bak"))
     return (
         '$ErrorActionPreference = "SilentlyContinue"\n'
         f"for ($i = 0; $i -lt 30; $i++) {{\n"
@@ -115,37 +126,37 @@ def build_swap_script(current_pid: int, old_exe: Path, new_exe: Path, sums_path:
         "    Start-Sleep -Milliseconds 500\n"
         "}\n"
         "Start-Sleep -Milliseconds 300\n"
-        f"Move-Item -Path {old} -Destination {old_bak} -Force\n"
-        f"Move-Item -Path {new} -Destination {old} -Force\n"
-        f"if (Test-Path {old}) {{ Remove-Item -Path {old_bak} -Force -EA SilentlyContinue }}\n"
-        f"else {{ Move-Item -Path {old_bak} -Destination {old} -Force }}\n"
-        "try {\n"
-        f"    $hash = (Get-FileHash -Path {old} -Algorithm SHA256).Hash.ToLower()\n"
-        f"    if (Test-Path {sums}) {{\n"
-        f"        $lines = Get-Content {sums}\n"
-        "        $newLines = @()\n"
-        "        $found = $false\n"
-        "        foreach ($line in $lines) {\n"
-        "            if ($line -match 'App/PortableFix\\.exe$') {\n"
-        '                $newLines += "$hash  App/PortableFix.exe"\n'
-        "                $found = $true\n"
-        "            } else {\n"
-        "                $newLines += $line\n"
-        "            }\n"
-        "        }\n"
-        '        if (-not $found) { $newLines += "$hash  App/PortableFix.exe" }\n'
-        f"        Set-Content -Path {sums} -Value $newLines -Encoding ASCII\n"
-        "    }\n"
-        "} catch {}\n"
-        f"Start-Process -FilePath {old}\n"
+        f"if (Test-Path {settings_json}) {{ Copy-Item -Path {settings_json} -Destination {settings_bak} -Force }}\n"
+        f"Expand-Archive -Path {zip_p} -DestinationPath {stage} -Force\n"
+        f"$stagedRoot = (Get-ChildItem -Path {stage} -Directory | Select-Object -First 1).FullName\n"
+        f"if (Test-Path {app_dir}) {{ Move-Item -Path {app_dir} -Destination {app_bak} -Force }}\n"
+        f"if (Test-Path {modules_dir}) {{ Move-Item -Path {modules_dir} -Destination {modules_bak} -Force }}\n"
+        f"Move-Item -Path \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
+        f"Move-Item -Path \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
+        f"Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
+        f"Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
+        f"if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
+        f"if (Test-Path {app_exe}) {{\n"
+        f"    Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
+        f"    Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
+        "} else {\n"
+        f"    Remove-Item -Path {app_dir} -Recurse -Force -EA SilentlyContinue\n"
+        f"    Remove-Item -Path {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
+        f"    if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
+        f"    if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
+        "}\n"
+        f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
+        f"Remove-Item -Path {zip_p} -Force -EA SilentlyContinue\n"
+        f"Remove-Item -Path {settings_bak} -Force -EA SilentlyContinue\n"
+        f"Start-Process -FilePath {cmd_path}\n"
     )
 
 
-def apply_update(new_exe_path: Path, current_exe_path: Path, sums_path: Path) -> bool:
-    if not is_writable(current_exe_path.parent):
+def apply_update(zip_path: Path, install_dir: Path) -> bool:
+    if not is_writable(install_dir):
         return False
     current_pid = os.getpid()
-    script_text = build_swap_script(current_pid, current_exe_path, new_exe_path, sums_path)
+    script_text = build_swap_script(current_pid, install_dir, zip_path)
     script_path = Path(tempfile.gettempdir()) / f"portablefix_update_{current_pid}.ps1"
     try:
         script_path.write_text(script_text, encoding="utf-8-sig")

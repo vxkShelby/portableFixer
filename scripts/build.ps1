@@ -23,4 +23,25 @@ if ($LASTEXITCODE -ne 0) {
 
 py "$root\scripts\generate_sha256sums.py" "$root"
 
+& "$root\scripts\build_release_zip.ps1"
+
+$iscc = Get-Command ISCC.exe -EA SilentlyContinue
+if (-not $iscc) {
+    foreach ($candidate in @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    )) {
+        if (Test-Path $candidate) { $iscc = Get-Item $candidate; break }
+    }
+}
+if ($iscc) {
+    & $iscc.Path "$root\installer\PortableFix.iss"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup compiler failed with exit code $LASTEXITCODE"
+    }
+    Write-Host "Installer written to $root\Output\PortableFix-Setup.exe"
+} else {
+    Write-Host "Inno Setup (ISCC.exe) not found - skipped building PortableFix-Setup.exe. Install it from https://jrsoftware.org/isinfo.php to also produce the installer."
+}
+
 Write-Host "Build complete. Run PortableFix.cmd from $root to launch."

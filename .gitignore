@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 App/
 build/
+Output/
 Data/SHA256SUMS
 Data/settings.json
 Backups/

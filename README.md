@@ -118,25 +118,35 @@ Tieto kroky vyžadujú zdroje mimo repozitára a robia sa ručne:
 
 Ručný postup, nič z toho nie je automatizované:
 
-1. Zvýš `APP_VERSION` v `portablefix/version.py`.
+1. Zvýš `APP_VERSION` v `portablefix/version.py` **a** `MyAppVersion`
+   v `installer/PortableFix.iss` (musia sedieť).
 2. `powershell -ExecutionPolicy Bypass -File scripts\build.ps1` →
-   `App/PortableFix.exe` (onefile).
-3. Podpíš (`signtool sign ...`, viď vyššie).
+   `App/PortableFix.exe` (onefile), `Output/PortableFix-Portable.zip`
+   (+ `.sha256`), a ak máš nainštalovaný Inno Setup (ISCC.exe,
+   [jrsoftware.org](https://jrsoftware.org/isinfo.php)) aj
+   `Output/PortableFix-Setup.exe`.
+3. Podpíš `App/PortableFix.exe` (`signtool sign ...`, viď vyššie) **pred**
+   krokom 2 alebo re-spusti `scripts\build_release_zip.ps1` po podpise,
+   nech je podpísaný exe aj v zipe.
 4. `python scripts/generate_sha256sums.py .` — aktualizuje
-   `Data/SHA256SUMS`.
-5. Vypočítaj samostatný hash pre auto-update mechanizmus a ulož ho ako
-   jednoriadkový text do `App/PortableFix.exe.sha256` (lokálny súbor,
-   `App/` je celé v `.gitignore`, netreba nový záznam):
-   ```powershell
-   (Get-FileHash App\PortableFix.exe -Algorithm SHA256).Hash | Out-File App\PortableFix.exe.sha256 -Encoding ascii -NoNewline
-   ```
-6. Vytvor GitHub Release s tagom `v<verzia>` (napr. `v1.1.0`), nahraj
-   **oba** súbory — `App/PortableFix.exe` aj
-   `App/PortableFix.exe.sha256` — ako assety.
+   `Data/SHA256SUMS` (obsah zipu musí mať aktuálne SHA256SUMS, spusti pred
+   krokom 2/3 podľa poradia vyššie).
+5. Vytvor GitHub Release s tagom `v<verzia>` (napr. `v1.1.0`), nahraj
+   **tri** súbory ako assety, presne s týmito menami (auto-update aj
+   inštalátor ich vyhľadávajú podľa fixného mena, nie podľa verzie):
+   - `PortableFix-Portable.zip` — toto sťahuje aj auto-update mechanizmus
+   - `PortableFix-Portable.zip.sha256`
+   - `PortableFix-Setup.exe` — inštalátor pre bežných používateľov
 
 **Dôležité:** ak sa release vytvorí bez `.sha256` assetu, auto-update
-si to nevšimne a stiahnutý `.exe` sa aplikuje **bez overenia hashu**
+si to nevšimne a stiahnutý balík sa aplikuje **bez overenia hashu**
 (žiadne varovanie v UI) — krok 5 nikdy nevynechaj.
+
+Auto-update od tejto verzie sťahuje **celý balík** (exe + Data + Modules),
+nie len samotné `.exe` — takto sa k už nainštalovaným kópiám dostanú aj
+nové/zmenené moduly, nielen zmeny v Python kóde. `Data/settings.json`
+(jazyk, dry-run) sa pri update zachová, všetko ostatné v `App/`, `Modules/`
+a `PortableFix.cmd` sa nahradí.
 
 ## Vývoj
 

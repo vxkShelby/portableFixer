@@ -1099,7 +1099,7 @@ def test_update_banner_shows_when_check_finds_newer_version(qtbot, tmp_path):
     qtbot.addWidget(window)
     window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
 
-    info = UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes="")
+    info = UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes="")
     window._on_update_check_finished(info)
 
     assert window.update_banner.isVisible() is True
@@ -1125,7 +1125,7 @@ def test_update_banner_dismiss_hides_it(qtbot, tmp_path):
     qtbot.addWidget(window)
     window.show()  # isVisible() reflects the ancestor chain, so the top-level must be shown (see test_restart_as_admin_button_visibility for the same pattern)
 
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
     window.update_dismiss_button.click()
 
     assert window.update_banner.isVisible() is False
@@ -1148,7 +1148,7 @@ def test_update_button_click_declined_confirm_does_not_start_download(qtbot, tmp
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update6")
     qtbot.addWidget(window)
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 
@@ -1171,7 +1171,7 @@ def test_update_button_click_confirmed_downloads_and_applies_update(qtbot, tmp_p
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update7")
     qtbot.addWidget(window)
     monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 
@@ -1193,7 +1193,7 @@ def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_pat
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update8")
     qtbot.addWidget(window)
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 
@@ -1216,7 +1216,7 @@ def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monke
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update9")
     qtbot.addWidget(window)
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 
@@ -1230,7 +1230,7 @@ def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_toggle_mid_dl")
     qtbot.addWidget(window)
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     # Simulate a download in progress (mirrors what _on_update_button_clicked
     # sets before starting the QThread) without actually starting one.
@@ -1250,7 +1250,7 @@ def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_batch_guard")
     qtbot.addWidget(window)
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
     window._batch_active = True
 
     window.update_button.click()
@@ -1280,7 +1280,7 @@ def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update10")
     qtbot.addWidget(window)
     monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
-    window._on_update_check_finished(UpdateInfo(version="9.9.9", download_url="https://x", sha256_url=None, notes=""))
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 

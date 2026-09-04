@@ -510,16 +510,16 @@ class MainWindow(QMainWindow):
         self._update_download_runner.download_finished.connect(self._on_update_download_finished)
         self._update_download_runner.start()
 
-    def _on_update_download_finished(self, new_exe_path, error: str) -> None:
+    def _on_update_download_finished(self, zip_path, error: str) -> None:
         info = self._pending_update_info
         self._update_in_progress = False
         self.update_button.setEnabled(True)
         self.update_dismiss_button.setEnabled(True)
-        if not new_exe_path:
+        if not zip_path:
             self.update_banner_label.setText(self._t("update_download_failed"))
             return
-        current_exe = Path(sys.executable)
-        if not updater.is_writable(current_exe.parent):
+        install_dir = paths.get_base_dir()
+        if not updater.is_writable(install_dir):
             self.update_banner_label.setText(self._t("update_not_writable"))
             return
         confirmed = QMessageBox.question(
@@ -531,8 +531,7 @@ class MainWindow(QMainWindow):
                 self._t("update_available_banner").format(version=info.version)
             )
             return
-        sums_path = paths.get_base_dir() / "Data" / "SHA256SUMS"
-        if not updater.apply_update(new_exe_path, current_exe, sums_path):
+        if not updater.apply_update(zip_path, install_dir):
             self.update_banner_label.setText(self._t("update_apply_failed"))
             return
         self._quit_app()

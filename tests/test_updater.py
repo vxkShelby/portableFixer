@@ -37,12 +37,12 @@ def test_is_newer_false_when_equal():
     assert is_newer("1.0.0", "1.0.0") is False
 
 
-def _release_json(tag="v1.1.0", with_sha=True, exe_name="PortableFix.exe"):
-    assets = [{"name": exe_name, "browser_download_url": "https://example.com/PortableFix.exe"}]
+def _release_json(tag="v1.1.0", with_sha=True, zip_name="PortableFix-Portable.zip"):
+    assets = [{"name": zip_name, "browser_download_url": "https://example.com/PortableFix-Portable.zip"}]
     if with_sha:
         assets.append({
-            "name": "PortableFix.exe.sha256",
-            "browser_download_url": "https://example.com/PortableFix.exe.sha256",
+            "name": "PortableFix-Portable.zip.sha256",
+            "browser_download_url": "https://example.com/PortableFix-Portable.zip.sha256",
         })
     return json.dumps({"tag_name": tag, "assets": assets, "body": "release notes"}).encode("utf-8")
 
@@ -64,8 +64,8 @@ def test_check_for_update_returns_info_when_remote_newer():
         info = check_for_update("1.0.0")
     assert info == UpdateInfo(
         version="1.1.0",
-        download_url="https://example.com/PortableFix.exe",
-        sha256_url="https://example.com/PortableFix.exe.sha256",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
         notes="release notes",
     )
 
@@ -80,19 +80,19 @@ def test_check_for_update_returns_none_on_malformed_json():
         assert check_for_update("1.0.0") is None
 
 
-def test_check_for_update_returns_none_when_no_exe_asset_present():
-    body = _release_json(tag="v1.1.0", exe_name="SomethingElse.exe")
+def test_check_for_update_returns_none_when_no_zip_asset_present():
+    body = _release_json(tag="v1.1.0", zip_name="SomethingElse.zip")
     with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(body)):
         assert check_for_update("1.0.0") is None
 
 
 def test_download_update_succeeds_when_hash_matches(tmp_path):
-    content = b"fake-exe-content"
+    content = b"fake-zip-content"
     expected_hash = hashlib.sha256(content).hexdigest()
     info = UpdateInfo(
         version="1.1.0",
-        download_url="https://example.com/PortableFix.exe",
-        sha256_url="https://example.com/PortableFix.exe.sha256",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
         notes="",
     )
 
@@ -104,19 +104,20 @@ def test_download_update_succeeds_when_hash_matches(tmp_path):
             result_path = download_update(info, tmp_path / "dest")
 
     assert result_path.read_bytes() == content
+    assert result_path.name == "PortableFix-update.zip"
 
 
 def test_download_update_raises_and_cleans_up_on_hash_mismatch(tmp_path):
     info = UpdateInfo(
         version="1.1.0",
-        download_url="https://example.com/PortableFix.exe",
-        sha256_url="https://example.com/PortableFix.exe.sha256",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
         notes="",
     )
     wrong_hash = "0" * 64
 
     def fake_urlretrieve(url, path):
-        Path(path).write_bytes(b"fake-exe-content")
+        Path(path).write_bytes(b"fake-zip-content")
 
     dest = tmp_path / "dest"
     with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
@@ -124,12 +125,12 @@ def test_download_update_raises_and_cleans_up_on_hash_mismatch(tmp_path):
             with pytest.raises(UpdateVerificationError):
                 download_update(info, dest)
 
-    assert not (dest / "PortableFix.new.exe").exists()
+    assert not (dest / "PortableFix-update.zip").exists()
 
 
 def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path):
     info = UpdateInfo(
-        version="1.1.0", download_url="https://example.com/PortableFix.exe", sha256_url=None, notes="",
+        version="1.1.0", package_url="https://example.com/PortableFix-Portable.zip", sha256_url=None, notes="",
     )
     dest = tmp_path / "dest"
 
@@ -141,12 +142,12 @@ def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path)
         with pytest.raises(ConnectionError):
             download_update(info, dest)
 
-    assert not (dest / "PortableFix.new.exe").exists()
+    assert not (dest / "PortableFix-update.zip").exists()
 
 
 def test_download_update_skips_verification_when_no_sha256_asset(tmp_path):
     info = UpdateInfo(
-        version="1.1.0", download_url="https://example.com/PortableFix.exe", sha256_url=None, notes="",
+        version="1.1.0", package_url="https://example.com/PortableFix-Portable.zip", sha256_url=None, notes="",
     )
 
     def fake_urlretrieve(url, path):
@@ -161,12 +162,10 @@ def test_download_update_skips_verification_when_no_sha256_asset(tmp_path):
 def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
     monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
 
-    apply_update(
-        new_exe_path=tmp_path / "PortableFix.new.exe",
-        current_exe_path=tmp_path / "PortableFix.exe",
-        sums_path=tmp_path / "SHA256SUMS",
-    )
+    apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
 
     scripts = list(tmp_path.glob("portablefix_update_*.ps1"))
     assert len(scripts) == 1
@@ -176,12 +175,10 @@ def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
 def test_apply_update_returns_true_on_success(tmp_path, monkeypatch):
     monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
 
-    result = apply_update(
-        new_exe_path=tmp_path / "PortableFix.new.exe",
-        current_exe_path=tmp_path / "PortableFix.exe",
-        sums_path=tmp_path / "SHA256SUMS",
-    )
+    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
 
     assert result is True
 
@@ -190,11 +187,7 @@ def test_apply_update_returns_false_without_spawning_when_not_writable(tmp_path,
     popen_calls = []
     monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: popen_calls.append(1))
 
-    result = apply_update(
-        new_exe_path=tmp_path / "PortableFix.new.exe",
-        current_exe_path=tmp_path / "missing_dir" / "PortableFix.exe",
-        sums_path=tmp_path / "SHA256SUMS",
-    )
+    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=tmp_path / "missing_install_dir")
 
     assert result is False
     assert popen_calls == []
@@ -202,17 +195,15 @@ def test_apply_update_returns_false_without_spawning_when_not_writable(tmp_path,
 
 def test_apply_update_returns_false_when_popen_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
 
     def raise_oserror(*a, **k):
         raise OSError("no such file")
 
     monkeypatch.setattr(updater_module.subprocess, "Popen", raise_oserror)
 
-    result = apply_update(
-        new_exe_path=tmp_path / "PortableFix.new.exe",
-        current_exe_path=tmp_path / "PortableFix.exe",
-        sums_path=tmp_path / "SHA256SUMS",
-    )
+    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
 
     assert result is False
 
@@ -231,9 +222,8 @@ def test_build_swap_script_parses_as_valid_powershell():
 
     script = build_swap_script(
         current_pid=12345,
-        old_exe=Path(r"C:\Users\test\USB Fixer\App\PortableFix.exe"),
-        new_exe=Path(r"C:\Users\test\AppData\Local\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\Users\test\USB Fixer\Data\SHA256SUMS"),
+        install_dir=Path(r"C:\Users\test\USB Fixer"),
+        zip_path=Path(r"C:\Users\test\AppData\Local\Temp\PortableFix-update.zip"),
     )
     env = os.environ.copy()
     env["PFCMD"] = script
@@ -248,11 +238,10 @@ def test_build_swap_script_parses_as_valid_powershell():
 def test_build_swap_script_quotes_paths_with_spaces():
     script = build_swap_script(
         current_pid=1,
-        old_exe=Path(r"C:\Users\test\USB Fixer\App\PortableFix.exe"),
-        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\Users\test\USB Fixer\Data\SHA256SUMS"),
+        install_dir=Path(r"C:\Users\test\USB Fixer"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert "'C:\\Users\\test\\USB Fixer\\App\\PortableFix.exe'" in script
+    assert "'C:\\Users\\test\\USB Fixer\\App'" in script
 
 
 def test_build_swap_script_single_quotes_do_not_interpolate_dollar_sign():
@@ -264,14 +253,13 @@ def test_build_swap_script_single_quotes_do_not_interpolate_dollar_sign():
     import os
     import subprocess
 
-    old_exe = Path(r"C:\Users\Jane$Doe\App\PortableFix.exe")
+    install_dir = Path(r"C:\Users\Jane$Doe\USB Fixer")
     script = build_swap_script(
         current_pid=1,
-        old_exe=old_exe,
-        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\App\SHA256SUMS"),
+        install_dir=install_dir,
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert "'C:\\Users\\Jane$Doe\\App\\PortableFix.exe'" in script
+    assert "'C:\\Users\\Jane$Doe\\USB Fixer\\App'" in script
     assert '"C:\\Users\\Jane$Doe' not in script
 
     env = os.environ.copy()
@@ -285,28 +273,44 @@ def test_build_swap_script_single_quotes_do_not_interpolate_dollar_sign():
 
 
 def test_build_swap_script_escapes_embedded_single_quote_in_path():
-    old_exe = Path(r"C:\Users\O'Brien\App\PortableFix.exe")
+    install_dir = Path(r"C:\Users\O'Brien\USB Fixer")
     script = build_swap_script(
         current_pid=1,
-        old_exe=old_exe,
-        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\App\SHA256SUMS"),
+        install_dir=install_dir,
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
     assert "O''Brien" in script
 
 
-def test_build_swap_script_restores_backup_if_swap_fails_to_verify():
+def test_build_swap_script_restores_backup_folders_if_swap_fails_to_verify():
     script = build_swap_script(
         current_pid=1,
-        old_exe=Path(r"C:\App\PortableFix.exe"),
-        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\App\SHA256SUMS"),
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert (
-        "if (Test-Path 'C:\\App\\PortableFix.exe') { Remove-Item -Path 'C:\\App\\PortableFix.exe.old' "
-        "-Force -EA SilentlyContinue }" in script
+    assert "if (Test-Path 'C:\\App\\App\\PortableFix.exe') {" in script
+    assert "Move-Item -Path 'C:\\App\\App.old' -Destination 'C:\\App\\App' -Force" in script
+    assert "Move-Item -Path 'C:\\App\\Modules.old' -Destination 'C:\\App\\Modules' -Force" in script
+
+
+def test_build_swap_script_preserves_settings_json_across_the_swap():
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert "else { Move-Item -Path 'C:\\App\\PortableFix.exe.old' -Destination 'C:\\App\\PortableFix.exe' -Force }" in script
+    assert "settings.json" in script
+    assert "settings.json.bak" in script
+
+
+def test_build_swap_script_expands_the_downloaded_zip():
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert "Expand-Archive" in script
+    assert "'C:\\Temp\\PortableFix-update.zip'" in script
 
 
 def test_build_swap_script_handles_non_ascii_path_component():
@@ -316,25 +320,32 @@ def test_build_swap_script_handles_non_ascii_path_component():
     # system codepage and isn't testable from here; the BOM added in
     # apply_update (utf-8-sig) is what makes powershell.exe -File decode it
     # as UTF-8 regardless of codepage.
-    old_exe = Path(r"C:\Users\Ondřej Čučko\App\PortableFix.exe")
+    install_dir = Path(r"C:\Users\Ondřej Čučko\USB Fixer")
     script = build_swap_script(
         current_pid=1,
-        old_exe=old_exe,
-        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\App\SHA256SUMS"),
+        install_dir=install_dir,
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert str(old_exe) in script
+    assert str(install_dir) in script
 
 
 def test_build_swap_script_contains_pid_wait_loop():
     script = build_swap_script(
         current_pid=54321,
-        old_exe=Path(r"C:\App\PortableFix.exe"),
-        new_exe=Path(r"C:\Temp\PortableFix.new.exe"),
-        sums_path=Path(r"C:\App\SHA256SUMS"),
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
     assert "54321" in script
     assert "Get-Process" in script
+
+
+def test_build_swap_script_restarts_via_portablefix_cmd():
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert "Start-Process -FilePath 'C:\\App\\PortableFix.cmd'" in script
 
 
 from portablefix.updater import UpdateCheckRunner, UpdateDownloadRunner
@@ -349,7 +360,7 @@ def test_update_check_runner_emits_none_when_no_update(qtbot):
 
 
 def test_update_check_runner_emits_update_info(qtbot):
-    info = UpdateInfo(version="1.1.0", download_url="https://x", sha256_url=None, notes="")
+    info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
     with patch("portablefix.updater.check_for_update", return_value=info):
         runner = UpdateCheckRunner("1.0.0")
         with qtbot.waitSignal(runner.check_finished, timeout=2000) as blocker:
@@ -358,8 +369,8 @@ def test_update_check_runner_emits_update_info(qtbot):
 
 
 def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
-    info = UpdateInfo(version="1.1.0", download_url="https://x", sha256_url=None, notes="")
-    fake_path = tmp_path / "PortableFix.new.exe"
+    info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
+    fake_path = tmp_path / "PortableFix-update.zip"
     fake_path.write_bytes(b"x")
     with patch("portablefix.updater.download_update", return_value=fake_path):
         runner = UpdateDownloadRunner(info, tmp_path)
@@ -369,7 +380,7 @@ def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
 
 
 def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
-    info = UpdateInfo(version="1.1.0", download_url="https://x", sha256_url=None, notes="")
+    info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
     with patch("portablefix.updater.download_update", side_effect=UpdateVerificationError("bad hash")):
         runner = UpdateDownloadRunner(info, tmp_path)
         with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
