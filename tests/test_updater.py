@@ -303,6 +303,31 @@ def test_build_swap_script_preserves_settings_json_across_the_swap():
     assert "settings.json.bak" in script
 
 
+def test_build_swap_script_retries_deleting_the_zip():
+    # Expand-Archive can hold the zip handle open a moment after returning;
+    # a single Remove-Item can silently no-op on that transient lock.
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert script.count("Remove-Item -Path 'C:\\Temp\\PortableFix-update.zip'") == 1
+    assert "for ($i = 0; $i -lt 30; $i++)" in script
+
+
+def test_build_swap_script_relaunches_before_cleaning_up_temp_files():
+    # A freshly-downloaded zip can sit under AV scanning for many seconds;
+    # the relaunch must never wait on that cleanup finishing first.
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\PortableFix.cmd'")
+    zip_cleanup_pos = script.index("Remove-Item -Path 'C:\\Temp\\PortableFix-update.zip'")
+    assert relaunch_pos < zip_cleanup_pos
+
+
 def test_build_swap_script_expands_the_downloaded_zip():
     script = build_swap_script(
         current_pid=1,

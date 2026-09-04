@@ -145,10 +145,17 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"    if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
         f"    if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
         "}\n"
-        f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
-        f"Remove-Item -Path {zip_p} -Force -EA SilentlyContinue\n"
-        f"Remove-Item -Path {settings_bak} -Force -EA SilentlyContinue\n"
+        # Relaunch first, then clean up temp files - a freshly-downloaded
+        # zip can sit under active AV scanning for many seconds, and that
+        # must never delay the user seeing their updated app come back.
         f"Start-Process -FilePath {cmd_path}\n"
+        f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
+        "for ($i = 0; $i -lt 30; $i++) {\n"
+        f"    if (-not (Test-Path {zip_p})) {{ break }}\n"
+        f"    Remove-Item -Path {zip_p} -Force -EA SilentlyContinue\n"
+        "    Start-Sleep -Milliseconds 1000\n"
+        "}\n"
+        f"Remove-Item -Path {settings_bak} -Force -EA SilentlyContinue\n"
     )
 
 
