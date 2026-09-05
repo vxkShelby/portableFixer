@@ -76,3 +76,12 @@ def test_m17_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.label_en
         assert action.description_sk
         assert action.description_en
+
+
+def test_m17_clear_policy_keys_refuses_on_domain_joined_or_mdm_enrolled_machine():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    command = by_id["browser_clear_policy_keys"].command
+    assert "dsregcmd" in command
+    assert "PartOfDomain" in command
+    assert "exit 1" in command
