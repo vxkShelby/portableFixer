@@ -5,10 +5,10 @@ actions:
     label_sk: "Docasne subory pouzivatela"
     label_en: "User temp files"
     risk: SAFE
-    command: "Remove-Item \"$env:TEMP\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
-    preview_command: "$f = Get-ChildItem \"$env:TEMP\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:TEMP\""
-    description_sk: "Vycisti $env:TEMP."
-    description_en: "Clears $env:TEMP."
+    command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$'; Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $_.Name -notmatch $excludePattern } | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    preview_command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$'; $f = Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $_.Name -notmatch $excludePattern } | Get-ChildItem -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:TEMP\""
+    description_sk: "Vycisti $env:TEMP (okrem bezbeziacej appky - vlastny _MEI* extrakcny priecinok, PortableFix fallback data a prebiehajuci update - tie sa nikdy nemazu)."
+    description_en: "Clears $env:TEMP (excludes the running app's own _MEI* extraction folder, PortableFix fallback data, and an in-progress update - those are never deleted)."
 
   - id: system_temp
     label_sk: "Systemove docasne subory"

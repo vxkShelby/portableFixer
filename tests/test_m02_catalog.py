@@ -28,6 +28,22 @@ def test_m02_catalog_no_wmic():
     module = load_module(CATALOG_PATH)
     for action in module.actions:
         assert "wmic" not in action.command.lower()
+
+
+def test_m02_user_temp_never_deletes_the_running_apps_own_files():
+    # user_temp wildcard-deletes everything under %TEMP% - it must exclude
+    # the running PyInstaller onefile app's own _MEI* extraction folder, its
+    # %TEMP%\PortableFix fallback state (Data/Logs/Reports/Backups), and an
+    # in-progress auto-update's staging folder/script, or a SAFE-labeled
+    # "clean temp files" action can corrupt or delete the app running it.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "user_temp")
+    for command in (action.command, action.preview_command):
+        assert "-notmatch $excludePattern" in command
+        assert "_MEI" in command
+        assert "PortableFix" in command
+        assert "PortableFixUpdate_" in command
+        assert "portablefix_update_" in command
         assert "wmic" not in (action.preview_command or "").lower()
 
 
