@@ -61,6 +61,11 @@ def _iter_output_segments(fd: int):
             if not candidates:
                 break
             idx = min(candidates)
+            if idx == idx_r and idx == len(buf) - 1:
+                # Trailing \r with nothing after it yet - it may be the first
+                # half of a \r\n split across two read() chunks. Wait for
+                # more data instead of guessing wrong and losing the line.
+                break
             segment = buf[:idx]
             is_real_line = buf[idx : idx + 1] == b"\n" or buf[idx : idx + 2] == b"\r\n"
             skip = 2 if buf[idx : idx + 2] == b"\r\n" else 1

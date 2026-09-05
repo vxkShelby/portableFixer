@@ -1,6 +1,6 @@
 import json
 
-from portablefix.audit_log import append_entry, make_entry
+from portablefix.audit_log import append_entry, audit_log_path, make_entry
 from portablefix.models import ActionDef, ModuleDef, RiskLevel
 from portablefix.report import build_report_data, generate_report
 
@@ -109,3 +109,17 @@ def test_html_report_has_collapsible_escaped_output_and_failure_marker(tmp_path)
     assert "<b>raw & output</b>" not in content
     assert 'class="card fail"' in content
     assert "FAILED" in content
+
+
+def test_build_report_data_skips_corrupted_audit_line(tmp_path):
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_bad")
+    append_entry(tmp_path, "run_bad", entry)
+    path = audit_log_path(tmp_path, "run_bad")
+    with path.open("a", encoding="utf-8") as f:
+        f.write('{"truncated": tr\n')
+
+    data = build_report_data(tmp_path, "run_bad", modules, "en", {}, {})
+
+    assert len(data["actions"]) == 1
+    assert data["actions"][0]["action_id"] == "user_temp"

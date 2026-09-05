@@ -14,6 +14,10 @@ from .integrity import compute_sha256
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
 _TRUSTED_DOWNLOAD_HOSTS = {"github.com", "objects.githubusercontent.com"}
+# urlretrieve has no timeout at all - a stalled connection hangs the download
+# thread forever. This bounds each individual socket read/connect instead.
+DOWNLOAD_TIMEOUT_SEC = 30
+_DOWNLOAD_CHUNK_SIZE = 65536
 
 
 def _is_trusted_download_url(url: str) -> bool:
@@ -37,7 +41,11 @@ def parse_version(v: str) -> tuple[int, ...]:
     v = v.lstrip("vV")
     parts = []
     for p in v.split("."):
-        digits = "".join(ch for ch in p if ch.isdigit())
+        digits = ""
+        for ch in p:
+            if not ch.isdigit():
+                break
+            digits += ch
         parts.append(int(digits) if digits else 0)
     return tuple(parts)
 
@@ -86,7 +94,12 @@ def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     zip_path = dest_dir / "PortableFix-update.zip"
     try:
-        urllib.request.urlretrieve(info.package_url, zip_path)
+        with urllib.request.urlopen(info.package_url, timeout=DOWNLOAD_TIMEOUT_SEC) as resp, zip_path.open("wb") as f:
+            while True:
+                chunk = resp.read(_DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                f.write(chunk)
     except Exception:
         zip_path.unlink(missing_ok=True)
         raise
@@ -160,7 +173,7 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
         f"Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
         f"if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
-        f"if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue)) {{\n"
+        f"if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue) -and (Test-Path {vendor_dir}) -and (Get-ChildItem -Path {vendor_dir} -EA SilentlyContinue)) {{\n"
         f"    Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"

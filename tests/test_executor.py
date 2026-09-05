@@ -121,6 +121,42 @@ def test_action_runner_splits_progress_on_bare_carriage_return(qtbot):
     assert runner.captured_output == ["30%"]
 
 
+def test_action_runner_keeps_real_line_when_crlf_splits_across_chunks(qtbot):
+    class FakeStdout:
+        def fileno(self):
+            return 7
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    # "Progress: 50%\r\nDone\n" arriving split so the \r and \n land in
+    # separate os.read() chunks - the \r must not be misread as a bare
+    # progress redraw just because its \n hadn't arrived yet.
+    reads = [b"Progress: 50%\r", b"\nDone\n", b""]
+
+    def fake_read(fd, size):
+        return reads.pop(0)
+
+    plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
+    runner = ActionRunner(plan)
+    lines = []
+    runner.output_line.connect(lines.append)
+    with patch("portablefix.executor.subprocess.Popen", return_value=FakeProcess()):
+        with patch("portablefix.executor.os.read", side_effect=fake_read):
+            with qtbot.waitSignal(runner.finished_with_code, timeout=2000) as blocker:
+                runner.start()
+    assert blocker.args == [0]
+    assert lines == ["Progress: 50%", "Done"]
+    assert runner.captured_output == ["Progress: 50%", "Done"]
+
+
 def test_action_runner_cancel_kills_process_and_reports_cancelled_code(qtbot):
     plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
     runner = ActionRunner(plan)

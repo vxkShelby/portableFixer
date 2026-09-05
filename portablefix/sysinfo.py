@@ -166,6 +166,7 @@ def get_ram_usage_gb() -> tuple[float, float]:
 _hw_computer = None
 _hw_init_attempted = False
 _hw_init_error: str | None = None
+_hw_init_assets_dir: Path | None = None
 
 
 def _vendor_dir(assets_dir: Path) -> Path:
@@ -176,10 +177,11 @@ def init_hardware_monitor(assets_dir: Path):
     """Lazily loads LibreHardwareMonitorLib via pythonnet. Returns the opened
     Computer object, or None if unavailable - every caller must treat every
     sensor as optional and degrade to 'N/A' rather than crash."""
-    global _hw_computer, _hw_init_attempted, _hw_init_error
-    if _hw_init_attempted:
+    global _hw_computer, _hw_init_attempted, _hw_init_error, _hw_init_assets_dir
+    if _hw_init_attempted and _hw_init_assets_dir == assets_dir:
         return _hw_computer
     _hw_init_attempted = True
+    _hw_init_assets_dir = assets_dir
     try:
         vendor = _vendor_dir(assets_dir)
         if not (vendor / "LibreHardwareMonitorLib.dll").exists():

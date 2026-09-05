@@ -55,6 +55,10 @@ def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
     for path in sorted(modules_dir.glob("*/actions.yaml")):
         try:
             module = load_module(path)
+            ids_in_module = [a.id for a in module.actions]
+            same_file_dupes = {i for i in ids_in_module if ids_in_module.count(i) > 1}
+            if same_file_dupes:
+                raise ModuleLoadError(f"duplicate action id(s) {sorted(same_file_dupes)} within {path}")
             collisions = [a.id for a in module.actions if a.id in seen_action_ids]
             if collisions:
                 first_path = seen_action_ids[collisions[0]]

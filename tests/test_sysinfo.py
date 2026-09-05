@@ -49,6 +49,29 @@ def test_read_hardware_sensors_degrades_gracefully_without_vendored_dll(tmp_path
     assert error is not None
 
 
+def test_init_hardware_monitor_retries_with_a_different_assets_dir(tmp_path):
+    sysinfo._hw_init_attempted = False
+    sysinfo._hw_computer = None
+    sysinfo._hw_init_error = None
+    sysinfo._hw_init_assets_dir = None
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    try:
+        sysinfo.init_hardware_monitor(tmp_path)
+        first_error = sysinfo.hardware_monitor_error()
+        sysinfo.init_hardware_monitor(other_dir)
+        second_error = sysinfo.hardware_monitor_error()
+    finally:
+        sysinfo._hw_init_attempted = False
+        sysinfo._hw_computer = None
+        sysinfo._hw_init_error = None
+        sysinfo._hw_init_assets_dir = None
+    # Both attempts genuinely ran (no vendored DLL in either dir) rather than
+    # the second silently reusing the first attempt's cached failure.
+    assert "not bundled" in first_error
+    assert "not bundled" in second_error
+
+
 def test_ping_once_parses_time_from_ping_output():
     fake = MagicMock()
     fake.stdout = (

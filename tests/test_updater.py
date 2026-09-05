@@ -37,6 +37,14 @@ def test_is_newer_false_when_equal():
     assert is_newer("1.0.0", "1.0.0") is False
 
 
+def test_parse_version_takes_leading_digits_only_on_hyphenated_prerelease_tag():
+    assert parse_version("1.2.3-rc10") == (1, 2, 3)
+
+
+def test_is_newer_treats_prerelease_tag_as_not_newer_than_next_release():
+    assert is_newer("1.2.3-rc10", "1.2.4") is False
+
+
 def _release_json(tag="v1.1.0", with_sha=True, zip_name="PortableFix-Portable.zip"):
     assets = [{
         "name": zip_name,
@@ -53,6 +61,16 @@ def _release_json(tag="v1.1.0", with_sha=True, zip_name="PortableFix-Portable.zi
 def _mock_response(body: bytes):
     mock_resp = MagicMock()
     mock_resp.read.return_value = body
+    mock_resp.__enter__.return_value = mock_resp
+    return mock_resp
+
+
+def _mock_download_response(body: bytes):
+    # download_update reads in a chunk loop (`while chunk := resp.read(n)`),
+    # unlike the single-shot .read() the sha256/API responses use above -
+    # this yields the body once, then b"" to end the loop.
+    mock_resp = MagicMock()
+    mock_resp.read.side_effect = [body, b""]
     mock_resp.__enter__.return_value = mock_resp
     return mock_resp
 
@@ -120,6 +138,35 @@ def test_check_for_update_drops_sha256_url_when_untrusted_host_but_keeps_zip():
     assert info.sha256_url is None
 
 
+def test_download_update_passes_a_timeout_to_the_package_download(tmp_path):
+    # urlretrieve (the previous implementation) had NO timeout at all - a
+    # stalled connection hung the download thread forever. Every urlopen
+    # call here must be bounded.
+    from portablefix.updater import DOWNLOAD_TIMEOUT_SEC
+
+    content = b"fake-zip-content"
+    expected_hash = hashlib.sha256(content).hexdigest()
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+    calls = []
+
+    def fake_urlopen(url, timeout=None):
+        calls.append((url, timeout))
+        if url == info.package_url:
+            return _mock_download_response(content)
+        return _mock_response(expected_hash.encode("utf-8"))
+
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        download_update(info, tmp_path / "dest")
+
+    assert (info.package_url, DOWNLOAD_TIMEOUT_SEC) in calls
+    assert all(timeout is not None for _, timeout in calls)
+
+
 def test_download_update_succeeds_when_hash_matches(tmp_path):
     content = b"fake-zip-content"
     expected_hash = hashlib.sha256(content).hexdigest()
@@ -130,12 +177,13 @@ def test_download_update_succeeds_when_hash_matches(tmp_path):
         notes="",
     )
 
-    def fake_urlretrieve(url, path):
-        Path(path).write_bytes(content)
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(content)
+        return _mock_response(expected_hash.encode("utf-8"))
 
-    with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-        with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(expected_hash.encode("utf-8"))):
-            result_path = download_update(info, tmp_path / "dest")
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        result_path = download_update(info, tmp_path / "dest")
 
     assert result_path.read_bytes() == content
     assert result_path.name == "PortableFix-update.zip"
@@ -150,19 +198,20 @@ def test_download_update_raises_and_cleans_up_on_hash_mismatch(tmp_path):
     )
     wrong_hash = "0" * 64
 
-    def fake_urlretrieve(url, path):
-        Path(path).write_bytes(b"fake-zip-content")
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(b"fake-zip-content")
+        return _mock_response(wrong_hash.encode("utf-8"))
 
     dest = tmp_path / "dest"
-    with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-        with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(wrong_hash.encode("utf-8"))):
-            with pytest.raises(UpdateVerificationError):
-                download_update(info, dest)
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(UpdateVerificationError):
+            download_update(info, dest)
 
     assert not (dest / "PortableFix-update.zip").exists()
 
 
-def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path):
+def test_download_update_cleans_up_partial_file_on_read_failure(tmp_path):
     info = UpdateInfo(
         version="1.1.0",
         package_url="https://example.com/PortableFix-Portable.zip",
@@ -171,11 +220,11 @@ def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path)
     )
     dest = tmp_path / "dest"
 
-    def fake_urlretrieve(url, path):
-        Path(path).write_bytes(b"partial")
-        raise ConnectionError("connection dropped")
+    mock_resp = MagicMock()
+    mock_resp.read.side_effect = [b"partial", ConnectionError("connection dropped")]
+    mock_resp.__enter__.return_value = mock_resp
 
-    with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+    with patch("portablefix.updater.urllib.request.urlopen", return_value=mock_resp):
         with pytest.raises(ConnectionError):
             download_update(info, dest)
 
@@ -189,12 +238,8 @@ def test_download_update_raises_when_no_sha256_asset(tmp_path):
         version="1.1.0", package_url="https://example.com/PortableFix-Portable.zip", sha256_url=None, notes="",
     )
 
-    def fake_urlretrieve(url, path):
-        Path(path).write_bytes(b"anything")
-
-    with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-        with pytest.raises(UpdateVerificationError):
-            download_update(info, tmp_path / "dest")
+    with pytest.raises(UpdateVerificationError):
+        download_update(info, tmp_path / "dest")
 
     assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
 
@@ -330,7 +375,8 @@ def test_build_swap_script_restores_backup_folders_if_swap_fails_to_verify():
     )
     assert (
         "if ((Test-Path 'C:\\App\\App\\PortableFix.exe') -and (Test-Path 'C:\\App\\Modules') "
-        "-and (Get-ChildItem -Path 'C:\\App\\Modules' -EA SilentlyContinue)) {"
+        "-and (Get-ChildItem -Path 'C:\\App\\Modules' -EA SilentlyContinue) "
+        "-and (Test-Path 'C:\\App\\Vendor') -and (Get-ChildItem -Path 'C:\\App\\Vendor' -EA SilentlyContinue)) {"
     ) in script
     assert "Move-Item -Path 'C:\\App\\App.old' -Destination 'C:\\App\\App' -Force" in script
     assert "Move-Item -Path 'C:\\App\\Modules.old' -Destination 'C:\\App\\Modules' -Force" in script

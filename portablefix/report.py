@@ -26,8 +26,12 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
     entries = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
     return entries
 
 

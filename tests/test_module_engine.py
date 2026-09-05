@@ -106,6 +106,23 @@ def test_load_all_modules_rejects_module_with_duplicate_action_id(tmp_path):
     assert "a1" in errors[0]
 
 
+def test_load_all_modules_rejects_same_file_duplicate_action_id(tmp_path):
+    (tmp_path / "m01_diagnostics").mkdir()
+    (tmp_path / "m01_diagnostics" / "actions.yaml").write_text(
+        "module_id: m01_diagnostics\n"
+        "actions:\n"
+        "  - id: a1\n    label_sk: x\n    label_en: x\n    risk: SAFE\n    command: x\n"
+        "  - id: a1\n    label_sk: y\n    label_en: y\n    risk: SAFE\n    command: y\n",
+        encoding="utf-8",
+    )
+
+    modules, errors = load_all_modules(tmp_path)
+
+    assert modules == []
+    assert len(errors) == 1
+    assert "a1" in errors[0]
+
+
 def test_m01_actions_yaml_loads():
     module = load_module(Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml")
     assert module.module_id == "m01_diagnostics"
