@@ -539,6 +539,39 @@ def test_destructive_action_accepted_runs_normally(qtbot, tmp_path, monkeypatch)
     assert "destructive-ran" in window.console.toPlainText()
 
 
+def test_cancel_during_restore_point_creation_prevents_the_pending_action_from_running(qtbot, tmp_path, monkeypatch):
+    # Checkpoint-Computer is a real, slow-ish PowerShell call running on a
+    # background QThread - clicking Cancel while it's still in flight must
+    # not let the DESTRUCTIVE action it was guarding run anyway once it
+    # finishes.
+    import time
+
+    from portablefix import restore_point
+
+    def slow_create_restore_point(description):
+        time.sleep(0.4)
+        return True, ""
+
+    monkeypatch.setattr(restore_point, "create_restore_point", slow_create_restore_point)
+
+    base_dir = _make_destructive_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_cancel_rp"
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+
+    window.run_selected_actions()
+    qtbot.waitUntil(lambda: window._pending_restore_point_runner is not None, timeout=5000)
+    assert window._pending_restore_point_runner.isRunning() is True
+    window._on_cancel_clicked()
+
+    qtbot.wait(700)
+    assert window._runner is None
+    assert "destructive-ran" not in window.console.toPlainText()
+
+
 def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_safe(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
@@ -1059,6 +1092,23 @@ def test_search_box_shows_all_rows_when_cleared(qtbot, tmp_path):
     assert window._action_rows["temp_cleanup"].isHidden() is False
 
 
+def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_risk")
+    qtbot.addWidget(window)
+
+    window.search_box.setText("moderate")
+
+    assert window._risk_view_rows["moderate_one"].isHidden() is False
+    assert window._risk_view_rows["safe_one"].isHidden() is True
+    assert window._risk_view_rows["destructive_one"].isHidden() is True
+
+    window.search_box.setText("")
+
+    assert window._risk_view_rows["moderate_one"].isHidden() is False
+    assert window._risk_view_rows["safe_one"].isHidden() is False
+
+
 def test_apply_preset_selects_only_ids_present_in_catalog(qtbot, tmp_path):
     from portablefix.gui.main_window import PRESETS
 
@@ -1290,6 +1340,44 @@ def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
     assert window._update_download_runner is None
 
 
+def test_quit_app_routes_through_close_event_and_cancels_a_live_batch_runner(qtbot, tmp_path):
+    # _quit_app() used to call QApplication.quit() directly, which bypasses
+    # closeEvent entirely - confirming an update restart mid-batch would
+    # then leave a live ActionRunner uncancelled and unwaited-on.
+    from portablefix.executor import ActionRunner, build_execution_plan
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_quit_app_cleanup")
+    qtbot.addWidget(window)
+
+    plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
+    runner = ActionRunner(plan, parent=window)
+    window._runner = runner
+    runner.start()
+    qtbot.waitUntil(lambda: runner._process is not None, timeout=5000)
+
+    window._quit_app()
+
+    assert runner._cancel_requested is True
+    qtbot.waitUntil(lambda: runner.isFinished(), timeout=5000)
+
+
+def test_run_selected_actions_does_nothing_while_update_is_in_progress(qtbot, tmp_path):
+    # Symmetric to the update-button guard above: starting a batch while an
+    # update download is in flight let _quit_app() (confirmed restart) fire
+    # mid-batch with no chance for closeEvent's cleanup to run.
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_batch_update_guard")
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+    window._update_in_progress = True
+
+    window.run_selected_actions()
+
+    assert window._batch_active is False
+    assert window._runner is None
+
+
 def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path, monkeypatch):
     from portablefix.updater import UpdateInfo
     from portablefix.gui import main_window as mw_module
@@ -1512,3 +1600,34 @@ def test_close_event_cancels_and_waits_on_an_in_flight_batch_runner(qtbot, tmp_p
 
     assert runner._cancel_requested is True
     qtbot.waitUntil(lambda: runner.isFinished(), timeout=5000)
+
+
+def test_close_event_waits_longer_for_uncancellable_network_runners(qtbot, tmp_path):
+    from portablefix import updater as updater_module
+
+    class _FakeRunner:
+        def __init__(self):
+            self.wait_calls = []
+
+        def wait(self, timeout_ms):
+            self.wait_calls.append(timeout_ms)
+            return True
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_slow")
+    qtbot.addWidget(window)
+
+    # The speed test and update download each make one blocking,
+    # uninterruptible network call - closeEvent can't cancel them, so it
+    # must wait long enough to cover their real worst-case duration instead
+    # of the 5s used for everything else, or it risks destroying a live
+    # QThread.
+    speed_test_runner = _FakeRunner()
+    update_download_runner = _FakeRunner()
+    window._speed_test_runner = speed_test_runner
+    window._update_download_runner = update_download_runner
+
+    window.close()
+
+    assert speed_test_runner.wait_calls == [25_000]
+    assert update_download_runner.wait_calls == [updater_module.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000]

@@ -138,20 +138,35 @@ class MainWindow(QMainWindow):
         # is a use-after-free risk - wait for each to actually finish first.
         # A one-shot runner may already be auto-deleted by Qt once its thread
         # ended; that RuntimeError just means there's nothing left to wait for.
-        for runner in (
+        # Neither the speed test nor the update download can be cancelled
+        # mid-flight (both make one blocking, uninterruptible network call),
+        # so their wait must cover their real worst-case duration - a short
+        # timeout here would let closeEvent proceed while that QThread is
+        # still alive, which is the exact crash this loop exists to prevent.
+        quick_runners = (
             self._static_info_runner,
             self._hw_sensor_runner,
             self._ping_runner,
-            self._speed_test_runner,
             self._runner,
             self._update_check_runner,
-            self._update_download_runner,
             self._pending_restore_point_runner,
-        ):
+        )
+        slow_runners = (
+            (self._speed_test_runner, 25_000),
+            (self._update_download_runner, updater.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000),
+        )
+        for runner in quick_runners:
             if runner is None:
                 continue
             try:
                 runner.wait(5000)
+            except RuntimeError:
+                pass
+        for runner, timeout_ms in slow_runners:
+            if runner is None:
+                continue
+            try:
+                runner.wait(timeout_ms)
             except RuntimeError:
                 pass
         super().closeEvent(event)
@@ -371,6 +386,7 @@ class MainWindow(QMainWindow):
         self._nav_row_order: list[QWidget] = [self._category_groups[c] for c in self._categories_order]
 
         self._risk_view_checkboxes: dict[str, QCheckBox] = {}
+        self._risk_view_rows: dict[str, QWidget] = {}
         for risk in self._risk_tabs_order:
             card = QFrame()
             card.setObjectName("actionCard")
@@ -411,6 +427,7 @@ class MainWindow(QMainWindow):
                     lambda state, m=mirror_checkbox: m.setChecked(state != 0)
                 )
                 self._risk_view_checkboxes[action_id] = mirror_checkbox
+                self._risk_view_rows[action_id] = row_widget
                 row.addWidget(mirror_checkbox)
                 category_label = QLabel(self._t(category_i18n_keys[module.category]))
                 category_label.setObjectName("actionStatus")
@@ -489,6 +506,13 @@ class MainWindow(QMainWindow):
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
         for action_id, row_widget in self._action_rows.items():
+            if not needle:
+                row_widget.setHidden(False)
+                continue
+            _, action = self._find_action(action_id)
+            haystack = action.label(self.settings.language).lower()
+            row_widget.setHidden(needle not in haystack)
+        for action_id, row_widget in self._risk_view_rows.items():
             if not needle:
                 row_widget.setHidden(False)
                 continue
@@ -636,7 +660,10 @@ class MainWindow(QMainWindow):
         self.update_banner.setVisible(False)
 
     def _quit_app(self) -> None:
-        QApplication.instance().quit()
+        # Route through close() (not QApplication.quit() directly) so
+        # closeEvent's cancel/wait cleanup for every in-flight runner always
+        # runs first - quit() bypasses closeEvent entirely.
+        self.close()
 
     def _on_update_button_clicked(self) -> None:
         if self._batch_active:
@@ -746,6 +773,8 @@ class MainWindow(QMainWindow):
             checkbox.setAccessibleName(self._action_accessible_name(action, text))
 
     def run_selected_actions(self) -> None:
+        if self._update_in_progress:
+            return
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
@@ -844,6 +873,12 @@ class MainWindow(QMainWindow):
         except OSError:
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
+        if self._cancel_requested:
+            # Cancel was clicked while the restore point was still being
+            # created - the action it was guarding must never run, and
+            # _on_cancel_clicked already emptied the queue.
+            self._run_next()
+            return
         if not success:
             proceed = QMessageBox.warning(
                 self,
