@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -128,6 +129,11 @@ class MainWindow(QMainWindow):
             self._hw_sensor_timer.stop()
         if self._ping_timer is not None:
             self._ping_timer.stop()
+        # Ask anything still actively running to stop before we wait on it -
+        # otherwise the wait below just burns its whole timeout doing nothing.
+        self._queue = []
+        if self._runner is not None:
+            self._runner.cancel()
         # Destroying self while a runner's native thread is still mid-flight
         # is a use-after-free risk - wait for each to actually finish first.
         # A one-shot runner may already be auto-deleted by Qt once its thread
@@ -137,6 +143,10 @@ class MainWindow(QMainWindow):
             self._hw_sensor_runner,
             self._ping_runner,
             self._speed_test_runner,
+            self._runner,
+            self._update_check_runner,
+            self._update_download_runner,
+            self._pending_restore_point_runner,
         ):
             if runner is None:
                 continue
@@ -415,6 +425,12 @@ class MainWindow(QMainWindow):
         scroll.setWidget(scroll_content)
         center_layout.addWidget(scroll, 1)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("batchProgress")
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        center_layout.addWidget(self.progress_bar)
+
         run_row = QHBoxLayout()
         self.run_button = QPushButton(self._t("run_selected"))
         self.run_button.setObjectName("runButton")
@@ -440,6 +456,21 @@ class MainWindow(QMainWindow):
         if self._categories_order:
             self.category_list.setCurrentRow(0)
         self._update_status_bar()
+        if self._batch_active:
+            # A language toggle mid-batch rebuilds run_button/cancel_button/
+            # progress_bar/console fresh - restore the in-flight state onto
+            # the new widgets, otherwise a freshly-enabled run_button lets a
+            # second click stomp on the still-running batch's queue/runner,
+            # and the still-running action's output silently stops reaching
+            # the (now orphaned) old console.
+            self.run_button.setEnabled(False)
+            self.cancel_button.setEnabled(True)
+            self.language_button.setEnabled(False)
+            self.progress_bar.setMaximum(self._queue_total)
+            self.progress_bar.setValue(self._queue_total - len(self._queue))
+            self.progress_bar.setVisible(True)
+            if self._runner is not None:
+                self._runner.output_line.connect(self.console.appendPlainText)
         if self._pending_update_info is not None:
             if self._update_in_progress:
                 self.update_banner_label.setText(self._t("update_downloading"))
@@ -618,7 +649,7 @@ class MainWindow(QMainWindow):
         )
         if confirmed != QMessageBox.Yes:
             return
-        dest_dir = Path(tempfile.gettempdir()) / "PortableFixUpdate"
+        dest_dir = Path(tempfile.mkdtemp(prefix="PortableFixUpdate_"))
         self.update_banner_label.setText(self._t("update_downloading"))
         self.update_button.setEnabled(False)
         self.update_dismiss_button.setEnabled(False)
@@ -728,6 +759,10 @@ class MainWindow(QMainWindow):
             self._snapshot_before = self._take_snapshot()
             self.run_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
+            self.language_button.setEnabled(False)
+            self.progress_bar.setMaximum(self._queue_total)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setVisible(True)
         self._run_next()
 
     def _run_next(self) -> None:
@@ -737,6 +772,9 @@ class MainWindow(QMainWindow):
                 if not self._closed:
                     self.run_button.setEnabled(True)
                     self.cancel_button.setEnabled(False)
+                    self.language_button.setEnabled(True)
+                    self.progress_bar.setValue(self._queue_total)
+                    self.progress_bar.setVisible(False)
                     self._update_status_bar()
                 snapshot_after = self._take_snapshot()
                 try:
@@ -764,6 +802,7 @@ class MainWindow(QMainWindow):
                     pos=position, total=self._queue_total, label=action.label(self.settings.language)
                 )
             )
+            self.progress_bar.setValue(position - 1)
 
         needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
             ModuleCategory.REPAIR,
@@ -898,7 +937,7 @@ class MainWindow(QMainWindow):
 
         self._sysinfo_labels: dict[str, QLabel] = {}
 
-        def add_row(key: str, label_key: str) -> None:
+        def add_row(key: str, label_key: str, tooltip: str | None = None) -> None:
             row = QHBoxLayout()
             row.setSpacing(6)
             caption = QLabel(self._t(label_key))
@@ -907,6 +946,9 @@ class MainWindow(QMainWindow):
             row.addStretch(1)
             value = QLabel(self._t("sysinfo_loading"))
             value.setWordWrap(True)
+            if tooltip:
+                caption.setToolTip(tooltip)
+                value.setToolTip(tooltip)
             self._sysinfo_labels[key] = value
             row.addWidget(value)
             layout.addLayout(row)
@@ -914,7 +956,7 @@ class MainWindow(QMainWindow):
         add_row("os", "sysinfo_os")
         add_row("cpu_name", "sysinfo_cpu")
         add_row("cpu_load", "sysinfo_cpu_load")
-        add_row("cpu_clock", "sysinfo_cpu_clock")
+        add_row("cpu_clock", "sysinfo_cpu_clock", tooltip=self._t("sysinfo_cpu_clock_hint"))
         add_row("ram", "sysinfo_ram")
         add_row("ram_speed", "sysinfo_ram_speed")
         add_row("gpu_name", "sysinfo_gpu")

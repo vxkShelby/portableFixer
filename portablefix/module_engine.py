@@ -51,9 +51,19 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
 def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
     modules: list[ModuleDef] = []
     errors: list[str] = []
+    seen_action_ids: dict[str, Path] = {}
     for path in sorted(modules_dir.glob("*/actions.yaml")):
         try:
-            modules.append(load_module(path))
+            module = load_module(path)
+            collisions = [a.id for a in module.actions if a.id in seen_action_ids]
+            if collisions:
+                first_path = seen_action_ids[collisions[0]]
+                raise ModuleLoadError(
+                    f"duplicate action id(s) {collisions} already used by {first_path}"
+                )
+            for action in module.actions:
+                seen_action_ids[action.id] = path
+            modules.append(module)
         except (ModuleLoadError, yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             errors.append(f"{path}: {exc}")
     return modules, errors

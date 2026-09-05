@@ -54,13 +54,13 @@ _STRINGS = {
         "sysinfo_os": "OS",
         "sysinfo_cpu": "CPU",
         "sysinfo_cpu_load": "Vyuzitie",
-        "sysinfo_cpu_clock": "Hodinky",
+        "sysinfo_cpu_clock": "Frekvencia",
         "sysinfo_ram": "RAM",
         "sysinfo_ram_speed": "Rychlost",
         "sysinfo_gpu": "GPU",
         "sysinfo_gpu_load": "Vyuzitie",
         "sysinfo_gpu_temp": "Teplota",
-        "sysinfo_gpu_clock": "Hodinky",
+        "sysinfo_gpu_clock": "Frekvencia",
         "sysinfo_gpu_vram": "VRAM",
         "sysinfo_network": "Siet",
         "sysinfo_ip": "IP",
@@ -69,6 +69,7 @@ _STRINGS = {
         "sysinfo_speed_testing": "Testujem...",
         "sysinfo_na": "N/A",
         "sysinfo_loading": "Nacitavam...",
+        "sysinfo_cpu_clock_hint": "Vyzaduje ovladac PawnIO (Oprava > Instalacia PawnIO senzoroveho driveru)",
     },
     "en": {
         "app_title": "PortableFix",
@@ -140,6 +141,7 @@ _STRINGS = {
         "sysinfo_speed_testing": "Testing...",
         "sysinfo_na": "N/A",
         "sysinfo_loading": "Loading...",
+        "sysinfo_cpu_clock_hint": "Requires the PawnIO driver (Repair > Install PawnIO sensor driver)",
     },
 }
 

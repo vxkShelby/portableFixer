@@ -6,12 +6,19 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from PySide6.QtCore import QThread, Signal
 
 from .integrity import compute_sha256
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
+_TRUSTED_DOWNLOAD_HOSTS = {"github.com", "objects.githubusercontent.com"}
+
+
+def _is_trusted_download_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and parsed.hostname in _TRUSTED_DOWNLOAD_HOSTS
 
 
 class UpdateVerificationError(Exception):
@@ -52,15 +59,18 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
             return None
         assets = data.get("assets", [])
         zip_asset = next((a for a in assets if a.get("name", "").lower() == "portablefix-portable.zip"), None)
-        if not zip_asset:
+        if not zip_asset or not _is_trusted_download_url(zip_asset["browser_download_url"]):
             return None
         sha_asset = next(
             (a for a in assets if a.get("name", "").lower() == "portablefix-portable.zip.sha256"), None
         )
+        sha256_url = sha_asset["browser_download_url"] if sha_asset else None
+        if sha256_url and not _is_trusted_download_url(sha256_url):
+            sha256_url = None
         return UpdateInfo(
             version=tag.lstrip("vV"),
             package_url=zip_asset["browser_download_url"],
-            sha256_url=sha_asset["browser_download_url"] if sha_asset else None,
+            sha256_url=sha256_url,
             notes=data.get("body", ""),
         )
     except Exception:
@@ -68,6 +78,11 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
 
 
 def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
+    # Fail closed: a release published without a .sha256 asset (CI mishap, or
+    # a tampered release that simply omits it) must not be trusted silently -
+    # an unverified zip is about to be swapped in as the running application.
+    if not info.sha256_url:
+        raise UpdateVerificationError("Release has no SHA256 manifest - refusing to install.")
     dest_dir.mkdir(parents=True, exist_ok=True)
     zip_path = dest_dir / "PortableFix-update.zip"
     try:
@@ -75,13 +90,12 @@ def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
     except Exception:
         zip_path.unlink(missing_ok=True)
         raise
-    if info.sha256_url:
-        with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
-            expected = resp.read().decode("utf-8").strip().split()[0].lower()
-        actual = compute_sha256(zip_path)
-        if actual.lower() != expected:
-            zip_path.unlink(missing_ok=True)
-            raise UpdateVerificationError("Downloaded package does not match expected SHA256.")
+    with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
+        expected = resp.read().decode("utf-8").strip().split()[0].lower()
+    actual = compute_sha256(zip_path)
+    if actual.lower() != expected:
+        zip_path.unlink(missing_ok=True)
+        raise UpdateVerificationError("Downloaded package does not match expected SHA256.")
     return zip_path
 
 
@@ -131,6 +145,11 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         "Start-Sleep -Milliseconds 300\n"
         f"if (Test-Path {settings_json}) {{ Copy-Item -Path {settings_json} -Destination {settings_bak} -Force }}\n"
         f"Expand-Archive -Path {zip_p} -DestinationPath {stage} -Force\n"
+        # Zip-slip guard: refuse to proceed if any extracted entry landed
+        # outside the staging directory (a crafted zip with '../' entries).
+        f"$stageFull = (Resolve-Path {stage}).Path\n"
+        f"$escaped = Get-ChildItem -Path {stage} -Recurse -File | Where-Object {{ -not $_.FullName.StartsWith($stageFull) }}\n"
+        f"if ($escaped) {{ Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue; exit 1 }}\n"
         f"$stagedRoot = (Get-ChildItem -Path {stage} -Directory | Select-Object -First 1).FullName\n"
         f"if (Test-Path {app_dir}) {{ Move-Item -Path {app_dir} -Destination {app_bak} -Force }}\n"
         f"if (Test-Path {modules_dir}) {{ Move-Item -Path {modules_dir} -Destination {modules_bak} -Force }}\n"
@@ -141,7 +160,7 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
         f"Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
         f"if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
-        f"if (Test-Path {app_exe}) {{\n"
+        f"if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue)) {{\n"
         f"    Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
@@ -172,8 +191,10 @@ def apply_update(zip_path: Path, install_dir: Path) -> bool:
         return False
     current_pid = os.getpid()
     script_text = build_swap_script(current_pid, install_dir, zip_path)
-    script_path = Path(tempfile.gettempdir()) / f"portablefix_update_{current_pid}.ps1"
+    fd, script_path_str = tempfile.mkstemp(prefix=f"portablefix_update_{current_pid}_", suffix=".ps1")
+    script_path = Path(script_path_str)
     try:
+        os.close(fd)
         script_path.write_text(script_text, encoding="utf-8-sig")
         subprocess.Popen(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],

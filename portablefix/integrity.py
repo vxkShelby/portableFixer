@@ -1,6 +1,8 @@
 import hashlib
 from pathlib import Path
 
+from PySide6.QtCore import QThread, Signal
+
 
 def compute_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -40,3 +42,19 @@ def check_integrity(base_dir: Path) -> list[str]:
         if not file_path.exists() or compute_sha256(file_path) != expected_hash:
             mismatches.append(rel_path)
     return mismatches
+
+
+class IntegrityCheckRunner(QThread):
+    """Hashing every file under App/ and Modules/ can take a visible moment
+    on slow USB media - runs off the GUI thread so the window can appear
+    immediately instead of stalling on a blank screen at every launch."""
+
+    check_finished = Signal(list)
+
+    def __init__(self, base_dir: Path, parent=None):
+        super().__init__(parent)
+        self._base_dir = base_dir
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        self.check_finished.emit(check_integrity(self._base_dir))

@@ -9,7 +9,7 @@ from portablefix import i18n
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
-from portablefix.integrity import check_integrity
+from portablefix.integrity import IntegrityCheckRunner
 from portablefix.paths import get_base_dir, resolve_writable_base_dir
 from portablefix.settings import load_settings, save_settings
 
@@ -33,14 +33,6 @@ def main() -> int:
                 i18n.translate("fallback_banner", settings.language),
             )
 
-        mismatches = check_integrity(raw_base_dir)
-        if mismatches:
-            QMessageBox.warning(
-                None,
-                i18n.translate("app_title", settings.language),
-                i18n.translate("integrity_warning", settings.language) + "\n" + "\n".join(mismatches),
-            )
-
         # Timestamp prefix makes Reports/Logs/Backups filenames sort
         # chronologically - a bare random id doesn't, which breaks the
         # "same technician, same machine, multiple visits" use case.
@@ -53,6 +45,22 @@ def main() -> int:
             run_id=run_id,
         )
         window.show()
+
+        def _on_integrity_checked(mismatches: list) -> None:
+            if mismatches:
+                QMessageBox.warning(
+                    window,
+                    i18n.translate("app_title", settings.language),
+                    i18n.translate("integrity_warning", settings.language) + "\n" + "\n".join(mismatches),
+                )
+
+        # Hashing every shipped file can take a visible moment on slow USB
+        # media - runs after the window is already on screen instead of
+        # stalling launch on a blank screen.
+        integrity_runner = IntegrityCheckRunner(raw_base_dir, parent=window)
+        integrity_runner.check_finished.connect(_on_integrity_checked)
+        integrity_runner.start()
+
         exit_code = app.exec()
         try:
             save_settings(base_dir, settings)

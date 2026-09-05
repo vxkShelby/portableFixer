@@ -478,8 +478,12 @@ def test_run_button_disabled_during_batch_and_reenabled_after(qtbot, tmp_path):
 
     window.run_selected_actions()
     assert window.run_button.isEnabled() is False
+    assert window.progress_bar.isVisibleTo(window) is True
+    assert window.progress_bar.maximum() == 1
 
     qtbot.waitUntil(lambda: window.run_button.isEnabled() is True, timeout=10000)
+    assert window.progress_bar.isVisibleTo(window) is False
+    assert window.progress_bar.value() == 1
 
 
 def test_running_a_batch_generates_a_report(qtbot, tmp_path):
@@ -1248,6 +1252,30 @@ def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
     assert window.update_dismiss_button.isEnabled() is False
 
 
+def test_language_toggle_mid_batch_restores_run_state_on_the_rebuilt_widgets(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_toggle_mid_batch")
+    qtbot.addWidget(window)
+
+    # Simulate a batch in progress (mirrors what run_selected_actions sets)
+    # without actually starting one, then rebuild via a language toggle.
+    window._batch_active = True
+    window._queue = ["hello"]
+    window._queue_total = 2
+    window.run_button.setEnabled(False)
+    window.cancel_button.setEnabled(True)
+    window.language_button.setEnabled(False)
+
+    window._on_toggle_language()
+
+    assert window.run_button.isEnabled() is False
+    assert window.cancel_button.isEnabled() is True
+    assert window.language_button.isEnabled() is False
+    assert window.progress_bar.isVisibleTo(window) is True
+    assert window.progress_bar.maximum() == 2
+    assert window.progress_bar.value() == 1
+
+
 def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
     from portablefix.updater import UpdateInfo
 
@@ -1462,3 +1490,25 @@ def test_ping_ready_updates_ping_label(qtbot, tmp_path):
 
     window._on_ping_ready(None)
     assert window._sysinfo_labels["ping"].text() == "N/A"
+
+
+def test_close_event_cancels_and_waits_on_an_in_flight_batch_runner(qtbot, tmp_path):
+    from portablefix.executor import ActionRunner, build_execution_plan
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_cancel")
+    qtbot.addWidget(window)
+
+    plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
+    runner = ActionRunner(plan, parent=window)
+    window._runner = runner
+    runner.start()
+    qtbot.waitUntil(lambda: runner._process is not None, timeout=5000)
+
+    # closeEvent must cancel the still-running action and actually wait for
+    # its process to die - not just fire-and-forget, which would either hang
+    # the whole app shutdown or destroy the runner mid-flight (a crash risk).
+    window.close()
+
+    assert runner._cancel_requested is True
+    qtbot.waitUntil(lambda: runner.isFinished(), timeout=5000)

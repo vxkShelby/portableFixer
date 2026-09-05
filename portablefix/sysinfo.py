@@ -322,6 +322,7 @@ class HardwareSensorRunner(QThread):
     def __init__(self, assets_dir: Path, parent=None):
         super().__init__(parent)
         self._assets_dir = assets_dir
+        self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
         self.sensors_ready.emit(read_hardware_sensors(self._assets_dir))

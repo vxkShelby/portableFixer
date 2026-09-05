@@ -107,12 +107,18 @@ def test_action_runner_splits_progress_on_bare_carriage_return(qtbot):
 
     plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
     runner = ActionRunner(plan)
+    lines = []
+    runner.output_line.connect(lines.append)
     with patch("portablefix.executor.subprocess.Popen", return_value=FakeProcess()):
         with patch("portablefix.executor.os.read", side_effect=fake_read):
             with qtbot.waitSignal(runner.finished_with_code, timeout=2000) as blocker:
                 runner.start()
     assert blocker.args == [0]
-    assert runner.captured_output == ["10%", "20%", "30%"]
+    # Every tick is shown live (so DISM/chkdsk-style progress stays visible)...
+    assert lines == ["10%", "20%", "30%"]
+    # ...but only the newline-terminated line is a real, persistent line of
+    # output - the bare-\r progress redraws don't bloat the audit log/report.
+    assert runner.captured_output == ["30%"]
 
 
 def test_action_runner_cancel_kills_process_and_reports_cancelled_code(qtbot):

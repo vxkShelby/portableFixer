@@ -38,11 +38,15 @@ def _clean_line(raw_line: str) -> str:
 
 
 def _iter_output_segments(fd: int):
-    """Read raw bytes and split on \\r or \\n.
+    """Read raw bytes and split on \\r or \\n, yielding (text, is_real_line).
 
     Tools like DISM/chkdsk redraw progress with a bare \\r instead of a
     newline; splitting on \\n only left that progress invisible for the
-    whole run, which looked identical to a genuine hang.
+    whole run, which looked identical to a genuine hang. A bare-\\r segment
+    is a transient progress redraw (is_real_line=False) - callers still see
+    it live but shouldn't treat it as a persistent line of output, or a
+    single DISM run turns into hundreds of near-duplicate audit-log/report
+    entries.
     """
     buf = b""
     while True:
@@ -58,11 +62,12 @@ def _iter_output_segments(fd: int):
                 break
             idx = min(candidates)
             segment = buf[:idx]
+            is_real_line = buf[idx : idx + 1] == b"\n" or buf[idx : idx + 2] == b"\r\n"
             skip = 2 if buf[idx : idx + 2] == b"\r\n" else 1
             buf = buf[idx + skip :]
-            yield segment.decode("utf-8", errors="replace")
+            yield segment.decode("utf-8", errors="replace"), is_real_line
     if buf:
-        yield buf.decode("utf-8", errors="replace")
+        yield buf.decode("utf-8", errors="replace"), True
 
 
 class ActionRunner(QThread):
@@ -125,18 +130,20 @@ class ActionRunner(QThread):
             self.finished_with_code.emit(self.POWERSHELL_NOT_FOUND_EXIT_CODE)
             return
         self._process = process
+        self._last_activity = time.monotonic()
         watchdog = threading.Thread(target=self._watchdog, daemon=True)
         watchdog.start()
         try:
             assert process.stdout is not None
             fd = process.stdout.fileno()
-            for segment in _iter_output_segments(fd):
+            for segment, is_real_line in _iter_output_segments(fd):
                 self._last_activity = time.monotonic()
                 line = _clean_line(segment)
                 if not line:
                     continue
-                self.captured_output.append(line)
                 self.output_line.emit(line)
+                if is_real_line:
+                    self.captured_output.append(line)
             process.wait()
             self._watchdog_stop.set()
             if self._timed_out:

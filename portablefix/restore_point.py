@@ -5,11 +5,17 @@ from PySide6.QtCore import QThread, Signal
 from .executor import POWERSHELL_PREFIX
 
 
+def _ps_quote(value: str) -> str:
+    # Single-quoted PowerShell strings never interpolate $variables or
+    # subexpressions, unlike the double-quoted string this previously used -
+    # see the identical helper (and its rationale) in updater.py.
+    return "'" + value.replace("'", "''") + "'"
+
+
 def create_restore_point(description: str) -> tuple[bool, str]:
-    safe_description = description.replace('"', "'")
     command = (
         'Enable-ComputerRestore -Drive "C:\\"; '
-        f'Checkpoint-Computer -Description "{safe_description}" -RestorePointType MODIFY_SETTINGS'
+        f'Checkpoint-Computer -Description {_ps_quote(description)} -RestorePointType MODIFY_SETTINGS'
     )
     try:
         result = subprocess.run(POWERSHELL_PREFIX + [command], capture_output=True, timeout=120)

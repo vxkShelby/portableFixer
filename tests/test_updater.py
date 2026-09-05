@@ -38,11 +38,14 @@ def test_is_newer_false_when_equal():
 
 
 def _release_json(tag="v1.1.0", with_sha=True, zip_name="PortableFix-Portable.zip"):
-    assets = [{"name": zip_name, "browser_download_url": "https://example.com/PortableFix-Portable.zip"}]
+    assets = [{
+        "name": zip_name,
+        "browser_download_url": "https://github.com/vxkShelby/portableFixer/releases/download/v1.1.0/PortableFix-Portable.zip",
+    }]
     if with_sha:
         assets.append({
             "name": "PortableFix-Portable.zip.sha256",
-            "browser_download_url": "https://example.com/PortableFix-Portable.zip.sha256",
+            "browser_download_url": "https://github.com/vxkShelby/portableFixer/releases/download/v1.1.0/PortableFix-Portable.zip.sha256",
         })
     return json.dumps({"tag_name": tag, "assets": assets, "body": "release notes"}).encode("utf-8")
 
@@ -64,8 +67,8 @@ def test_check_for_update_returns_info_when_remote_newer():
         info = check_for_update("1.0.0")
     assert info == UpdateInfo(
         version="1.1.0",
-        package_url="https://example.com/PortableFix-Portable.zip",
-        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        package_url="https://github.com/vxkShelby/portableFixer/releases/download/v1.1.0/PortableFix-Portable.zip",
+        sha256_url="https://github.com/vxkShelby/portableFixer/releases/download/v1.1.0/PortableFix-Portable.zip.sha256",
         notes="release notes",
     )
 
@@ -84,6 +87,37 @@ def test_check_for_update_returns_none_when_no_zip_asset_present():
     body = _release_json(tag="v1.1.0", zip_name="SomethingElse.zip")
     with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(body)):
         assert check_for_update("1.0.0") is None
+
+
+def test_check_for_update_returns_none_when_zip_asset_url_is_untrusted_host():
+    body = json.dumps({
+        "tag_name": "v1.1.0",
+        "assets": [{"name": "PortableFix-Portable.zip", "browser_download_url": "https://evil.example.com/PortableFix-Portable.zip"}],
+        "body": "release notes",
+    }).encode("utf-8")
+    with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(body)):
+        assert check_for_update("1.0.0") is None
+
+
+def test_check_for_update_drops_sha256_url_when_untrusted_host_but_keeps_zip():
+    body = json.dumps({
+        "tag_name": "v1.1.0",
+        "assets": [
+            {
+                "name": "PortableFix-Portable.zip",
+                "browser_download_url": "https://github.com/vxkShelby/portableFixer/releases/download/v1.1.0/PortableFix-Portable.zip",
+            },
+            {
+                "name": "PortableFix-Portable.zip.sha256",
+                "browser_download_url": "https://evil.example.com/PortableFix-Portable.zip.sha256",
+            },
+        ],
+        "body": "release notes",
+    }).encode("utf-8")
+    with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(body)):
+        info = check_for_update("1.0.0")
+    assert info is not None
+    assert info.sha256_url is None
 
 
 def test_download_update_succeeds_when_hash_matches(tmp_path):
@@ -130,7 +164,10 @@ def test_download_update_raises_and_cleans_up_on_hash_mismatch(tmp_path):
 
 def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path):
     info = UpdateInfo(
-        version="1.1.0", package_url="https://example.com/PortableFix-Portable.zip", sha256_url=None, notes="",
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
     )
     dest = tmp_path / "dest"
 
@@ -145,7 +182,9 @@ def test_download_update_cleans_up_partial_file_on_urlretrieve_failure(tmp_path)
     assert not (dest / "PortableFix-update.zip").exists()
 
 
-def test_download_update_skips_verification_when_no_sha256_asset(tmp_path):
+def test_download_update_raises_when_no_sha256_asset(tmp_path):
+    # Fail closed: a release with no SHA256 manifest must never be trusted
+    # silently - refusing beats installing an unverified zip.
     info = UpdateInfo(
         version="1.1.0", package_url="https://example.com/PortableFix-Portable.zip", sha256_url=None, notes="",
     )
@@ -154,9 +193,10 @@ def test_download_update_skips_verification_when_no_sha256_asset(tmp_path):
         Path(path).write_bytes(b"anything")
 
     with patch("portablefix.updater.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-        result_path = download_update(info, tmp_path / "dest")
+        with pytest.raises(UpdateVerificationError):
+            download_update(info, tmp_path / "dest")
 
-    assert result_path.read_bytes() == b"anything"
+    assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
 
 
 def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
@@ -288,7 +328,10 @@ def test_build_swap_script_restores_backup_folders_if_swap_fails_to_verify():
         install_dir=Path(r"C:\App"),
         zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert "if (Test-Path 'C:\\App\\App\\PortableFix.exe') {" in script
+    assert (
+        "if ((Test-Path 'C:\\App\\App\\PortableFix.exe') -and (Test-Path 'C:\\App\\Modules') "
+        "-and (Get-ChildItem -Path 'C:\\App\\Modules' -EA SilentlyContinue)) {"
+    ) in script
     assert "Move-Item -Path 'C:\\App\\App.old' -Destination 'C:\\App\\App' -Force" in script
     assert "Move-Item -Path 'C:\\App\\Modules.old' -Destination 'C:\\App\\Modules' -Force" in script
     assert "Move-Item -Path 'C:\\App\\Vendor.old' -Destination 'C:\\App\\Vendor' -Force" in script
@@ -302,6 +345,16 @@ def test_build_swap_script_swaps_vendor_folder_with_backup(tmp_path):
     )
     assert "if (Test-Path 'C:\\App\\Vendor') { Move-Item -Path 'C:\\App\\Vendor' -Destination 'C:\\App\\Vendor.old' -Force }" in script
     assert 'if (Test-Path "$stagedRoot\\Vendor") { Move-Item -Path "$stagedRoot\\Vendor" -Destination \'C:\\App\\Vendor\' -Force }' in script
+
+
+def test_build_swap_script_rejects_zip_entries_that_escape_the_stage_directory():
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert "-not $_.FullName.StartsWith($stageFull)" in script
+    assert "exit 1" in script
 
 
 def test_build_swap_script_preserves_settings_json_across_the_swap():

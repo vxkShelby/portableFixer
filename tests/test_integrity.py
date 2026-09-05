@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-from portablefix.integrity import check_integrity, compute_sha256, parse_sha256sums
+from portablefix.integrity import IntegrityCheckRunner, check_integrity, compute_sha256, parse_sha256sums
 
 
 def test_compute_sha256_matches_hashlib(tmp_path):
@@ -58,3 +58,13 @@ def test_check_integrity_unreadable_manifest_degrades_to_empty_instead_of_raisin
     (tmp_path / "Data").mkdir()
     (tmp_path / "Data" / "SHA256SUMS").write_bytes(b"\xff\xfe\x00\xff not valid utf-8")
     assert check_integrity(tmp_path) == []
+
+
+def test_integrity_check_runner_emits_mismatches_off_the_gui_thread(qtbot, tmp_path):
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_text("aaaa  App/missing.txt\n", encoding="utf-8")
+
+    runner = IntegrityCheckRunner(tmp_path)
+    with qtbot.waitSignal(runner.check_finished, timeout=5000) as blocker:
+        runner.start()
+    assert blocker.args == [["App/missing.txt"]]
