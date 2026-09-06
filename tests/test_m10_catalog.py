@@ -24,3 +24,19 @@ def test_m10_catalog_covers_problem_devices_and_third_party_drivers():
     module = load_module(CATALOG_PATH)
     ids = {a.id for a in module.actions}
     assert ids == {"drv_problem_devices", "drv_third_party_list", "drv_export_backup"}
+
+
+def test_m10_catalog_driver_backup_locks_down_its_output_folder():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "drv_export_backup")
+    assert "icacls" in action.command
+    assert "S-1-5-32-544" in action.command
+    assert "S-1-5-18" in action.command
+    assert "$env:USERDOMAIN" in action.command
+
+
+def test_m10_catalog_driver_backup_exit_code_reflects_actual_result():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "drv_export_backup")
+    assert "exit 1" in action.command
+    assert "exit 0" in action.command

@@ -1,5 +1,7 @@
 import hashlib
-from pathlib import Path
+import os
+
+import pytest
 
 from portablefix.integrity import IntegrityCheckRunner, check_integrity, compute_sha256, parse_sha256sums
 
@@ -65,6 +67,26 @@ def test_check_integrity_detects_file_added_outside_the_manifest(tmp_path):
     (tmp_path / "Data" / "SHA256SUMS").write_text(f"{digest}  App/known.txt\n", encoding="utf-8")
 
     assert check_integrity(tmp_path) == ["Modules/planted.dll"]
+
+
+def test_check_integrity_skips_symlinks_instead_of_following_them(tmp_path):
+    (tmp_path / "App").mkdir()
+    real_dir = tmp_path / "real_target"
+    real_dir.mkdir()
+    (real_dir / "secret.txt").write_bytes(b"outside base_dir")
+    link_path = tmp_path / "App" / "linked"
+    try:
+        os.symlink(real_dir, link_path, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or admin on this machine")
+
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_text("", encoding="utf-8")
+
+    # A symlinked directory under App/ must not be walked into (it isn't in
+    # the manifest either way, but if rglob followed it and it looped back
+    # to an ancestor, this call would hang instead of returning).
+    assert check_integrity(tmp_path) == []
 
 
 def test_check_integrity_unreadable_manifest_degrades_to_empty_instead_of_raising(tmp_path):

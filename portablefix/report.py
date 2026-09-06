@@ -44,22 +44,39 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
     return entries
 
 
+_MAX_PREVIOUS_REPORT_BYTES = 10 * 1024 * 1024
+
+
 def _find_previous_report(reports_dir: Path, hostname: str) -> dict | None:
     if not reports_dir.exists():
         return None
-    candidates = sorted(reports_dir.glob(f"{hostname}_*.json"), key=lambda p: p.stat().st_mtime)
+    # Sorted by filename, not mtime: run_id starts with a UTC timestamp
+    # (see main.py's run_id format), so filenames already sort chronologically
+    # - and stay correct after a USB copy/backup/restore resets mtimes.
+    candidates = sorted(reports_dir.glob(f"{hostname}_*.json"), key=lambda p: p.name)
     if not candidates:
         return None
+    latest = candidates[-1]
     try:
-        return json.loads(candidates[-1].read_text(encoding="utf-8"))
+        if latest.stat().st_size > _MAX_PREVIOUS_REPORT_BYTES:
+            return None
+        parsed = json.loads(latest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    # A prior report that's syntactically valid JSON but not the shape this
+    # tool itself ever writes (corrupted, hand-edited, or from a future/past
+    # schema) must degrade to "no previous report" rather than let a
+    # malformed field crash the comparison a few lines later.
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _build_comparison(previous: dict | None, actions: list[dict], snapshot_after: dict) -> dict | None:
     if previous is None:
         return None
-    prev_free = previous.get("snapshot_after", {}).get("free_gb")
+    prev_snapshot = previous.get("snapshot_after")
+    if not isinstance(prev_snapshot, dict):
+        prev_snapshot = {}
+    prev_free = prev_snapshot.get("free_gb")
     curr_free = snapshot_after.get("free_gb")
     free_gb_delta = None
     if isinstance(prev_free, (int, float)) and isinstance(curr_free, (int, float)):
@@ -202,8 +219,8 @@ def _render_html(data: dict) -> str:
     comparison_section = ""
     comparison = data.get("previous_comparison")
     if comparison:
-        delta = comparison["free_gb_delta"]
-        delta_txt = f"{'+' if delta >= 0 else ''}{delta} GB" if delta is not None else "?"
+        cmp_delta = comparison["free_gb_delta"]
+        delta_txt = f"{'+' if cmp_delta >= 0 else ''}{cmp_delta} GB" if cmp_delta is not None else "?"
         comparison_section = (
             "<h2>Since last visit</h2>"
             f"<div class=\"meta\">Previous run {html.escape(str(comparison['previous_run_id']))} "

@@ -310,7 +310,10 @@ def read_hardware_sensors(assets_dir: Path) -> dict:
     except Exception:
         pass
     if gpu_candidates:
-        result.update(max(gpu_candidates, key=lambda g: g["gpu_load_percent"] or -1))
+        result.update(max(
+            gpu_candidates,
+            key=lambda g: g["gpu_load_percent"] if g["gpu_load_percent"] is not None else -1,
+        ))
     return result
 
 

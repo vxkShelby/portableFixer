@@ -66,3 +66,9 @@ def test_m15_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.label_en
         assert action.description_sk
         assert action.description_en
+
+
+def test_m15_catalog_clear_safe_mode_flag_does_not_overwrite_backup_on_second_run():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "boot_clear_safe_mode_flag")
+    assert "if (-not (Test-Path $bk))" in action.command

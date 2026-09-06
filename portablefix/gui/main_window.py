@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
         self._sysinfo_timer = None
         self._hw_sensor_timer = None
         self._ping_timer = None
+        self._vpn_timer = None
         self._build_ui()
         self._start_update_check()
         self._start_sysinfo_polling()
@@ -131,6 +132,8 @@ class MainWindow(QMainWindow):
             self._hw_sensor_timer.stop()
         if self._ping_timer is not None:
             self._ping_timer.stop()
+        if self._vpn_timer is not None:
+            self._vpn_timer.stop()
         # Ask anything still actively running to stop before we wait on it -
         # otherwise the wait below just burns its whole timeout doing nothing.
         self._queue = []
@@ -1068,9 +1071,16 @@ class MainWindow(QMainWindow):
 
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._on_ping_tick)
-        self._ping_timer.timeout.connect(self._on_vpn_tick)
         self._ping_timer.start(4000)
         self._on_ping_tick()
+
+        # VPN state doesn't change on a 4s cadence like ping does, and unlike
+        # ping.exe, checking it spawns a full powershell.exe - a much longer
+        # interval avoids needless CPU/battery cost from a process spawn
+        # every few seconds for the whole session.
+        self._vpn_timer = QTimer(self)
+        self._vpn_timer.timeout.connect(self._on_vpn_tick)
+        self._vpn_timer.start(60_000)
         self._on_vpn_tick()
 
     def _on_static_info_ready(self, info: sysinfo.StaticInfo) -> None:

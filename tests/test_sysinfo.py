@@ -117,6 +117,25 @@ def test_read_hardware_sensors_does_not_mix_fields_from_different_gpus(tmp_path)
     assert result["gpu_clock_mhz"] == 1800.0
 
 
+def test_read_hardware_sensors_prefers_a_genuinely_idle_gpu_over_one_with_no_load_sensor(tmp_path):
+    # `g["gpu_load_percent"] or -1` would treat a real 0% load identically to
+    # a missing sensor (None) - both fall back to -1, so whichever GPU came
+    # first in enumeration order would arbitrarily win the tie instead of
+    # the one that actually reported a real (if idle) load value.
+    idle_with_sensor = _FakeHardware("GpuNvidia", "NVIDIA RTX 4070", [
+        _FakeSensor("Load", "GPU Core", 0.0),
+        _FakeSensor("Temperature", "GPU Core", 35.0),
+    ])
+    no_load_sensor = _FakeHardware("GpuIntel", "Intel Iris Xe", [
+        _FakeSensor("Temperature", "GPU Core", 40.0),
+    ])
+    fake_computer = _FakeComputer([no_load_sensor, idle_with_sensor])
+    with patch("portablefix.sysinfo.init_hardware_monitor", return_value=fake_computer):
+        result = sysinfo.read_hardware_sensors(tmp_path)
+    assert result["gpu_name"] == "NVIDIA RTX 4070"
+    assert result["gpu_load_percent"] == 0.0
+
+
 def test_init_hardware_monitor_retries_with_a_different_assets_dir(tmp_path):
     sysinfo._hw_init_attempted = False
     sysinfo._hw_computer = None

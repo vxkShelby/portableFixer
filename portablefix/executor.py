@@ -110,7 +110,11 @@ class ActionRunner(QThread):
         start = time.monotonic()
         while not self._watchdog_stop.wait(WATCHDOG_POLL_SEC):
             now = time.monotonic()
-            timeout = self._inactivity_timeout_override or INACTIVITY_TIMEOUT_SEC
+            timeout = (
+                self._inactivity_timeout_override
+                if self._inactivity_timeout_override is not None
+                else INACTIVITY_TIMEOUT_SEC
+            )
             if now - self._last_activity > timeout or now - start > HARD_CAP_SEC:
                 self._timed_out = True
                 if self._process is not None:

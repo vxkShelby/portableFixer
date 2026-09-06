@@ -39,23 +39,29 @@ def check_integrity(base_dir: Path) -> list[str]:
         # best-effort tamper check itself - it must not take down the app.
         return []
     mismatches = []
-    for rel_path, expected_hash in expected.items():
-        file_path = base_dir / rel_path
-        if not file_path.exists() or compute_sha256(file_path) != expected_hash:
-            mismatches.append(rel_path)
-    # A file that showed up under App/ or Modules/ without ever being in the
-    # manifest (extra DLL, planted module) is exactly what this tamper check
-    # exists to catch - not just files that changed after being listed.
+    seen: set[str] = set()
+    # A single walk covers both directions: a file present on disk that
+    # changed or was never in the manifest (extra DLL, planted module), and
+    # (via `seen`, checked below) a manifest entry that vanished entirely.
+    # Symlinks are skipped - not just because a symlinked file could point
+    # outside base_dir, but because a symlinked *directory* can cycle back to
+    # an ancestor and make rglob recurse forever, letting a planted symlink
+    # hang this check instead of getting caught by it.
     for target in TARGET_DIRS:
         target_dir = base_dir / target
         if not target_dir.exists():
             continue
         for file_path in target_dir.rglob("*"):
-            if not file_path.is_file():
+            if file_path.is_symlink() or not file_path.is_file():
                 continue
             rel_path = file_path.relative_to(base_dir).as_posix()
-            if rel_path not in expected:
+            seen.add(rel_path)
+            expected_hash = expected.get(rel_path)
+            if expected_hash is None or compute_sha256(file_path) != expected_hash:
                 mismatches.append(rel_path)
+    for rel_path in expected:
+        if rel_path not in seen:
+            mismatches.append(rel_path)
     return mismatches
 
 

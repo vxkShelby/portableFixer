@@ -205,3 +205,17 @@ def test_action_runner_uses_per_action_inactivity_timeout_override(qtbot):
         runner.start()
         qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
     assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE
+
+
+def test_action_runner_honors_an_explicit_zero_second_inactivity_override(qtbot):
+    # `0 or DEFAULT` would silently discard an explicit 0-second override -
+    # this asserts it actually times out fast instead of falling back to the
+    # real 300s default (which would make this test hang for 5 minutes).
+    plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
+    runner = ActionRunner(plan, inactivity_timeout_sec=0)
+    results = []
+    runner.finished_with_code.connect(results.append)
+    with patch.object(executor_module, "WATCHDOG_POLL_SEC", 0.1):
+        runner.start()
+        qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
+    assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE

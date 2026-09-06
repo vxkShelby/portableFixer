@@ -163,6 +163,55 @@ def test_build_report_data_comparison_is_none_without_a_previous_report(tmp_path
     assert data["previous_comparison"] is None
 
 
+def test_build_report_data_degrades_gracefully_on_a_malformed_previous_report(tmp_path):
+    import socket
+
+    hostname = socket.gethostname()
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    # Syntactically valid JSON, but not the dict shape this tool ever writes
+    # (e.g. a hand-edited or corrupted file) - must not crash report generation.
+    (reports_dir / f"{hostname}_bad.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_bad_prev")
+    append_entry(tmp_path, "run_bad_prev", entry)
+
+    data = build_report_data(
+        tmp_path, "run_bad_prev", modules, "en",
+        snapshot_before={"free_gb": 11.0}, snapshot_after={"free_gb": 12.0},
+    )
+    assert data["previous_comparison"] is None
+
+
+def test_build_report_data_tolerates_a_previous_report_with_wrong_shaped_snapshot(tmp_path):
+    import socket
+
+    hostname = socket.gethostname()
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    # snapshot_after here is a list instead of the expected dict.
+    old_report = {
+        "run_id": "old_run3",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "snapshot_after": ["not", "a", "dict"],
+        "actions": [{"action_id": "a"}],
+    }
+    (reports_dir / f"{hostname}_old_run3.json").write_text(json.dumps(old_report), encoding="utf-8")
+
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_bad_shape")
+    append_entry(tmp_path, "run_bad_shape", entry)
+
+    data = build_report_data(
+        tmp_path, "run_bad_shape", modules, "en",
+        snapshot_before={"free_gb": 11.0}, snapshot_after={"free_gb": 12.0},
+    )
+    comparison = data["previous_comparison"]
+    assert comparison["previous_run_id"] == "old_run3"
+    assert comparison["free_gb_delta"] is None
+
+
 def test_html_report_shows_since_last_visit_section_when_a_previous_report_exists(tmp_path):
     import socket
 
@@ -188,6 +237,9 @@ def test_html_report_shows_since_last_visit_section_when_a_previous_report_exist
     content = html_path.read_text(encoding="utf-8")
     assert "Since last visit" in content
     assert "old_run2" in content
+    # The top summary line must still show THIS run's own free-space delta
+    # (11.0 -> 12.0 GB), not get clobbered by the comparison section's delta.
+    assert "Free space: 11.0 GB &rarr; 12.0 GB (+1.0 GB)" in content
 
 
 def test_build_report_data_skips_valid_json_line_missing_required_fields(tmp_path):

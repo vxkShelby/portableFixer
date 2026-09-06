@@ -38,6 +38,28 @@ def test_m01_catalog_covers_core_system_info_actions():
     }.issubset(ids)
 
 
+def test_m01_catalog_diagnostic_exports_lock_down_their_output_folder():
+    # battery_health_report and eventlog_full_export write potentially
+    # sensitive data (event logs, battery telemetry) under a shared
+    # ProgramData folder - they must restrict it to the current user,
+    # SYSTEM, and Administrators so other local accounts can't read it.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("battery_health_report", "eventlog_full_export"):
+        command = by_id[action_id].command
+        assert "icacls" in command, action_id
+        assert "S-1-5-32-544" in command, action_id
+        assert "S-1-5-18" in command, action_id
+        assert "$env:USERDOMAIN" in command, action_id
+
+
+def test_m01_catalog_eventlog_export_exit_code_reflects_actual_result():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "eventlog_full_export")
+    assert "exit 1" in action.command
+    assert "exit 0" in action.command
+
+
 def test_m01_catalog_every_action_has_both_language_labels_and_descriptions():
     module = load_module(CATALOG_PATH)
     for action in module.actions:
