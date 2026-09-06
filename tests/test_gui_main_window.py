@@ -229,6 +229,69 @@ def test_batch_continues_past_disk_write_failure_instead_of_stalling(qtbot, tmp_
     assert window.console.toPlainText().count("Disk write failed") == 2
 
 
+def test_batch_stops_when_app_dir_disappears_mid_run(qtbot, tmp_path, monkeypatch):
+    # Regression test for the mid-batch integrity guard in _run_next: if the
+    # app's own install folder vanishes between two queued actions (the real
+    # incident this guard exists for - something external wiped it out from
+    # under the running process), the batch must stop immediately instead of
+    # dispatching the next action against a filesystem state nobody can
+    # reason about, and it must say so loudly rather than silently continue.
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_dir_gone")
+    qtbot.addWidget(window)
+    window._action_checkboxes["first_action"].setChecked(True)
+    window._action_checkboxes["second_action"].setChecked(True)
+
+    calls = {"n": 0}
+
+    def fake_intact():
+        calls["n"] += 1
+        return calls["n"] == 1  # intact for the first dispatch, gone before the second
+
+    monkeypatch.setattr(window, "_app_dir_intact", fake_intact)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a) or QMessageBox.Ok)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
+
+    assert "first-ran" in window.console.toPlainText()
+    assert "second-ran" not in window.console.toPlainText()
+    assert window._queue == []
+    assert len(warnings) == 1
+
+    log_path = audit_log_path(base_dir, "run_dir_gone")
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert any(e["module_id"] == "_system" and e["action_id"] == "integrity_guard" for e in entries)
+
+
+def test_single_action_run_also_stops_when_app_dir_missing_before_dispatch(qtbot, tmp_path, monkeypatch):
+    # The guard must not be batch-only: a run with a single selected action
+    # goes through the exact same _queue/_run_next path, and this must not
+    # false-positive for the normal case either (this test's fake_intact
+    # only ever returns False, proving the guard fires even for a 1-item
+    # queue rather than being skipped as "too small to be a real batch").
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_single_gone")
+    qtbot.addWidget(window)
+    window._action_checkboxes["first_action"].setChecked(True)
+
+    monkeypatch.setattr(window, "_app_dir_intact", lambda: False)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a) or QMessageBox.Ok)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
+
+    assert "first-ran" not in window.console.toPlainText()
+    assert window._queue == []
+    assert len(warnings) == 1
+
+
 def test_main_window_warns_but_still_opens_when_one_module_is_broken(qtbot, tmp_path, monkeypatch):
     base_dir = _make_base_dir(tmp_path)
     broken_dir = base_dir / "Modules" / "m02_cleanup"

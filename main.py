@@ -6,12 +6,39 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import i18n
+from portablefix.audit_log import append_entry, make_entry
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
 from portablefix.integrity import IntegrityCheckRunner
-from portablefix.paths import get_base_dir, resolve_writable_base_dir
+from portablefix.paths import (
+    get_base_dir,
+    resolve_temp_root,
+    resolve_windir_temp_root,
+    resolve_writable_base_dir,
+)
 from portablefix.settings import load_settings, save_settings
+
+
+def _write_startup_diagnostics(raw_base_dir, base_dir, used_fallback: bool, run_id: str, dry_run: bool) -> None:
+    """Forensic breadcrumb: if the app's own folder ever gets wiped out from
+    under it again, this is what it believed its paths were at the moment it
+    started - answered by manual timestamp forensics last time, which
+    shouldn't be necessary next time."""
+    diag_entry = make_entry(
+        "_system",
+        "startup_diagnostics",
+        "",
+        0,
+        f"base_dir={raw_base_dir} state_dir={base_dir} used_fallback={used_fallback} "
+        f"temp_root={resolve_temp_root()} windir_temp_root={resolve_windir_temp_root()}",
+        dry_run,
+        run_id,
+    )
+    try:
+        append_entry(base_dir, run_id, diag_entry)
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -37,6 +64,8 @@ def main() -> int:
         # chronologically - a bare random id doesn't, which breaks the
         # "same technician, same machine, multiple visits" use case.
         run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+        _write_startup_diagnostics(raw_base_dir, base_dir, used_fallback, run_id, settings.dry_run)
+
         window = MainWindow(
             assets_dir=raw_base_dir,
             state_dir=base_dir,

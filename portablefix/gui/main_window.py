@@ -953,6 +953,14 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(True)
         self._run_next()
 
+    def _app_dir_intact(self) -> bool:
+        # Cheap existence check, not a deep scan - Modules/ is the canary
+        # because it's the one directory every action's own catalog lives
+        # in, so its disappearance is as clear a sign as any that the app's
+        # install folder was wiped out from under the running process.
+        app_dir = paths.get_base_dir()
+        return app_dir.exists() and (app_dir / "Modules").exists()
+
     def _run_next(self) -> None:
         if not self._queue:
             if self._batch_active:
@@ -980,6 +988,34 @@ class MainWindow(QMainWindow):
                         self.console.appendPlainText(self._t("disk_write_failed"))
                 if html_path is not None and not self._closed:
                     self._show_batch_summary(html_path)
+            return
+        if not self._app_dir_intact():
+            # The app's own install folder (or its Modules/ subfolder) has
+            # vanished since this batch started - something external wiped
+            # it out from under the running process. Continuing would only
+            # dispatch further actions against a filesystem state nobody can
+            # reason about, and would keep masking exactly this kind of
+            # incident: append_entry() happily recreates a missing Logs/ dir
+            # before writing, so a silently-continuing batch leaves almost no
+            # trace of when/what actually went missing. Stop now instead.
+            self._queue = []
+            entry = make_entry(
+                "_system",
+                "integrity_guard",
+                "",
+                1,
+                "App base directory or Modules/ folder was missing before dispatching the next "
+                "queued action - batch stopped for safety.",
+                self.settings.dry_run,
+                self.run_id,
+            )
+            try:
+                append_entry(self.state_dir, self.run_id, entry)
+            except OSError:
+                pass
+            if not self._closed:
+                QMessageBox.warning(self, self._t("app_title"), self._t("batch_stopped_app_dir_missing"))
+            self._run_next()
             return
         action_id = self._queue.pop(0)
         module, action = self._find_action(action_id)
