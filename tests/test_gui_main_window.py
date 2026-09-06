@@ -1675,6 +1675,20 @@ def test_vpn_status_ready_updates_vpn_label(qtbot, tmp_path):
     assert window._sysinfo_labels["vpn"].text() == "N/A"
 
 
+def test_sysinfo_labels_render_as_plain_text_not_rich_text(qtbot, tmp_path):
+    # These labels show strings sourced from hardware/OS reports (GPU name,
+    # VPN adapter name, disk health summary, ...) that an unprivileged local
+    # process can name arbitrarily - they must never be interpreted as HTML.
+    from PySide6.QtCore import Qt
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_plaintext_labels")
+    qtbot.addWidget(window)
+
+    for key, label in window._sysinfo_labels.items():
+        assert label.textFormat() == Qt.TextFormat.PlainText, key
+
+
 def test_close_event_cancels_and_waits_on_an_in_flight_batch_runner(qtbot, tmp_path):
     from portablefix.executor import ActionRunner, build_execution_plan
 

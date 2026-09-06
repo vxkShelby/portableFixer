@@ -226,7 +226,7 @@ def _render_html(data: dict) -> str:
     comparison = data.get("previous_comparison")
     if comparison:
         cmp_delta = comparison["free_gb_delta"]
-        delta_txt = f"{'+' if cmp_delta >= 0 else ''}{cmp_delta} GB" if cmp_delta is not None else "?"
+        delta_txt = f"{'+' if cmp_delta > 0 else ''}{cmp_delta} GB" if cmp_delta is not None else "?"
         comparison_section = (
             "<h2>Since last visit</h2>"
             f"<div class=\"meta\">Previous run {html.escape(str(comparison['previous_run_id']))} "

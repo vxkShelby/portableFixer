@@ -44,11 +44,18 @@ def _iter_real_files(root: Path):
         except OSError:
             continue
         for entry in entries:
-            if entry.is_symlink() or entry.is_junction():
+            try:
+                if entry.is_symlink() or entry.is_junction():
+                    continue
+                is_dir = entry.is_dir()
+                is_file = entry.is_file()
+            except OSError:
+                # A stat failure (e.g. permission denied) on one entry must
+                # not abort this best-effort check for every other entry.
                 continue
-            if entry.is_dir():
+            if is_dir:
                 stack.append(entry)
-            elif entry.is_file():
+            elif is_file:
                 yield entry
 
 

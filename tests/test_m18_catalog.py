@@ -74,4 +74,8 @@ def test_m18_catalog_backup_folder_lockdown_grants_the_current_user_too():
     assert "S-1-5-32-544" in action.command
     assert "S-1-5-18" in action.command
     assert "$env:USERDOMAIN" in action.command
-    assert "if (-not (Test-Path $root))" in action.command
+    # Must be unconditional (icacls is idempotent) so an already-existing
+    # unhardened root from an older install gets fixed too, not just a
+    # freshly created one.
+    assert 'icacls $root /inheritance:r' in action.command
+    assert "Test-Path $root" not in action.command

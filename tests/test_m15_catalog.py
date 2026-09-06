@@ -81,3 +81,6 @@ def test_m15_catalog_clear_safe_mode_flag_locks_down_its_backup_folder():
     assert "S-1-5-32-544" in action.command
     assert "S-1-5-18" in action.command
     assert "$env:USERDOMAIN" in action.command
+    # Must be unconditional (icacls is idempotent) so an already-existing
+    # unhardened root from an older install gets fixed too.
+    assert "Test-Path $root" not in action.command
