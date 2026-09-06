@@ -59,10 +59,10 @@ actions:
     label_sk: "Cache nahladov"
     label_en: "Thumbnail cache"
     risk: SAFE
-    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe }; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (-not (Get-Process -Name explorer -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe; for ($i = 0; $i -lt 20; $i++) { if (Get-Process -Name explorer -EA SilentlyContinue) { break }; Start-Sleep -Milliseconds 200 } }; $restarted = [bool](Get-Process -Name explorer -EA SilentlyContinue); Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; Explorer restart: \" + $(if ($restarted) { \"OK\" } else { \"FAILED\" }))"
     preview_command: "$f = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c thumbnail cache file(s), $mb MB, and restart Explorer\""
-    description_sk: "Vymaze cache nahladov a restartuje Explorer."
-    description_en: "Clears the thumbnail cache and restarts Explorer."
+    description_sk: "Vymaze cache nahladov a restartuje Explorer (pocka, kym stary proces naozaj skonci, aby restart nespadol)."
+    description_en: "Clears the thumbnail cache and restarts Explorer (waits for the old process to fully exit first, so the restart doesn't crash)."
 
   - id: font_cache
     label_sk: "Cache pisiem"
