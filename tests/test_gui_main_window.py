@@ -1210,6 +1210,21 @@ def test_apply_preset_selects_only_ids_present_in_catalog(qtbot, tmp_path):
         del PRESETS["_test_preset"]
 
 
+def test_preset_button_stays_checked_and_is_mutually_exclusive(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_preset_checked")
+    qtbot.addWidget(window)
+
+    window._preset_buttons["quick_clean"].click()
+
+    assert window._preset_buttons["quick_clean"].isChecked() is True
+
+    window._preset_buttons["full_diagnostic"].click()
+
+    assert window._preset_buttons["quick_clean"].isChecked() is False
+    assert window._preset_buttons["full_diagnostic"].isChecked() is True
+
+
 def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_statusbar")

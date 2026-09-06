@@ -9,6 +9,7 @@ from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFrame,
@@ -307,15 +308,12 @@ class MainWindow(QMainWindow):
         preset_label = QLabel(self._t("presets_label"))
         preset_label.setObjectName("selectionScope")
         preset_row.addWidget(preset_label)
-        preset_row.addWidget(self._make_selection_button(
-            self._t("preset_quick_clean"), lambda: self._apply_preset("quick_clean")
-        ))
-        preset_row.addWidget(self._make_selection_button(
-            self._t("preset_full_diagnostic"), lambda: self._apply_preset("full_diagnostic")
-        ))
-        preset_row.addWidget(self._make_selection_button(
-            self._t("preset_privacy_debloat"), lambda: self._apply_preset("privacy_debloat")
-        ))
+        self._preset_buttons: dict[str, QPushButton] = {}
+        self._preset_button_group = QButtonGroup(self)
+        self._preset_button_group.setExclusive(True)
+        preset_row.addWidget(self._make_preset_button(self._t("preset_quick_clean"), "quick_clean"))
+        preset_row.addWidget(self._make_preset_button(self._t("preset_full_diagnostic"), "full_diagnostic"))
+        preset_row.addWidget(self._make_preset_button(self._t("preset_privacy_debloat"), "privacy_debloat"))
         preset_row.addStretch(1)
         self.search_box = QLineEdit()
         self.search_box.setObjectName("searchBox")
@@ -589,6 +587,13 @@ class MainWindow(QMainWindow):
         wanted = [aid for aid in PRESETS[preset_key] if aid in self._action_checkboxes]
         self._apply_selection(list(self._action_checkboxes), "none")
         self._apply_selection(wanted, "all")
+        # Exclusive QButtonGroup membership already unchecks the other two
+        # preset buttons on a real click; set this one explicitly too so the
+        # highlight is correct even when _apply_preset is called directly
+        # (e.g. from tests) for a key with no matching button.
+        button = self._preset_buttons.get(preset_key)
+        if button is not None:
+            button.setChecked(True)
 
     def _update_status_bar(self) -> None:
         if self._batch_active:
@@ -613,6 +618,17 @@ class MainWindow(QMainWindow):
         # clicked(bool) would overwrite a lambda's bound default argument,
         # so swallow the checked flag before invoking the handler.
         button.clicked.connect(lambda _checked=False: on_click())
+        return button
+
+    def _make_preset_button(self, text: str, preset_key: str) -> QPushButton:
+        # A distinct objectName/checkable state from selectionBtn on purpose -
+        # selectionBtn is shared by many one-shot action buttons elsewhere in
+        # this file, and those must stay plain (non-toggling) buttons.
+        button = self._make_selection_button(text, lambda: self._apply_preset(preset_key))
+        button.setObjectName("presetBtn")
+        button.setCheckable(True)
+        self._preset_button_group.addButton(button)
+        self._preset_buttons[preset_key] = button
         return button
 
     def _make_action_detail_toggle(self, action: ActionDef) -> tuple[QToolButton, QWidget]:

@@ -208,6 +208,27 @@ QPushButton#selectionBtn:hover {
     color: #2fe6ff;
     background: transparent;
 }
+QPushButton#presetBtn {
+    background: transparent;
+    border: 1px dashed #232d3a;
+    border-radius: 2px;
+    padding: 3px 10px;
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 8.5pt;
+    color: #8a97a8;
+}
+QPushButton#presetBtn:hover {
+    border: 1px solid #2fe6ff;
+    color: #2fe6ff;
+    background: transparent;
+}
+QPushButton#presetBtn:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(47, 230, 255, 45), stop:1 rgba(47, 230, 255, 5));
+    border: 1px solid #2fe6ff;
+    color: #8ff2ff;
+    font-weight: bold;
+}
 QLabel#selectionScope {
     font-family: 'Consolas', 'Cascadia Mono';
     color: #6b7686;
