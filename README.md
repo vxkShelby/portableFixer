@@ -1,5 +1,7 @@
 # PortableFix
 
+*[English version: README.en.md](README.en.md)*
+
 Prenosný diagnostický a opravný nástroj pre Windows 10/11, určený na beh
 z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 
