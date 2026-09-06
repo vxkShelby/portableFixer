@@ -24,3 +24,27 @@ actions:
     command: "if (Get-Command winget -EA SilentlyContinue) { winget upgrade --all --silent --disable-interactivity --accept-source-agreements --accept-package-agreements; Write-Output 'winget upgrade --all finished.' } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
     description_sk: "Potichu aktualizuje vsetok softver, ktory winget pozna. Moze trvat dlho pri viacerych balikoch. Bez univerzalneho undo (nie je genericky sposob znizit verziu) - pred spustenim sa vytvori bod obnovenia."
     description_en: "Silently updates all software winget knows about. Can take a while with many packages. No generic undo (there's no universal downgrade path) - a restore point is created before running."
+
+  - id: winget_export_installed
+    label_sk: "Export zoznamu nainstalovaneho softveru (winget)"
+    label_en: "Export installed software list (winget)"
+    risk: SAFE
+    command: "if (Get-Command winget -EA SilentlyContinue) { $me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\WingetExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $outFile = \"$dest\\winget-packages.json\"; $out = & winget export -o $outFile --accept-source-agreements 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0) { Write-Output ('Winget package list exported to: ' + $outFile) } else { Write-Output ('winget export failed: ' + (($out | Select-Object -Last 3) -join ' ')); exit 1 } } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).'; exit 1 }"
+    description_sk: "Zaexportuje JSON manifest vsetkych nainstalovanych balikov a ich verzii (winget export) do priecinka pristupneho len aktualnemu pouzivatelovi, SYSTEM a administratorom - neskor pouzitelny cez 'winget import' na obnovenie rovnakej sady na novom pocitaci. Nic nemeni, len uklada subor."
+    description_en: "Exports a JSON manifest of every installed package and its version (winget export) into a folder only the current user, SYSTEM, and administrators can read - usable later with 'winget import' to restore the same set on a fresh machine. Changes nothing, only saves a file."
+
+  - id: winget_source_list
+    label_sk: "Zoznam zdrojov balikov (winget)"
+    label_en: "List package sources (winget)"
+    risk: SAFE
+    command: "if (Get-Command winget -EA SilentlyContinue) { winget source list } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
+    description_sk: "Vypise nakonfigurovane zdroje balikov (msstore, winget komunitny repozitar a pod.). Nic nemeni."
+    description_en: "Lists configured package sources (msstore, the winget community repo, etc.). Changes nothing."
+
+  - id: winget_source_reset
+    label_sk: "Reset zdrojov balikov (winget)"
+    label_en: "Reset package sources (winget)"
+    risk: MODERATE
+    command: "if (Get-Command winget -EA SilentlyContinue) { & winget source reset --force; if ($LASTEXITCODE -eq 0) { Write-Output 'winget source reset --force finished.' } else { Write-Output ('winget source reset failed with exit code ' + $LASTEXITCODE); exit 1 } } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).'; exit 1 }"
+    description_sk: "Resetuje vsetky zdroje balikov spat na predvolene nastavenia Windows. Riesi poskodeny/zle nastaveny zoznam zdrojov. Bez univerzalneho undo (nie je genericky sposob obnovit povodne vlastne zdroje, ak nejake existovali)."
+    description_en: "Resets all package sources back to Windows' defaults. Fixes a corrupted/misconfigured source list. No generic undo (there's no universal way to restore whatever custom sources existed before)."
