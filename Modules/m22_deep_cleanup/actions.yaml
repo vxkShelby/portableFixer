@@ -1,0 +1,36 @@
+module_id: m22_deep_cleanup
+category: CLEANUP
+actions:
+  - id: leftover_uninstall_keys_report
+    label_sk: "Osamotene polozky odinstalacie v registri"
+    label_en: "Orphaned uninstall registry entries"
+    risk: SAFE
+    command: "$paths = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'; $orphans = foreach ($p in $paths) { Get-ItemProperty -Path $p -EA SilentlyContinue | Where-Object { $_.DisplayName -and $_.InstallLocation -and -not (Test-Path -LiteralPath $_.InstallLocation) } }; if ($orphans) { $orphans | Select-Object DisplayName, InstallLocation, PSChildName | Format-Table -AutoSize -Wrap; Write-Output ('Found ' + $orphans.Count + ' orphaned uninstall registry entrie(s) - install folder no longer exists.') } else { Write-Output 'No orphaned uninstall registry entries found.' }"
+    description_sk: "Najde polozky Uninstall v registri, ktorych InstallLocation priecinok uz na disku neexistuje - pozostatok po nedokoncenej/zlyhanej odinstalacii. Polozka na vymenitelnom/sietovom disku sa moze zobrazit aj vtedy, ak je disk len docasne odpojeny. Nic nemeni, pripadne mazanie v registri (regedit) je na pouzivatelovi."
+    description_en: "Finds Uninstall registry entries whose InstallLocation folder no longer exists on disk - a leftover from a botched/incomplete uninstall. An entry on a removable/network drive can also show up here if that drive is just temporarily disconnected. Changes nothing; removing anything via regedit is left to the user to review."
+
+  - id: duplicate_files_report
+    label_sk: "Duplicitne subory (podla obsahu)"
+    label_en: "Duplicate files (by content)"
+    risk: SAFE
+    command: "$roots = @($env:USERPROFILE); $files = foreach ($r in $roots) { if (Test-Path $r) { Get-ChildItem $r -Recurse -File -Force -EA SilentlyContinue | Where-Object { $_.Length -gt 1MB } } }; $groups = $files | Group-Object Length | Where-Object { $_.Count -gt 1 }; $dupes = @{}; foreach ($g in $groups) { foreach ($f in $g.Group) { $h = $null; try { $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -EA Stop).Hash } catch { }; if (-not $h) { continue }; if (-not $dupes.ContainsKey($h)) { $dupes[$h] = @() }; $dupes[$h] += $f.FullName } }; $realDupes = $dupes.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }; if ($realDupes) { $totalWasted = 0; foreach ($d in $realDupes) { $size = (Get-Item -LiteralPath $d.Value[0]).Length; $totalWasted += $size * ($d.Value.Count - 1); Write-Output ('--- ' + $d.Value.Count + ' copies (' + [math]::Round($size/1MB,1) + ' MB each) ---'); $d.Value | ForEach-Object { Write-Output \"  $_\" } }; Write-Output ('Total space recoverable by removing duplicates: ' + [math]::Round($totalWasted/1GB,2) + ' GB') } else { Write-Output 'No duplicate files found (scanned files over 1 MB under your user profile).' }"
+    inactivity_timeout_sec: 900
+    description_sk: "Najde duplicitne subory (podla SHA256 hashu) v $env:USERPROFILE, iba subory nad 1 MB. Rozsah je zamerne obmedzeny na profil pouzivatela kvoli casu; ktoru kopiu ponechat, si vyberie pouzivatel sam. Nic nemaze, len report."
+    description_en: "Finds duplicate files (by SHA256 hash) under $env:USERPROFILE, only files over 1 MB. Scope is deliberately bounded to the user profile for speed; choosing which copy to keep is left to the user. Deletes nothing, report only."
+
+  - id: broken_shortcuts_report
+    label_sk: "Nefunkcne odkazy (.lnk)"
+    label_en: "Broken shortcuts (.lnk)"
+    risk: SAFE
+    command: "$sh = New-Object -ComObject WScript.Shell; $searchPaths = @((Join-Path $env:USERPROFILE 'Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu'), [Environment]::GetFolderPath('CommonStartMenu')) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique; $broken = @(); foreach ($p in $searchPaths) { Get-ChildItem $p -Filter '*.lnk' -Recurse -File -EA SilentlyContinue | ForEach-Object { try { $target = $sh.CreateShortcut($_.FullName).TargetPath; if ($target -and -not (Test-Path -LiteralPath $target)) { $broken += [PSCustomObject]@{ Shortcut = $_.FullName; Target = $target } } } catch {} } }; if ($broken) { $broken | Format-Table -AutoSize -Wrap; Write-Output ('Found ' + $broken.Count + ' broken shortcut(s) pointing to a missing target.') } else { Write-Output 'No broken shortcuts found.' }"
+    description_sk: "Skontroluje odkazy (.lnk) na Ploche a v ponuke Start (aktualny pouzivatel aj vsetci pouzivatelia), ci ich ciel este existuje. Ciel na vymenitelnom alebo sietovom disku moze byt len docasne odpojeny, preto ziadne automaticke mazanie. Nic nemeni."
+    description_en: "Checks shortcuts (.lnk) on the Desktop and in the Start Menu (current user and all users) for a target that no longer exists. A target on a removable or network drive may just be temporarily disconnected, so there is no automatic deletion. Changes nothing."
+
+  - id: wipe_free_space
+    label_sk: "Bezpecne prepisanie volneho miesta (C:)"
+    label_en: "Securely wipe free space (C:)"
+    risk: MODERATE
+    command: "$out = & cipher /w:C:\\ 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0) { Write-Output 'Free space on C: securely wiped (previously deleted file remnants overwritten). Can take a long time on large/mostly-full drives.' } else { Write-Output ('cipher /w failed: ' + (($out | Select-Object -Last 3) -join ' ')); exit 1 }"
+    inactivity_timeout_sec: 1800
+    description_sk: "Prepise pozostatky predtym vymazanych suborov vo volnom mieste disku C: pomocou vstavaneho cipher /w. Nedotyka sa existujucich suborov, len volneho miesta - voci aktualnym datam nedestruktivne. Na velkych/temer plnych diskoch moze bezat velmi dlho."
+    description_en: "Overwrites remnants of previously deleted files in the free space of drive C: using the built-in cipher /w. Does not touch existing files, only free space - non-destructive to current data. Can take a very long time on large/mostly-full drives."
