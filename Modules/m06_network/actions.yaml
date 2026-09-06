@@ -15,6 +15,14 @@ actions:
     command: "Get-NetIPConfiguration | Format-List"
     description_sk: "Zobrazi aktualnu IP konfiguraciu vsetkych rozhrani, nic nemeni."
     description_en: "Shows the current IP configuration of all interfaces, changes nothing."
+  - id: net_wifi_diagnostics
+    label_sk: "Diagnostika Wi-Fi (signal, kanal, pripojenie)"
+    label_en: "Wi-Fi diagnostics (signal, channel, connection)"
+    risk: SAFE
+    command: "netsh wlan show interfaces"
+    description_sk: "Zobrazi stav Wi-Fi rozhrania - SSID, signal, kanal, pasmo, rychlost pripojenia. Na pocitaci bez Wi-Fi adaptera hlasi, ze ziadne rozhranie neexistuje. Nic nemeni."
+    description_en: "Shows Wi-Fi interface status - SSID, signal strength, channel, band, connection speed. On a machine without a Wi-Fi adapter, it reports that no interface exists. Changes nothing."
+
   - id: net_flush_dns
     label_sk: "Vycistenie DNS cache"
     label_en: "Flush DNS cache"

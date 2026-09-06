@@ -15,3 +15,10 @@ actions:
     command: "pnputil /enum-drivers"
     description_sk: "Vypise vsetky nainstalovane ovladace tretich stran (mimo Windows), nic nemeni."
     description_en: "Lists all installed third-party (non-inbox) drivers, changes nothing."
+  - id: drv_export_backup
+    label_sk: "Zaloha vsetkych ovladacov"
+    label_en: "Back up all drivers"
+    risk: SAFE
+    command: "$dest = \"$env:ProgramData\\PortableFix\\DriverBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; $out = & pnputil /export-driver * $dest 2>&1; $exitCode = $LASTEXITCODE; $summary = ($out | Select-String -Pattern 'Total driver packages:|Exported driver packages:') -join '; '; if ($exitCode -eq 0) { Write-Output ('Driver backup saved to: ' + $dest); Write-Output $summary } else { Write-Output ('Driver export failed (needs administrator): ' + (($out | Select-Object -Last 3) -join ' ')) }; exit 0"
+    description_sk: "Zaexportuje vsetky nainstalovane ovladace (pnputil /export-driver) do priecinka pred resetom/reinstalaciou systemu - najma tretostranove/OEM ovladace, ktore by inak bolo tazke znovu najst. Nic v systeme nemeni, len uklada subory."
+    description_en: "Exports every installed driver (pnputil /export-driver) to a folder before a system reset/reinstall - especially third-party/OEM drivers that would otherwise be hard to find again. Changes nothing in the system, only saves files."

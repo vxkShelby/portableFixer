@@ -22,3 +22,10 @@ actions:
     command: "netsh winhttp show proxy; Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue | Select-Object ProxyEnable,ProxyServer,AutoConfigURL | Format-List"
     description_sk: "Vypise systemove (WinHTTP) aj pouzivatelske proxy nastavenia. Nezname proxy moze znamenat malware presmerovanie."
     description_en: "Shows system (WinHTTP) and per-user proxy settings. An unknown proxy can indicate malware traffic redirection."
+  - id: online_speed_test
+    label_sk: "Test rychlosti pripojenia"
+    label_en: "Connection speed test"
+    risk: SAFE
+    command: "$url = 'https://speed.cloudflare.com/__down?bytes=25000000'; try { $req = [System.Net.WebRequest]::Create($url); $req.UserAgent = 'Mozilla/5.0'; $req.Timeout = 20000; $sw = [System.Diagnostics.Stopwatch]::StartNew(); $resp = $req.GetResponse(); $stream = $resp.GetResponseStream(); $buffer = New-Object byte[] 65536; $total = 0; while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { $total += $read }; $sw.Stop(); $resp.Close(); $mbps = [math]::Round(($total * 8) / $sw.Elapsed.TotalSeconds / 1000000, 1); Write-Output (\"Download speed: $mbps Mbps ($([math]::Round($total/1MB,1)) MB in $([math]::Round($sw.Elapsed.TotalSeconds,1))s)\") } catch { Write-Output ('Speed test failed: ' + $_.Exception.Message) }"
+    description_sk: "Zmeria rychlost stiahnutia (~25 MB z Cloudflare) - rovnaky test ako tlacidlo v System info paneli, ale ako katalogova akcia sa vysledok zapise do audit logu a reportu davky. Vyzaduje internet."
+    description_en: "Measures download speed (~25 MB from Cloudflare) - the same test as the System info panel button, but as a catalog action the result gets written to the audit log and batch report. Requires internet."

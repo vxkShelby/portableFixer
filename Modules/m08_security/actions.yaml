@@ -61,6 +61,22 @@ actions:
     description_sk: "Zisti, ci je zapnute automaticke prihlasenie a ci registry obsahuje ulozene heslo v ciston texte (heslo samotne nevypisuje). Nic nemeni."
     description_en: "Checks whether autologon is enabled and whether the registry stores a plaintext password (does not print the password itself). Changes nothing."
 
+  - id: sec_listening_ports_audit
+    label_sk: "Audit naslchajucich portov a procesov"
+    label_en: "Listening ports and process audit"
+    risk: SAFE
+    command: "Get-NetTCPConnection -State Listen -EA SilentlyContinue | ForEach-Object { $proc = Get-Process -Id $_.OwningProcess -EA SilentlyContinue; [PSCustomObject]@{ LocalPort = $_.LocalPort; LocalAddress = $_.LocalAddress; PID = $_.OwningProcess; Process = $proc.ProcessName; Path = $proc.Path } } | Sort-Object LocalPort -Unique | Format-Table -AutoSize -Wrap"
+    description_sk: "Spari kazdy naslchajuci TCP port s procesom, ktory ho drzi (meno + cesta k binarke) - standardny 'co komunikuje von' kontrolny bod. Nic nemeni."
+    description_en: "Correlates every listening TCP port with the process holding it (name + binary path) - a standard 'what's phoning home' check. Changes nothing."
+
+  - id: sec_root_cert_audit
+    label_sk: "Audit dovernych root certifikatov"
+    label_en: "Trusted root certificate audit"
+    risk: SAFE
+    command: "$roots = Get-ChildItem Cert:\\LocalMachine\\Root; Write-Output ('Total root CAs: ' + $roots.Count); $suspicious = $roots | Where-Object { $_.Subject -ne $_.Issuer }; if ($suspicious) { Write-Output '--- Subject != Issuer (unusual for a real root CA - can be legitimate anti-cheat/DRM software, but worth reviewing) ---'; $suspicious | Select-Object Subject,Issuer,Thumbprint | Format-List } else { Write-Output 'No structurally unusual root certs found.' }; $expired = $roots | Where-Object { $_.NotAfter -lt (Get-Date) }; if ($expired) { Write-Output ('--- Expired root certs still present (' + $expired.Count + ') ---'); $expired | Select-Object Subject,NotAfter,Thumbprint | Format-Table -AutoSize -Wrap }"
+    description_sk: "Vypise pocet dovernych root CA certifikatov a oznaci tie, kde Subject != Issuer (nezvycajne pre skutocnu root CA - znamy vektor MITM/malware, ale caste aj u legitimneho anti-cheat/DRM softveru) a expirovane certifikaty stale v store. Nic nemeni."
+    description_en: "Lists the count of trusted root CA certificates and flags any where Subject != Issuer (unusual for a real root CA - a known MITM/malware vector, but also common with legitimate anti-cheat/DRM software) plus expired certs still sitting in the store. Changes nothing."
+
   - id: hard_defender_clear_exclusions
     label_sk: "Vycistenie vynimiek Defenderu"
     label_en: "Clear Defender exclusions"

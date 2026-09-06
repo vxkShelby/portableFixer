@@ -113,6 +113,30 @@ actions:
     description_sk: "Zobrazi teplotu, opotrebovanie a chybove pocitadla fyzickych diskov, ak su podporovane. Nic nemeni."
     description_en: "Shows temperature, wear, and error counters for physical disks, if supported. Changes nothing."
 
+  - id: boot_time_breakdown
+    label_sk: "Rozklad casu spustania (posledne starty)"
+    label_en: "Startup time breakdown (recent boots)"
+    risk: SAFE
+    command: "$events = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100} -MaxEvents 5 -EA SilentlyContinue; if ($events) { foreach ($e in $events) { $xml = [xml]$e.ToXml(); $bootMs = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'BootTime' }).'#text'; Write-Output ($e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + ' - total boot time: ' + [math]::Round([double]$bootMs/1000,1) + 's') } } else { Write-Output 'No boot performance events found (log empty, disabled, or needs administrator to read).' }"
+    description_sk: "Zobrazi celkovy cas spustania z poslednych 5 startov (Windows uz tuto udalost sam zaznamenava, ID 100 v logu Diagnostics-Performance). Nic nemeni."
+    description_en: "Shows total boot duration from the last 5 startups (Windows already records this itself, event ID 100 in the Diagnostics-Performance log). Changes nothing."
+
+  - id: battery_health_report
+    label_sk: "Zdravie baterie (design vs. realna kapacita)"
+    label_en: "Battery health report (design vs. actual capacity)"
+    risk: SAFE
+    command: "$dest = \"$env:ProgramData\\PortableFix\\BatteryReport_$(Get-Date -Format 'yyyyMMdd_HHmmss').html\"; New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null; $out = & powercfg /batteryreport /output $dest /duration 30 2>&1; if (Test-Path $dest) { Write-Output ('Battery health report saved to: ' + $dest); Write-Output 'Open it in a browser to see design capacity vs full charge capacity and drain history.' } else { Write-Output ('Could not generate battery report: ' + ($out -join ' ')) }"
+    description_sk: "Vygeneruje Windows report o zdravi baterie (powercfg /batteryreport) - design kapacita vs. realna plna kapacita a historia vybijania za 30 dni. Na pocitacoch bez baterie hlasi prazdny report. Nic nemeni, len ulozi HTML subor."
+    description_en: "Generates the built-in Windows battery health report (powercfg /batteryreport) - design capacity vs. actual full charge capacity and 30-day drain history. On desktops without a battery the report comes back empty. Changes nothing, only saves an HTML file."
+
+  - id: eventlog_full_export
+    label_sk: "Plny export event logov (.evtx)"
+    label_en: "Full event log export (.evtx)"
+    risk: SAFE
+    command: "$dest = \"$env:ProgramData\\PortableFix\\EventLogExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; $logs = 'System','Application','Security'; $exported = 0; foreach ($log in $logs) { & wevtutil epl $log \"$dest\\$log.evtx\" 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { $exported++ } }; Write-Output (\"Exported $exported/$($logs.Count) event log(s) to: $dest (Security needs administrator)\"); exit 0"
+    description_sk: "Exportuje cele System/Application/Security logy do .evtx suborov na neskorsiu analyzu v Event Vieweri inde (nie len poslednych 50 udalosti ako ine akcie). Security log vyzaduje administratora. Nic nemeni, len uklada subory."
+    description_en: "Exports the full System/Application/Security logs to .evtx files for later analysis in Event Viewer elsewhere (not just the last 50 events like other actions). The Security log needs administrator. Changes nothing, only saves files."
+
   - id: installed_software
     label_sk: "Nainstalovany softver"
     label_en: "Installed software"

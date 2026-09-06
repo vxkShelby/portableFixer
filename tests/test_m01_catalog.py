@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml"
 
 
-def test_m01_catalog_loads_15_actions_in_diagnostics_category():
+def test_m01_catalog_loads_18_actions_in_diagnostics_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m01_diagnostics"
     assert module.category == ModuleCategory.DIAGNOSTICS
-    assert len(module.actions) == 15
+    assert len(module.actions) == 18
 
 
 def test_m01_catalog_all_actions_safe_readonly():
@@ -34,6 +34,7 @@ def test_m01_catalog_covers_core_system_info_actions():
         "volumes", "physical_disks", "recent_hotfixes", "defender_status",
         "top_cpu_processes", "pending_reboot", "eventlog_critical_7d",
         "bsod_summary", "disk_reliability_counters", "installed_software",
+        "boot_time_breakdown", "battery_health_report", "eventlog_full_export",
     }.issubset(ids)
 
 

@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_11_actions_in_security_category():
+def test_m08_catalog_loads_13_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 11
+    assert len(module.actions) == 13
 
 
 def test_m08_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 6
+    assert len(by_risk[RiskLevel.SAFE]) == 8
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "sec_defender_quickscan",
         "sec_defender_update",
@@ -44,6 +44,8 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
         "sec_defender_exclusions_list",
         "sec_rdp_status",
         "sec_autologon_check",
+        "sec_listening_ports_audit",
+        "sec_root_cert_audit",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
 
@@ -71,4 +73,6 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "hard_defender_clear_exclusions",
         "hard_uac_restore_default",
         "sec_wpbt_disable",
+        "sec_listening_ports_audit",
+        "sec_root_cert_audit",
     }

@@ -29,3 +29,10 @@ actions:
     command: "Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' } | Select-Object Name,DisplayName,State,StartName,PathName | Format-Table -AutoSize -Wrap"
     description_sk: "Vypise sluzby nastavene na automaticke spustenie vratane cesty k binarke a uctu, nic nemeni."
     description_en: "Lists services set to start automatically including their binary path and account, changes nothing."
+  - id: autoruns_wmi_event_subscriptions
+    label_sk: "WMI event subscriptions (fileless perzistencia)"
+    label_en: "WMI event subscriptions (fileless persistence)"
+    risk: SAFE
+    command: "try { $filters = Get-CimInstance -Namespace root\\subscription -ClassName __EventFilter -EA Stop; $consumers = Get-CimInstance -Namespace root\\subscription -ClassName __EventConsumer -EA Stop; $bindings = Get-CimInstance -Namespace root\\subscription -ClassName __FilterToConsumerBinding -EA Stop; if (-not $filters -and -not $consumers -and -not $bindings) { Write-Output 'No WMI event subscriptions found (clean).' } else { Write-Output '--- Event Filters ---'; $filters | Select-Object Name,Query | Format-List; Write-Output '--- Event Consumers ---'; $consumers | Select-Object Name,@{N='Type';E={$_.CimClass.CimClassName}} | Format-Table -AutoSize; Write-Output '--- Filter-to-Consumer Bindings ---'; $bindings | Select-Object Filter,Consumer | Format-Table -AutoSize -Wrap } } catch { Write-Output ('Could not query WMI subscriptions: ' + $_.Exception.Message) }"
+    description_sk: "Vypise WMI event subscriptions (__EventFilter/__EventConsumer/__FilterToConsumerBinding) - znamy sposob fileless perzistencie malwaru, ktory autostart cez registre/ulohy neodhali. Poznamka: 'SCM Event Log Filter/Consumer' je legitimny vstavany zaznam Windows, nie hrozba. Nic nemeni."
+    description_en: "Lists WMI event subscriptions (__EventFilter/__EventConsumer/__FilterToConsumerBinding) - a known fileless malware persistence technique that registry/task-based autostart checks won't reveal. Note: an 'SCM Event Log Filter/Consumer' entry is a legitimate built-in Windows entry, not a threat. Changes nothing."
