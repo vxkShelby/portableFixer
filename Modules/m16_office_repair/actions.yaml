@@ -51,3 +51,11 @@ actions:
     inactivity_timeout_sec: 2400
     description_sk: "Spusti uplnu opravu Click-to-Run Office (znovu stiahne Office cez internet, 15-30+ min). Rovnaka nezistena poznamka o dokonceni ako pri rychlej oprave, tu s dlhsim behom. Tato akcia ma predlzeny watchdog (40 min) namiesto standardnych 300s."
     description_en: "Runs a full Click-to-Run Office repair (re-downloads Office over the internet, 15-30+ min). Same unconfirmed caveat about completion timing as Quick Repair, with a longer run. This action has an extended watchdog (40 min) instead of the standard 300s."
+
+  - id: office_reset_outlook_profile
+    label_sk: "Reset profilu Outlooku"
+    label_en: "Reset Outlook profile"
+    risk: MODERATE
+    command: "$found = $false; foreach ($v in '16.0','15.0','14.0') { $profilesKey = \"HKCU:\\Software\\Microsoft\\Office\\$v\\Outlook\\Profiles\"; if (Test-Path $profilesKey) { $found = $true; Stop-Process -Name OUTLOOK -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; Rename-Item -Path $profilesKey -NewName (\"Profiles.bak-$ts\"); Write-Output (\"Outlook profile reset (Office $v). Old profile backed up under registry key 'Profiles.bak-$ts' - Outlook creates a fresh default profile on next launch.\"); break } }; if (-not $found) { Write-Output 'No Outlook profile registry key found (Outlook not configured on this account, or an unsupported version).' }"
+    description_sk: "Zatvori Outlook bez varovania a premenuje jeho profil (kontá, nastavenia synchronizacie) nabok v registri - Outlook si pri dalsom starte vytvori novy predvoleny profil. Standardny prvy krok pri opakovanych padoch/zaseknuti Outlooku. Zaloha ostane v registri, ale bez automatickeho undo (rovnaky princip ako reset profilu Chrome/Edge)."
+    description_en: "Closes Outlook without asking and renames its profile (accounts, sync settings) aside in the registry - Outlook creates a fresh default profile on next launch. A standard first step for recurring Outlook crashes/freezes. The old profile stays in the registry but there's no automatic undo (same approach as the Chrome/Edge profile reset)."

@@ -44,6 +44,35 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
     return entries
 
 
+def _find_previous_report(reports_dir: Path, hostname: str) -> dict | None:
+    if not reports_dir.exists():
+        return None
+    candidates = sorted(reports_dir.glob(f"{hostname}_*.json"), key=lambda p: p.stat().st_mtime)
+    if not candidates:
+        return None
+    try:
+        return json.loads(candidates[-1].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _build_comparison(previous: dict | None, actions: list[dict], snapshot_after: dict) -> dict | None:
+    if previous is None:
+        return None
+    prev_free = previous.get("snapshot_after", {}).get("free_gb")
+    curr_free = snapshot_after.get("free_gb")
+    free_gb_delta = None
+    if isinstance(prev_free, (int, float)) and isinstance(curr_free, (int, float)):
+        free_gb_delta = round(curr_free - prev_free, 2)
+    return {
+        "previous_run_id": previous.get("run_id"),
+        "previous_generated_at": previous.get("generated_at"),
+        "free_gb_delta": free_gb_delta,
+        "previous_action_count": len(previous.get("actions", [])),
+        "action_count": len(actions),
+    }
+
+
 def build_report_data(
     base_dir: Path,
     run_id: str,
@@ -68,15 +97,18 @@ def build_report_data(
                 "output": entry.get("output", ""),
             }
         )
+    hostname = socket.gethostname()
+    previous = _find_previous_report(base_dir / "Reports", hostname)
     return {
         "run_id": run_id,
-        "hostname": socket.gethostname(),
+        "hostname": hostname,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "os": platform.platform(),
         "snapshot_before": snapshot_before,
         "snapshot_after": snapshot_after,
         "actions": actions,
         "requires_restart": [a for a in actions if a["risk"] == "REQUIRES_REBOOT"],
+        "previous_comparison": _build_comparison(previous, actions, snapshot_after),
     }
 
 
@@ -167,6 +199,19 @@ def _render_html(data: dict) -> str:
         items = "".join(f"<li>{html.escape(a['label'])}</li>" for a in data["requires_restart"])
         restart_section = f"<h2>Requires restart</h2><ul>{items}</ul>"
 
+    comparison_section = ""
+    comparison = data.get("previous_comparison")
+    if comparison:
+        delta = comparison["free_gb_delta"]
+        delta_txt = f"{'+' if delta >= 0 else ''}{delta} GB" if delta is not None else "?"
+        comparison_section = (
+            "<h2>Since last visit</h2>"
+            f"<div class=\"meta\">Previous run {html.escape(str(comparison['previous_run_id']))} "
+            f"({html.escape(str(comparison['previous_generated_at']))})<br>"
+            f"Free space change since then: {delta_txt}<br>"
+            f"Actions run then vs. now: {comparison['previous_action_count']} &rarr; {comparison['action_count']}</div>"
+        )
+
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>PortableFix report {html.escape(data['run_id'])}</title>
 <style>{_CSS}</style></head>
@@ -181,6 +226,7 @@ Free space: {free_before} GB &rarr; {free_after} GB{delta}</div>
 <div class="chip fail"><span class="num">{fail_count}</span><span class="lbl">Failed</span></div>
 <div class="chip dry"><span class="num">{dry_count}</span><span class="lbl">Dry-run</span></div>
 </div>
+{comparison_section}
 {cards}
 {restart_section}
 </div></body></html>

@@ -125,6 +125,71 @@ def test_build_report_data_skips_corrupted_audit_line(tmp_path):
     assert data["actions"][0]["action_id"] == "user_temp"
 
 
+def test_build_report_data_includes_comparison_with_previous_report(tmp_path):
+    import socket
+
+    hostname = socket.gethostname()
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    old_report = {
+        "run_id": "old_run",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "snapshot_after": {"free_gb": 10.0},
+        "actions": [{"action_id": "a"}, {"action_id": "b"}],
+    }
+    (reports_dir / f"{hostname}_old_run.json").write_text(json.dumps(old_report), encoding="utf-8")
+
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_compare")
+    append_entry(tmp_path, "run_compare", entry)
+
+    data = build_report_data(
+        tmp_path, "run_compare", modules, "en",
+        snapshot_before={"free_gb": 11.0}, snapshot_after={"free_gb": 12.0},
+    )
+
+    comparison = data["previous_comparison"]
+    assert comparison["previous_run_id"] == "old_run"
+    assert comparison["free_gb_delta"] == 2.0
+    assert comparison["previous_action_count"] == 2
+    assert comparison["action_count"] == 1
+
+
+def test_build_report_data_comparison_is_none_without_a_previous_report(tmp_path):
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_solo")
+    append_entry(tmp_path, "run_solo", entry)
+    data = build_report_data(tmp_path, "run_solo", modules, "en", {}, {})
+    assert data["previous_comparison"] is None
+
+
+def test_html_report_shows_since_last_visit_section_when_a_previous_report_exists(tmp_path):
+    import socket
+
+    hostname = socket.gethostname()
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    old_report = {
+        "run_id": "old_run2",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "snapshot_after": {"free_gb": 10.0},
+        "actions": [],
+    }
+    (reports_dir / f"{hostname}_old_run2.json").write_text(json.dumps(old_report), encoding="utf-8")
+
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_compare2")
+    append_entry(tmp_path, "run_compare2", entry)
+
+    html_path, _ = generate_report(
+        tmp_path, "run_compare2", modules, "en",
+        snapshot_before={"free_gb": 11.0}, snapshot_after={"free_gb": 12.0},
+    )
+    content = html_path.read_text(encoding="utf-8")
+    assert "Since last visit" in content
+    assert "old_run2" in content
+
+
 def test_build_report_data_skips_valid_json_line_missing_required_fields(tmp_path):
     modules = _fixture_modules()
     entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_missing")
