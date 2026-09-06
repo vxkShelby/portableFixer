@@ -1072,10 +1072,38 @@ class MainWindow(QMainWindow):
                 self._run_next()
                 return
 
-        if self.settings.dry_run and action.preview_command:
-            plan = build_execution_plan(action.preview_command, dry_run=False, app_dir=paths.get_base_dir())
+        app_dir = paths.get_base_dir()
+        temp_protect = paths.compute_temp_protected_child(app_dir)
+        windir_temp_protect = paths.compute_windir_temp_protected_child(app_dir)
+        if action.id == "user_temp" and temp_protect is not None and temp_protect == paths.resolve_temp_root():
+            # The app's own root IS %TEMP% itself, or %TEMP% is redirected
+            # via a junction/symlink so a resolved-path comparison could
+            # never match PowerShell's unresolved view of it - either way
+            # there's no single safe child to exclude, so refuse to run
+            # this action at all rather than risk wiping the app out from
+            # under itself.
+            QMessageBox.warning(self, self._t("app_title"), self._t("user_temp_blocked_app_is_temp_root"))
+            self._run_next()
+            return
+        if (
+            action.id == "system_temp"
+            and windir_temp_protect is not None
+            and windir_temp_protect == paths.resolve_windir_temp_root()
+        ):
+            # Same refusal, mirrored for %WINDIR%\Temp.
+            QMessageBox.warning(self, self._t("app_title"), self._t("system_temp_blocked_app_is_temp_root"))
+            self._run_next()
+            return
+
+        if action.id == "system_temp":
+            action_temp_protect = windir_temp_protect
         else:
-            plan = build_execution_plan(action.command, self.settings.dry_run, app_dir=paths.get_base_dir())
+            action_temp_protect = temp_protect
+
+        if self.settings.dry_run and action.preview_command:
+            plan = build_execution_plan(action.preview_command, dry_run=False, temp_protect=action_temp_protect)
+        else:
+            plan = build_execution_plan(action.command, self.settings.dry_run, temp_protect=action_temp_protect)
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()

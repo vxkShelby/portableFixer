@@ -5,8 +5,8 @@ actions:
     label_sk: "Docasne subory pouzivatela"
     label_en: "User temp files"
     risk: SAFE
-    command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$'; Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $childPrefix = $_.FullName.TrimEnd('\\') + '\\'; $isSelfOrAncestorOfApp = ($__pfAppDir) -and ($_.FullName.Equals($__pfAppDir.TrimEnd('\\'), [StringComparison]::OrdinalIgnoreCase) -or $__pfAppDir.StartsWith($childPrefix, [StringComparison]::OrdinalIgnoreCase)); $_.Name -notmatch $excludePattern -and -not $isSelfOrAncestorOfApp } | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
-    preview_command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$'; $f = Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $childPrefix = $_.FullName.TrimEnd('\\') + '\\'; $isSelfOrAncestorOfApp = ($__pfAppDir) -and ($_.FullName.Equals($__pfAppDir.TrimEnd('\\'), [StringComparison]::OrdinalIgnoreCase) -or $__pfAppDir.StartsWith($childPrefix, [StringComparison]::OrdinalIgnoreCase)); $_.Name -notmatch $excludePattern -and -not $isSelfOrAncestorOfApp } | Get-ChildItem -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:TEMP\""
+    command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$'; Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $_.Name -notmatch $excludePattern -and -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    preview_command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$'; $f = Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $_.Name -notmatch $excludePattern -and -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Get-ChildItem -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:TEMP\""
     description_sk: "Vycisti $env:TEMP (okrem bezbeziacej appky - vlastny _MEI* extrakcny priecinok, PortableFix fallback data, prebiehajuci update a priecinok, v ktorom appka prave bezi nech je kdekolvek pod TEMP - tie sa nikdy nemazu)."
     description_en: "Clears $env:TEMP (excludes the running app's own _MEI* extraction folder, PortableFix fallback data, an in-progress update, and the folder the app is currently running from wherever it lives under TEMP - those are never deleted)."
 
@@ -14,10 +14,10 @@ actions:
     label_sk: "Systemove docasne subory"
     label_en: "System temp files"
     risk: SAFE
-    command: "Remove-Item \"$env:WINDIR\\Temp\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
-    preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Temp\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:WINDIR\\Temp\""
-    description_sk: "Vycisti $env:WINDIR\\Temp."
-    description_en: "Clears $env:WINDIR\\Temp."
+    command: "Get-ChildItem \"$env:WINDIR\\Temp\" -Force -EA SilentlyContinue | Where-Object { -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
+    preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Temp\" -Force -EA SilentlyContinue | Where-Object { -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Get-ChildItem -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:WINDIR\\Temp\""
+    description_sk: "Vycisti $env:WINDIR\\Temp (okrem priecinka, v ktorom appka prave bezi, ak by tam nahodou bola)."
+    description_en: "Clears $env:WINDIR\\Temp (excludes the folder the app is currently running from, on the rare chance it's there)."
 
   - id: recycle_bin
     label_sk: "Kos"

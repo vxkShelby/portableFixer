@@ -27,15 +27,15 @@ class ExecutionPlan:
     argv: list[str] | None
 
 
-def build_execution_plan(command: str, dry_run: bool, app_dir: Path | None = None) -> ExecutionPlan:
+def build_execution_plan(command: str, dry_run: bool, temp_protect: Path | None = None) -> ExecutionPlan:
     if dry_run:
         return ExecutionPlan(mode="dry_run", display_command=command, argv=None)
     prefix = ""
-    if app_dir is not None:
+    if temp_protect is not None:
         # Single-quote with doubled-quote escaping, not an f-string into double
         # quotes - the real path can contain $ or backticks PowerShell would expand.
-        escaped = str(app_dir).replace("'", "''")
-        prefix = f"$__pfAppDir = '{escaped}'; "
+        escaped = str(temp_protect).replace("'", "''")
+        prefix = f"$__pfProtect = '{escaped}'; "
     utf8_command = f"{prefix}[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}"
     return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [utf8_command])
 
