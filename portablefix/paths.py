@@ -10,10 +10,20 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _raw_temp_dir() -> str:
+    # os.environ["TEMP"] directly, not tempfile.gettempdir() - the latter
+    # checks TMPDIR before TEMP, but the PowerShell side reads $env:TEMP
+    # literally. If TMPDIR were ever set to a different directory than TEMP,
+    # this function and the PowerShell command would silently reason about
+    # two different roots - exactly the class of bug this module exists to
+    # close, just via a different env var.
+    return os.environ.get("TEMP") or tempfile.gettempdir()
+
+
 def resolve_temp_root() -> Path | None:
     """Canonical %TEMP% root, or None if it can't be resolved."""
     try:
-        return Path(tempfile.gettempdir()).resolve()
+        return Path(_raw_temp_dir()).resolve()
     except OSError:
         return None
 
@@ -88,7 +98,7 @@ def compute_temp_protected_child(app_dir: Path) -> Path | None:
     `_compute_protected_child` for the full explanation, including the two
     "refuse" sentinels.
     """
-    return _compute_protected_child(app_dir, Path(tempfile.gettempdir()), resolve_temp_root())
+    return _compute_protected_child(app_dir, Path(_raw_temp_dir()), resolve_temp_root())
 
 
 def compute_windir_temp_protected_child(app_dir: Path) -> Path | None:

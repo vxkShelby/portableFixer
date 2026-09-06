@@ -151,6 +151,45 @@ def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
     assert entry["exit_code"] == 0
 
 
+_USER_TEMP_ACTIONS_YAML = """
+module_id: m02_cleanup
+actions:
+  - id: user_temp
+    label_sk: "X"
+    label_en: "User temp files"
+    risk: SAFE
+    command: "Write-Output 'user-temp-ran'"
+"""
+
+
+def test_user_temp_action_is_blocked_when_app_is_temp_root_or_temp_is_redirected(qtbot, tmp_path, monkeypatch):
+    # Regression test for the wiring in _dispatch_action, not paths.py's own
+    # logic (already covered by tests/test_paths.py) - this is the choke
+    # point a future refactor of _dispatch_action could silently break
+    # (reordering the check past the dry-run branch, forgetting to call
+    # _run_next() and stalling the queue) for a bug that has already
+    # recurred twice in the field.
+    from portablefix.gui import main_window as mw_module
+
+    base_dir = _make_base_dir(tmp_path, _USER_TEMP_ACTIONS_YAML)
+    sentinel = tmp_path / "faketemp"
+    sentinel.mkdir()
+    monkeypatch.setattr(mw_module.paths, "compute_temp_protected_child", lambda app_dir: sentinel)
+    monkeypatch.setattr(mw_module.paths, "resolve_temp_root", lambda: sentinel)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="testrun_blocked")
+    qtbot.addWidget(window)
+    window._action_checkboxes["user_temp"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=5000)
+    assert len(warnings) == 1
+    assert "user-temp-ran" not in window.console.toPlainText()
+
+
 _TWO_SAFE_ACTIONS_YAML = """
 module_id: m01_diagnostics
 actions:

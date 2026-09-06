@@ -62,7 +62,7 @@ def test_compute_temp_protected_child_nested_ancestor(monkeypatch, tmp_path):
     # not the app's own (deeper) folder.
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
     wrapper_child = temp_root / "_MEI123456"
     app_dir = wrapper_child / "deep" / "nested" / "PortableFix"
     app_dir.mkdir(parents=True)
@@ -73,7 +73,7 @@ def test_compute_temp_protected_child_nested_ancestor(monkeypatch, tmp_path):
 def test_compute_temp_protected_child_exact_top_level_match(monkeypatch, tmp_path):
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
     app_dir = temp_root / "PortableFix"
     app_dir.mkdir()
 
@@ -85,7 +85,7 @@ def test_compute_temp_protected_child_unrelated_app_dir_returns_none(monkeypatch
     # Files, etc. - nothing under %TEMP% to protect at all.
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
     app_dir = tmp_path / "elsewhere" / "PortableFix"
     app_dir.mkdir(parents=True)
 
@@ -100,7 +100,7 @@ def test_compute_temp_protected_child_app_dir_is_temp_root_itself_returns_sentin
     # action entirely rather than pick an unsafe child.
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
 
     result = compute_temp_protected_child(temp_root)
 
@@ -111,7 +111,7 @@ def test_compute_temp_protected_child_app_dir_is_temp_root_itself_returns_sentin
 def test_compute_temp_protected_child_returns_none_when_app_dir_resolve_fails(monkeypatch, tmp_path):
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
     app_dir = temp_root / "gone"
     original_resolve = Path.resolve
 
@@ -140,7 +140,7 @@ def test_compute_temp_protected_child_handles_short_path_alias_via_resolve(monke
 
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
     app_dir = temp_root / "SomeLongApplicationFolderName"
     app_dir.mkdir()
 
@@ -178,7 +178,7 @@ def test_compute_temp_protected_child_refuses_when_temp_itself_is_a_junction(mon
         check=True,
         capture_output=True,
     )
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(junction_temp))
+    monkeypatch.setenv("TEMP", str(junction_temp))
     app_dir = junction_temp / "AppFolder" / "bin"
     app_dir.mkdir(parents=True)
 
@@ -194,7 +194,7 @@ def test_compute_temp_protected_child_unaffected_when_temp_is_not_redirected(mon
     # trigger and normal protected-child computation proceeds as usual.
     temp_root = tmp_path / "faketemp"
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setenv("TEMP", str(temp_root))
     app_dir = temp_root / "PortableFix"
     app_dir.mkdir()
 
@@ -202,6 +202,24 @@ def test_compute_temp_protected_child_unaffected_when_temp_is_not_redirected(mon
 
     assert result == app_dir.resolve()
     assert result != resolve_temp_root()
+
+
+def test_compute_temp_protected_child_ignores_tmpdir_uses_temp(monkeypatch, tmp_path):
+    # tempfile.gettempdir() checks TMPDIR before TEMP, but the PowerShell
+    # side reads $env:TEMP literally - if TMPDIR were ever set to a
+    # different directory, reasoning about TMPDIR here while PowerShell
+    # wipes the real TEMP would silently reopen this exact bug class.
+    real_temp = tmp_path / "realtemp"
+    real_temp.mkdir()
+    decoy_tmpdir = tmp_path / "decoy_tmpdir"
+    decoy_tmpdir.mkdir()
+    monkeypatch.setenv("TEMP", str(real_temp))
+    monkeypatch.setenv("TMPDIR", str(decoy_tmpdir))
+    app_dir = real_temp / "PortableFix"
+    app_dir.mkdir()
+
+    assert compute_temp_protected_child(app_dir) == app_dir.resolve()
+    assert resolve_temp_root() == real_temp.resolve()
 
 
 def test_compute_windir_temp_protected_child_nested_ancestor(monkeypatch, tmp_path):
