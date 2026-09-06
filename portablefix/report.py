@@ -50,10 +50,16 @@ _MAX_PREVIOUS_REPORT_BYTES = 10 * 1024 * 1024
 def _find_previous_report(reports_dir: Path, hostname: str) -> dict | None:
     if not reports_dir.exists():
         return None
-    # Sorted by filename, not mtime: run_id starts with a UTC timestamp
-    # (see main.py's run_id format), so filenames already sort chronologically
-    # - and stay correct after a USB copy/backup/restore resets mtimes.
-    candidates = sorted(reports_dir.glob(f"{hostname}_*.json"), key=lambda p: p.name)
+    # Filtered by prefix rather than glob(f"{hostname}_*.json") - a Windows
+    # computer name can itself contain glob metacharacters like [ or ].
+    # Sorted by filename, not mtime: run_id starts with a UTC timestamp (see
+    # main.py's run_id format), so filenames already sort chronologically -
+    # and stay correct after a USB copy/backup/restore resets mtimes.
+    prefix = f"{hostname}_"
+    candidates = sorted(
+        (p for p in reports_dir.glob("*.json") if p.name.startswith(prefix)),
+        key=lambda p: p.name,
+    )
     if not candidates:
         return None
     latest = candidates[-1]

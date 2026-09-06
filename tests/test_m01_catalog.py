@@ -51,6 +51,10 @@ def test_m01_catalog_diagnostic_exports_lock_down_their_output_folder():
         assert "S-1-5-32-544" in command, action_id
         assert "S-1-5-18" in command, action_id
         assert "$env:USERDOMAIN" in command, action_id
+        # The shared $env:ProgramData\PortableFix parent must also get
+        # locked down the first time it's ever created, not just each
+        # action's own per-run subfolder.
+        assert "if (-not (Test-Path $root))" in command, action_id
 
 
 def test_m01_catalog_eventlog_export_exit_code_reflects_actual_result():

@@ -1,5 +1,6 @@
 import hashlib
 import os
+import subprocess
 
 import pytest
 
@@ -86,6 +87,49 @@ def test_check_integrity_skips_symlinks_instead_of_following_them(tmp_path):
     # A symlinked directory under App/ must not be walked into (it isn't in
     # the manifest either way, but if rglob followed it and it looped back
     # to an ancestor, this call would hang instead of returning).
+    assert check_integrity(tmp_path) == []
+
+
+def test_check_integrity_skips_junctions_instead_of_following_them(tmp_path):
+    # An NTFS junction (mklink /J) is a reparse point but pathlib's
+    # is_symlink() returns False for it - only is_junction() (3.12+) catches
+    # it. No admin/Developer Mode needed to create one, unlike a real symlink.
+    (tmp_path / "App").mkdir()
+    real_dir = tmp_path / "real_target"
+    real_dir.mkdir()
+    (real_dir / "secret.txt").write_bytes(b"outside base_dir")
+    link_path = tmp_path / "App" / "linked_junction"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link_path), str(real_dir)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip("mklink /J not available in this environment")
+
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_text("", encoding="utf-8")
+
+    assert check_integrity(tmp_path) == []
+
+
+def test_check_integrity_skips_a_junction_that_cycles_back_to_an_ancestor(tmp_path):
+    # This is the scenario that actually hangs a plain rglob() walk: a
+    # junction inside App/ pointing back at App/ itself recurses forever
+    # since rglob has already descended into it before any per-entry check
+    # runs. The fix must refuse to descend in the first place.
+    (tmp_path / "App").mkdir()
+    (tmp_path / "App" / "sub").mkdir()
+    link_path = tmp_path / "App" / "sub" / "cycle_back"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link_path), str(tmp_path / "App")],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip("mklink /J not available in this environment")
+
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_text("", encoding="utf-8")
+
     assert check_integrity(tmp_path) == []
 
 

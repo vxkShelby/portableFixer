@@ -62,3 +62,16 @@ def test_m18_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.label_en
         assert action.description_sk
         assert action.description_en
+
+
+def test_m18_catalog_backup_folder_lockdown_grants_the_current_user_too():
+    # An Administrators+SYSTEM-only ACL breaks non-elevated writes/deletes on
+    # this same folder, since a nominally-admin but non-elevated user gets a
+    # filtered token where that group membership is deny-only for ACL checks.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "backup_user_folders")
+    assert "icacls" in action.command
+    assert "S-1-5-32-544" in action.command
+    assert "S-1-5-18" in action.command
+    assert "$env:USERDOMAIN" in action.command
+    assert "if (-not (Test-Path $root))" in action.command

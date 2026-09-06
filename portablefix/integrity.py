@@ -28,6 +28,30 @@ def parse_sha256sums(sums_path: Path) -> dict[str, str]:
     return result
 
 
+def _iter_real_files(root: Path):
+    """Yield files under root without ever descending into a symlink or an
+    NTFS junction (mklink /J - a reparse point pathlib does NOT treat as a
+    symlink, so `Path.is_symlink()` alone misses it). rglob() itself already
+    recurses into a directory before any per-entry check can run, so a
+    planted junction that points back to an ancestor makes it loop forever;
+    walking directories ourselves lets us refuse to descend in the first
+    place instead of only filtering results after the fact."""
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink() or entry.is_junction():
+                continue
+            if entry.is_dir():
+                stack.append(entry)
+            elif entry.is_file():
+                yield entry
+
+
 def check_integrity(base_dir: Path) -> list[str]:
     sums_path = base_dir / "Data" / "SHA256SUMS"
     if not sums_path.exists():
@@ -43,17 +67,11 @@ def check_integrity(base_dir: Path) -> list[str]:
     # A single walk covers both directions: a file present on disk that
     # changed or was never in the manifest (extra DLL, planted module), and
     # (via `seen`, checked below) a manifest entry that vanished entirely.
-    # Symlinks are skipped - not just because a symlinked file could point
-    # outside base_dir, but because a symlinked *directory* can cycle back to
-    # an ancestor and make rglob recurse forever, letting a planted symlink
-    # hang this check instead of getting caught by it.
     for target in TARGET_DIRS:
         target_dir = base_dir / target
         if not target_dir.exists():
             continue
-        for file_path in target_dir.rglob("*"):
-            if file_path.is_symlink() or not file_path.is_file():
-                continue
+        for file_path in _iter_real_files(target_dir):
             rel_path = file_path.relative_to(base_dir).as_posix()
             seen.add(rel_path)
             expected_hash = expected.get(rel_path)

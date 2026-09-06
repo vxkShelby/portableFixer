@@ -77,6 +77,17 @@ def test_m16_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.description_en
 
 
+def test_m16_catalog_outlook_profile_reset_fails_the_action_if_rename_fails():
+    # Rename-Item's default ErrorActionPreference is Continue - without
+    # -EA Stop + a catch, a failed rename (e.g. Outlook still holding the
+    # registry key open) would still print the success message and exit 0.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "office_reset_outlook_profile")
+    assert "-EA Stop" in action.command
+    assert "catch" in action.command
+    assert "exit 1" in action.command
+
+
 def test_m16_long_running_repairs_have_extended_inactivity_timeouts():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}

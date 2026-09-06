@@ -72,3 +72,12 @@ def test_m15_catalog_clear_safe_mode_flag_does_not_overwrite_backup_on_second_ru
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "boot_clear_safe_mode_flag")
     assert "if (-not (Test-Path $bk))" in action.command
+
+
+def test_m15_catalog_clear_safe_mode_flag_locks_down_its_backup_folder():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "boot_clear_safe_mode_flag")
+    assert "icacls" in action.command
+    assert "S-1-5-32-544" in action.command
+    assert "S-1-5-18" in action.command
+    assert "$env:USERDOMAIN" in action.command

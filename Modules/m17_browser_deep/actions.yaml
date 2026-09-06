@@ -29,7 +29,7 @@ actions:
     label_sk: "Reset profilu Chrome"
     label_en: "Reset Chrome profile"
     risk: MODERATE
-    command: "Stop-Process -Name chrome -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $src = \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\"; $dst = \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default.bak-$ts\"; if (Test-Path $src) { Rename-Item -Path $src -NewName (Split-Path $dst -Leaf); Write-Output ('Chrome profile reset. Old profile saved as ' + $dst) } else { Write-Output 'Chrome default profile not found.' }"
+    command: "Stop-Process -Name chrome -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $src = \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\"; $dst = \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default.bak-$ts\"; if (Test-Path $src) { try { Rename-Item -Path $src -NewName (Split-Path $dst -Leaf) -EA Stop; Write-Output ('Chrome profile reset. Old profile saved as ' + $dst) } catch { Write-Output ('Failed to reset Chrome profile (it may still be running): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'Chrome default profile not found.' }"
     description_sk: "Zatvori Chrome bez varovania a premenuje jeho profil (nastavenia, rozsirenia, hesla) nabok - Chrome si pri dalsom starte vytvori novy. Zaloha ostane na disku, ale nema automaticke undo (bezpecne vratit sa da len pred prvym dalsim spustenim Chrome)."
     description_en: "Closes Chrome without asking and renames its profile (settings, extensions, saved passwords) aside - Chrome creates a fresh one on next launch. The old profile stays on disk but there's no automatic undo (only safely reversible before Chrome is relaunched)."
 
@@ -37,7 +37,7 @@ actions:
     label_sk: "Reset profilu Edge"
     label_en: "Reset Edge profile"
     risk: MODERATE
-    command: "Stop-Process -Name msedge -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $src = \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\"; $dst = \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default.bak-$ts\"; if (Test-Path $src) { Rename-Item -Path $src -NewName (Split-Path $dst -Leaf); Write-Output ('Edge profile reset. Old profile saved as ' + $dst) } else { Write-Output 'Edge default profile not found.' }"
+    command: "Stop-Process -Name msedge -Force -EA SilentlyContinue; Start-Sleep -Seconds 2; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; $src = \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\"; $dst = \"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default.bak-$ts\"; if (Test-Path $src) { try { Rename-Item -Path $src -NewName (Split-Path $dst -Leaf) -EA Stop; Write-Output ('Edge profile reset. Old profile saved as ' + $dst) } catch { Write-Output ('Failed to reset Edge profile (it may still be running): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'Edge default profile not found.' }"
     description_sk: "Rovnaky princip ako reset Chrome, ale pre Edge (proces msedge). Zaloha bez automatickeho undo."
     description_en: "Same approach as the Chrome reset, targeting Edge (msedge process). Backup kept, no automatic undo."
 

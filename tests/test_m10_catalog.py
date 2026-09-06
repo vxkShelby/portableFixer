@@ -33,6 +33,7 @@ def test_m10_catalog_driver_backup_locks_down_its_output_folder():
     assert "S-1-5-32-544" in action.command
     assert "S-1-5-18" in action.command
     assert "$env:USERDOMAIN" in action.command
+    assert "if (-not (Test-Path $root))" in action.command
 
 
 def test_m10_catalog_driver_backup_exit_code_reflects_actual_result():

@@ -78,6 +78,20 @@ def test_m17_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.description_en
 
 
+def test_m17_catalog_profile_resets_fail_the_action_if_rename_fails():
+    # Same discipline as the Outlook profile reset: Rename-Item's default
+    # ErrorActionPreference is Continue, so without -EA Stop + a catch a
+    # failed rename (browser still running, file locked) would still print
+    # the success message and exit 0.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("browser_reset_chrome_profile", "browser_reset_edge_profile"):
+        command = by_id[action_id].command
+        assert "-EA Stop" in command, action_id
+        assert "catch" in command, action_id
+        assert "exit 1" in command, action_id
+
+
 def test_m17_clear_policy_keys_refuses_on_domain_joined_or_mdm_enrolled_machine():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}

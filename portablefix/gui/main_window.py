@@ -5,7 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -1019,6 +1019,12 @@ class MainWindow(QMainWindow):
             row.addStretch(1)
             value = QLabel(self._t("sysinfo_loading"))
             value.setWordWrap(True)
+            # These labels show text sourced from hardware/OS reports (GPU
+            # name, VPN adapter name, disk health string, ...) - an
+            # unprivileged local process can name a device or VPN profile
+            # almost anything, so force plain text rather than letting Qt's
+            # auto-detection ever render it as rich text.
+            value.setTextFormat(Qt.TextFormat.PlainText)
             if tooltip:
                 caption.setToolTip(tooltip)
                 value.setToolTip(tooltip)
