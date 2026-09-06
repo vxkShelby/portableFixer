@@ -22,8 +22,9 @@ actions:
     label_en: "Enable .NET Framework 3.5"
     risk: REQUIRES_REBOOT
     command: "Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart"
-    description_sk: "Zapne .NET Framework 3.5 (potrebuje ho niektory starsi/hobby softver). Casto zlyha chybou 0x800f0950, ak je zakazane stahovanie funkcii cez Windows Update alebo nie je internet - vtedy treba instalacne medium Windows."
-    description_en: "Enables .NET Framework 3.5 (needed by some older/hobby software). Frequently fails with error 0x800f0950 if feature restoration via Windows Update is disabled by policy or there's no internet - Windows installation media is then needed."
+    undo_command: "Disable-WindowsOptionalFeature -Online -FeatureName NetFx3 -NoRestart"
+    description_sk: "Zapne .NET Framework 3.5 (potrebuje ho niektory starsi/hobby softver). Casto zlyha chybou 0x800f0950, ak je zakazane stahovanie funkcii cez Windows Update alebo nie je internet - vtedy treba instalacne medium Windows. Vyzaduje restart pre plne uplatnenie, undo funkciu zase vypne."
+    description_en: "Enables .NET Framework 3.5 (needed by some older/hobby software). Frequently fails with error 0x800f0950 if feature restoration via Windows Update is disabled by policy or there's no internet - Windows installation media is then needed. Requires a restart to fully apply; undo disables the feature again."
 
   - id: feature_disable_powershell_v2
     label_sk: "Vypnutie PowerShell v2"
@@ -39,5 +40,6 @@ actions:
     label_en: "Enable Windows Sandbox"
     risk: REQUIRES_REBOOT
     command: "try { Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM' -All -NoRestart -EA Stop; Write-Output 'Windows Sandbox enabled - restart required.' } catch { Write-Output ('Could not enable Windows Sandbox: ' + $_.Exception.Message + ' (needs Windows 10/11 Pro or Enterprise, and virtualization enabled in firmware.)') }"
-    description_sk: "Zapne Windows Sandbox (jednorazove izolovane prostredie na otestovanie podozriveho suboru/instalatora). Potrebuje Pro/Enterprise edicu a zapnutu virtualizaciu vo firmwari."
-    description_en: "Enables Windows Sandbox (a disposable isolated environment for testing a suspicious file/installer). Needs a Pro/Enterprise edition and virtualization enabled in firmware."
+    undo_command: "try { Disable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM' -NoRestart -EA Stop; Write-Output 'Windows Sandbox disabled.' } catch { Write-Output ('Could not disable Windows Sandbox: ' + $_.Exception.Message) }"
+    description_sk: "Zapne Windows Sandbox (jednorazove izolovane prostredie na otestovanie podozriveho suboru/instalatora). Potrebuje Pro/Enterprise edicu a zapnutu virtualizaciu vo firmwari. Vyzaduje restart pre plne uplatnenie, undo funkciu zase vypne."
+    description_en: "Enables Windows Sandbox (a disposable isolated environment for testing a suspicious file/installer). Needs a Pro/Enterprise edition and virtualization enabled in firmware. Requires a restart to fully apply; undo disables the feature again."

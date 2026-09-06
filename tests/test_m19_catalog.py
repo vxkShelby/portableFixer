@@ -30,16 +30,16 @@ def test_m19_catalog_risk_distribution():
     assert RiskLevel.DESTRUCTIVE not in by_risk
 
 
-def test_m19_catalog_only_powershell_v2_disable_has_undo():
+def test_m19_catalog_every_toggleable_feature_has_undo():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    assert by_id["feature_disable_powershell_v2"].undo_command is not None
-    for not_undoable in (
-        "feature_list_report",
-        "feature_legacy_insecure_report",
+    for undoable in (
+        "feature_disable_powershell_v2",
         "feature_enable_dotnet35",
         "feature_enable_sandbox",
     ):
+        assert by_id[undoable].undo_command is not None, undoable
+    for not_undoable in ("feature_list_report", "feature_legacy_insecure_report"):
         assert by_id[not_undoable].undo_command is None, not_undoable
 
 

@@ -32,16 +32,16 @@ def test_m15_catalog_risk_distribution():
     assert RiskLevel.REQUIRES_REBOOT not in by_risk
 
 
-def test_m15_catalog_only_f8_recovery_has_undo():
+def test_m15_catalog_reversible_actions_have_undo():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    assert by_id["boot_enable_f8_legacy_recovery"].undo_command is not None
+    for undoable in ("boot_enable_f8_legacy_recovery", "boot_clear_safe_mode_flag"):
+        assert by_id[undoable].undo_command is not None, undoable
     for not_undoable in (
         "boot_bcd_report",
         "boot_tpm_status",
         "boot_bitlocker_status",
         "boot_safe_mode_status",
-        "boot_clear_safe_mode_flag",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
 
