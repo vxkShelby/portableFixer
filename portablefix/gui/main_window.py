@@ -1057,9 +1057,9 @@ class MainWindow(QMainWindow):
                 return
 
         if self.settings.dry_run and action.preview_command:
-            plan = build_execution_plan(action.preview_command, dry_run=False)
+            plan = build_execution_plan(action.preview_command, dry_run=False, app_dir=paths.get_base_dir())
         else:
-            plan = build_execution_plan(action.command, self.settings.dry_run)
+            plan = build_execution_plan(action.command, self.settings.dry_run, app_dir=paths.get_base_dir())
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()

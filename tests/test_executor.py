@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import patch
 
 from portablefix.executor import POWERSHELL_PREFIX, ActionRunner, _clean_line, build_execution_plan
@@ -30,6 +31,26 @@ def test_build_execution_plan_real_run():
 def test_build_execution_plan_real_run_forces_utf8_but_keeps_display_command_clean():
     plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
     assert plan.argv[-1] == "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output 'hi'"
+    assert plan.display_command == "Write-Output 'hi'"
+
+
+def test_build_execution_plan_without_app_dir_is_byte_identical_to_before():
+    plan = build_execution_plan("Write-Output 'hi'", dry_run=False)
+    plan_explicit_none = build_execution_plan("Write-Output 'hi'", dry_run=False, app_dir=None)
+    assert plan.argv == POWERSHELL_PREFIX + [
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output 'hi'"
+    ]
+    assert plan_explicit_none.argv == plan.argv
+
+
+def test_build_execution_plan_with_app_dir_prepends_escaped_variable_assignment():
+    plan = build_execution_plan(
+        "Write-Output 'hi'", dry_run=False, app_dir=Path("C:/Users/O'Brien/PortableFix")
+    )
+    assert plan.argv == POWERSHELL_PREFIX + [
+        "$__pfAppDir = 'C:\\Users\\O''Brien\\PortableFix'; "
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output 'hi'"
+    ]
     assert plan.display_command == "Write-Output 'hi'"
 
 

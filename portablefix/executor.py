@@ -3,6 +3,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -26,10 +27,16 @@ class ExecutionPlan:
     argv: list[str] | None
 
 
-def build_execution_plan(command: str, dry_run: bool) -> ExecutionPlan:
+def build_execution_plan(command: str, dry_run: bool, app_dir: Path | None = None) -> ExecutionPlan:
     if dry_run:
         return ExecutionPlan(mode="dry_run", display_command=command, argv=None)
-    utf8_command = f"[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}"
+    prefix = ""
+    if app_dir is not None:
+        # Single-quote with doubled-quote escaping, not an f-string into double
+        # quotes - the real path can contain $ or backticks PowerShell would expand.
+        escaped = str(app_dir).replace("'", "''")
+        prefix = f"$__pfAppDir = '{escaped}'; "
+    utf8_command = f"{prefix}[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}"
     return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [utf8_command])
 
 
