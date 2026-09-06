@@ -3,9 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from portablefix.integrity import compute_sha256
-
-TARGET_DIRS = ("App", "Modules")
+from portablefix.integrity import TARGET_DIRS, compute_sha256
 
 
 def collect_files(base_dir: Path) -> list[Path]:

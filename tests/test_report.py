@@ -123,3 +123,17 @@ def test_build_report_data_skips_corrupted_audit_line(tmp_path):
 
     assert len(data["actions"]) == 1
     assert data["actions"][0]["action_id"] == "user_temp"
+
+
+def test_build_report_data_skips_valid_json_line_missing_required_fields(tmp_path):
+    modules = _fixture_modules()
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_missing")
+    append_entry(tmp_path, "run_missing", entry)
+    path = audit_log_path(tmp_path, "run_missing")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"module_id": "m02_cleanup"}) + "\n")
+
+    data = build_report_data(tmp_path, "run_missing", modules, "en", {}, {})
+
+    assert len(data["actions"]) == 1
+    assert data["actions"][0]["action_id"] == "user_temp"

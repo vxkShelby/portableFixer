@@ -3,6 +3,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+TARGET_DIRS = ("App", "Modules")
+
 
 def compute_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -41,6 +43,19 @@ def check_integrity(base_dir: Path) -> list[str]:
         file_path = base_dir / rel_path
         if not file_path.exists() or compute_sha256(file_path) != expected_hash:
             mismatches.append(rel_path)
+    # A file that showed up under App/ or Modules/ without ever being in the
+    # manifest (extra DLL, planted module) is exactly what this tamper check
+    # exists to catch - not just files that changed after being listed.
+    for target in TARGET_DIRS:
+        target_dir = base_dir / target
+        if not target_dir.exists():
+            continue
+        for file_path in target_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            rel_path = file_path.relative_to(base_dir).as_posix()
+            if rel_path not in expected:
+                mismatches.append(rel_path)
     return mismatches
 
 

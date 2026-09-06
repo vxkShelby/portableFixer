@@ -54,6 +54,19 @@ def test_check_integrity_detects_missing_file(tmp_path):
     assert check_integrity(tmp_path) == ["App/missing.txt"]
 
 
+def test_check_integrity_detects_file_added_outside_the_manifest(tmp_path):
+    (tmp_path / "App").mkdir()
+    known = tmp_path / "App" / "known.txt"
+    known.write_bytes(b"content")
+    digest = compute_sha256(known)
+    (tmp_path / "Modules").mkdir()
+    (tmp_path / "Modules" / "planted.dll").write_bytes(b"not in the manifest")
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_text(f"{digest}  App/known.txt\n", encoding="utf-8")
+
+    assert check_integrity(tmp_path) == ["Modules/planted.dll"]
+
+
 def test_check_integrity_unreadable_manifest_degrades_to_empty_instead_of_raising(tmp_path):
     (tmp_path / "Data").mkdir()
     (tmp_path / "Data" / "SHA256SUMS").write_bytes(b"\xff\xfe\x00\xff not valid utf-8")

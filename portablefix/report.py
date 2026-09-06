@@ -19,6 +19,9 @@ def _find_action(modules: list[ModuleDef], module_id: str, action_id: str) -> Ac
     return None
 
 
+_REQUIRED_ENTRY_FIELDS = ("module_id", "action_id", "timestamp", "exit_code", "dry_run")
+
+
 def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
     path = audit_log_path(base_dir, run_id)
     if not path.exists():
@@ -29,9 +32,15 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
         if not line:
             continue
         try:
-            entries.append(json.loads(line))
+            entry = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # A truncated write mid-crash can leave a syntactically valid JSON
+        # object missing fields the report needs - skip it rather than
+        # letting a KeyError abort the whole report for every good entry.
+        if not isinstance(entry, dict) or any(f not in entry for f in _REQUIRED_ENTRY_FIELDS):
+            continue
+        entries.append(entry)
     return entries
 
 
