@@ -45,3 +45,17 @@ actions:
     command: "UsoClient.exe StartScan"
     description_sk: "Spusti kontrolu dostupnych aktualizacii na pozadi."
     description_en: "Starts a background scan for available updates."
+  - id: wu_driver_updates_report
+    label_sk: "Kontrola aktualizacii ovladacov (Windows Update)"
+    label_en: "Check for driver updates (Windows Update)"
+    risk: SAFE
+    command: "try { $session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $result = $searcher.Search(\"IsInstalled=0 and Type='Driver'\"); if ($result.Updates.Count -eq 0) { Write-Output 'No pending driver updates found via Windows Update.' } else { foreach ($u in $result.Updates) { Write-Output $u.Title } } } catch { Write-Output ('Could not check for driver updates: ' + $_.Exception.Message); exit 1 }"
+    description_sk: "Cez Windows Update Agent (COM API) skontroluje, ci su k dispozicii aktualizacie typu Driver. Nic nemeni."
+    description_en: "Uses the Windows Update Agent (COM API) to check for pending Driver-type updates. Changes nothing."
+  - id: wu_uninstall_last_update
+    label_sk: "Odinstalovanie poslednej aktualizacie"
+    label_en: "Uninstall last update"
+    risk: REQUIRES_REBOOT
+    command: "$hotfix = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1; if ($hotfix -and $hotfix.HotFixID -match '^KB(\\d+)$') { $kb = $matches[1]; $out = & wusa.exe /uninstall /kb:$kb /quiet /norestart 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0 -or $exitCode -eq 3010) { Write-Output ('Uninstall of ' + $hotfix.HotFixID + ' started (exit code ' + $exitCode + '). Restart required to finish.') } else { Write-Output ('Failed to uninstall ' + $hotfix.HotFixID + ' - exit code ' + $exitCode); exit 1 } } else { Write-Output 'No recent hotfix found to uninstall (or HotFixID format unexpected).'; exit 1 }"
+    description_sk: "Najde najnovsie nainstalovany hotfix (KB) a odinstaluje ho cez wusa.exe /uninstall - standardny krok, ak nedavna aktualizacia nieco pokazila. Vyzaduje restart na dokoncenie. Bez undo (nemozno automaticky znovu nainstalovat konkretne KB)."
+    description_en: "Finds the most recently installed hotfix (KB) and uninstalls it via wusa.exe /uninstall - a standard troubleshooting step when a recent update broke something. Requires a restart to finish. No undo (can't automatically reinstall a specific KB)."

@@ -22,3 +22,31 @@ actions:
     command: "$me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\DriverBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $out = & pnputil /export-driver * $dest 2>&1; $exitCode = $LASTEXITCODE; $summary = ($out | Select-String -Pattern 'Total driver packages:|Exported driver packages:') -join '; '; if ($exitCode -eq 0) { Write-Output ('Driver backup saved to: ' + $dest); Write-Output $summary } else { Write-Output ('Driver export failed (needs administrator): ' + (($out | Select-Object -Last 3) -join ' ')) }; if ($exitCode -eq 0) { exit 0 } else { exit 1 }"
     description_sk: "Zaexportuje vsetky nainstalovane ovladace (pnputil /export-driver) do priecinka pristupneho len aktualnemu pouzivatelovi, SYSTEM a administratorom - pred resetom/reinstalaciou systemu, najma tretostranove/OEM ovladace, ktore by inak bolo tazke znovu najst. Nic v systeme nemeni, len uklada subory."
     description_en: "Exports every installed driver (pnputil /export-driver) into a folder only the current user, SYSTEM, and administrators can read - before a system reset/reinstall, especially third-party/OEM drivers that would otherwise be hard to find again. Changes nothing in the system, only saves files."
+  - id: drv_stale_report
+    label_sk: "Stare ovladace (2+ roky)"
+    label_en: "Stale drivers (2+ years)"
+    risk: SAFE
+    command: "$cutoff = (Get-Date).AddYears(-2); $old = Get-CimInstance Win32_PnpSignedDriver | ForEach-Object { if ($_.DriverDate) { try { $parsed = [Management.ManagementDateTimeConverter]::ToDateTime($_.DriverDate) } catch { return }; $_ | Add-Member -NotePropertyName ParsedDate -NotePropertyValue $parsed -PassThru } } | Where-Object { $_.ParsedDate -lt $cutoff }; if ($old) { $old | Sort-Object ParsedDate | Select-Object DeviceName, DriverVersion, @{N='DriverDate';E={$_.ParsedDate.ToString('yyyy-MM-dd')}} | Format-Table -AutoSize -Wrap } else { Write-Output 'No drivers older than 2 years found.' }"
+    description_sk: "Vypise nainstalovane ovladace stare viac ako 2 roky, zoradene podla datumu. Nic nemeni."
+    description_en: "Lists installed drivers older than 2 years, sorted by date. Changes nothing."
+  - id: drv_restore_backup
+    label_sk: "Obnovenie zalohy ovladacov"
+    label_en: "Restore driver backup"
+    risk: MODERATE
+    command: "$root = \"$env:ProgramData\\PortableFix\"; $latest = Get-ChildItem $root -Directory -Filter 'DriverBackup_*' -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1; if ($latest) { & pnputil /add-driver \"$($latest.FullName)\\*.inf\" /subdirs /install 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Restored drivers from: ' + $latest.FullName) } else { Write-Output ('Driver restore failed (needs administrator): exit code ' + $LASTEXITCODE); exit 1 } } else { Write-Output 'No driver backup found (run \"Back up all drivers\" first).'; exit 1 }"
+    description_sk: "Najde najnovsiu zalohu vytvorenu akciou 'Zaloha vsetkych ovladacov' (priecinok DriverBackup_* v $env:ProgramData\\PortableFix) a nainstaluje z nej ovladace cez pnputil /add-driver. Bez univerzalneho undo (nie je genericky sposob vratit sa na povodne/starsie ovladace)."
+    description_en: "Finds the most recent backup made by the 'Back up all drivers' action (a DriverBackup_* folder under $env:ProgramData\\PortableFix) and installs drivers from it via pnputil /add-driver. No generic undo (there's no universal way to roll back to the previous/older drivers)."
+  - id: drv_duplicate_packages_report
+    label_sk: "Duplicitne balicky ovladacov"
+    label_en: "Duplicate driver packages"
+    risk: SAFE
+    command: "$out = pnputil /enum-drivers; $blocks = ($out -join \"`n\") -split '(?=Published Name\\s*:)'; $groups = @{}; foreach ($b in $blocks) { if ($b -match 'Original Name\\s*:\\s*(\\S+)') { $orig = $matches[1]; if (-not $groups.ContainsKey($orig)) { $groups[$orig] = @() }; $groups[$orig] += $b } }; $dupes = $groups.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }; if ($dupes) { foreach ($d in $dupes) { Write-Output ('--- ' + $d.Key + ' (' + $d.Value.Count + ' versions published) ---') }; Write-Output 'Review with \"pnputil /enum-drivers\" for full details; remove old ones manually with \"pnputil /delete-driver <oemN.inf> /uninstall\" if you are sure they are unused.' } else { Write-Output 'No duplicate driver package versions found.' }"
+    description_sk: "Iba nahlasi ovladacie balicky s viacerymi publikovanymi verziami pre to iste povodne meno (mozny zvysok po aktualizaciach). Nic neodstranuje - ak je niektory zbytocny, odstrante ho sami prikazom 'pnputil /delete-driver <oemN.inf> /uninstall' po overeni cez 'pnputil /enum-drivers'."
+    description_en: "Only reports driver packages with multiple published versions for the same original name (possible leftovers from updates). Removes nothing - if one is unused, delete it yourself with 'pnputil /delete-driver <oemN.inf> /uninstall' after checking with 'pnputil /enum-drivers'."
+  - id: drv_unsigned_report
+    label_sk: "Nepodpisane ovladace"
+    label_en: "Unsigned drivers"
+    risk: SAFE
+    command: "$unsigned = Get-CimInstance Win32_PnpSignedDriver | Where-Object { $_.IsSigned -eq $false -and $_.DeviceName }; if ($unsigned) { $unsigned | Select-Object DeviceName, DriverVersion, Manufacturer | Format-Table -AutoSize -Wrap } else { Write-Output 'No unsigned drivers found.' }"
+    description_sk: "Vypise nainstalovane ovladace, ktore nie su digitalne podpisane. Nic nemeni."
+    description_en: "Lists installed drivers that are not digitally signed. Changes nothing."
