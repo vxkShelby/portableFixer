@@ -39,6 +39,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M19 | Oprava | Voliteľné funkcie Windows: prehľad, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Oprava | Aktualizácia softvéru cez winget: zoznam, zastaraný softvér, update all |
 | M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor) |
+| M22 | Čistenie | Hlbšie čistenie: osamotené uninstall položky, duplicitné súbory, nefunkčné odkazy (.lnk), bezpečné prepísanie voľného miesta |
 
 ## Bezpečnostné mechanizmy
 
@@ -66,6 +67,14 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   `Modules/`, `Vendor/`, `PortableFix.cmd`) - `Data/settings.json`
   (jazyk, dry-run) sa zachová. Pri zlyhaní (offline, timeout) je ticho
   — nič nevypíše.
+- **Ochrana pred zmazaním vlastných súborov:** akcie čistiace `%TEMP%`
+  a `%WINDIR%\Temp` (`user_temp`, `system_temp`) rozpoznajú, ak appka
+  beží zvnútra tohto priečinka, a jej priečinok vynechajú - ak sa to
+  nedá bezpečne určiť (appka JE `%TEMP%`, alebo je presmerovaný cez
+  junction/symlink), akcia sa radšej vôbec nespustí a appka to oznámi.
+  Appka pri štarte tiež zaloguje vlastné cesty, a počas behu dávky
+  kontroluje, či jej priečinok medzičasom nezmizol - ak áno, dávku
+  okamžite zastaví namiesto tichého pokračovania.
 
 ## Štruktúra priečinkov
 
@@ -93,8 +102,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 Výstup: `App/PortableFix.exe` (PyInstaller onefile, jeden spustiteľný
-súbor, žiadny `_internal` podpriečinok). Po buildе vygeneruj kontrolné
-súčty: `python scripts/generate_sha256sums.py`.
+súbor, žiadny `_internal` podpriečinok). Skript automaticky aj
+vygeneruje kontrolné súčty, zbalí portable ZIP a skompiluje inštalátor
+(ak je nájdený `ISCC.exe`) - žiadny manuálny krok navyše netreba.
 
 ## Manuálne kroky pred distribúciou
 

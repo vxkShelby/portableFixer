@@ -40,6 +40,7 @@ PowerShell.
 | M19 | Repair | Windows optional features: overview, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Repair | Software updates via winget: list, outdated software, update all |
 | M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor) |
+| M22 | Cleanup | Deep cleanup: orphaned uninstall entries, duplicate files, broken shortcuts (.lnk), secure free-space wipe |
 
 ## Safety mechanisms
 
@@ -68,6 +69,15 @@ PowerShell.
   replaces the whole package (`App/`, `Modules/`, `Vendor/`,
   `PortableFix.cmd`) - `Data/settings.json` (language, dry-run) is kept.
   On failure (offline, timeout) it stays silent - nothing is shown.
+- **Self-delete protection:** the actions that wipe `%TEMP%` and
+  `%WINDIR%\Temp` (`user_temp`, `system_temp`) detect if the app is
+  running from inside that folder and exclude it - if that can't be
+  determined safely (the app's own folder IS `%TEMP%`, or it's
+  redirected via a junction/symlink), the action refuses to run at all
+  and tells the user instead of guessing. The app also logs its own
+  resolved paths at startup, and checks mid-batch whether its own
+  folder has disappeared - if so, it stops the batch immediately
+  instead of silently continuing.
 
 ## Folder layout
 
@@ -95,8 +105,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 Output: `App/PortableFix.exe` (PyInstaller onefile, a single
-executable, no `_internal` subfolder). After building, regenerate the
-checksums: `python scripts/generate_sha256sums.py`.
+executable, no `_internal` subfolder). The script also automatically
+regenerates checksums, packages the portable ZIP, and compiles the
+installer (if `ISCC.exe` is found) - no extra manual step needed.
 
 ## Manual steps before distribution
 
