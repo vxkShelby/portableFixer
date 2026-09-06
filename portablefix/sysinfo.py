@@ -227,6 +227,11 @@ def read_hardware_sensors(assets_dir: Path) -> dict:
     computer = init_hardware_monitor(assets_dir)
     if computer is None:
         return result
+    # Each GPU's fields are collected into its own dict first - on a laptop
+    # with an iGPU+dGPU, writing straight into `result` per-sensor would mix
+    # e.g. one GPU's name with another GPU's temperature. Only the busiest
+    # GPU's complete, consistent set of fields is published.
+    gpu_candidates = []
     try:
         for hw in computer.Hardware:
             hw.Update()
@@ -240,23 +245,33 @@ def read_hardware_sensors(assets_dir: Path) -> dict:
                 if clocks:
                     result["cpu_clock_mhz"] = round(max(clocks), 0)
             elif type_name.startswith("Gpu"):
-                result["gpu_name"] = hw.Name
+                gpu = {
+                    "gpu_name": hw.Name,
+                    "gpu_load_percent": None,
+                    "gpu_temp_c": None,
+                    "gpu_clock_mhz": None,
+                    "gpu_vram_used_gb": None,
+                    "gpu_vram_total_gb": None,
+                }
                 for s in hw.Sensors:
                     sensor_type, name, value = str(s.SensorType), s.Name, s.Value
                     if value is None:
                         continue
                     if sensor_type == "Load" and name == "GPU Core":
-                        result["gpu_load_percent"] = round(value, 0)
+                        gpu["gpu_load_percent"] = round(value, 0)
                     elif sensor_type == "Temperature" and name == "GPU Core":
-                        result["gpu_temp_c"] = round(value, 0)
+                        gpu["gpu_temp_c"] = round(value, 0)
                     elif sensor_type == "Clock" and name == "GPU Core":
-                        result["gpu_clock_mhz"] = round(value, 0)
+                        gpu["gpu_clock_mhz"] = round(value, 0)
                     elif sensor_type == "SmallData" and name == "D3D Dedicated Memory Used":
-                        result["gpu_vram_used_gb"] = round(value / 1024, 1)
+                        gpu["gpu_vram_used_gb"] = round(value / 1024, 1)
                     elif sensor_type == "SmallData" and name == "D3D Dedicated Memory Total":
-                        result["gpu_vram_total_gb"] = round(value / 1024, 1)
+                        gpu["gpu_vram_total_gb"] = round(value / 1024, 1)
+                gpu_candidates.append(gpu)
     except Exception:
         pass
+    if gpu_candidates:
+        result.update(max(gpu_candidates, key=lambda g: g["gpu_load_percent"] or -1))
     return result
 
 

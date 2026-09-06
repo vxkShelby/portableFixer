@@ -50,6 +50,48 @@ def test_read_hardware_sensors_degrades_gracefully_without_vendored_dll(tmp_path
     assert error is not None
 
 
+class _FakeSensor:
+    def __init__(self, sensor_type, name, value):
+        self.SensorType = sensor_type
+        self.Name = name
+        self.Value = value
+
+
+class _FakeHardware:
+    def __init__(self, hardware_type, name, sensors):
+        self.HardwareType = hardware_type
+        self.Name = name
+        self.Sensors = sensors
+
+    def Update(self):
+        pass
+
+
+class _FakeComputer:
+    def __init__(self, hardware):
+        self.Hardware = hardware
+
+
+def test_read_hardware_sensors_does_not_mix_fields_from_different_gpus(tmp_path):
+    igpu = _FakeHardware("GpuIntel", "Intel Iris Xe", [
+        _FakeSensor("Load", "GPU Core", 5.0),
+        _FakeSensor("Temperature", "GPU Core", 40.0),
+    ])
+    dgpu = _FakeHardware("GpuNvidia", "NVIDIA RTX 4070", [
+        _FakeSensor("Load", "GPU Core", 80.0),
+        _FakeSensor("Temperature", "GPU Core", 70.0),
+        _FakeSensor("Clock", "GPU Core", 1800.0),
+    ])
+    fake_computer = _FakeComputer([igpu, dgpu])
+    with patch("portablefix.sysinfo.init_hardware_monitor", return_value=fake_computer):
+        result = sysinfo.read_hardware_sensors(tmp_path)
+    # The busier GPU's fields must all come from that same GPU, never a mix.
+    assert result["gpu_name"] == "NVIDIA RTX 4070"
+    assert result["gpu_load_percent"] == 80.0
+    assert result["gpu_temp_c"] == 70.0
+    assert result["gpu_clock_mhz"] == 1800.0
+
+
 def test_init_hardware_monitor_retries_with_a_different_assets_dir(tmp_path):
     sysinfo._hw_init_attempted = False
     sysinfo._hw_computer = None
