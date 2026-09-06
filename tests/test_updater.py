@@ -231,6 +231,61 @@ def test_download_update_cleans_up_partial_file_on_read_failure(tmp_path):
     assert not (dest / "PortableFix-update.zip").exists()
 
 
+def test_download_update_reports_progress_via_content_length(tmp_path):
+    content = b"x" * 100
+    expected_hash = hashlib.sha256(content).hexdigest()
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            mock_resp = MagicMock()
+            mock_resp.read.side_effect = [content[:60], content[60:], b""]
+            mock_resp.getheader.return_value = str(len(content))
+            mock_resp.__enter__.return_value = mock_resp
+            return mock_resp
+        return _mock_response(expected_hash.encode("utf-8"))
+
+    calls = []
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        download_update(info, tmp_path / "dest", on_progress=lambda d, t: calls.append((d, t)))
+
+    assert calls == [(60, 100), (100, 100)]
+
+
+def test_download_update_reports_zero_total_when_content_length_missing(tmp_path):
+    # A missing/malformed Content-Length header must degrade to "unknown
+    # size" (0), not crash the download - the GUI shows an indeterminate
+    # progress bar in that case instead of a frozen one.
+    content = b"abc"
+    expected_hash = hashlib.sha256(content).hexdigest()
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            mock_resp = MagicMock()
+            mock_resp.read.side_effect = [content, b""]
+            mock_resp.getheader.return_value = None
+            mock_resp.__enter__.return_value = mock_resp
+            return mock_resp
+        return _mock_response(expected_hash.encode("utf-8"))
+
+    calls = []
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        download_update(info, tmp_path / "dest", on_progress=lambda d, t: calls.append((d, t)))
+
+    assert calls == [(3, 0)]
+
+
 def test_download_update_raises_when_no_sha256_asset(tmp_path):
     # Fail closed: a release with no SHA256 manifest must never be trusted
     # silently - refusing beats installing an unverified zip.
@@ -512,6 +567,23 @@ def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
         with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
             runner.start()
     assert blocker.args == [fake_path, ""]
+
+
+def test_update_download_runner_forwards_progress_signal(qtbot, tmp_path):
+    info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
+
+    def fake_download_update(info, dest_dir, on_progress=None):
+        on_progress(50, 100)
+        on_progress(100, 100)
+        return tmp_path / "PortableFix-update.zip"
+
+    with patch("portablefix.updater.download_update", side_effect=fake_download_update):
+        runner = UpdateDownloadRunner(info, tmp_path)
+        progress_calls = []
+        runner.progress.connect(lambda d, t: progress_calls.append((d, t)))
+        with qtbot.waitSignal(runner.download_finished, timeout=2000):
+            runner.start()
+    assert progress_calls == [(50, 100), (100, 100)]
 
 
 def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):

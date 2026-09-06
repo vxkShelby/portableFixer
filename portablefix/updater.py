@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -85,7 +86,11 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
         return None
 
 
-def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
+def download_update(
+    info: UpdateInfo,
+    dest_dir: Path,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
     # Fail closed: a release published without a .sha256 asset (CI mishap, or
     # a tampered release that simply omits it) must not be trusted silently -
     # an unverified zip is about to be swapped in as the running application.
@@ -95,11 +100,21 @@ def download_update(info: UpdateInfo, dest_dir: Path) -> Path:
     zip_path = dest_dir / "PortableFix-update.zip"
     try:
         with urllib.request.urlopen(info.package_url, timeout=DOWNLOAD_TIMEOUT_SEC) as resp, zip_path.open("wb") as f:
+            try:
+                total = int(resp.getheader("Content-Length") or 0)
+            except (TypeError, ValueError):
+                # A missing/malformed header means unknown size, not fatal -
+                # the caller shows an indeterminate progress bar instead.
+                total = 0
+            downloaded = 0
             while True:
                 chunk = resp.read(_DOWNLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
                 f.write(chunk)
+                downloaded += len(chunk)
+                if on_progress is not None:
+                    on_progress(downloaded, total)
     except Exception:
         zip_path.unlink(missing_ok=True)
         raise
@@ -234,6 +249,7 @@ class UpdateCheckRunner(QThread):
 
 class UpdateDownloadRunner(QThread):
     download_finished = Signal(object, str)
+    progress = Signal(int, int)
 
     def __init__(self, info: UpdateInfo, dest_dir: Path, parent=None):
         super().__init__(parent)
@@ -243,7 +259,7 @@ class UpdateDownloadRunner(QThread):
 
     def run(self) -> None:
         try:
-            path = download_update(self._info, self._dest_dir)
+            path = download_update(self._info, self._dest_dir, on_progress=self.progress.emit)
             self.download_finished.emit(path, "")
         except Exception as exc:
             self.download_finished.emit(None, str(exc))
