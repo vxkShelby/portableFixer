@@ -226,6 +226,30 @@ def test_load_module_parses_undo_command(tmp_path):
     assert module.actions[0].undo_command == "Write-Output 'undo'"
 
 
+def test_load_module_parses_inactivity_timeout_sec(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n"
+        "    inactivity_timeout_sec: 2400\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.actions[0].inactivity_timeout_sec == 2400
+
+
+def test_load_module_without_inactivity_timeout_sec_defaults_to_none(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML, encoding="utf-8")
+    module = load_module(yaml_path)
+    assert module.actions[0].inactivity_timeout_sec is None
+
+
 def test_load_module_without_undo_command_defaults_to_none(tmp_path):
     yaml_path = tmp_path / "actions.yaml"
     yaml_path.write_text(

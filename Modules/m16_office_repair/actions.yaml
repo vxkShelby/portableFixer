@@ -39,6 +39,7 @@ actions:
     label_en: "Office Quick Repair (offline)"
     risk: MODERATE
     command: "$c2r = \"$env:ProgramFiles\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeC2RClient.exe\"; if (Test-Path $c2r) { & $c2r scenario=Repair RepairType=QuickRepair DisplayLevel=False; Write-Output 'Quick Repair started (offline, ~2-5 min).' } else { Write-Output 'Click-to-Run client not found - Office is not installed, or is an MSI-based/volume-license install that needs Control Panel > Programs repair instead.' }"
+    inactivity_timeout_sec: 600
     description_sk: "Spusti rychlu (offline) opravu Click-to-Run Office. Nevyzaduje internet, cca 2-5 min. Poznamka: nie je isto overene, ci prikaz caka na dokoncenie opravy alebo sa hlasi hotovy skor - ak nastroj ohlasi uspech skoro po spusteni, oprava mohla pokracovat na pozadi."
     description_en: "Runs a quick (offline) Click-to-Run Office repair. No internet needed, ~2-5 min. Note: it's not fully confirmed whether the command blocks until the repair actually finishes or reports done early - if this reports success very quickly, the repair may still be running in the background."
 
@@ -47,5 +48,6 @@ actions:
     label_en: "Office Online Repair"
     risk: MODERATE
     command: "$c2r = \"$env:ProgramFiles\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeC2RClient.exe\"; if (Test-Path $c2r) { & $c2r scenario=Repair RepairType=FullRepair DisplayLevel=False; Write-Output 'Online Repair started (needs internet, re-downloads the Office payload, can take 15-30+ min).' } else { Write-Output 'Click-to-Run client not found.' }"
-    description_sk: "Spusti uplnu opravu Click-to-Run Office (znovu stiahne Office cez internet, 15-30+ min). Rovnaka nezistena poznamka o dokonceni ako pri rychlej oprave, tu s dlhsim behom - moze narazit na 300s watchdog appky, ak prikaz behom tejto doby nic nevypise."
-    description_en: "Runs a full Click-to-Run Office repair (re-downloads Office over the internet, 15-30+ min). Same unconfirmed caveat about completion timing as Quick Repair, with a longer run - may hit the app's 300s inactivity watchdog if the command prints nothing for that long."
+    inactivity_timeout_sec: 2400
+    description_sk: "Spusti uplnu opravu Click-to-Run Office (znovu stiahne Office cez internet, 15-30+ min). Rovnaka nezistena poznamka o dokonceni ako pri rychlej oprave, tu s dlhsim behom. Tato akcia ma predlzeny watchdog (40 min) namiesto standardnych 300s."
+    description_en: "Runs a full Click-to-Run Office repair (re-downloads Office over the internet, 15-30+ min). Same unconfirmed caveat about completion timing as Quick Repair, with a longer run. This action has an extended watchdog (40 min) instead of the standard 300s."

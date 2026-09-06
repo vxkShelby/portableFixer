@@ -43,6 +43,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 description_en=raw.get("description_en", ""),
                 preview_command=raw.get("preview_command"),
                 undo_command=raw.get("undo_command"),
+                inactivity_timeout_sec=raw.get("inactivity_timeout_sec"),
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

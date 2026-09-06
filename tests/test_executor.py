@@ -191,3 +191,17 @@ def test_action_runner_watchdog_kills_process_after_inactivity_timeout(qtbot):
             runner.start()
             qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
     assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE
+
+
+def test_action_runner_uses_per_action_inactivity_timeout_override(qtbot):
+    # A per-action override must win even though the module-level default
+    # (300s) is left untouched - this is what lets a long-running action
+    # (e.g. Office Online Repair) get a longer watchdog than everything else.
+    plan = build_execution_plan("Start-Sleep -Seconds 30", dry_run=False)
+    runner = ActionRunner(plan, inactivity_timeout_sec=0.2)
+    results = []
+    runner.finished_with_code.connect(results.append)
+    with patch.object(executor_module, "WATCHDOG_POLL_SEC", 0.1):
+        runner.start()
+        qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
+    assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE

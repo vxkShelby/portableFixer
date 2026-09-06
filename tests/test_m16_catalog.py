@@ -72,3 +72,17 @@ def test_m16_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.label_en
         assert action.description_sk
         assert action.description_en
+
+
+def test_m16_long_running_repairs_have_extended_inactivity_timeouts():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert by_id["office_online_repair"].inactivity_timeout_sec == 2400
+    assert by_id["office_quick_repair"].inactivity_timeout_sec == 600
+    for default_timeout in (
+        "office_version_channel_report",
+        "office_addins_report",
+        "office_ost_pst_report",
+        "office_com_addin_disable_all_thirdparty",
+    ):
+        assert by_id[default_timeout].inactivity_timeout_sec is None, default_timeout

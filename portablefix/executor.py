@@ -83,7 +83,7 @@ class ActionRunner(QThread):
     CANCELLED_EXIT_CODE = -3
     POWERSHELL_NOT_FOUND_EXIT_CODE = -4
 
-    def __init__(self, plan: ExecutionPlan, parent=None):
+    def __init__(self, plan: ExecutionPlan, parent=None, inactivity_timeout_sec: int | None = None):
         super().__init__(parent)
         self._plan = plan
         self.captured_output: list[str] = []
@@ -92,6 +92,10 @@ class ActionRunner(QThread):
         self._timed_out = False
         self._last_activity = time.monotonic()
         self._watchdog_stop = threading.Event()
+        # None means "use the module default" - looked up live in _watchdog
+        # (not snapshotted here) so tests can still patch INACTIVITY_TIMEOUT_SEC
+        # after construction, same as they already do for WATCHDOG_POLL_SEC.
+        self._inactivity_timeout_override = inactivity_timeout_sec
         self.finished.connect(self.deleteLater)
 
     def cancel(self) -> None:
@@ -106,7 +110,8 @@ class ActionRunner(QThread):
         start = time.monotonic()
         while not self._watchdog_stop.wait(WATCHDOG_POLL_SEC):
             now = time.monotonic()
-            if now - self._last_activity > INACTIVITY_TIMEOUT_SEC or now - start > HARD_CAP_SEC:
+            timeout = self._inactivity_timeout_override or INACTIVITY_TIMEOUT_SEC
+            if now - self._last_activity > timeout or now - start > HARD_CAP_SEC:
                 self._timed_out = True
                 if self._process is not None:
                     try:
