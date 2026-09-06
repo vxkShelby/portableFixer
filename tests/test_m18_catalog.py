@@ -79,3 +79,15 @@ def test_m18_catalog_backup_folder_lockdown_grants_the_current_user_too():
     # freshly created one.
     assert 'icacls $root /inheritance:r' in action.command
     assert "Test-Path $root" not in action.command
+
+
+def test_m18_catalog_restore_paths_check_robocopy_exit_code_too():
+    # The forward backup command already translates robocopy's bitflag exit
+    # codes (0-7 = success, 8+ = real failure) - both restore paths
+    # (backup_user_folders' undo, and the standalone backup_restore_latest)
+    # run the identical robocopy call and must apply the same check, not
+    # just claim "Restored..." unconditionally.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert "$LASTEXITCODE -ge 8" in by_id["backup_user_folders"].undo_command
+    assert "$LASTEXITCODE -ge 8" in by_id["backup_restore_latest"].command

@@ -65,3 +65,14 @@ def test_m14_catalog_every_action_has_both_language_labels_and_descriptions():
         assert action.label_en
         assert action.description_sk
         assert action.description_en
+
+
+def test_m14_catalog_reset_print_system_verifies_it_actually_worked():
+    # Stop-Service/Start-Service on Spooler silently no-op without
+    # administrator - the command must check via -EA Stop/try-catch and a
+    # final Get-Printer re-check, not just claim success unconditionally.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "print_reset_print_system")
+    assert "-EA Stop" in action.command
+    assert "exit 1" in action.command
+    assert "Get-Printer -EA SilentlyContinue" in action.command

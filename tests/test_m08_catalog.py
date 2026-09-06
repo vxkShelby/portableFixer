@@ -76,3 +76,15 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "sec_listening_ports_audit",
         "sec_root_cert_audit",
     }
+
+
+def test_m08_catalog_uac_restore_verifies_the_registry_write_actually_worked():
+    # Set-ItemProperty on this HKLM policy key throws a non-terminating
+    # SecurityException without administrator, which -EA SilentlyContinue
+    # (or no -EA at all) would swallow while still claiming success.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "hard_uac_restore_default")
+    assert "-EA Stop" in action.command
+    assert "exit 1" in action.command
+    assert "-EA Stop" in action.undo_command
+    assert "exit 1" in action.undo_command

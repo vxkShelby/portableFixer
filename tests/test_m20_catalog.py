@@ -84,3 +84,10 @@ def test_m20_catalog_source_reset_exit_code_reflects_actual_result():
     action = next(a for a in module.actions if a.id == "winget_source_reset")
     assert "$LASTEXITCODE" in action.command
     assert "exit 1" in action.command
+
+
+def test_m20_catalog_update_all_exit_code_reflects_actual_result():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "winget_update_all")
+    assert "$LASTEXITCODE" in action.command
+    assert "exit 1" in action.command

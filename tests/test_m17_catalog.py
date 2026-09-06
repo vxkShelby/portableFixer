@@ -92,6 +92,17 @@ def test_m17_catalog_profile_resets_fail_the_action_if_rename_fails():
         assert "exit 1" in command, action_id
 
 
+def test_m17_clear_policy_keys_verifies_the_keys_are_actually_gone():
+    # Remove-Item on an HKLM key with -EA SilentlyContinue silently no-ops
+    # without administrator - the command must Test-Path both keys
+    # afterward and only claim success if they're actually gone.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "browser_clear_policy_keys")
+    assert "chromeGone" in action.command
+    assert "edgeGone" in action.command
+    assert action.command.count("exit 1") == 2
+
+
 def test_m17_clear_policy_keys_refuses_on_domain_joined_or_mdm_enrolled_machine():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}

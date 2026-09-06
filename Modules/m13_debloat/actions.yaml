@@ -26,10 +26,10 @@ actions:
     label_sk: "Obmedzenie telemetrie"
     label_en: "Reduce telemetry"
     risk: MODERATE
-    command: "New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name AllowTelemetry -Value 0 -Type DWord; Write-Output 'Telemetry policy set to 0 (Security/minimum).'"
+    command: "try { New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Force -EA Stop | Out-Null; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name AllowTelemetry -Value 0 -Type DWord -EA Stop; Write-Output 'Telemetry policy set to 0 (Security/minimum).' } catch { Write-Output ('Failed to set telemetry policy (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name AllowTelemetry -EA SilentlyContinue"
-    description_sk: "Nastavi politiku telemetrie na najnizsiu moznu hodnotu (0). Windows Home/Pro tuto hodnotu automaticky obmedzi na 1 (Basic) - plne 0 funguje len na Enterprise/Education/IoT. Undo politiku odstrani a vrati predvoleny stav."
-    description_en: "Sets the telemetry policy to the lowest available value (0). Windows Home/Pro silently clamps this to 1 (Basic) - full 0 only takes effect on Enterprise/Education/IoT. Undo removes the policy, restoring the default."
+    description_sk: "Nastavi politiku telemetrie na najnizsiu moznu hodnotu (0). Windows Home/Pro tuto hodnotu automaticky obmedzi na 1 (Basic) - plne 0 funguje len na Enterprise/Education/IoT. Vyzaduje administratora. Undo politiku odstrani a vrati predvoleny stav."
+    description_en: "Sets the telemetry policy to the lowest available value (0). Windows Home/Pro silently clamps this to 1 (Basic) - full 0 only takes effect on Enterprise/Education/IoT. Needs administrator. Undo removes the policy, restoring the default."
   - id: debloat_disable_suggestions
     label_sk: "Vypnutie navrhov a reklam v Starte"
     label_en: "Disable Start suggestions and ads"
@@ -65,10 +65,10 @@ actions:
     label_sk: "Vypnutie Widgetov"
     label_en: "Disable Widgets"
     risk: MODERATE
-    command: "New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Name AllowNewsAndInterests -Value 0 -Type DWord; Write-Output 'Widgets disabled by policy (takes effect after restart).'"
+    command: "try { New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Force -EA Stop | Out-Null; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Name AllowNewsAndInterests -Value 0 -Type DWord -EA Stop; Write-Output 'Widgets disabled by policy (takes effect after restart).' } catch { Write-Output ('Failed to disable Widgets (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh' -Name AllowNewsAndInterests -EA SilentlyContinue"
-    description_sk: "Vypne panel Widgetov (spravy a zaujmy) politikou. Prejavi sa po restarte. Undo politiku odstrani."
-    description_en: "Disables the Widgets board (news and interests) by policy. Takes effect after restart. Undo removes the policy."
+    description_sk: "Vypne panel Widgetov (spravy a zaujmy) politikou. Vyzaduje administratora. Prejavi sa po restarte. Undo politiku odstrani."
+    description_en: "Disables the Widgets board (news and interests) by policy. Needs administrator. Takes effect after restart. Undo removes the policy."
   - id: debloat_disable_advertising_id
     label_sk: "Vypnutie reklamneho ID"
     label_en: "Disable advertising ID"

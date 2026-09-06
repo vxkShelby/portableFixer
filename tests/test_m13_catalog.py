@@ -88,3 +88,15 @@ def test_m13_removal_actions_share_the_same_package_list():
     assert extract_list(by_id["debloat_remove_promo_apps"].command) == extract_list(
         by_id["debloat_remove_provisioned"].command
     )
+
+
+def test_m13_hklm_policy_writes_verify_they_actually_worked():
+    # Set-ItemProperty on an HKLM policy key throws a non-terminating
+    # SecurityException without administrator - the command must use
+    # -EA Stop + try/catch so it can't claim success on a silent no-op.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("debloat_disable_telemetry", "debloat_disable_widgets"):
+        command = by_id[action_id].command
+        assert "-EA Stop" in command, action_id
+        assert "exit 1" in command, action_id

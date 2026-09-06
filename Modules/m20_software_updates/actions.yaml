@@ -21,7 +21,7 @@ actions:
     label_sk: "Aktualizacia vsetkeho softveru (winget)"
     label_en: "Update all software (winget)"
     risk: MODERATE
-    command: "if (Get-Command winget -EA SilentlyContinue) { winget upgrade --all --silent --disable-interactivity --accept-source-agreements --accept-package-agreements; Write-Output 'winget upgrade --all finished.' } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
+    command: "if (Get-Command winget -EA SilentlyContinue) { & winget upgrade --all --silent --disable-interactivity --accept-source-agreements --accept-package-agreements; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0) { Write-Output 'winget upgrade --all finished.' } else { Write-Output ('winget upgrade --all failed with exit code ' + $exitCode); exit 1 } } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).'; exit 1 }"
     description_sk: "Potichu aktualizuje vsetok softver, ktory winget pozna. Moze trvat dlho pri viacerych balikoch. Bez univerzalneho undo (nie je genericky sposob znizit verziu) - pred spustenim sa vytvori bod obnovenia."
     description_en: "Silently updates all software winget knows about. Can take a while with many packages. No generic undo (there's no universal downgrade path) - a restore point is created before running."
 
