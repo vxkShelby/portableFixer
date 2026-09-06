@@ -20,8 +20,9 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 ; Lets the user choose install-for-me (no admin, works for a USB drive path
 ; too - it is just a folder) vs install-for-all-users (Program Files, needs
-; admin). PortableFix itself elevates on launch via PortableFix.cmd, so the
-; installer does not need to force admin up front.
+; admin). PortableFix launches non-elevated and only elevates on demand via
+; its own in-app "Restart as Administrator" button, so the installer does
+; not need to force admin up front.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline dialog
 DisableProgramGroupPage=yes
@@ -49,9 +50,9 @@ Source: "{#RepoRoot}\PortableFix.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\portablefix.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\PortableFix.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}\App"; IconFilename: "{app}\portablefix.ico"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\PortableFix.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}\App"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\PortableFix.cmd"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\App\PortableFix.exe"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent runasoriginaluser
