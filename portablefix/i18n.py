@@ -52,7 +52,6 @@ _STRINGS = {
         "status_bar_selected": "Vybrane: {count}  |  Najvyssie riziko: {risk}",
         "status_bar_running": "Beh {pos}/{total}: {label}",
         "status_running": "BEZI",
-        "sysinfo_title": "System info",
         "sysinfo_os": "OS",
         "sysinfo_uptime": "Doba behu",
         "sysinfo_cpu": "CPU",
@@ -78,6 +77,9 @@ _STRINGS = {
         "sysinfo_na": "N/A",
         "sysinfo_loading": "Nacitavam...",
         "sysinfo_cpu_clock_hint": "Vyzaduje ovladac PawnIO (Oprava > Instalacia PawnIO senzoroveho driveru)",
+        "show_action_details": "Zobrazit podrobnosti",
+        "hide_action_details": "Skryt podrobnosti",
+        "action_detail_undo_label": "Vratenie:",
     },
     "en": {
         "app_title": "PortableFix",
@@ -132,7 +134,6 @@ _STRINGS = {
         "status_bar_selected": "Selected: {count}  |  Highest risk: {risk}",
         "status_bar_running": "Running {pos}/{total}: {label}",
         "status_running": "RUNNING",
-        "sysinfo_title": "System info",
         "sysinfo_os": "OS",
         "sysinfo_uptime": "Uptime",
         "sysinfo_cpu": "CPU",
@@ -158,6 +159,9 @@ _STRINGS = {
         "sysinfo_na": "N/A",
         "sysinfo_loading": "Loading...",
         "sysinfo_cpu_clock_hint": "Requires the PawnIO driver (Repair > Install PawnIO sensor driver)",
+        "show_action_details": "Show details",
+        "hide_action_details": "Hide details",
+        "action_detail_undo_label": "Undo:",
     },
 }
 

@@ -1114,6 +1114,34 @@ def test_search_box_filters_action_rows_by_label(qtbot, tmp_path):
     assert window._action_rows["temp_cleanup"].isHidden() is True
 
 
+def test_search_box_matches_action_id_and_command_not_just_label(qtbot, tmp_path):
+    # "sfc"/"dism" live in the action id and command (e.g. id "sfc_scannow",
+    # command "sfc /scannow"), not in the human-friendly label ("System File
+    # Checker (repair)") - label-only search missed these entirely.
+    yaml_text = """
+module_id: m01_diagnostics
+actions:
+  - id: sfc_scannow
+    label_sk: "X"
+    label_en: "System File Checker (repair)"
+    risk: MODERATE
+    command: "sfc /scannow"
+  - id: firewall_check
+    label_sk: "X"
+    label_en: "Firewall status"
+    risk: MODERATE
+    command: "Write-Output 'b'"
+"""
+    base_dir = _make_base_dir(tmp_path, yaml_text)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_cmd")
+    qtbot.addWidget(window)
+
+    window.search_box.setText("sfc")
+
+    assert window._action_rows["sfc_scannow"].isHidden() is False
+    assert window._action_rows["firewall_check"].isHidden() is True
+
+
 def test_search_box_shows_all_rows_when_cleared(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search2")
@@ -1275,7 +1303,7 @@ def test_update_button_click_confirmed_downloads_and_applies_update(qtbot, tmp_p
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     fake_exe = tmp_path / "PortableFix.new.exe"
     fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
     monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
     applied = {}
     monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
@@ -1292,13 +1320,48 @@ def test_update_button_click_confirmed_downloads_and_applies_update(qtbot, tmp_p
     assert applied.get("quit_called") is True
 
 
+def test_update_download_progress_signal_updates_progress_bar(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+    import threading
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    resume = threading.Event()
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+
+    def fake_download_update(info, dest, on_progress=None):
+        on_progress(50, 100)
+        resume.wait(timeout=5)
+        return fake_exe
+
+    monkeypatch.setattr(mw_module.updater, "download_update", fake_download_update)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: True)
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_progress")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_quit_app", lambda: None)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: window.progress_bar.maximum() == 100, timeout=5000)
+    assert window.progress_bar.isVisibleTo(window) is True
+    assert window.progress_bar.value() == 50
+
+    resume.set()
+    qtbot.waitUntil(lambda: window.progress_bar.isVisibleTo(window) is False, timeout=5000)
+
+
 def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_path, monkeypatch):
     from portablefix.updater import UpdateInfo
     from portablefix.gui import main_window as mw_module
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
 
-    def raise_it(info, dest):
+    def raise_it(info, dest, on_progress=None):
         raise Exception("boom")
 
     monkeypatch.setattr(mw_module.updater, "download_update", raise_it)
@@ -1321,7 +1384,7 @@ def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monke
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     fake_exe = tmp_path / "PortableFix.new.exe"
     fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
     monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
     applied = {}
     monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
@@ -1446,7 +1509,7 @@ def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path
     monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
     fake_exe = tmp_path / "PortableFix.new.exe"
     fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
     monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
     applied = {}
     monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
@@ -1754,3 +1817,86 @@ def test_presets_only_reference_action_ids_that_exist_in_the_real_catalogs():
     for preset_name, action_ids in PRESETS.items():
         missing = [a for a in action_ids if a not in real_ids]
         assert not missing, f"preset {preset_name!r} references missing action id(s): {missing}"
+
+
+DETAILED_ACTION_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: detailed_action
+    label_sk: "X"
+    label_en: "X"
+    risk: SAFE
+    command: "Write-Output 'run-me'"
+    description_sk: "Popis SK"
+    description_en: "Full description EN"
+    undo_command: "Write-Output 'undo-me'"
+"""
+
+
+def test_action_detail_panel_starts_hidden_in_both_views(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail1")
+    qtbot.addWidget(window)
+
+    assert window._action_detail_panels["detailed_action"].isHidden() is True
+    assert window._risk_view_detail_panels["detailed_action"].isHidden() is True
+
+
+def test_clicking_detail_toggle_shows_description_command_and_undo_command(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel, QPlainTextEdit
+
+    base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail2")
+    qtbot.addWidget(window)
+
+    panel = window._action_detail_panels["detailed_action"]
+    window._action_detail_toggles["detailed_action"].click()
+
+    assert panel.isHidden() is False
+    label_texts = [w.text() for w in panel.findChildren(QLabel)]
+    command_texts = [w.toPlainText() for w in panel.findChildren(QPlainTextEdit)]
+    assert "Full description EN" in label_texts
+    assert "Write-Output 'run-me'" in command_texts
+    assert "Write-Output 'undo-me'" in command_texts
+
+
+def test_clicking_detail_toggle_again_hides_the_panel(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail3")
+    qtbot.addWidget(window)
+
+    toggle = window._action_detail_toggles["detailed_action"]
+    panel = window._action_detail_panels["detailed_action"]
+
+    toggle.click()
+    assert panel.isHidden() is False
+    toggle.click()
+    assert panel.isHidden() is True
+
+
+def test_detail_panel_omits_undo_section_when_action_has_no_undo_command(qtbot, tmp_path):
+    from PySide6.QtWidgets import QPlainTextEdit
+
+    base_dir = _make_base_dir(tmp_path)  # ACTIONS_YAML's "hello" action has no undo_command
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail4")
+    qtbot.addWidget(window)
+
+    panel = window._action_detail_panels["hello"]
+    window._action_detail_toggles["hello"].click()
+
+    command_texts = [w.toPlainText() for w in panel.findChildren(QPlainTextEdit)]
+    assert command_texts == ["Write-Output 'hello-from-gui-test'"]
+
+
+def test_expand_state_is_independent_between_category_and_risk_tab_views(qtbot, tmp_path):
+    # Expand/collapse is a pure display convenience, not selection state - it
+    # deliberately has no two-way sync like the checkboxes do, so expanding
+    # one view's row must never affect the other view's row for the same action.
+    base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail5")
+    qtbot.addWidget(window)
+
+    window._action_detail_toggles["detailed_action"].click()
+
+    assert window._action_detail_panels["detailed_action"].isHidden() is False
+    assert window._risk_view_detail_panels["detailed_action"].isHidden() is True

@@ -223,6 +223,48 @@ QLabel#actionStatus[state="running"] { color: #ffb020; }
 QLabel#actionStatus[state="ok"] { color: #39ff88; }
 QLabel#actionStatus[state="fail"] { color: #ff2d6f; }
 
+QToolButton#actionDetailToggle {
+    background: transparent;
+    border: 1px dashed #232d3a;
+    border-radius: 2px;
+    padding: 1px 6px;
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+    color: #8a97a8;
+}
+QToolButton#actionDetailToggle:hover {
+    border: 1px solid #2fe6ff;
+    color: #2fe6ff;
+}
+QToolButton#actionDetailToggle:checked {
+    color: #2fe6ff;
+    border: 1px solid #2fe6ff;
+}
+QWidget#actionDetailPanel {
+    background-color: #0b0e14;
+    border: 1px solid #1c2530;
+    border-radius: 2px;
+}
+QLabel#actionDetailDescription {
+    color: #d6e2f0;
+    font-size: 9pt;
+}
+QLabel#actionDetailLabel {
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 8pt;
+    font-weight: bold;
+    color: #6b7686;
+}
+QPlainTextEdit#actionDetailCommand {
+    background-color: #06080c;
+    border: 1px solid #1c2530;
+    border-radius: 2px;
+    padding: 6px;
+    font-family: 'Cascadia Mono', 'Consolas';
+    font-size: 8.5pt;
+    color: #9fd9e8;
+}
+
 QLineEdit#searchBox {
     background-color: #06080c;
     border: 1px solid #232d3a;

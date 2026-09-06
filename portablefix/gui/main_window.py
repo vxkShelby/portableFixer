@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QLabel,
     QWidget,
@@ -86,6 +87,8 @@ class MainWindow(QMainWindow):
         self._action_checkboxes: dict[str, QCheckBox] = {}
         self._action_rows: dict[str, QWidget] = {}
         self._action_status_labels: dict[str, QLabel] = {}
+        self._action_detail_toggles: dict[str, QToolButton] = {}
+        self._action_detail_panels: dict[str, QWidget] = {}
         self._action_start_times: dict[str, float] = {}
         self._queue_total = 0
         self._queue: list[str] = []
@@ -385,14 +388,21 @@ class MainWindow(QMainWindow):
                     self._action_status_labels[action.id] = status_label
                     row.addWidget(status_label)
                     row.addStretch(1)
-                    card_layout.addWidget(row_widget)
-                    self._action_rows[action.id] = row_widget
+                    detail_toggle, detail_panel = self._make_action_detail_toggle(action)
+                    self._action_detail_toggles[action.id] = detail_toggle
+                    self._action_detail_panels[action.id] = detail_panel
+                    row.addWidget(detail_toggle)
+                    row_container = self._wrap_row_with_detail_panel(row_widget, detail_panel)
+                    card_layout.addWidget(row_container)
+                    self._action_rows[action.id] = row_container
             self._category_groups[category] = card
             scroll_layout.addWidget(card)
         self._nav_row_order: list[QWidget] = [self._category_groups[c] for c in self._categories_order]
 
         self._risk_view_checkboxes: dict[str, QCheckBox] = {}
         self._risk_view_rows: dict[str, QWidget] = {}
+        self._risk_view_detail_toggles: dict[str, QToolButton] = {}
+        self._risk_view_detail_panels: dict[str, QWidget] = {}
         for risk in self._risk_tabs_order:
             card = QFrame()
             card.setObjectName("actionCard")
@@ -433,13 +443,21 @@ class MainWindow(QMainWindow):
                     lambda state, m=mirror_checkbox: m.setChecked(state != 0)
                 )
                 self._risk_view_checkboxes[action_id] = mirror_checkbox
-                self._risk_view_rows[action_id] = row_widget
                 row.addWidget(mirror_checkbox)
                 category_label = QLabel(self._t(category_i18n_keys[module.category]))
                 category_label.setObjectName("actionStatus")
                 row.addWidget(category_label)
                 row.addStretch(1)
-                card_layout.addWidget(row_widget)
+                # Independent from the category view's toggle on purpose:
+                # expand/collapse is display-only, not selection state, so
+                # unlike the checkboxes above it has no two-way sync to break.
+                detail_toggle, detail_panel = self._make_action_detail_toggle(action)
+                self._risk_view_detail_toggles[action_id] = detail_toggle
+                self._risk_view_detail_panels[action_id] = detail_panel
+                row.addWidget(detail_toggle)
+                row_container = self._wrap_row_with_detail_panel(row_widget, detail_panel)
+                self._risk_view_rows[action_id] = row_container
+                card_layout.addWidget(row_container)
             scroll_layout.addWidget(card)
             card.setHidden(True)
             self._nav_row_order.append(card)
@@ -509,6 +527,19 @@ class MainWindow(QMainWindow):
         for index, widget in enumerate(self._nav_row_order):
             widget.setHidden(index != row)
 
+    def _action_search_haystack(self, action) -> str:
+        # Label alone misses power-user searches like "sfc" or "dism" - those
+        # tool names live in the id/command (e.g. id "sfc_scannow", command
+        # "sfc /scannow"), not in the human-friendly label ("System File
+        # Checker (repair)"). Description is included too since it sometimes
+        # names the underlying tool where the label doesn't.
+        return " ".join((
+            action.id,
+            action.label(self.settings.language),
+            action.description(self.settings.language),
+            action.command,
+        )).lower()
+
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
         matched_ids: set[str] = set()
@@ -517,7 +548,7 @@ class MainWindow(QMainWindow):
                 row_widget.setHidden(False)
                 continue
             _, action = self._find_action(action_id)
-            haystack = action.label(self.settings.language).lower()
+            haystack = self._action_search_haystack(action)
             is_match = needle in haystack
             row_widget.setHidden(not is_match)
             if is_match:
@@ -527,7 +558,7 @@ class MainWindow(QMainWindow):
                 row_widget.setHidden(False)
                 continue
             _, action = self._find_action(action_id)
-            haystack = action.label(self.settings.language).lower()
+            haystack = self._action_search_haystack(action)
             row_widget.setHidden(needle not in haystack)
 
         if not needle:
@@ -583,6 +614,66 @@ class MainWindow(QMainWindow):
         # so swallow the checked flag before invoking the handler.
         button.clicked.connect(lambda _checked=False: on_click())
         return button
+
+    def _make_action_detail_toggle(self, action: ActionDef) -> tuple[QToolButton, QWidget]:
+        # The tooltip only shows the description on hover and disappears on
+        # any focus change - this toggle makes the same info (plus the raw
+        # command, which the tooltip never showed) stay on screen so a
+        # cautious/technical user can read it before ever checking the box.
+        # Collapsed by default so the row density doesn't change for anyone
+        # who doesn't click it.
+        toggle = QToolButton()
+        toggle.setObjectName("actionDetailToggle")
+        toggle.setCheckable(True)
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle.setToolTip(self._t("show_action_details"))
+        toggle.setText("▼")
+
+        panel = QWidget()
+        panel.setObjectName("actionDetailPanel")
+        panel.setHidden(True)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(10, 8, 10, 8)
+        panel_layout.setSpacing(4)
+
+        description_label = QLabel(action.description(self.settings.language))
+        description_label.setObjectName("actionDetailDescription")
+        description_label.setWordWrap(True)
+        panel_layout.addWidget(description_label)
+
+        command_box = QPlainTextEdit(action.command)
+        command_box.setObjectName("actionDetailCommand")
+        command_box.setReadOnly(True)
+        command_box.setFixedHeight(60)
+        panel_layout.addWidget(command_box)
+
+        if action.undo_command:
+            undo_label = QLabel(self._t("action_detail_undo_label"))
+            undo_label.setObjectName("actionDetailLabel")
+            panel_layout.addWidget(undo_label)
+            undo_box = QPlainTextEdit(action.undo_command)
+            undo_box.setObjectName("actionDetailCommand")
+            undo_box.setReadOnly(True)
+            undo_box.setFixedHeight(48)
+            panel_layout.addWidget(undo_box)
+
+        def _on_toggled(checked: bool) -> None:
+            panel.setHidden(not checked)
+            toggle.setText("▲" if checked else "▼")
+            toggle.setToolTip(self._t("hide_action_details") if checked else self._t("show_action_details"))
+
+        toggle.toggled.connect(_on_toggled)
+        return toggle, panel
+
+    @staticmethod
+    def _wrap_row_with_detail_panel(row_widget: QWidget, detail_panel: QWidget) -> QWidget:
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(4)
+        container_layout.addWidget(row_widget)
+        container_layout.addWidget(detail_panel)
+        return container
 
     def _apply_selection(self, action_ids: list[str], mode: str) -> None:
         # mode is "all", "none", or a RiskLevel value (e.g. "SAFE") meaning
@@ -715,13 +806,27 @@ class MainWindow(QMainWindow):
         self.update_button.setEnabled(False)
         self.update_dismiss_button.setEnabled(False)
         self._update_in_progress = True
+        self.progress_bar.setMaximum(0)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
         self._update_download_runner = updater.UpdateDownloadRunner(self._pending_update_info, dest_dir, parent=self)
         self._update_download_runner.download_finished.connect(self._on_update_download_finished)
+        self._update_download_runner.progress.connect(self._on_update_download_progress)
         self._update_download_runner.start()
+
+    def _on_update_download_progress(self, downloaded: int, total: int) -> None:
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(downloaded)
+        else:
+            # Server didn't send a usable Content-Length - indeterminate
+            # (busy/marquee) beats a progress bar frozen at 0%.
+            self.progress_bar.setMaximum(0)
 
     def _on_update_download_finished(self, zip_path, error: str) -> None:
         info = self._pending_update_info
         self._update_in_progress = False
+        self.progress_bar.setVisible(False)
         self.update_button.setEnabled(True)
         self.update_dismiss_button.setEnabled(True)
         if not zip_path:
@@ -1003,14 +1108,10 @@ class MainWindow(QMainWindow):
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("actionCard")
-        panel.setFixedWidth(230)
+        panel.setFixedWidth(345)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
-
-        title = QLabel(self._t("sysinfo_title"))
-        title.setObjectName("cardHeading")
-        layout.addWidget(title)
 
         self._sysinfo_labels: dict[str, QLabel] = {}
 
