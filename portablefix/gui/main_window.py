@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
         return i18n.translate(key, self.settings.language)
 
     def _build_ui(self) -> None:
-        self.setWindowTitle(self._t("app_title"))
+        self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
         self.setStyleSheet(style.STYLE)
         self.resize(1000, 700)
         central = QWidget(self)
