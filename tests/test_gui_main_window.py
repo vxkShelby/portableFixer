@@ -1505,7 +1505,7 @@ def test_sysinfo_panel_has_a_label_for_every_expected_field(qtbot, tmp_path):
 
     expected_keys = {
         "os", "cpu_name", "cpu_load", "cpu_clock", "ram", "ram_speed",
-        "gpu_name", "gpu_load", "gpu_temp", "gpu_clock", "gpu_vram", "ip", "ping",
+        "gpu_name", "gpu_load", "gpu_temp", "gpu_clock", "gpu_vram", "ip", "ping", "vpn",
     }
     assert expected_keys <= set(window._sysinfo_labels.keys())
     assert window.speed_test_button is not None
@@ -1578,6 +1578,21 @@ def test_ping_ready_updates_ping_label(qtbot, tmp_path):
 
     window._on_ping_ready(None)
     assert window._sysinfo_labels["ping"].text() == "N/A"
+
+
+def test_vpn_status_ready_updates_vpn_label(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_vpn")
+    qtbot.addWidget(window)
+
+    window._on_vpn_status_ready("WireGuard Tunnel")
+    assert window._sysinfo_labels["vpn"].text() == "Connected (WireGuard Tunnel)"
+
+    window._on_vpn_status_ready("")
+    assert window._sysinfo_labels["vpn"].text() == "Not connected"
+
+    window._on_vpn_status_ready(None)
+    assert window._sysinfo_labels["vpn"].text() == "N/A"
 
 
 def test_close_event_cancels_and_waits_on_an_in_flight_batch_runner(qtbot, tmp_path):

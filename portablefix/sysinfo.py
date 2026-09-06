@@ -280,6 +280,41 @@ def ping_once(host: str = "8.8.8.8", timeout_ms: int = 1000) -> float | None:
     return None
 
 
+_VPN_ADAPTER_PATTERN = (
+    "WireGuard|OpenVPN|TAP-Windows|Wintun|NordLynx|NordVPN|ExpressVPN|ProtonVPN|"
+    "Mullvad|Tailscale|ZeroTier|Netbird|Hamachi|Cisco AnyConnect|GlobalProtect|"
+    "Surfshark|IPVanish|Private Internet Access|FortiClient"
+)
+
+
+def check_vpn_status() -> str | None:
+    """Best-effort VPN detection, no admin rights needed. Returns the VPN's
+    name if one looks active (a connected native Windows VPN profile, or an
+    up virtual adapter matching a known VPN client), "" if none was found,
+    or None if the check itself failed (subprocess error/timeout - shown as
+    N/A, never guessed as either connected or not)."""
+    script = (
+        "$native = Get-VpnConnection -EA SilentlyContinue | "
+        "Where-Object { $_.ConnectionStatus -eq 'Connected' } | "
+        "Select-Object -First 1 -ExpandProperty Name; "
+        "if ($native) { Write-Output $native; exit 0 }; "
+        f"$pattern = '{_VPN_ADAPTER_PATTERN}'; "
+        "$adapter = Get-NetAdapter -EA SilentlyContinue | "
+        "Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match $pattern } | "
+        "Select-Object -First 1 -ExpandProperty InterfaceDescription; "
+        "Write-Output $adapter"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def run_speed_test(size_bytes: int = 25_000_000, timeout: float = 20.0) -> float | None:
     """Downloads a fixed-size payload from Cloudflare's public speed-test
     endpoint and returns the measured throughput in Mbps, or None on failure."""
@@ -343,6 +378,21 @@ class PingRunner(QThread):
 
     def run(self) -> None:
         self.ping_ready.emit(ping_once(self._host))
+
+
+class VpnStatusRunner(QThread):
+    """One-shot: VPN detection shells out to PowerShell (Get-VpnConnection +
+    Get-NetAdapter), which can take a moment - runs off the GUI thread like
+    every other subprocess-backed sysinfo check."""
+
+    vpn_status_ready = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        self.vpn_status_ready.emit(check_vpn_status())
 
 
 class SpeedTestRunner(QThread):

@@ -1,3 +1,4 @@
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -85,6 +86,45 @@ def test_ping_once_parses_time_from_ping_output():
 def test_ping_once_returns_none_on_timeout():
     with patch("portablefix.sysinfo.subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("ping", 2)):
         assert sysinfo.ping_once() is None
+
+
+def test_check_vpn_status_returns_adapter_name_when_present():
+    fake = MagicMock()
+    fake.stdout = "WireGuard Tunnel\n"
+    with patch("portablefix.sysinfo.subprocess.run", return_value=fake):
+        assert sysinfo.check_vpn_status() == "WireGuard Tunnel"
+
+
+def test_check_vpn_status_returns_empty_string_when_nothing_found():
+    fake = MagicMock()
+    fake.stdout = "\n"
+    with patch("portablefix.sysinfo.subprocess.run", return_value=fake):
+        assert sysinfo.check_vpn_status() == ""
+
+
+def test_check_vpn_status_returns_none_on_timeout():
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("powershell", 10)):
+        assert sysinfo.check_vpn_status() is None
+
+
+def test_check_vpn_status_script_is_valid_powershell_and_checks_native_and_adapter_vpns():
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return MagicMock(stdout="")
+
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=fake_run):
+        sysinfo.check_vpn_status()
+    script = calls[0][-1]
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         f"[scriptblock]::Create(@'\n{script}\n'@) | Out-Null; Write-Output 'OK'"],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert "OK" in result.stdout, result.stderr
+    assert "Get-VpnConnection" in script
+    assert "Get-NetAdapter" in script
 
 
 def test_run_speed_test_computes_mbps_from_elapsed_time():

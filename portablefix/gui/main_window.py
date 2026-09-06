@@ -106,9 +106,11 @@ class MainWindow(QMainWindow):
         self._cpu_load_sampler = sysinfo.CpuLoadSampler()
         self._static_info_runner = None
         self._ping_runner = None
+        self._vpn_runner = None
         self._speed_test_runner = None
         self._hw_sensor_runner = None
         self._ping_busy = False
+        self._vpn_busy = False
         self._speed_test_busy = False
         self._hw_sensor_busy = False
         self._sysinfo_timer = None
@@ -147,6 +149,7 @@ class MainWindow(QMainWindow):
             self._static_info_runner,
             self._hw_sensor_runner,
             self._ping_runner,
+            self._vpn_runner,
             self._runner,
             self._update_check_runner,
             self._pending_restore_point_runner,
@@ -1001,6 +1004,7 @@ class MainWindow(QMainWindow):
         add_row("gpu_vram", "sysinfo_gpu_vram")
         add_row("ip", "sysinfo_ip")
         add_row("ping", "sysinfo_ping")
+        add_row("vpn", "sysinfo_vpn")
 
         self.speed_test_button = self._make_selection_button(
             self._t("sysinfo_speed_test_button"), self._on_speed_test_clicked
@@ -1029,8 +1033,10 @@ class MainWindow(QMainWindow):
 
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._on_ping_tick)
+        self._ping_timer.timeout.connect(self._on_vpn_tick)
         self._ping_timer.start(4000)
         self._on_ping_tick()
+        self._on_vpn_tick()
 
     def _on_static_info_ready(self, info: sysinfo.StaticInfo) -> None:
         if self._closed:
@@ -1093,6 +1099,26 @@ class MainWindow(QMainWindow):
         if self._closed:
             return
         self._sysinfo_labels["ping"].setText(f"{latency_ms:.0f} ms" if latency_ms is not None else self._t("sysinfo_na"))
+
+    def _on_vpn_tick(self) -> None:
+        if self._closed or self._vpn_busy:
+            return
+        self._vpn_busy = True
+        self._vpn_runner = sysinfo.VpnStatusRunner(parent=self)
+        self._vpn_runner.vpn_status_ready.connect(self._on_vpn_status_ready)
+        self._vpn_runner.start()
+
+    def _on_vpn_status_ready(self, name: str | None) -> None:
+        self._vpn_busy = False
+        if self._closed:
+            return
+        if name is None:
+            text = self._t("sysinfo_na")
+        elif name == "":
+            text = self._t("sysinfo_vpn_off")
+        else:
+            text = self._t("sysinfo_vpn_connected").format(name=name)
+        self._sysinfo_labels["vpn"].setText(text)
 
     def _on_speed_test_clicked(self) -> None:
         if self._speed_test_busy:
