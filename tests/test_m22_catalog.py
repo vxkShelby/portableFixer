@@ -66,3 +66,32 @@ def test_m22_catalog_long_running_actions_declare_inactivity_timeout_sec():
     default_timeout_ids = {"leftover_uninstall_keys_report", "broken_shortcuts_report"}
     for action_id in default_timeout_ids:
         assert by_id[action_id].inactivity_timeout_sec is None, action_id
+
+
+def test_m22_catalog_wipe_free_space_has_a_raised_hard_cap():
+    # cipher /w on a large/mostly-full drive can genuinely run for hours -
+    # the global 2-hour HARD_CAP_SEC would kill a legitimately-progressing
+    # wipe and report it as "timed out" instead of just slow.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "wipe_free_space")
+    assert action.hard_cap_sec == 21600
+
+
+def test_m22_catalog_wipe_free_space_targets_the_system_drive_not_a_hardcoded_letter():
+    # A portable tool can't assume the OS lives on C: - every other
+    # drive-wide action in this codebase (m03_disk) uses $env:SystemDrive.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "wipe_free_space")
+    assert "$env:SystemDrive" in action.command
+    assert "C:\\" not in action.command
+
+
+def test_m22_catalog_duplicate_files_report_skips_legacy_compatibility_junctions():
+    # Windows PowerShell 5.1's -Recurse follows reparse points, so classic
+    # per-profile compat junctions (Application Data -> AppData\Roaming,
+    # My Documents -> Documents, etc.) would make -Recurse visit the same
+    # physical file twice under two different logical paths, producing a
+    # false-positive "duplicate".
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "duplicate_files_report")
+    assert "ReparsePoint" in action.command

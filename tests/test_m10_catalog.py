@@ -63,6 +63,20 @@ def test_m10_catalog_duplicate_packages_report_is_report_only():
     assert "pnputil /delete-driver" in action.description_sk
 
 
+def test_m10_catalog_duplicate_packages_report_parses_by_position_not_english_labels():
+    # pnputil's field labels (Published Name/Original Name) are localized to
+    # the OS display language - matching against the English label text
+    # would silently find zero duplicates on a non-English Windows install.
+    # The command must instead rely on the fixed line position within each
+    # per-driver block, which pnputil emits in the same order regardless of
+    # display language.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "drv_duplicate_packages_report")
+    assert "Original Name" not in action.command
+    assert "Published Name" not in action.command
+    assert "$lines[1]" in action.command
+
+
 def test_m10_catalog_restore_backup_uses_export_backup_folder_naming():
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "drv_restore_backup")

@@ -44,6 +44,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 preview_command=raw.get("preview_command"),
                 undo_command=raw.get("undo_command"),
                 inactivity_timeout_sec=raw.get("inactivity_timeout_sec"),
+                hard_cap_sec=raw.get("hard_cap_sec"),
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

@@ -28,6 +28,7 @@ class ActionDef:
     preview_command: str | None = None
     undo_command: str | None = None
     inactivity_timeout_sec: int | None = None
+    hard_cap_sec: int | None = None
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

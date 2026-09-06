@@ -219,3 +219,21 @@ def test_action_runner_honors_an_explicit_zero_second_inactivity_override(qtbot)
         runner.start()
         qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
     assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE
+
+
+def test_action_runner_honors_an_explicit_hard_cap_override(qtbot):
+    # A per-action hard_cap_sec override must trip even while the command
+    # stays "active" (keeps producing output, so the inactivity timeout
+    # never fires) - this is what an action like a long-running disk wipe
+    # needs: a higher ceiling than the global default, not a bypass of it.
+    plan = build_execution_plan(
+        "for ($i = 0; $i -lt 100; $i++) { Write-Output $i; Start-Sleep -Milliseconds 50 }",
+        dry_run=False,
+    )
+    runner = ActionRunner(plan, inactivity_timeout_sec=300, hard_cap_sec=0)
+    results = []
+    runner.finished_with_code.connect(results.append)
+    with patch.object(executor_module, "WATCHDOG_POLL_SEC", 0.1):
+        runner.start()
+        qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
+    assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE

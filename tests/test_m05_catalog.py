@@ -74,6 +74,10 @@ def test_m05_catalog_driver_updates_report_uses_wua_com_api_not_trigger_detectio
     assert action.risk == RiskLevel.SAFE
     assert "Microsoft.Update.Session" in action.command
     assert "UsoClient" not in action.command
+    # A live WUA search against Microsoft Update can take several minutes -
+    # the default 300s inactivity timeout is too tight for a single silent
+    # long-running COM call with no interim output.
+    assert action.inactivity_timeout_sec == 600
 
 
 def test_m05_catalog_uninstall_last_update_requires_reboot():
@@ -82,3 +86,14 @@ def test_m05_catalog_uninstall_last_update_requires_reboot():
     assert action.risk == RiskLevel.REQUIRES_REBOOT
     assert action.undo_command is None
     assert "wusa.exe" in action.command
+
+
+def test_m05_catalog_uninstall_last_update_uses_wua_history_not_gethotfix():
+    # Get-HotFix's InstalledOn field is unreliable (frequently null on real
+    # machines), so sorting by it doesn't reliably surface the actual most
+    # recent update. The WUA COM API's update history is more consistent.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "wu_uninstall_last_update")
+    assert "Get-HotFix" not in action.command
+    assert "Microsoft.Update.Session" in action.command
+    assert "QueryHistory" in action.command

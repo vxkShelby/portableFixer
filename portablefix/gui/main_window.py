@@ -958,7 +958,11 @@ class MainWindow(QMainWindow):
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()
-        runner = ActionRunner(plan, parent=self, inactivity_timeout_sec=action.inactivity_timeout_sec)
+        runner = ActionRunner(
+            plan, parent=self,
+            inactivity_timeout_sec=action.inactivity_timeout_sec,
+            hard_cap_sec=action.hard_cap_sec,
+        )
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)
         runner.finished_with_code.connect(
