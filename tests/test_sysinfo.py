@@ -27,6 +27,31 @@ def test_get_static_info_returns_populated_fields():
     assert info.cpu_cores >= 1
 
 
+def test_get_uptime_seconds_is_positive_and_increases():
+    first = sysinfo.get_uptime_seconds()
+    assert first > 0
+    time.sleep(0.2)
+    second = sysinfo.get_uptime_seconds()
+    assert second > first
+
+
+def test_get_battery_percent_returns_int_or_none():
+    result = sysinfo.get_battery_percent()
+    assert result is None or (isinstance(result, int) and 0 <= result <= 100)
+
+
+def test_get_ram_speed_and_disk_health_via_mocked_subprocess():
+    fake = MagicMock()
+    fake.stdout = "3200\n---PF_SEP---\nHealthy, Healthy\n"
+    with patch("portablefix.sysinfo.subprocess.run", return_value=fake):
+        assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Healthy, Healthy")
+
+
+def test_get_ram_speed_and_disk_health_returns_none_none_on_timeout():
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("powershell", 10)):
+        assert sysinfo._get_ram_speed_and_disk_health() == (None, None)
+
+
 def test_read_hardware_sensors_degrades_gracefully_without_vendored_dll(tmp_path):
     sysinfo._hw_init_attempted = False
     sysinfo._hw_computer = None

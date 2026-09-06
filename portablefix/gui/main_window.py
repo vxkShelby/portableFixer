@@ -1024,11 +1024,14 @@ class MainWindow(QMainWindow):
             layout.addLayout(row)
 
         add_row("os", "sysinfo_os")
+        add_row("uptime", "sysinfo_uptime")
         add_row("cpu_name", "sysinfo_cpu")
         add_row("cpu_load", "sysinfo_cpu_load")
         add_row("cpu_clock", "sysinfo_cpu_clock", tooltip=self._t("sysinfo_cpu_clock_hint"))
         add_row("ram", "sysinfo_ram")
         add_row("ram_speed", "sysinfo_ram_speed")
+        add_row("battery", "sysinfo_battery")
+        add_row("disk_health", "sysinfo_disk_health")
         add_row("gpu_name", "sysinfo_gpu")
         add_row("gpu_load", "sysinfo_gpu_load")
         add_row("gpu_temp", "sysinfo_gpu_temp")
@@ -1078,7 +1081,17 @@ class MainWindow(QMainWindow):
         self._sysinfo_labels["ram_speed"].setText(
             f"{info.ram_speed_mhz} MHz" if info.ram_speed_mhz else self._t("sysinfo_na")
         )
+        self._sysinfo_labels["disk_health"].setText(info.disk_health_summary or self._t("sysinfo_na"))
         self._sysinfo_labels["ip"].setText(info.local_ip)
+
+    @staticmethod
+    def _format_uptime(seconds: float) -> str:
+        total_minutes = int(seconds // 60)
+        days, rem_minutes = divmod(total_minutes, 24 * 60)
+        hours, minutes = divmod(rem_minutes, 60)
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m"
+        return f"{hours}h {minutes}m"
 
     def _on_sysinfo_tick(self) -> None:
         if self._closed:
@@ -1087,6 +1100,9 @@ class MainWindow(QMainWindow):
         self._sysinfo_labels["cpu_load"].setText(f"{cpu_load:.0f}%" if cpu_load is not None else self._t("sysinfo_na"))
         used_gb, total_gb = sysinfo.get_ram_usage_gb()
         self._sysinfo_labels["ram"].setText(f"{used_gb} / {total_gb} GB")
+        self._sysinfo_labels["uptime"].setText(self._format_uptime(sysinfo.get_uptime_seconds()))
+        battery = sysinfo.get_battery_percent()
+        self._sysinfo_labels["battery"].setText(f"{battery}%" if battery is not None else self._t("sysinfo_na"))
 
     def _on_hw_sensor_tick(self) -> None:
         if self._closed or self._hw_sensor_busy:

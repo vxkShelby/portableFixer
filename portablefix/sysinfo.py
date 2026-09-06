@@ -19,6 +19,7 @@ class StaticInfo:
     cpu_cores: int
     local_ip: str
     ram_speed_mhz: int | None
+    disk_health_summary: str | None
 
 
 @dataclass
@@ -77,29 +78,67 @@ def get_static_info() -> StaticInfo:
 
     import os
 
+    ram_speed_mhz, disk_health_summary = _get_ram_speed_and_disk_health()
+
     return StaticInfo(
         os_name=os_name,
         cpu_name=cpu_name,
         cpu_cores=os.cpu_count() or 1,
         local_ip=local_ip,
-        ram_speed_mhz=_get_ram_speed_mhz(),
+        ram_speed_mhz=ram_speed_mhz,
+        disk_health_summary=disk_health_summary,
     )
 
 
-def _get_ram_speed_mhz() -> int | None:
-    # RAM speed has no registry source - a one-off CIM query at startup
-    # (this value never changes while running) matches how every other
-    # PortableFix action already shells out to PowerShell for hardware info.
+def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
+    # Both are one-off static facts read once at startup (neither changes
+    # mid-session) - combined into one PowerShell launch instead of two,
+    # since every MainWindow construction (including in tests) pays this
+    # subprocess cost once per launch.
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             "(Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 -ExpandProperty Speed)"],
+             "(Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 -ExpandProperty Speed); "
+             "'---PF_SEP---'; "
+             "(Get-PhysicalDisk | Select-Object -ExpandProperty HealthStatus) -join ', '"],
             capture_output=True, text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        return int(result.stdout.strip())
+        speed_part, _, health_part = result.stdout.partition("---PF_SEP---")
+        speed_part, health_part = speed_part.strip(), health_part.strip()
+        speed = int(speed_part) if speed_part else None
+        return speed, (health_part or None)
     except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None, None
+
+
+class _SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", wintypes.DWORD),
+        ("BatteryFullLifeTime", wintypes.DWORD),
+    ]
+
+
+def get_battery_percent() -> int | None:
+    """None means no battery present (desktop) or the status is unknown -
+    never guess a number in either case."""
+    status = _SYSTEM_POWER_STATUS()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
         return None
+    if status.BatteryFlag == 128 or status.BatteryLifePercent == 255:
+        return None
+    return status.BatteryLifePercent
+
+
+ctypes.windll.kernel32.GetTickCount64.restype = ctypes.c_uint64
+
+
+def get_uptime_seconds() -> float:
+    return ctypes.windll.kernel32.GetTickCount64() / 1000.0
 
 
 class _FILETIME(ctypes.Structure):

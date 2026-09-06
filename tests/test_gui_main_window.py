@@ -1559,8 +1559,9 @@ def test_sysinfo_panel_has_a_label_for_every_expected_field(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     expected_keys = {
-        "os", "cpu_name", "cpu_load", "cpu_clock", "ram", "ram_speed",
-        "gpu_name", "gpu_load", "gpu_temp", "gpu_clock", "gpu_vram", "ip", "ping", "vpn",
+        "os", "uptime", "cpu_name", "cpu_load", "cpu_clock", "ram", "ram_speed",
+        "battery", "disk_health", "gpu_name", "gpu_load", "gpu_temp", "gpu_clock",
+        "gpu_vram", "ip", "ping", "vpn",
     }
     assert expected_keys <= set(window._sysinfo_labels.keys())
     assert window.speed_test_button is not None
@@ -1576,13 +1577,37 @@ def test_static_info_ready_updates_os_cpu_ip_labels(qtbot, tmp_path):
 
     window._on_static_info_ready(sysinfo.StaticInfo(
         os_name="Windows 11 Pro", cpu_name="Test CPU", cpu_cores=8,
-        local_ip="10.0.0.5", ram_speed_mhz=3200,
+        local_ip="10.0.0.5", ram_speed_mhz=3200, disk_health_summary="Healthy",
     ))
 
     assert window._sysinfo_labels["os"].text() == "Windows 11 Pro"
     assert window._sysinfo_labels["cpu_name"].text() == "Test CPU (8 cores)"
     assert window._sysinfo_labels["ram_speed"].text() == "3200 MHz"
     assert window._sysinfo_labels["ip"].text() == "10.0.0.5"
+    assert window._sysinfo_labels["disk_health"].text() == "Healthy"
+
+
+def test_format_uptime_formats_days_hours_minutes():
+    assert MainWindow._format_uptime(90) == "0h 1m"
+    assert MainWindow._format_uptime(100_000) == "1d 3h 46m"
+
+
+def test_sysinfo_tick_updates_uptime_and_battery_labels(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import main_window as mw_module
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_uptime_battery")
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(mw_module.sysinfo, "get_uptime_seconds", lambda: 100_000)
+    monkeypatch.setattr(mw_module.sysinfo, "get_battery_percent", lambda: 77)
+    window._on_sysinfo_tick()
+    assert window._sysinfo_labels["uptime"].text() == "1d 3h 46m"
+    assert window._sysinfo_labels["battery"].text() == "77%"
+
+    monkeypatch.setattr(mw_module.sysinfo, "get_battery_percent", lambda: None)
+    window._on_sysinfo_tick()
+    assert window._sysinfo_labels["battery"].text() == "N/A"
 
 
 def test_hw_sensors_ready_updates_cpu_and_gpu_labels(qtbot, tmp_path):
