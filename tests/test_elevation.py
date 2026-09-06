@@ -22,3 +22,15 @@ def test_relaunch_as_admin_calls_shell_execute(monkeypatch):
     assert executable == "C:/USB/PortableFix/App/PortableFix.exe"
     assert params == "--flag value"
     assert result == 42
+
+
+def test_relaunch_as_admin_quotes_args_containing_spaces(monkeypatch):
+    calls = []
+
+    def fake_shell_execute(hwnd, verb, executable, params, directory, show_cmd):
+        calls.append(params)
+        return 42
+
+    monkeypatch.setattr(ctypes.windll.shell32, "ShellExecuteW", fake_shell_execute)
+    relaunch_as_admin("C:/Python/python.exe", ["C:\\USB Fixer\\main.py"])
+    assert calls[0] == '"C:\\USB Fixer\\main.py"'

@@ -291,6 +291,40 @@ def test_restart_as_admin_closes_window_on_success(qtbot, tmp_path, monkeypatch)
     assert closed == [True]
 
 
+def test_restart_as_admin_passes_sys_argv_when_not_frozen(qtbot, tmp_path, monkeypatch):
+    import sys as sys_module
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=False, run_id="testrun")
+    qtbot.addWidget(window)
+
+    monkeypatch.delattr(sys_module, "frozen", raising=False)
+    calls = []
+    monkeypatch.setattr(elevation, "relaunch_as_admin", lambda *a, **k: calls.append(a) or 42)
+    monkeypatch.setattr(window, "close", lambda: None)
+
+    window._on_restart_as_admin()
+
+    assert calls[0][1] == sys_module.argv
+
+
+def test_restart_as_admin_passes_no_args_when_frozen(qtbot, tmp_path, monkeypatch):
+    import sys as sys_module
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=False, run_id="testrun")
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(sys_module, "frozen", True, raising=False)
+    calls = []
+    monkeypatch.setattr(elevation, "relaunch_as_admin", lambda *a, **k: calls.append(a) or 42)
+    monkeypatch.setattr(window, "close", lambda: None)
+
+    window._on_restart_as_admin()
+
+    assert calls[0][1] is None
+
+
 def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     settings = Settings(language="sk")
@@ -1109,6 +1143,27 @@ def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
     assert window._risk_view_rows["safe_one"].isHidden() is False
 
 
+def test_search_box_hints_when_matches_exist_only_in_another_view(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_hint")
+    qtbot.addWidget(window)
+    window.category_list.setCurrentRow(1)  # SAFE risk tab - only safe_one lives here
+
+    window.search_box.setText("moderate")
+
+    assert "1 match" in window.statusBar().currentMessage()
+
+
+def test_search_box_shows_no_matches_message(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_none")
+    qtbot.addWidget(window)
+
+    window.search_box.setText("zzz_no_such_action")
+
+    assert "No matches" in window.statusBar().currentMessage()
+
+
 def test_apply_preset_selects_only_ids_present_in_catalog(qtbot, tmp_path):
     from portablefix.gui.main_window import PRESETS
 
@@ -1646,3 +1701,17 @@ def test_close_event_waits_longer_for_uncancellable_network_runners(qtbot, tmp_p
 
     assert speed_test_runner.wait_calls == [25_000]
     assert update_download_runner.wait_calls == [updater_module.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000]
+
+
+def test_presets_only_reference_action_ids_that_exist_in_the_real_catalogs():
+    from portablefix.gui.main_window import PRESETS
+    from portablefix.module_engine import load_all_modules
+
+    real_modules_dir = Path(__file__).resolve().parent.parent / "Modules"
+    modules, errors = load_all_modules(real_modules_dir)
+    assert errors == []
+    real_ids = {action.id for module in modules for action in module.actions}
+
+    for preset_name, action_ids in PRESETS.items():
+        missing = [a for a in action_ids if a not in real_ids]
+        assert not missing, f"preset {preset_name!r} references missing action id(s): {missing}"

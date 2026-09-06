@@ -1,4 +1,5 @@
 import ctypes
+import subprocess
 
 
 def is_admin() -> bool:
@@ -9,5 +10,7 @@ def is_admin() -> bool:
 
 
 def relaunch_as_admin(executable: str, args: list[str] | None = None) -> int:
-    params = " ".join(args or [])
+    # list2cmdline quotes each arg Windows-correctly - a plain " ".join broke
+    # on any path containing a space (e.g. the script path in dev mode).
+    params = subprocess.list2cmdline(args) if args else ""
     return ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, 1)

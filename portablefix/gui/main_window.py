@@ -508,13 +508,17 @@ class MainWindow(QMainWindow):
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
+        matched_ids: set[str] = set()
         for action_id, row_widget in self._action_rows.items():
             if not needle:
                 row_widget.setHidden(False)
                 continue
             _, action = self._find_action(action_id)
             haystack = action.label(self.settings.language).lower()
-            row_widget.setHidden(needle not in haystack)
+            is_match = needle in haystack
+            row_widget.setHidden(not is_match)
+            if is_match:
+                matched_ids.add(action_id)
         for action_id, row_widget in self._risk_view_rows.items():
             if not needle:
                 row_widget.setHidden(False)
@@ -522,6 +526,30 @@ class MainWindow(QMainWindow):
             _, action = self._find_action(action_id)
             haystack = action.label(self.settings.language).lower()
             row_widget.setHidden(needle not in haystack)
+
+        if not needle:
+            self._update_status_bar()
+            return
+
+        # A match hiding in a category/risk tab the user isn't currently
+        # looking at previously looked identical to "no such action" - tell
+        # them explicitly instead of leaving an empty-looking list.
+        current_row = self.category_list.currentRow()
+        if 0 <= current_row < len(self._categories_order):
+            current_view_ids = set(self._category_action_ids[self._categories_order[current_row]])
+        else:
+            risk_index = current_row - len(self._categories_order)
+            if 0 <= risk_index < len(self._risk_tabs_order):
+                current_view_ids = set(self._risk_action_ids[self._risk_tabs_order[risk_index]])
+            else:
+                current_view_ids = set()
+
+        if not matched_ids:
+            self.statusBar().showMessage(self._t("search_no_matches").format(query=text.strip()))
+        elif not (current_view_ids & matched_ids):
+            self.statusBar().showMessage(self._t("search_matches_elsewhere").format(count=len(matched_ids)))
+        else:
+            self._update_status_bar()
 
     def _apply_preset(self, preset_key: str) -> None:
         wanted = [aid for aid in PRESETS[preset_key] if aid in self._action_checkboxes]
@@ -715,7 +743,11 @@ class MainWindow(QMainWindow):
         self._quit_app()
 
     def _on_restart_as_admin(self) -> None:
-        result = elevation.relaunch_as_admin(sys.executable)
+        # In a frozen build sys.executable IS the app - no args needed. In
+        # dev mode it's python.exe, which needs the script path re-passed or
+        # elevating just opens a bare interpreter instead of restarting the app.
+        args = None if getattr(sys, "frozen", False) else sys.argv
+        result = elevation.relaunch_as_admin(sys.executable, args)
         if result <= 32:
             QMessageBox.warning(
                 self,
@@ -923,7 +955,7 @@ class MainWindow(QMainWindow):
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()
-        runner = ActionRunner(plan, parent=self)
+        runner = ActionRunner(plan, parent=self, inactivity_timeout_sec=action.inactivity_timeout_sec)
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)
         runner.finished_with_code.connect(
