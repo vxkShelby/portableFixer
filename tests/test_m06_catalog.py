@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m06_network" / "actions.yaml"
 
 
-def test_m06_catalog_loads_13_actions_in_repair_category():
+def test_m06_catalog_loads_15_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m06_network"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 13
+    assert len(module.actions) == 15
 
 
 def test_m06_catalog_risk_distribution():
@@ -19,8 +19,8 @@ def test_m06_catalog_risk_distribution():
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
     assert len(by_risk[RiskLevel.SAFE]) == 5
-    assert len(by_risk[RiskLevel.MODERATE]) == 6
-    assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 2
+    assert len(by_risk[RiskLevel.MODERATE]) == 7
+    assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 3
     assert RiskLevel.DESTRUCTIVE not in by_risk
 
 
@@ -34,6 +34,8 @@ def test_m06_catalog_covers_expected_ids():
         "net_lan_inspector",
         "net_flush_dns",
         "net_hosts_reset",
+        "net_disable_multimedia_throttling",
+        "net_tcp_latency_tuning",
         "net_dhcp_renew",
         "net_winsock_reset",
         "net_tcpip_reset",
@@ -52,6 +54,8 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_firewall_reset",
         "net_adapter_power_disable",
         "net_set_public_dns",
+        "net_disable_multimedia_throttling",
+        "net_tcp_latency_tuning",
     ):
         assert by_id[undoable].undo_command is not None, undoable
     for action_id in (
@@ -66,6 +70,21 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_print_spooler_reset",
     ):
         assert by_id[action_id].undo_command is None, action_id
+
+
+def test_m06_catalog_new_latency_tweaks_refresh_backup_on_every_run():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("net_disable_multimedia_throttling", "net_tcp_latency_tuning"):
+        command = by_id[action_id].command
+        assert "if (-not (Test-Path $bk))" not in command, action_id
+
+
+def test_m06_catalog_tcp_latency_tuning_targets_only_active_adapters():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "net_tcp_latency_tuning")
+    assert action.risk == RiskLevel.REQUIRES_REBOOT
+    assert "-eq 'Up'" in action.command
 
 
 def test_m06_catalog_lan_inspector_has_an_inactivity_timeout():
