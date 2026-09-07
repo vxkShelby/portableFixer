@@ -1350,6 +1350,46 @@ def test_preset_button_stays_checked_and_is_mutually_exclusive(qtbot, tmp_path):
     assert window._preset_buttons["full_diagnostic"].isChecked() is True
 
 
+def test_applying_a_preset_switches_the_sidebar_to_the_category_it_selected(qtbot, tmp_path):
+    # Applying a preset checked the right boxes correctly but left whichever
+    # category the sidebar already happened to be on visible - if that
+    # wasn't the category the preset actually touched, the user saw no
+    # visible change and had no way to tell anything had been selected.
+    from portablefix.gui.main_window import PRESETS
+    from portablefix.models import ModuleCategory
+
+    diag_dir = tmp_path / "Modules" / "m01_diagnostics"
+    diag_dir.mkdir(parents=True)
+    (diag_dir / "actions.yaml").write_text(
+        "module_id: m01_diagnostics\ncategory: DIAGNOSTICS\nactions:\n"
+        "  - id: diag_one\n    label_sk: X\n    label_en: Diag one\n    risk: SAFE\n    command: \"Write-Output 'a'\"\n",
+        encoding="utf-8",
+    )
+    clean_dir = tmp_path / "Modules" / "m02_cleanup"
+    clean_dir.mkdir(parents=True)
+    (clean_dir / "actions.yaml").write_text(
+        "module_id: m02_cleanup\ncategory: CLEANUP\nactions:\n"
+        "  - id: clean_one\n    label_sk: X\n    label_en: Clean one\n    risk: SAFE\n    command: \"Write-Output 'b'\"\n",
+        encoding="utf-8",
+    )
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id="run_preset_switch")
+    qtbot.addWidget(window)
+    PRESETS["_test_preset_switch"] = ["clean_one"]
+
+    try:
+        diag_index = window._categories_order.index(ModuleCategory.DIAGNOSTICS)
+        cleanup_index = window._categories_order.index(ModuleCategory.CLEANUP)
+        window.category_list.setCurrentRow(diag_index)
+
+        window._apply_preset("_test_preset_switch")
+
+        assert window.category_list.currentRow() == cleanup_index
+        assert window._category_groups[ModuleCategory.CLEANUP].isHidden() is False
+        assert window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden() is True
+    finally:
+        del PRESETS["_test_preset_switch"]
+
+
 def test_clearing_selection_unchecks_the_lit_preset_button(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_preset_clear")

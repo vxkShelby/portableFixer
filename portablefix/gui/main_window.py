@@ -598,6 +598,16 @@ class MainWindow(QMainWindow):
         button = self._preset_buttons.get(preset_key)
         if button is not None:
             button.setChecked(True)
+        # Jump the sidebar to the category holding the first action the
+        # preset just selected - without this, applying a preset checked
+        # the right boxes correctly but left whichever category the sidebar
+        # already happened to be on visible, which usually wasn't the one
+        # the preset actually touched.
+        wanted_set = set(wanted)
+        for index, category in enumerate(self._categories_order):
+            if wanted_set.intersection(self._category_action_ids.get(category, [])):
+                self.category_list.setCurrentRow(index)
+                break
 
     def _update_status_bar(self) -> None:
         if self._batch_active:
