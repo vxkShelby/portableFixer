@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m06_network" / "actions.yaml"
 
 
-def test_m06_catalog_loads_12_actions_in_repair_category():
+def test_m06_catalog_loads_13_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m06_network"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 12
+    assert len(module.actions) == 13
 
 
 def test_m06_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m06_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 4
+    assert len(by_risk[RiskLevel.SAFE]) == 5
     assert len(by_risk[RiskLevel.MODERATE]) == 6
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 2
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -31,6 +31,7 @@ def test_m06_catalog_covers_expected_ids():
         "net_adapter_status",
         "net_ip_config_report",
         "net_wifi_diagnostics",
+        "net_lan_inspector",
         "net_flush_dns",
         "net_hosts_reset",
         "net_dhcp_renew",
@@ -57,6 +58,7 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_adapter_status",
         "net_ip_config_report",
         "net_wifi_diagnostics",
+        "net_lan_inspector",
         "net_flush_dns",
         "net_dhcp_renew",
         "net_winsock_reset",
@@ -64,6 +66,16 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_print_spooler_reset",
     ):
         assert by_id[action_id].undo_command is None, action_id
+
+
+def test_m06_catalog_lan_inspector_has_an_inactivity_timeout():
+    # It probes a handful of router ports over the network (300ms timeout
+    # each) on top of the ARP/DNS lookups - more headroom than the default
+    # in case DNS reverse-lookup hangs on an unresponsive local resolver.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "net_lan_inspector")
+    assert action.risk == RiskLevel.SAFE
+    assert action.inactivity_timeout_sec == 60
 
 
 def test_m06_catalog_hosts_reset_backup_guarded_against_double_run():

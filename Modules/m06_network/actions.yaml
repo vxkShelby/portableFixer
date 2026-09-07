@@ -38,6 +38,15 @@ actions:
     undo_command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (Test-Path \"$hostsPath.bak\") { Copy-Item -Path \"$hostsPath.bak\" -Destination $hostsPath -Force }"
     description_sk: "Zalohuje aktualny hosts subor (len pri prvom behu) a nahradi ho predvolenym obsahom bez ceph presmerovani. Caste malware presmerovava domeny cez tento subor. Undo funguje spolahlivo len ak sa medzitym nespustila tato akcia druhy krat (zaloha je len jedna, z prveho behu)."
     description_en: "Backs up the current hosts file (only on first run) and replaces it with default content with no redirects. Malware commonly hijacks domains via this file. Undo only works reliably if this action hasn't run a second time since (there's only one backup, from the first run)."
+  - id: net_lan_inspector
+    label_sk: "Kontrola LAN zariadeni a routra"
+    label_en: "LAN device and router inspector"
+    risk: SAFE
+    command: "$gw = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4DefaultGateway.NextHop; $neighbors = Get-NetNeighbor -AddressFamily IPv4 -EA SilentlyContinue | Where-Object { $_.State -in 'Reachable','Stale','Permanent' -and $_.IPAddress -notmatch '^(0\\.|169\\.254\\.|224\\.|255\\.)' } | Sort-Object IPAddress -Unique; Write-Output ('LAN devices seen via ARP: ' + $neighbors.Count); foreach ($n in $neighbors) { $name = try { ([System.Net.Dns]::GetHostEntry($n.IPAddress)).HostName } catch { '' }; Write-Output ('  ' + $n.IPAddress + '  ' + $n.LinkLayerAddress + '  ' + $name) }; if ($gw) { Write-Output ('Checking common management ports on gateway ' + $gw + ' (300ms timeout each)...'); $openPorts = @(); foreach ($p in 21,23,80,443,7547,8080) { $client = New-Object System.Net.Sockets.TcpClient; try { $iar = $client.BeginConnect($gw, $p, $null, $null); $ok = $iar.AsyncWaitHandle.WaitOne(300); if ($ok -and $client.Connected) { $openPorts += $p } } catch {} finally { $client.Close() } }; if ($openPorts) { Write-Output ('  Open: ' + ($openPorts -join ', ') + ' - if you did not expect remote/web management on your router, check its admin settings.') } else { Write-Output '  None of the checked ports responded.' } } else { Write-Output 'No default gateway found.' }"
+    inactivity_timeout_sec: 60
+    description_sk: "Vypise zariadenia viditelne na lokalnej sieti cez ARP tabulku (IP, MAC, hostname ak sa da zistit) a skontroluje ci router odpovieda na zopar bezne zneuzivanych management portov (21 FTP, 23 Telnet, 80/443 web admin, 7547 TR-069, 8080). Iba diagnostika bez zmien - ARP tabulka moze obsahovat aj davno neaktivne zariadenia."
+    description_en: "Lists devices visible on the local network via the ARP table (IP, MAC, hostname if resolvable) and checks whether the router responds on a handful of commonly-abused management ports (21 FTP, 23 Telnet, 80/443 web admin, 7547 TR-069, 8080). Diagnostics only, changes nothing - the ARP table can include devices that haven't been active in a while."
+
   - id: net_dhcp_renew
     label_sk: "Obnovenie DHCP adresy"
     label_en: "Renew DHCP address"

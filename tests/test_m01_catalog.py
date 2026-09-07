@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml"
 
 
-def test_m01_catalog_loads_18_actions_in_diagnostics_category():
+def test_m01_catalog_loads_19_actions_in_diagnostics_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m01_diagnostics"
     assert module.category == ModuleCategory.DIAGNOSTICS
-    assert len(module.actions) == 18
+    assert len(module.actions) == 19
 
 
 def test_m01_catalog_all_actions_safe_readonly():
@@ -35,7 +35,17 @@ def test_m01_catalog_covers_core_system_info_actions():
         "top_cpu_processes", "pending_reboot", "eventlog_critical_7d",
         "bsod_summary", "disk_reliability_counters", "installed_software",
         "boot_time_breakdown", "battery_health_report", "eventlog_full_export",
+        "full_system_snapshot_report",
     }.issubset(ids)
+
+
+def test_m01_catalog_full_system_snapshot_has_an_inactivity_timeout():
+    # It chains several potentially-slow queries (scheduled tasks, network
+    # connections) into one command, so it needs more headroom than the
+    # default before the inactivity watchdog would call it stalled.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "full_system_snapshot_report")
+    assert action.inactivity_timeout_sec == 60
 
 
 def test_m01_catalog_diagnostic_exports_lock_down_their_output_folder():
