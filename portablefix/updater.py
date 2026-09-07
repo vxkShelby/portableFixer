@@ -128,7 +128,13 @@ def download_update(
     return zip_path
 
 
-_PROTECTED_ROOT_ENV_VARS = ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "WinDir")
+# Deliberately just the classic UAC-virtualized legacy-app roots (this is
+# what actually fools a naive write-probe), not every conceivable protected
+# path. A custom folder an admin locked down by hand isn't virtualized, so
+# is_writable()'s own write-then-read-back probe already fails on it
+# correctly without needing to be listed here - this list only needs to
+# cover the paths where that probe can be silently fooled.
+_PROTECTED_ROOT_ENV_VARS = ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "WinDir")
 
 
 def needs_elevation_for_update(directory: Path) -> bool:
