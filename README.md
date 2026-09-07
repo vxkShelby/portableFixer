@@ -126,7 +126,12 @@ Tieto kroky vyžadujú zdroje mimo repozitára a robia sa ručne:
 
 1. **Podpísanie kódu** — `App\PortableFix.exe` je podpísaný self-signed
    certifikátom (`CN=PortableFix Self-Signed`, verejná časť v
-   `Data\PortableFix-SelfSigned.cer`). Na cieľovom počítači sa dá
+   `Data\PortableFix-SelfSigned.cer`). Dôveryhodnosť certifikátu je
+   **presne ten istý krok, ktorý sa zneužíva pri phishingu** - importuj
+   ho len ak `Data\PortableFix-SelfSigned.cer` pochádza z balíka stiahnutého
+   z [oficiálnych GitHub Releases](https://github.com/vxkShelby/portableFixer/releases)
+   tohto repa (skontroluj `Data/SHA256SUMS` oproti stiahnutému balíku),
+   nikdy z e-mailu/odkazu od niekoho iného. Na cieľovom počítači sa dá
    podpis zdôveryhodniť importom (admin PowerShell):
    ```powershell
    Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\Root
@@ -168,8 +173,9 @@ Ručný postup, nič z toho nie je automatizované:
    - `PortableFix-Setup.exe` — inštalátor pre bežných používateľov
 
 **Dôležité:** ak sa release vytvorí bez `.sha256` assetu, auto-update
-si to nevšimne a stiahnutý balík sa aplikuje **bez overenia hashu**
-(žiadne varovanie v UI) — krok 5 nikdy nevynechaj.
+sťahovanie odmietne (fail-closed, banner "Stiahnutie zlyhalo") namiesto
+aplikovania neoverenej aktualizácie — no bez neho sa aktualizácia vôbec
+nedostane k používateľom, takže krok 5 nikdy nevynechaj.
 
 Auto-update od tejto verzie sťahuje **celý balík** (exe + Data + Modules),
 nie len samotné `.exe` — takto sa k už nainštalovaným kópiám dostanú aj

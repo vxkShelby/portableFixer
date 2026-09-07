@@ -129,8 +129,13 @@ These steps need resources outside the repo and are done by hand:
 
 1. **Code signing** — `App\PortableFix.exe` is signed with a
    self-signed certificate (`CN=PortableFix Self-Signed`, public part in
-   `Data\PortableFix-SelfSigned.cer`). On a target machine the signature
-   can be trusted by importing it (admin PowerShell):
+   `Data\PortableFix-SelfSigned.cer`). Trusting a certificate is
+   **exactly the step phishing attacks abuse** - only import it if
+   `Data\PortableFix-SelfSigned.cer` came from a package downloaded off
+   this repo's [official GitHub Releases](https://github.com/vxkShelby/portableFixer/releases)
+   (check `Data/SHA256SUMS` against the downloaded package), never from
+   an email or link sent by someone else. On a target machine the
+   signature can be trusted by importing it (admin PowerShell):
    ```powershell
    Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\Root
    Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
@@ -171,8 +176,10 @@ Manual process, none of this is automated:
    - `PortableFix-Setup.exe` — the installer for regular users
 
 **Important:** if a release is created without the `.sha256` asset,
-auto-update won't notice and the downloaded package gets applied
-**without hash verification** (no warning in the UI) - never skip step 5.
+auto-update refuses the download (fails closed, shows an "Update
+download failed" banner) instead of applying an unverified package -
+but that also means the update never reaches users at all, so never
+skip step 5.
 
 Since this version, auto-update downloads the **whole package** (exe +
 Data + Modules), not just the `.exe` - this way already-installed
