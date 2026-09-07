@@ -84,6 +84,9 @@ _STRINGS = {
         "show_action_details": "Zobrazit podrobnosti",
         "hide_action_details": "Skryt podrobnosti",
         "action_detail_undo_label": "Vratenie:",
+        "console_fullscreen_toggle": "Cez cele okno / vratit velkost",
+        "console_popout": "Otvorit v samostatnom okne",
+        "console_popout_title": "Vystup - PortableFix",
     },
     "en": {
         "app_title": "PortableFix",
@@ -170,6 +173,9 @@ _STRINGS = {
         "show_action_details": "Show details",
         "hide_action_details": "Hide details",
         "action_detail_undo_label": "Undo:",
+        "console_fullscreen_toggle": "Fill window / restore size",
+        "console_popout": "Open in a separate window",
+        "console_popout_title": "Output - PortableFix",
     },
 }
 

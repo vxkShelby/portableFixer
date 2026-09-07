@@ -344,6 +344,15 @@ QPlainTextEdit#console {
     font-size: 9pt;
     color: #9fd9e8;
 }
+QSplitter::handle {
+    background-color: #1c2530;
+}
+QSplitter::handle:vertical {
+    height: 6px;
+}
+QSplitter::handle:hover {
+    background-color: #2fe6ff;
+}
 
 QProgressBar#batchProgress {
     background-color: #06080c;

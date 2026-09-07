@@ -1436,6 +1436,42 @@ def test_global_clear_selection_button_only_enabled_when_something_is_selected(q
     assert window.global_select_none_button.isEnabled() is False
 
 
+def test_console_fullscreen_toggle_collapses_and_restores_the_body_pane(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_console_fs")
+    qtbot.addWidget(window)
+    window.show()
+    window.resize(1000, 700)
+    original_sizes = window._main_splitter.sizes()
+    assert original_sizes[0] > 0
+
+    window.console_fullscreen_button.click()
+    assert window._main_splitter.sizes()[0] == 0
+    assert window._main_splitter.sizes()[1] > 0
+
+    window.console_fullscreen_button.click()
+    assert window._main_splitter.sizes()[0] > 0
+
+
+def test_console_popout_reparents_console_and_reattaches_on_close(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_console_popout")
+    qtbot.addWidget(window)
+
+    assert window._console_container_layout.indexOf(window.console) != -1
+
+    window.console_popout_button.click()
+
+    assert window._console_window is not None
+    assert window._console_container_layout.indexOf(window.console) == -1
+    assert window.console.parent() is window._console_window
+
+    window._console_window.close()
+
+    assert window._console_window is None
+    assert window._console_container_layout.indexOf(window.console) != -1
+
+
 def test_update_banner_hidden_by_default(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_update1")

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QToolButton,
     QVBoxLayout,
     QLabel,
@@ -130,6 +131,8 @@ class MainWindow(QMainWindow):
         # callback fires after the C++ widgets are gone) so async batch-completion
         # handlers know not to touch self.run_button once the window is closing.
         self._closed = True
+        if self._console_window is not None:
+            self._console_window.close()
         if self._sysinfo_timer is not None:
             self._sysinfo_timer.stop()
         if self._hw_sensor_timer is not None:
@@ -486,12 +489,43 @@ class MainWindow(QMainWindow):
         center_layout.addLayout(run_row)
         body_layout.addLayout(center_layout, 1)
         body_layout.addWidget(self._build_sysinfo_panel())
-        root_layout.addLayout(body_layout, 3)
+        body_widget = QWidget()
+        body_widget.setLayout(body_layout)
 
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
-        root_layout.addWidget(self.console, 1)
+        self._console_window: QDialog | None = None
+        self._console_fullscreen = False
+        self._console_splitter_sizes: list[int] | None = None
+
+        console_toolbar = QHBoxLayout()
+        console_toolbar.addStretch(1)
+        self.console_fullscreen_button = self._make_selection_button(
+            "⤢", lambda: self._on_console_fullscreen_toggled()
+        )
+        self.console_fullscreen_button.setToolTip(self._t("console_fullscreen_toggle"))
+        console_toolbar.addWidget(self.console_fullscreen_button)
+        self.console_popout_button = self._make_selection_button(
+            "⧉", lambda: self._on_console_popout_clicked()
+        )
+        self.console_popout_button.setToolTip(self._t("console_popout"))
+        console_toolbar.addWidget(self.console_popout_button)
+
+        self._console_container_layout = QVBoxLayout()
+        self._console_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._console_container_layout.setSpacing(4)
+        self._console_container_layout.addLayout(console_toolbar)
+        self._console_container_layout.addWidget(self.console)
+        console_panel = QWidget()
+        console_panel.setLayout(self._console_container_layout)
+
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._main_splitter.addWidget(body_widget)
+        self._main_splitter.addWidget(console_panel)
+        self._main_splitter.setStretchFactor(0, 3)
+        self._main_splitter.setStretchFactor(1, 1)
+        root_layout.addWidget(self._main_splitter, 1)
 
         self.category_list.currentRowChanged.connect(self._on_category_changed)
         if self._categories_order:
@@ -628,6 +662,41 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             self._t("status_bar_selected").format(count=len(selected), risk=highest.value)
         )
+
+    def _on_console_fullscreen_toggled(self) -> None:
+        if self._console_fullscreen:
+            sizes = self._console_splitter_sizes or [3, 1]
+            self._main_splitter.setSizes(sizes)
+            self.console_fullscreen_button.setText("⤢")
+        else:
+            self._console_splitter_sizes = self._main_splitter.sizes()
+            total = sum(self._console_splitter_sizes) or 1
+            self._main_splitter.setSizes([0, total])
+            self.console_fullscreen_button.setText("⤡")
+        self._console_fullscreen = not self._console_fullscreen
+
+    def _on_console_popout_clicked(self) -> None:
+        if self._console_window is not None:
+            self._console_window.raise_()
+            self._console_window.activateWindow()
+            return
+        window = QDialog(self)
+        window.setWindowTitle(self._t("console_popout_title"))
+        window.setStyleSheet(style.STYLE)
+        window.resize(700, 400)
+        window.setModal(False)
+        layout = QVBoxLayout(window)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.addWidget(self.console)
+        window.finished.connect(lambda _result=0: self._reattach_console())
+        self._console_window = window
+        window.show()
+
+    def _reattach_console(self) -> None:
+        if self._console_window is None:
+            return
+        self._console_container_layout.addWidget(self.console)
+        self._console_window = None
 
     def _make_selection_button(self, text: str, on_click) -> QPushButton:
         button = QPushButton(text)
