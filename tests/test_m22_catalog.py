@@ -104,3 +104,37 @@ def test_m22_catalog_duplicate_files_report_skips_legacy_compatibility_junctions
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "duplicate_files_report")
     assert "ReparsePoint" in action.command
+
+
+def test_m22_catalog_disk_space_by_folder_report_skips_reparse_points():
+    # Same PS 5.1 -Recurse-follows-junctions issue as duplicate_files_report:
+    # without excluding reparse points at the top level, a self-referential
+    # or legacy compat junction can double-count size or blow up scan time.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "disk_space_by_folder_report")
+    assert "ReparsePoint" in action.command
+
+
+def test_m22_catalog_disk_space_by_folder_report_emits_progress_per_folder():
+    # inactivity_timeout_sec: 600 is a watchdog that resets on output. Sizing
+    # C:\Windows/Program Files/Users etc. can take well past 10 minutes with
+    # no output, so each top-level folder must Write-Output as soon as it is
+    # measured, not just in the final summary table.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "disk_space_by_folder_report")
+    assert "Write-Output" in action.command
+    # the per-folder progress line must run inside the sizing loop, i.e.
+    # before the final sort/select-first-15 summary step
+    progress_idx = action.command.index("Write-Output ($dir.FullName")
+    summary_idx = action.command.index("Sort-Object SizeGB -Descending")
+    assert progress_idx < summary_idx
+
+
+def test_m22_catalog_shortcut_hijack_report_excludes_pwa_app_flags():
+    # chrome.exe --app=https://... is Chrome/Edge's standard "Install as
+    # app" flow (Gmail, Docs, etc.), not a hijack - it must not match.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "shortcut_hijack_report")
+    assert "--app" in action.command
+    assert "$args" not in action.command
+    assert "$linkArgs" in action.command
