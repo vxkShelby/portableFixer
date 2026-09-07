@@ -18,7 +18,7 @@ PowerShell.
 
 ## Screenshot
 
-![PortableFix screenshot](docs/screenshot.png)
+![PortableFix screenshot](docs/screenshot-en.png)
 
 ## Quick start
 
