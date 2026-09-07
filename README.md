@@ -15,6 +15,10 @@
 Prenosný diagnostický a opravný nástroj pre Windows 10/11, určený na beh
 z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 
+## Náhľad
+
+![PortableFix screenshot](docs/screenshot.png)
+
 ## Rýchly štart
 
 1. Skopíruj celý priečinok na USB kľúč (alebo spusti priamo z disku).

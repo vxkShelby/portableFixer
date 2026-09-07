@@ -16,6 +16,10 @@ A portable diagnostic and repair tool for Windows 10/11, meant to run
 from a USB stick. Python 3.12 + PySide6 GUI, actions run through
 PowerShell.
 
+## Screenshot
+
+![PortableFix screenshot](docs/screenshot.png)
+
 ## Quick start
 
 1. Copy the whole folder to a USB stick (or run directly from disk).
