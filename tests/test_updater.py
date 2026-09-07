@@ -16,6 +16,7 @@ from portablefix.updater import (
     download_update,
     is_newer,
     is_writable,
+    needs_elevation_for_update,
     parse_version,
 )
 
@@ -356,6 +357,42 @@ def test_is_writable_false_for_missing_directory(tmp_path):
     assert is_writable(tmp_path / "does_not_exist") is False
 
 
+def test_needs_elevation_false_when_already_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.elevation, "is_admin", lambda: True)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    protected = tmp_path / "PortableFix"
+    protected.mkdir()
+    assert needs_elevation_for_update(protected) is False
+
+
+def test_needs_elevation_true_for_program_files_when_not_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.elevation, "is_admin", lambda: False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    protected = tmp_path / "PortableFix"
+    protected.mkdir()
+    assert needs_elevation_for_update(protected) is True
+
+
+def test_needs_elevation_false_for_ordinary_directory_when_not_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.elevation, "is_admin", lambda: False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "not_used"))
+    ordinary = tmp_path / "USB Fixer"
+    ordinary.mkdir()
+    assert needs_elevation_for_update(ordinary) is False
+
+
+def test_is_writable_false_under_protected_path_even_though_probe_write_would_succeed(tmp_path, monkeypatch):
+    # This is the UAC-virtualization scenario: a plain write-then-read-back
+    # probe would happily succeed (real or virtualized), which is exactly
+    # why is_writable() must refuse based on the path+elevation check rather
+    # than trusting the probe under a protected root.
+    monkeypatch.setattr(updater_module.elevation, "is_admin", lambda: False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    protected = tmp_path / "PortableFix"
+    protected.mkdir()
+    assert is_writable(protected) is False
+
+
 def test_build_swap_script_parses_as_valid_powershell():
     import os
     import subprocess
@@ -527,6 +564,36 @@ def test_build_swap_script_contains_pid_wait_loop():
     )
     assert "54321" in script
     assert "Get-Process" in script
+
+
+def test_build_swap_script_logs_to_a_temp_file_under_pid(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    script = build_swap_script(
+        current_pid=999,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert "update_log_999.txt" in script
+    assert "PortableFixUpdate" in script
+    assert "function Log(" in script
+
+
+def test_build_swap_script_aborts_without_swapping_if_process_still_running_after_wait():
+    # If the old exe hasn't exited by the time the wait loop gives up, its
+    # files are still locked - Move-Item would fail silently. The script
+    # must check again and bail out BEFORE touching App/Modules/Vendor,
+    # rather than proceeding into a doomed swap.
+    script = build_swap_script(
+        current_pid=42,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    abort_pos = script.index("ABORT: pid 42 did not exit")
+    first_move_pos = script.index("Move-Item -Path 'C:\\App\\App' -Destination 'C:\\App\\App.old'")
+    assert abort_pos < first_move_pos
+    # the abort branch must exit before the swap, not after
+    exit_pos = script.index("exit 1", abort_pos)
+    assert exit_pos < first_move_pos
 
 
 def test_build_swap_script_restarts_via_portablefix_cmd():

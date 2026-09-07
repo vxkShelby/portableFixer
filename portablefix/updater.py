@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from PySide6.QtCore import QThread, Signal
 
+from . import elevation
 from .integrity import compute_sha256
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
@@ -127,7 +128,39 @@ def download_update(
     return zip_path
 
 
+_PROTECTED_ROOT_ENV_VARS = ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "WinDir")
+
+
+def needs_elevation_for_update(directory: Path) -> bool:
+    # A non-admin process's writes under Program Files/Windows are often
+    # silently redirected by UAC file virtualization to
+    # %LOCALAPPDATA%\VirtualStore\... instead of actually failing - a naive
+    # write-then-read-back probe in is_writable() would "succeed" against
+    # that shadow copy while the real target stays untouched, and the swap
+    # script (running as powershell.exe, which is NOT virtualized) then
+    # fails for real on every Move-Item, silently, thanks to
+    # $ErrorActionPreference. Rather than trying to out-clever
+    # virtualization, refuse outright when installed under a protected
+    # system path and not elevated.
+    if elevation.is_admin():
+        return False
+    try:
+        resolved = str(directory.resolve()).casefold()
+    except OSError:
+        resolved = str(directory).casefold()
+    for env_var in _PROTECTED_ROOT_ENV_VARS:
+        root = os.environ.get(env_var)
+        if not root:
+            continue
+        root = root.rstrip("\\").casefold()
+        if resolved == root or resolved.startswith(root + "\\"):
+            return True
+    return False
+
+
 def is_writable(directory: Path) -> bool:
+    if needs_elevation_for_update(directory):
+        return False
     probe = directory / ".update_write_test"
     try:
         if not directory.exists():
@@ -164,45 +197,73 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
     zip_p = _ps_quote(str(zip_path))
     stage = _ps_quote(str(zip_path.parent / "PortableFixUpdateStage"))
     settings_bak = _ps_quote(str(zip_path.parent / "settings.json.bak"))
+    log_dir = _ps_quote(str(Path(tempfile.gettempdir()) / "PortableFixUpdate"))
+    log_file = _ps_quote(str(Path(tempfile.gettempdir()) / "PortableFixUpdate" / f"update_log_{current_pid}.txt"))
     return (
         '$ErrorActionPreference = "SilentlyContinue"\n'
+        # No diagnostics existed here before - every step below is silent by
+        # design ($ErrorActionPreference), so this log is the only evidence
+        # left behind if a swap fails. Written under %TEMP%, never under
+        # install_dir, so it's captured even when the install itself is on
+        # an unwritable/protected path.
+        f"New-Item -ItemType Directory -Force -Path {log_dir} | Out-Null\n"
+        f"function Log([string]$msg) {{ Add-Content -Path {log_file} -Value ((Get-Date -Format o) + ' ' + $msg) -EA SilentlyContinue }}\n"
+        f"Log 'update swap started, waiting for pid {current_pid} to exit'\n"
         f"for ($i = 0; $i -lt 30; $i++) {{\n"
         f"    if (-not (Get-Process -Id {current_pid} -EA SilentlyContinue)) {{ break }}\n"
         "    Start-Sleep -Milliseconds 500\n"
         "}\n"
         "Start-Sleep -Milliseconds 300\n"
+        # If the old process is still alive after the wait, its exe (and
+        # anything it has open under App\) is still locked - proceeding
+        # would make Move-Item fail silently and leave a half-swapped
+        # install. Nothing has been touched on disk yet, so aborting here
+        # is a clean no-op, not a rollback.
+        f"if (Get-Process -Id {current_pid} -EA SilentlyContinue) {{\n"
+        f"    Log 'ABORT: pid {current_pid} did not exit in time, files likely still locked'\n"
+        "    exit 1\n"
+        "}\n"
+        f"Log 'old process exited, proceeding with swap'\n"
         f"if (Test-Path {settings_json}) {{ Copy-Item -Path {settings_json} -Destination {settings_bak} -Force }}\n"
+        f"Log \"settings.json backed up: $(Test-Path {settings_bak})\"\n"
         f"Expand-Archive -Path {zip_p} -DestinationPath {stage} -Force\n"
+        f"Log \"expanded update zip: $(Test-Path {stage})\"\n"
         # Zip-slip guard: refuse to proceed if any extracted entry landed
         # outside the staging directory (a crafted zip with '../' entries).
         f"$stageFull = (Resolve-Path {stage}).Path\n"
         f"$escaped = Get-ChildItem -Path {stage} -Recurse -File | Where-Object {{ -not $_.FullName.StartsWith($stageFull) }}\n"
-        f"if ($escaped) {{ Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue; exit 1 }}\n"
+        f"if ($escaped) {{ Log 'ABORT: zip-slip guard tripped'; Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue; exit 1 }}\n"
         f"$stagedRoot = (Get-ChildItem -Path {stage} -Directory | Select-Object -First 1).FullName\n"
         f"if (Test-Path {app_dir}) {{ Move-Item -Path {app_dir} -Destination {app_bak} -Force }}\n"
         f"if (Test-Path {modules_dir}) {{ Move-Item -Path {modules_dir} -Destination {modules_bak} -Force }}\n"
         f"if (Test-Path {vendor_dir}) {{ Move-Item -Path {vendor_dir} -Destination {vendor_bak} -Force }}\n"
+        f"Log \"old folders backed up: App.old=$(Test-Path {app_bak}) Modules.old=$(Test-Path {modules_bak}) Vendor.old=$(Test-Path {vendor_bak})\"\n"
         f"Move-Item -Path \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
         f"Move-Item -Path \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
         f"if (Test-Path \"$stagedRoot\\Vendor\") {{ Move-Item -Path \"$stagedRoot\\Vendor\" -Destination {vendor_dir} -Force }}\n"
         f"Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
         f"Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
         f"if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
+        f"Log \"new files in place: App.exe=$(Test-Path {app_exe}) Modules=$(Test-Path {modules_dir}) Vendor=$(Test-Path {vendor_dir})\"\n"
         f"if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue) -and (Test-Path {vendor_dir}) -and (Get-ChildItem -Path {vendor_dir} -EA SilentlyContinue)) {{\n"
+        "    Log 'swap verified OK, removing backups'\n"
         f"    Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
         "} else {\n"
+        "    Log 'swap FAILED verification, rolling back to backups'\n"
         f"    Remove-Item -Path {app_dir} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
         f"    Remove-Item -Path {vendor_dir} -Recurse -Force -EA SilentlyContinue\n"
         f"    if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
         f"    if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
         f"    if (Test-Path {vendor_bak}) {{ Move-Item -Path {vendor_bak} -Destination {vendor_dir} -Force }}\n"
+        f"    Log \"rollback done, App.exe present=$(Test-Path {app_exe})\"\n"
         "}\n"
         # Relaunch first, then clean up temp files - a freshly-downloaded
         # zip can sit under active AV scanning for many seconds, and that
         # must never delay the user seeing their updated app come back.
+        f"Log \"relaunching via {cmd_path}\"\n"
         f"Start-Process -FilePath {cmd_path}\n"
         f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
         "for ($i = 0; $i -lt 30; $i++) {\n"
@@ -211,6 +272,7 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         "    Start-Sleep -Milliseconds 1000\n"
         "}\n"
         f"Remove-Item -Path {settings_bak} -Force -EA SilentlyContinue\n"
+        "Log 'update swap script finished'\n"
     )
 
 

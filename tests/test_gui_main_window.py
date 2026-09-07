@@ -1554,6 +1554,34 @@ def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monke
     assert applied.get("called") is None
 
 
+def test_update_needs_admin_shows_elevation_hint_without_applying(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import UpdateInfo
+    from portablefix.gui import main_window as mw_module
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    fake_exe = tmp_path / "PortableFix.new.exe"
+    fake_exe.write_bytes(b"x")
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
+    monkeypatch.setattr(mw_module.updater, "needs_elevation_for_update", lambda p: True)
+    applied = {}
+    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_needs_admin")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
+
+    window.update_button.click()
+
+    qtbot.waitUntil(
+        lambda: window.update_banner_label.text()
+        == "The app is installed in a protected folder (e.g. Program Files). Use 'Restart as administrator', then try the update again.",
+        timeout=5000,
+    )
+    assert applied.get("called") is None
+
+
 def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
     from portablefix.updater import UpdateInfo
 

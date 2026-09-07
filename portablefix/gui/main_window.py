@@ -869,7 +869,8 @@ class MainWindow(QMainWindow):
             return
         install_dir = paths.get_base_dir()
         if not updater.is_writable(install_dir):
-            self.update_banner_label.setText(self._t("update_not_writable"))
+            key = "update_needs_admin" if updater.needs_elevation_for_update(install_dir) else "update_not_writable"
+            self.update_banner_label.setText(self._t(key))
             return
         confirmed = QMessageBox.question(
             self, self._t("app_title"),
