@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m22_deep_cleanup" / "actions.yaml"
 
 
-def test_m22_catalog_loads_4_actions_in_cleanup_category():
+def test_m22_catalog_loads_6_actions_in_cleanup_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m22_deep_cleanup"
     assert module.category == ModuleCategory.CLEANUP
-    assert len(module.actions) == 4
+    assert len(module.actions) == 6
 
 
 def test_m22_catalog_risk_distribution():
@@ -22,6 +22,8 @@ def test_m22_catalog_risk_distribution():
         "leftover_uninstall_keys_report",
         "duplicate_files_report",
         "broken_shortcuts_report",
+        "shortcut_hijack_report",
+        "disk_space_by_folder_report",
     }
     assert by_risk[RiskLevel.MODERATE] == ["wipe_free_space"]
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -29,7 +31,7 @@ def test_m22_catalog_risk_distribution():
 
 
 def test_m22_catalog_no_action_has_undo_command():
-    # All three report actions are deliberately report-only (no companion
+    # All five report actions are deliberately report-only (no companion
     # delete/fix action - registry/hash/shortcut false positives make manual
     # review the right call), and wipe_free_space only touches already-free
     # space, so there is nothing to undo.
@@ -45,6 +47,8 @@ def test_m22_catalog_covers_expected_ids():
         "leftover_uninstall_keys_report",
         "duplicate_files_report",
         "broken_shortcuts_report",
+        "shortcut_hijack_report",
+        "disk_space_by_folder_report",
         "wipe_free_space",
     }
 
@@ -63,7 +67,12 @@ def test_m22_catalog_long_running_actions_declare_inactivity_timeout_sec():
     by_id = {a.id: a for a in module.actions}
     assert by_id["duplicate_files_report"].inactivity_timeout_sec == 900
     assert by_id["wipe_free_space"].inactivity_timeout_sec == 1800
-    default_timeout_ids = {"leftover_uninstall_keys_report", "broken_shortcuts_report"}
+    assert by_id["disk_space_by_folder_report"].inactivity_timeout_sec == 600
+    default_timeout_ids = {
+        "leftover_uninstall_keys_report",
+        "broken_shortcuts_report",
+        "shortcut_hijack_report",
+    }
     for action_id in default_timeout_ids:
         assert by_id[action_id].inactivity_timeout_sec is None, action_id
 

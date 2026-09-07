@@ -1327,6 +1327,20 @@ def test_preset_button_stays_checked_and_is_mutually_exclusive(qtbot, tmp_path):
     assert window._preset_buttons["full_diagnostic"].isChecked() is True
 
 
+def test_clearing_selection_unchecks_the_lit_preset_button(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_preset_clear")
+    qtbot.addWidget(window)
+
+    window._preset_buttons["quick_clean"].click()
+    assert window._preset_buttons["quick_clean"].isChecked() is True
+
+    window.global_select_none_button.click()
+
+    assert window._preset_buttons["quick_clean"].isChecked() is False
+    assert all(not cb.isChecked() for cb in window._action_checkboxes.values())
+
+
 def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_statusbar")

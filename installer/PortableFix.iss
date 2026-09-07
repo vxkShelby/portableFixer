@@ -17,6 +17,10 @@ AppPublisherURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}/releases
 ; #MyAppName is appended automatically -> suggested default is "...\PortableFix"
 DefaultDirName={autopf}\{#MyAppName}
+; Without this, Inno's "auto" default for the Select Destination Location
+; page skips it whenever the default path looks fine to it (which is always,
+; with PrivilegesRequired=lowest) - users never get a chance to pick.
+DisableDirPage=no
 DefaultGroupName={#MyAppName}
 ; Lets the user choose install-for-me (no admin, works for a USB drive path
 ; too - it is just a folder) vs install-for-all-users (Program Files, needs

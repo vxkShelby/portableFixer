@@ -694,6 +694,21 @@ class MainWindow(QMainWindow):
     def _apply_selection(self, action_ids: list[str], mode: str) -> None:
         # mode is "all", "none", or a RiskLevel value (e.g. "SAFE") meaning
         # "check only actions at exactly this risk level".
+        # Any manual selection change invalidates a previously lit preset
+        # button - without this, "Zrusit vyber" (or any select-by-risk/
+        # category button) left the preset button visually checked even
+        # though the actual checkbox selection no longer matches that preset.
+        # _apply_preset() re-lights the right button itself right after
+        # calling this, so clearing here doesn't affect preset switching.
+        checked_preset = self._preset_button_group.checkedButton()
+        if checked_preset is not None:
+            # An exclusive QButtonGroup refuses to drop to zero checked
+            # buttons via a direct setChecked(False) call on the sole
+            # checked one - toggle exclusivity off for the moment it takes
+            # to actually clear it.
+            self._preset_button_group.setExclusive(False)
+            checked_preset.setChecked(False)
+            self._preset_button_group.setExclusive(True)
         for action_id in action_ids:
             if mode == "all":
                 checked = True
