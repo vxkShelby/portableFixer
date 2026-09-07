@@ -3,7 +3,7 @@
 ;   ISCC installer\PortableFix.iss
 ; Bump MyAppVersion together with portablefix/version.py on every release.
 #define MyAppName "PortableFix"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "vxkShelby"
 #define MyAppURL "https://github.com/vxkShelby/portableFixer"
 #define RepoRoot ".."
@@ -59,4 +59,13 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}\App"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\App\PortableFix.exe"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; No runasoriginaluser: Inno's de-elevation trick for that flag (used to
+; avoid launching the app elevated right after an admin-mode/per-machine
+; install) is a known-fragile mechanism that can fail outright with
+; "error 740: the requested operation requires elevation" on some systems
+; instead of falling back gracefully - a hard crash on first launch is
+; worse than the one-time cosmetic issue of the very first post-install
+; launch coming up elevated after an admin install. Every later launch
+; (Start Menu/Desktop shortcut, or a per-user install) is unaffected -
+; the app's own manifest is asInvoker, so those always start non-elevated.
+Filename: "{app}\App\PortableFix.exe"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
