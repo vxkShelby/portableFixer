@@ -1,6 +1,16 @@
-# PortableFix
+<p align="center">
+  <img src="docs/logo.png" alt="PortableFix" width="120">
+</p>
 
-*[Slovenská verzia / Slovak version: README.md](README.md)*
+<h1 align="center">PortableFix</h1>
+<p align="center"><i><a href="README.md">Slovenská verzia / Slovak version</a></i></p>
+
+<p align="center">
+<a href="https://github.com/vxkShelby/portableFixer/actions/workflows/tests.yml"><img src="https://github.com/vxkShelby/portableFixer/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+<a href="https://github.com/vxkShelby/portableFixer/releases/latest"><img src="https://img.shields.io/github/v/release/vxkShelby/portableFixer" alt="Latest release"></a>
+<a href="https://github.com/vxkShelby/portableFixer/releases"><img src="https://img.shields.io/github/downloads/vxkShelby/portableFixer/total" alt="Downloads"></a>
+<a href="https://github.com/vxkShelby/portableFixer"><img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6" alt="Platform"></a>
+</p>
 
 A portable diagnostic and repair tool for Windows 10/11, meant to run
 from a USB stick. Python 3.12 + PySide6 GUI, actions run through
