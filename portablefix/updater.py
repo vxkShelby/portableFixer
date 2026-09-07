@@ -244,27 +244,42 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"if (Test-Path {modules_dir}) {{ Move-Item -Path {modules_dir} -Destination {modules_bak} -Force }}\n"
         f"if (Test-Path {vendor_dir}) {{ Move-Item -Path {vendor_dir} -Destination {vendor_bak} -Force }}\n"
         f"Log \"old folders backed up: App.old=$(Test-Path {app_bak}) Modules.old=$(Test-Path {modules_bak}) Vendor.old=$(Test-Path {vendor_bak})\"\n"
-        f"Move-Item -Path \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
-        f"Move-Item -Path \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
-        f"if (Test-Path \"$stagedRoot\\Vendor\") {{ Move-Item -Path \"$stagedRoot\\Vendor\" -Destination {vendor_dir} -Force }}\n"
-        f"Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
-        f"Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
-        f"if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
-        f"Log \"new files in place: App.exe=$(Test-Path {app_exe}) Modules=$(Test-Path {modules_dir}) Vendor=$(Test-Path {vendor_dir})\"\n"
-        f"if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue) -and (Test-Path {vendor_dir}) -and (Get-ChildItem -Path {vendor_dir} -EA SilentlyContinue)) {{\n"
-        "    Log 'swap verified OK, removing backups'\n"
-        f"    Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"    Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"    Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
-        "} else {\n"
-        "    Log 'swap FAILED verification, rolling back to backups'\n"
-        f"    Remove-Item -Path {app_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"    Remove-Item -Path {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"    Remove-Item -Path {vendor_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"    if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
-        f"    if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
-        f"    if (Test-Path {vendor_bak}) {{ Move-Item -Path {vendor_bak} -Destination {vendor_dir} -Force }}\n"
-        f"    Log \"rollback done, App.exe present=$(Test-Path {app_exe})\"\n"
+        # Root-cause fix: if App/Modules/Vendor is STILL present here, the
+        # move-away above silently failed (a locked .exe/DLL - AV scanning,
+        # or the process that just exited not having released the handle
+        # yet - swallowed by $ErrorActionPreference). Move-Item into an
+        # *existing* destination directory does not overwrite it, it nests
+        # the source folder one level deeper instead (verified empirically),
+        # so the old exe would stay exactly where it is. The verification
+        # check further down would then find that old exe still there and
+        # report "swap verified OK" - a false positive on an update that
+        # never actually happened. Refuse to swap into an occupied
+        # directory rather than nesting into it.
+        f"$backupOk = (-not (Test-Path {app_dir})) -and (-not (Test-Path {modules_dir})) -and (-not (Test-Path {vendor_dir}))\n"
+        f"if (-not $backupOk) {{ Log 'ABORT: old App/Modules/Vendor folder still present after backup move - likely locked, refusing to swap into an occupied directory' }}\n"
+        "if ($backupOk) {\n"
+        f"    Move-Item -Path \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
+        f"    Move-Item -Path \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
+        f"    if (Test-Path \"$stagedRoot\\Vendor\") {{ Move-Item -Path \"$stagedRoot\\Vendor\" -Destination {vendor_dir} -Force }}\n"
+        f"    Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
+        f"    Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
+        f"    if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
+        f"    Log \"new files in place: App.exe=$(Test-Path {app_exe}) Modules=$(Test-Path {modules_dir}) Vendor=$(Test-Path {vendor_dir})\"\n"
+        f"    if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue) -and (Test-Path {vendor_dir}) -and (Get-ChildItem -Path {vendor_dir} -EA SilentlyContinue)) {{\n"
+        "        Log 'swap verified OK, removing backups'\n"
+        f"        Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
+        f"        Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
+        f"        Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
+        "    } else {\n"
+        "        Log 'swap FAILED verification, rolling back to backups'\n"
+        f"        Remove-Item -Path {app_dir} -Recurse -Force -EA SilentlyContinue\n"
+        f"        Remove-Item -Path {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
+        f"        Remove-Item -Path {vendor_dir} -Recurse -Force -EA SilentlyContinue\n"
+        f"        if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
+        f"        if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
+        f"        if (Test-Path {vendor_bak}) {{ Move-Item -Path {vendor_bak} -Destination {vendor_dir} -Force }}\n"
+        f"        Log \"rollback done, App.exe present=$(Test-Path {app_exe})\"\n"
+        "    }\n"
         "}\n"
         # Relaunch first, then clean up temp files - a freshly-downloaded
         # zip can sit under active AV scanning for many seconds, and that

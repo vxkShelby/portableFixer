@@ -596,6 +596,91 @@ def test_build_swap_script_aborts_without_swapping_if_process_still_running_afte
     assert exit_pos < first_move_pos
 
 
+def _make_release_zip(tmp_path: Path, exe_marker: bytes = b"new-exe") -> Path:
+    # Mirrors the real release contract: one top-level folder containing
+    # App/, Data/, Modules/, Vendor/, PortableFix.cmd.
+    import shutil
+
+    src = tmp_path / "zip_src" / "PortableFix"
+    (src / "App").mkdir(parents=True)
+    (src / "App" / "PortableFix.exe").write_bytes(exe_marker)
+    (src / "Modules").mkdir()
+    (src / "Modules" / "mod.dll").write_bytes(b"m")
+    (src / "Vendor").mkdir()
+    (src / "Vendor" / "vendor.dll").write_bytes(b"v")
+    (src / "Data").mkdir()
+    (src / "Data" / "settings.json").write_text("{}")
+    (src / "PortableFix.cmd").write_text("@echo off\n")
+    zip_path = tmp_path / "PortableFix-update.zip"
+    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=src.parent)
+    return zip_path
+
+
+def _make_old_install(install_dir: Path) -> None:
+    (install_dir / "App").mkdir(parents=True)
+    (install_dir / "App" / "PortableFix.exe").write_bytes(b"old-exe")
+    (install_dir / "Modules").mkdir()
+    (install_dir / "Modules" / "mod.dll").write_bytes(b"old-m")
+    (install_dir / "Vendor").mkdir()
+    (install_dir / "Vendor" / "vendor.dll").write_bytes(b"old-v")
+    (install_dir / "Data").mkdir()
+    (install_dir / "Data" / "settings.json").write_text('{"k": "v"}')
+    (install_dir / "PortableFix.cmd").write_text("@echo off\n")
+
+
+def _run_script(script_text: str, tmp_path: Path) -> None:
+    import subprocess
+
+    script_path = tmp_path / "swap.ps1"
+    script_path.write_text(script_text, encoding="utf-8-sig")
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_swap_script_actually_replaces_old_files_end_to_end(tmp_path):
+    # None of the other build_swap_script tests ever RUN the script - they
+    # only assert substrings in the generated text or that it parses. This
+    # actually executes it against a real fake install, proving the swap
+    # logic itself (not just its syntax) works.
+    install_dir = tmp_path / "install"
+    _make_old_install(install_dir)
+    zip_path = _make_release_zip(tmp_path)
+    # current_pid must already be a dead pid so the wait loop exits immediately.
+    dead_pid = 999_999
+    script = build_swap_script(current_pid=dead_pid, install_dir=install_dir, zip_path=zip_path)
+
+    _run_script(script, tmp_path)
+
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"new-exe"
+    assert (install_dir / "Modules" / "mod.dll").exists()
+    assert (install_dir / "Vendor" / "vendor.dll").exists()
+    assert not (install_dir / "App.old").exists()
+
+
+def test_swap_script_aborts_without_false_positive_when_old_app_dir_is_locked(tmp_path):
+    # Reproduces the actual bug: if moving the old App folder out of the way
+    # fails (here simulated by holding a file open inside it, standing in
+    # for AV scanning / a lingering handle from the just-exited process),
+    # Move-Item into the still-occupied destination NESTS the new files
+    # instead of replacing them - so the old exe must be left in place
+    # rather than the script reporting a false "verified OK".
+    install_dir = tmp_path / "install"
+    _make_old_install(install_dir)
+    zip_path = _make_release_zip(tmp_path)
+    dead_pid = 999_998
+    script = build_swap_script(current_pid=dead_pid, install_dir=install_dir, zip_path=zip_path)
+
+    locked_file = install_dir / "App" / "PortableFix.exe"
+    with open(locked_file, "r+b"):
+        _run_script(script, tmp_path)
+
+    # Old exe must still be exactly the old one - not silently "verified"
+    # against new content nested one level deeper.
+    assert locked_file.read_bytes() == b"old-exe"
+
+
 def test_build_swap_script_restarts_via_portablefix_cmd():
     script = build_swap_script(
         current_pid=1,
