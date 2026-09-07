@@ -1397,6 +1397,10 @@ def test_clearing_selection_unchecks_the_lit_preset_button(qtbot, tmp_path):
 
     window._preset_buttons["quick_clean"].click()
     assert window._preset_buttons["quick_clean"].isChecked() is True
+    # quick_clean has no matching ids in this minimal fixture, so nothing
+    # actually got checked - check one by hand so the clear-selection
+    # button (now disabled with nothing selected) is actually clickable.
+    window._action_checkboxes["temp_cleanup"].setChecked(True)
 
     window.global_select_none_button.click()
 
@@ -1416,6 +1420,20 @@ def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
 
     window._action_checkboxes["firewall_check"].setChecked(True)
     assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: MODERATE"
+
+
+def test_global_clear_selection_button_only_enabled_when_something_is_selected(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_clear_btn_state")
+    qtbot.addWidget(window)
+
+    assert window.global_select_none_button.isEnabled() is False
+
+    window._action_checkboxes["temp_cleanup"].setChecked(True)
+    assert window.global_select_none_button.isEnabled() is True
+
+    window.global_select_none_button.click()
+    assert window.global_select_none_button.isEnabled() is False
 
 
 def test_update_banner_hidden_by_default(qtbot, tmp_path):

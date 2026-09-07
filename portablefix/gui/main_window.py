@@ -299,6 +299,8 @@ class MainWindow(QMainWindow):
         self.global_select_none_button = self._make_selection_button(
             self._t("select_none"), lambda: self._apply_selection(list(self._action_checkboxes), "none")
         )
+        self.global_select_none_button.setProperty("danger", True)
+        self.global_select_none_button.setEnabled(False)
         global_select_row.addWidget(self.global_select_none_button)
         global_select_row.addStretch(1)
         center_layout.addLayout(global_select_row)
@@ -610,9 +612,10 @@ class MainWindow(QMainWindow):
                 break
 
     def _update_status_bar(self) -> None:
+        selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        self.global_select_none_button.setEnabled(bool(selected))
         if self._batch_active:
             return
-        selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         if not selected:
             self.statusBar().showMessage(self._t("status_bar_none_selected"))
             return

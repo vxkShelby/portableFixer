@@ -208,6 +208,19 @@ QPushButton#selectionBtn:hover {
     color: #2fe6ff;
     background: transparent;
 }
+QPushButton#selectionBtn[danger="true"]:enabled {
+    border: 1px solid #ff2d6f;
+    color: #ff2d6f;
+}
+QPushButton#selectionBtn[danger="true"]:enabled:hover {
+    background: rgba(255, 45, 111, 20);
+    border: 1px solid #ff2d6f;
+    color: #ff2d6f;
+}
+QPushButton#selectionBtn[danger="true"]:disabled {
+    border: 1px dashed #1a212d;
+    color: #3a4250;
+}
 QPushButton#presetBtn {
     background: transparent;
     border: 1px dashed #232d3a;
