@@ -522,6 +522,14 @@ class MainWindow(QMainWindow):
             self.update_banner.setVisible(True)
 
     def _on_category_changed(self, row: int) -> None:
+        if self.search_box.text().strip():
+            # A search is active - every card stays visible (with only the
+            # matching rows shown, per _on_search_changed) so results from
+            # every category are reachable, not just whichever one the
+            # sidebar happens to be on.
+            for widget in self._nav_row_order:
+                widget.setHidden(False)
+            return
         for index, widget in enumerate(self._nav_row_order):
             widget.setHidden(index != row)
 
@@ -540,6 +548,14 @@ class MainWindow(QMainWindow):
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
+        if needle:
+            # Search every category/risk card at once instead of just the
+            # one the sidebar currently has open - a match hidden inside an
+            # unopened card looked identical to "no such action".
+            for widget in self._nav_row_order:
+                widget.setHidden(False)
+        else:
+            self._on_category_changed(self.category_list.currentRow())
         matched_ids: set[str] = set()
         for action_id, row_widget in self._action_rows.items():
             if not needle:
@@ -563,25 +579,13 @@ class MainWindow(QMainWindow):
             self._update_status_bar()
             return
 
-        # A match hiding in a category/risk tab the user isn't currently
-        # looking at previously looked identical to "no such action" - tell
-        # them explicitly instead of leaving an empty-looking list.
-        current_row = self.category_list.currentRow()
-        if 0 <= current_row < len(self._categories_order):
-            current_view_ids = set(self._category_action_ids[self._categories_order[current_row]])
-        else:
-            risk_index = current_row - len(self._categories_order)
-            if 0 <= risk_index < len(self._risk_tabs_order):
-                current_view_ids = set(self._risk_action_ids[self._risk_tabs_order[risk_index]])
-            else:
-                current_view_ids = set()
-
+        # Search now shows every matching card at once (see above), so
+        # there's no more "hidden in a tab you're not looking at" case -
+        # just report whether anything matched at all.
         if not matched_ids:
             self.statusBar().showMessage(self._t("search_no_matches").format(query=text.strip()))
-        elif not (current_view_ids & matched_ids):
-            self.statusBar().showMessage(self._t("search_matches_elsewhere").format(count=len(matched_ids)))
         else:
-            self._update_status_bar()
+            self.statusBar().showMessage(self._t("search_matches_count").format(count=len(matched_ids)))
 
     def _apply_preset(self, preset_key: str) -> None:
         wanted = [aid for aid in PRESETS[preset_key] if aid in self._action_checkboxes]

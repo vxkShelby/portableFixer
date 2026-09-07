@@ -1273,7 +1273,12 @@ def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
     assert window._risk_view_rows["safe_one"].isHidden() is False
 
 
-def test_search_box_hints_when_matches_exist_only_in_another_view(qtbot, tmp_path):
+def test_search_box_searches_globally_not_just_the_open_category(qtbot, tmp_path):
+    # Searching used to only unhide matching rows inside whichever
+    # category/risk card the sidebar currently had open - a match sitting in
+    # any other card stayed invisible because _on_category_changed had
+    # hidden that whole card. Search must now show every matching card at
+    # once regardless of which sidebar row is selected.
     base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_hint")
     qtbot.addWidget(window)
@@ -1281,7 +1286,25 @@ def test_search_box_hints_when_matches_exist_only_in_another_view(qtbot, tmp_pat
 
     window.search_box.setText("moderate")
 
-    assert "1 match" in window.statusBar().currentMessage()
+    assert "1" in window.statusBar().currentMessage()
+    # The card containing the match (a different risk tab than the one
+    # selected) must actually be visible, not just counted in the message.
+    moderate_card = window._risk_view_rows["moderate_one"]
+    while moderate_card.parentWidget() is not None and moderate_card not in window._nav_row_order:
+        moderate_card = moderate_card.parentWidget()
+    assert moderate_card.isHidden() is False
+
+
+def test_selecting_a_category_while_searching_keeps_all_cards_visible(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_switch")
+    qtbot.addWidget(window)
+
+    window.search_box.setText("moderate")
+    window.category_list.setCurrentRow(1)
+
+    for card in window._nav_row_order:
+        assert card.isHidden() is False
 
 
 def test_search_box_shows_no_matches_message(qtbot, tmp_path):
