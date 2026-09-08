@@ -78,6 +78,7 @@ def list_outdated_packages() -> list[OutdatedPackage]:
         result = subprocess.run(
             ["winget", "upgrade", "--include-unknown", "--accept-source-agreements"],
             capture_output=True, text=True, timeout=_SCAN_TIMEOUT_SEC,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -93,6 +94,7 @@ def update_package(package_id: str, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> t
                 "--disable-interactivity",
             ],
             capture_output=True, text=True, timeout=timeout_sec,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         output = (result.stdout + result.stderr).strip()
         return result.returncode == 0, output

@@ -92,6 +92,7 @@ def uninstall_program(program: InstalledProgram, timeout_sec: int = 300) -> tupl
         result = subprocess.run(
             ["cmd", "/c", command],
             capture_output=True, text=True, timeout=timeout_sec,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         output = (result.stdout + result.stderr).strip()
         return result.returncode == 0, output
