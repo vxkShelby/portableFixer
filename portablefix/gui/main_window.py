@@ -268,9 +268,12 @@ class MainWindow(QMainWindow):
         # Fixed 190px clipped longer entries (e.g. "Risk: REQUIRES_REBOOT")
         # behind a horizontal scrollbar - size to the longest actual label
         # instead so everything is readable without scrolling sideways.
+        # +56 covers the stylesheet's item padding (12px each side), list
+        # padding (6px each side) and the 3px selected/hover left border.
+        self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         metrics = self.category_list.fontMetrics()
         widest_label = max((metrics.horizontalAdvance(label) for label in category_labels), default=0)
-        self.category_list.setFixedWidth(min(max(widest_label + 40, 190), 280))
+        self.category_list.setFixedWidth(min(max(widest_label + 56, 190), 280))
         body_layout.addWidget(self.category_list)
 
         center_layout = QVBoxLayout()
@@ -1400,7 +1403,7 @@ class MainWindow(QMainWindow):
         add_row("ram", "sysinfo_ram")
         add_row("ram_speed", "sysinfo_ram_speed")
         add_row("battery", "sysinfo_battery")
-        add_row("disk_health", "sysinfo_disk_health")
+        add_row("disk_health", "sysinfo_disk_health", long=True)
         add_row("gpu_name", "sysinfo_gpu", long=True)
         add_row("gpu_load", "sysinfo_gpu_load")
         add_row("gpu_temp", "sysinfo_gpu_temp")
@@ -1408,7 +1411,7 @@ class MainWindow(QMainWindow):
         add_row("gpu_vram", "sysinfo_gpu_vram")
         add_row("ip", "sysinfo_ip")
         add_row("ping", "sysinfo_ping")
-        add_row("vpn", "sysinfo_vpn")
+        add_row("vpn", "sysinfo_vpn", long=True)
 
         self.speed_test_button = self._make_selection_button(
             self._t("sysinfo_speed_test_button"), self._on_speed_test_clicked
