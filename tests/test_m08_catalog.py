@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_13_actions_in_security_category():
+def test_m08_catalog_loads_16_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 13
+    assert len(module.actions) == 16
 
 
 def test_m08_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 8
+    assert len(by_risk[RiskLevel.SAFE]) == 11
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "sec_defender_quickscan",
         "sec_defender_update",
@@ -46,6 +46,9 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
         "sec_autologon_check",
         "sec_listening_ports_audit",
         "sec_root_cert_audit",
+        "sec_bootsector_check",
+        "sec_hidden_process_heuristic",
+        "sec_process_signature_audit",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
 
@@ -75,7 +78,23 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "sec_wpbt_disable",
         "sec_listening_ports_audit",
         "sec_root_cert_audit",
+        "sec_bootsector_check",
+        "sec_hidden_process_heuristic",
+        "sec_process_signature_audit",
     }
+
+
+def test_m08_catalog_rootkit_adjacent_heuristics_disclose_their_own_limits():
+    # These three deliberately do NOT claim to be real kernel-level rootkit
+    # detection (that needs a signed kernel driver, which this app does not
+    # have) - each description must say so explicitly rather than let a user
+    # assume PortableFix caught something it structurally cannot catch.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert "kernel" in by_id["sec_hidden_process_heuristic"].description_en.lower()
+    assert "not real bootkit detection" in by_id["sec_bootsector_check"].description_en.lower()
+    for action_id in ("sec_bootsector_check", "sec_hidden_process_heuristic", "sec_process_signature_audit"):
+        assert by_id[action_id].risk == RiskLevel.SAFE, action_id
 
 
 def test_m08_catalog_uac_restore_verifies_the_registry_write_actually_worked():
