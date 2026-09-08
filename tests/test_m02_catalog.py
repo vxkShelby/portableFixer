@@ -47,6 +47,19 @@ def test_m02_user_temp_never_deletes_the_running_apps_own_files():
         assert "wmic" not in (action.preview_command or "").lower()
 
 
+def test_m02_user_temp_never_deletes_claude_code_scratch_data():
+    # AI coding agents like Claude Code keep per-session scratch state at
+    # %TEMP%\claude\<project>\<session-id>\ - a top-level folder directly
+    # under %TEMP% that a wildcard "clean temp files" pass would otherwise
+    # wipe, including the currently-running session's own data. This was
+    # the actual (long unexplained) cause of a "mystery" scratch-file-loss
+    # bug hit repeatedly during this project's own development.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "user_temp")
+    for command in (action.command, action.preview_command):
+        assert "claude" in command
+
+
 def test_temp_wiping_actions_use_pfprotect_equality_guard():
     # user_temp ($env:TEMP) and system_temp ($env:WINDIR\Temp) both
     # wildcard-delete everything under their root - both must consult the
