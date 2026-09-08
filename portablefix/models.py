@@ -35,6 +35,7 @@ class ActionDef:
     hard_cap_sec: int | None = None
     problem_keywords: list[str] = field(default_factory=list)
     recommended_action_ids: list[str] = field(default_factory=list)
+    exclude_from_select_all: bool = False
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

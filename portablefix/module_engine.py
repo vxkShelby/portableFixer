@@ -47,6 +47,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 hard_cap_sec=raw.get("hard_cap_sec"),
                 problem_keywords=raw.get("problem_keywords", []),
                 recommended_action_ids=raw.get("recommended_action_ids", []),
+                exclude_from_select_all=raw.get("exclude_from_select_all", False),
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

@@ -932,6 +932,51 @@ def test_category_select_buttons_affect_only_their_category(qtbot, tmp_path):
     assert window._action_checkboxes["r_safe"].isChecked()
 
 
+def _write_module_with_excluded_action(base_dir, module_id, category, safe_id, excluded_id):
+    module_dir = base_dir / "Modules" / module_id
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        f"module_id: {module_id}\n"
+        f"category: {category}\n"
+        "actions:\n"
+        f"  - id: {safe_id}\n"
+        "    label_sk: \"S\"\n"
+        "    label_en: \"S\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 's'\"\n"
+        f"  - id: {excluded_id}\n"
+        "    label_sk: \"R\"\n"
+        "    label_en: \"R\"\n"
+        "    risk: MODERATE\n"
+        "    command: \"Write-Output 'r'\"\n"
+        "    exclude_from_select_all: true\n",
+        encoding="utf-8",
+    )
+
+
+def test_category_select_all_skips_actions_excluded_from_select_all(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
+
+    _write_module_with_excluded_action(
+        tmp_path, "m10_drivers", "DRIVER_UPDATES", "drv_safe", "drv_restore_backup"
+    )
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_selexcl"
+    )
+    qtbot.addWidget(window)
+
+    all_btn, _safe_btn, _none_btn = window._category_select_buttons[ModuleCategory.DRIVER_UPDATES]
+    all_btn.click()
+    assert window._action_checkboxes["drv_safe"].isChecked()
+    assert not window._action_checkboxes["drv_restore_backup"].isChecked()
+
+    # Manually checking it still works - the flag only opts it out of the
+    # bulk "select all" sweep, not out of selection entirely.
+    window._action_checkboxes["drv_restore_backup"].setChecked(True)
+    assert window._action_checkboxes["drv_restore_backup"].isChecked()
+
+
 def test_batch_completion_shows_summary_dialog(qtbot, tmp_path):
     _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
     settings = Settings(language="en", dry_run=True)

@@ -364,7 +364,7 @@ class MainWindow(QMainWindow):
             self._category_module_action_counts[module.category] = (
                 self._category_module_action_counts.get(module.category, 0) + len(module.actions)
             )
-        self._dashboard_tile_badges: dict[ModuleCategory, QLabel] = {}
+        self._dashboard_tile_count_labels: dict[ModuleCategory, tuple[QLabel, int]] = {}
         self._dashboard_score_label: QLabel | None = None
         for category in self._categories_order:
             if category == ModuleCategory.DASHBOARD:
@@ -853,7 +853,12 @@ class MainWindow(QMainWindow):
             self._preset_button_group.setExclusive(True)
         for action_id in action_ids:
             if mode == "all":
-                checked = True
+                # Recovery/restore-style actions (e.g. drv_restore_backup)
+                # opt out of blanket "select all" - they must be checked
+                # deliberately via their own checkbox, never swept in as a
+                # side effect of selecting everything in their category.
+                _, action = self._find_action(action_id)
+                checked = not action.exclude_from_select_all
             elif mode == "none":
                 checked = False
             else:
@@ -991,6 +996,19 @@ class MainWindow(QMainWindow):
         list_scroll.setVisible(False)
         panel_layout.addWidget(list_scroll)
 
+        # Refresh must stay reachable even when the scan finds nothing to
+        # update (or hasn't run yet) - it used to live inside select_row_widget,
+        # which hid it exactly when there was nothing selectable, leaving no
+        # way to ever re-check for updates again without restarting the app.
+        refresh_row = QHBoxLayout()
+        refresh_btn = QPushButton(self._t("winget_refresh_button"))
+        refresh_btn.setObjectName("selectionBtn")
+        refresh_row.addWidget(refresh_btn)
+        refresh_row.addStretch(1)
+        refresh_row_widget = QWidget()
+        refresh_row_widget.setLayout(refresh_row)
+        panel_layout.addWidget(refresh_row_widget)
+
         select_row = QHBoxLayout()
         select_all_btn = QPushButton(self._t("select_all"))
         select_all_btn.setObjectName("selectionBtn")
@@ -998,9 +1016,6 @@ class MainWindow(QMainWindow):
         select_none_btn = QPushButton(self._t("select_none"))
         select_none_btn.setObjectName("selectionBtn")
         select_row.addWidget(select_none_btn)
-        refresh_btn = QPushButton(self._t("winget_refresh_button"))
-        refresh_btn.setObjectName("selectionBtn")
-        select_row.addWidget(refresh_btn)
         select_row.addStretch(1)
         update_btn = QPushButton(self._t("winget_update_selected_button"))
         update_btn.setObjectName("runButton")
@@ -1153,21 +1168,22 @@ class MainWindow(QMainWindow):
             name_label.setWordWrap(True)
             tile_layout.addWidget(name_label)
             count = self._category_module_action_counts.get(category, 0)
-            count_text = self._t("dashboard_actions_count").format(count=count) if count else ""
-            count_label = QLabel(count_text)
+            count_label = QLabel(self._dashboard_count_text(count, 0))
             count_label.setObjectName("selectionScope")
+            count_label.setTextFormat(Qt.TextFormat.RichText)
             tile_layout.addWidget(count_label)
-            badge = QLabel("")
-            badge.setObjectName("riskBadge")
-            badge.setProperty("risk", "MODERATE")
-            badge.setVisible(False)
-            tile_layout.addWidget(badge)
-            self._dashboard_tile_badges[category] = badge
+            self._dashboard_tile_count_labels[category] = (count_label, count)
             tile.mousePressEvent = lambda _event, c=category: self._dashboard_tile_clicked(c)
             grid.addWidget(tile, index // columns, index % columns)
         card_layout.addLayout(grid)
         card_layout.addStretch(1)
         return card
+
+    def _dashboard_count_text(self, action_count: int, needs_fix_count: int) -> str:
+        base = self._t("dashboard_actions_count").format(count=action_count) if action_count else ""
+        if needs_fix_count:
+            base += f' <span style="color:#ffb020">({needs_fix_count})</span>'
+        return base
 
     def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
         if category in self._categories_order:
@@ -1190,13 +1206,8 @@ class MainWindow(QMainWindow):
             except KeyError:
                 continue
             counts[module.category] = counts.get(module.category, 0) + 1
-        for category, badge in self._dashboard_tile_badges.items():
-            count = counts.get(category, 0)
-            if count:
-                badge.setText(str(count))
-                badge.setVisible(True)
-            else:
-                badge.setVisible(False)
+        for category, (label, action_count) in self._dashboard_tile_count_labels.items():
+            label.setText(self._dashboard_count_text(action_count, counts.get(category, 0)))
 
     def _build_uninstaller_card(self) -> QFrame:
         card = QFrame()

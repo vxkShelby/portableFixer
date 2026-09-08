@@ -91,3 +91,13 @@ def test_m18_catalog_restore_paths_check_robocopy_exit_code_too():
     by_id = {a.id: a for a in module.actions}
     assert "$LASTEXITCODE -ge 8" in by_id["backup_user_folders"].undo_command
     assert "$LASTEXITCODE -ge 8" in by_id["backup_restore_latest"].command
+
+
+def test_m18_catalog_only_restore_latest_excludes_from_select_all():
+    # backup_restore_latest is a standalone "restore an old backup" recovery
+    # action - it must never fire as a side effect of "select all" for this
+    # category, only when the user checks it deliberately.
+    module = load_module(CATALOG_PATH)
+    for action in module.actions:
+        expected = action.id == "backup_restore_latest"
+        assert action.exclude_from_select_all is expected, action.id

@@ -36,6 +36,7 @@ actions:
     command: "$root = \"$env:ProgramData\\PortableFix\"; $latest = Get-ChildItem $root -Directory -Filter 'DriverBackup_*' -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1; if ($latest) { & pnputil /add-driver \"$($latest.FullName)\\*.inf\" /subdirs /install 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Restored drivers from: ' + $latest.FullName) } else { Write-Output ('Driver restore failed (needs administrator): exit code ' + $LASTEXITCODE); exit 1 } } else { Write-Output 'No driver backup found (run \"Back up all drivers\" first).'; exit 1 }"
     description_sk: "Najde najnovsiu zalohu vytvorenu akciou 'Zaloha vsetkych ovladacov' (priecinok DriverBackup_* v $env:ProgramData\\PortableFix) a nainstaluje z nej ovladace cez pnputil /add-driver. Bez univerzalneho undo (nie je genericky sposob vratit sa na povodne/starsie ovladace)."
     description_en: "Finds the most recent backup made by the 'Back up all drivers' action (a DriverBackup_* folder under $env:ProgramData\\PortableFix) and installs drivers from it via pnputil /add-driver. No generic undo (there's no universal way to roll back to the previous/older drivers)."
+    exclude_from_select_all: true
   - id: drv_duplicate_packages_report
     label_sk: "Duplicitne balicky ovladacov"
     label_en: "Duplicate driver packages"

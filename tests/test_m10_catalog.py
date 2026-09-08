@@ -113,3 +113,13 @@ def test_m10_catalog_driver_backup_exit_code_reflects_actual_result():
     action = next(a for a in module.actions if a.id == "drv_export_backup")
     assert "exit 1" in action.command
     assert "exit 0" in action.command
+
+
+def test_m10_catalog_only_restore_backup_excludes_from_select_all():
+    # drv_restore_backup overwrites installed drivers with whatever is in the
+    # last backup - it must never fire as a side effect of "select all" for
+    # the Driver Updates category, only when the user checks it deliberately.
+    module = load_module(CATALOG_PATH)
+    for action in module.actions:
+        expected = action.id == "drv_restore_backup"
+        assert action.exclude_from_select_all is expected, action.id
