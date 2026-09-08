@@ -60,6 +60,21 @@ def test_m02_user_temp_never_deletes_claude_code_scratch_data():
         assert "claude" in command
 
 
+def test_m02_user_temp_never_deletes_other_ai_agent_scratch_data():
+    # Same evidence class as the Claude Code bug: GitHub Copilot CLI and
+    # OpenAI's Codex CLI keep live session state directly under a top-level
+    # %TEMP%\<toolname>\ folder while running, and context-mode (an MCP
+    # plugin used in this very project's own sessions) keeps a live
+    # context-mode-guidance-s-<session-id> scratch folder that was directly
+    # observed present - and would have been wiped - on the dev machine.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "user_temp")
+    for command in (action.command, action.preview_command):
+        assert "copilot-cli" in command
+        assert "codex" in command
+        assert "context-mode-guidance-s-" in command
+
+
 def test_temp_wiping_actions_use_pfprotect_equality_guard():
     # user_temp ($env:TEMP) and system_temp ($env:WINDIR\Temp) both
     # wildcard-delete everything under their root - both must consult the
