@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m06_network" / "actions.yaml"
 
 
-def test_m06_catalog_loads_15_actions_in_repair_category():
+def test_m06_catalog_loads_16_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m06_network"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 15
+    assert len(module.actions) == 16
 
 
 def test_m06_catalog_risk_distribution():
@@ -19,7 +19,7 @@ def test_m06_catalog_risk_distribution():
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
     assert len(by_risk[RiskLevel.SAFE]) == 5
-    assert len(by_risk[RiskLevel.MODERATE]) == 7
+    assert len(by_risk[RiskLevel.MODERATE]) == 8
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 3
     assert RiskLevel.DESTRUCTIVE not in by_risk
 
@@ -36,6 +36,7 @@ def test_m06_catalog_covers_expected_ids():
         "net_hosts_reset",
         "net_disable_multimedia_throttling",
         "net_tcp_latency_tuning",
+        "net_dns_reset_automatic",
         "net_dhcp_renew",
         "net_winsock_reset",
         "net_tcpip_reset",
@@ -56,6 +57,7 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_set_public_dns",
         "net_disable_multimedia_throttling",
         "net_tcp_latency_tuning",
+        "net_dns_reset_automatic",
     ):
         assert by_id[undoable].undo_command is not None, undoable
     for action_id in (

@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_16_actions_in_security_category():
+def test_m08_catalog_loads_17_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 16
+    assert len(module.actions) == 17
 
 
 def test_m08_catalog_risk_distribution():
@@ -25,6 +25,7 @@ def test_m08_catalog_risk_distribution():
         "hard_defender_clear_exclusions",
         "hard_uac_restore_default",
         "sec_wpbt_disable",
+        "sec_restore_taskmgr_regedit",
     }
     assert RiskLevel.DESTRUCTIVE not in by_risk
     assert RiskLevel.REQUIRES_REBOOT not in by_risk
@@ -33,7 +34,12 @@ def test_m08_catalog_risk_distribution():
 def test_m08_catalog_only_hardening_actions_have_undo_command():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    for undoable in ("hard_defender_clear_exclusions", "hard_uac_restore_default", "sec_wpbt_disable"):
+    for undoable in (
+        "hard_defender_clear_exclusions",
+        "hard_uac_restore_default",
+        "sec_wpbt_disable",
+        "sec_restore_taskmgr_regedit",
+    ):
         assert by_id[undoable].undo_command is not None, undoable
     for not_undoable in (
         "sec_defender_status",
@@ -81,6 +87,7 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "sec_bootsector_check",
         "sec_hidden_process_heuristic",
         "sec_process_signature_audit",
+        "sec_restore_taskmgr_regedit",
     }
 
 
