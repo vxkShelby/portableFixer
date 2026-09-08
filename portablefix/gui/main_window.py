@@ -261,11 +261,16 @@ class MainWindow(QMainWindow):
         body_layout.setSpacing(10)
         self.category_list = QListWidget()
         self.category_list.setObjectName("categoryList")
-        self.category_list.setFixedWidth(190)
-        for category in self._categories_order:
-            self.category_list.addItem(QListWidgetItem(self._t(category_i18n_keys[category])))
-        for risk in self._risk_tabs_order:
-            self.category_list.addItem(QListWidgetItem(f"{self._t('risk_tab_prefix')} {risk.value}"))
+        category_labels = [self._t(category_i18n_keys[category]) for category in self._categories_order]
+        category_labels += [f"{self._t('risk_tab_prefix')} {risk.value}" for risk in self._risk_tabs_order]
+        for label in category_labels:
+            self.category_list.addItem(QListWidgetItem(label))
+        # Fixed 190px clipped longer entries (e.g. "Risk: REQUIRES_REBOOT")
+        # behind a horizontal scrollbar - size to the longest actual label
+        # instead so everything is readable without scrolling sideways.
+        metrics = self.category_list.fontMetrics()
+        widest_label = max((metrics.horizontalAdvance(label) for label in category_labels), default=0)
+        self.category_list.setFixedWidth(min(max(widest_label + 40, 190), 280))
         body_layout.addWidget(self.category_list)
 
         center_layout = QVBoxLayout()
@@ -1348,7 +1353,7 @@ class MainWindow(QMainWindow):
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("actionCard")
-        panel.setMinimumWidth(345)
+        panel.setMinimumWidth(400)
         panel.setMaximumWidth(600)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -1356,15 +1361,10 @@ class MainWindow(QMainWindow):
 
         self._sysinfo_labels: dict[str, QLabel] = {}
 
-        def add_row(key: str, label_key: str, tooltip: str | None = None) -> None:
-            row = QHBoxLayout()
-            row.setSpacing(6)
+        def add_row(key: str, label_key: str, tooltip: str | None = None, long: bool = False) -> None:
             caption = QLabel(self._t(label_key))
             caption.setObjectName("selectionScope")
-            row.addWidget(caption)
-            row.addStretch(1)
             value = QLabel(self._t("sysinfo_loading"))
-            value.setWordWrap(True)
             # These labels show text sourced from hardware/OS reports (GPU
             # name, VPN adapter name, disk health string, ...) - an
             # unprivileged local process can name a device or VPN profile
@@ -1375,19 +1375,33 @@ class MainWindow(QMainWindow):
                 caption.setToolTip(tooltip)
                 value.setToolTip(tooltip)
             self._sysinfo_labels[key] = value
-            row.addWidget(value)
-            layout.addLayout(row)
+            if long:
+                # Names like a full CPU/GPU model string are too long to
+                # share a row with their caption at any reasonable panel
+                # width - stack them so the value gets the full row width
+                # to itself and stays on one line instead of wrapping.
+                value.setWordWrap(False)
+                layout.addWidget(caption)
+                layout.addWidget(value)
+            else:
+                value.setWordWrap(True)
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                row.addWidget(caption)
+                row.addStretch(1)
+                row.addWidget(value)
+                layout.addLayout(row)
 
-        add_row("os", "sysinfo_os")
+        add_row("os", "sysinfo_os", long=True)
         add_row("uptime", "sysinfo_uptime")
-        add_row("cpu_name", "sysinfo_cpu")
+        add_row("cpu_name", "sysinfo_cpu", long=True)
         add_row("cpu_load", "sysinfo_cpu_load")
         add_row("cpu_clock", "sysinfo_cpu_clock", tooltip=self._t("sysinfo_cpu_clock_hint"))
         add_row("ram", "sysinfo_ram")
         add_row("ram_speed", "sysinfo_ram_speed")
         add_row("battery", "sysinfo_battery")
         add_row("disk_health", "sysinfo_disk_health")
-        add_row("gpu_name", "sysinfo_gpu")
+        add_row("gpu_name", "sysinfo_gpu", long=True)
         add_row("gpu_load", "sysinfo_gpu_load")
         add_row("gpu_temp", "sysinfo_gpu_temp")
         add_row("gpu_clock", "sysinfo_gpu_clock")

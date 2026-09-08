@@ -50,6 +50,12 @@ def get_static_info() -> StaticInfo:
         _read_reg(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName")
         or "Windows"
     )
+    # Microsoft never updated this registry value for Windows 11 - it still
+    # literally reads "Windows 10 ..." on every Windows 11 install. The real
+    # OS is determined by the build number instead (>=22000 is Windows 11).
+    build_str = _read_reg(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber")
+    if build_str and build_str.isdigit() and int(build_str) >= 22000:
+        os_name = os_name.replace("Windows 10", "Windows 11")
     display_version = _read_reg(
         winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "DisplayVersion"
     )

@@ -27,6 +27,40 @@ def test_get_static_info_returns_populated_fields():
     assert info.cpu_cores >= 1
 
 
+def test_get_static_info_corrects_windows_10_product_name_to_11_on_build_22000_plus(monkeypatch):
+    # ProductName in the registry still literally says "Windows 10 ..." on
+    # every real Windows 11 install - Microsoft never updated it. The build
+    # number is the only reliable signal, so the corrected name must key
+    # off CurrentBuildNumber, not trust ProductName at face value.
+    def fake_read_reg(hive, path, name):
+        if name == "ProductName":
+            return "Windows 10 Home"
+        if name == "CurrentBuildNumber":
+            return "22631"
+        if name == "DisplayVersion":
+            return "23H2"
+        return None
+
+    monkeypatch.setattr(sysinfo, "_read_reg", fake_read_reg)
+    info = sysinfo.get_static_info()
+    assert info.os_name == "Windows 11 Home 23H2"
+
+
+def test_get_static_info_leaves_actual_windows_10_unchanged(monkeypatch):
+    def fake_read_reg(hive, path, name):
+        if name == "ProductName":
+            return "Windows 10 Home"
+        if name == "CurrentBuildNumber":
+            return "19045"
+        if name == "DisplayVersion":
+            return "22H2"
+        return None
+
+    monkeypatch.setattr(sysinfo, "_read_reg", fake_read_reg)
+    info = sysinfo.get_static_info()
+    assert info.os_name == "Windows 10 Home 22H2"
+
+
 def test_get_uptime_seconds_is_positive_and_increases():
     first = sysinfo.get_uptime_seconds()
     assert first > 0
