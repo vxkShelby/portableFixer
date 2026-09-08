@@ -6,11 +6,14 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m20_software_updates" / "actions.yaml"
 
 
-def test_m20_catalog_loads_6_actions_in_winget_category():
+def test_m20_catalog_loads_4_actions_in_winget_category():
+    # winget_list_outdated/winget_update_all were retired in favor of the
+    # dynamic per-package update panel (portablefix/winget_updates.py) -
+    # this catalog now only covers the actions that stayed static one-liners.
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m20_software_updates"
     assert module.category == ModuleCategory.WINGET
-    assert len(module.actions) == 6
+    assert len(module.actions) == 4
 
 
 def test_m20_catalog_risk_distribution():
@@ -19,10 +22,9 @@ def test_m20_catalog_risk_distribution():
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
     assert set(by_risk[RiskLevel.SAFE]) == {
-        "winget_list_installed", "winget_list_outdated",
-        "winget_export_installed", "winget_source_list",
+        "winget_list_installed", "winget_export_installed", "winget_source_list",
     }
-    assert set(by_risk[RiskLevel.MODERATE]) == {"winget_update_all", "winget_source_reset"}
+    assert set(by_risk[RiskLevel.MODERATE]) == {"winget_source_reset"}
     assert RiskLevel.DESTRUCTIVE not in by_risk
     assert RiskLevel.REQUIRES_REBOOT not in by_risk
 
@@ -45,8 +47,8 @@ def test_m20_catalog_covers_expected_ids():
     module = load_module(CATALOG_PATH)
     ids = {a.id for a in module.actions}
     assert ids == {
-        "winget_list_installed", "winget_list_outdated", "winget_update_all",
-        "winget_export_installed", "winget_source_list", "winget_source_reset",
+        "winget_list_installed", "winget_export_installed",
+        "winget_source_list", "winget_source_reset",
     }
 
 
@@ -82,12 +84,5 @@ def test_m20_catalog_export_installed_locks_down_its_output_folder():
 def test_m20_catalog_source_reset_exit_code_reflects_actual_result():
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "winget_source_reset")
-    assert "$LASTEXITCODE" in action.command
-    assert "exit 1" in action.command
-
-
-def test_m20_catalog_update_all_exit_code_reflects_actual_result():
-    module = load_module(CATALOG_PATH)
-    action = next(a for a in module.actions if a.id == "winget_update_all")
     assert "$LASTEXITCODE" in action.command
     assert "exit 1" in action.command

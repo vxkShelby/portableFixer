@@ -820,6 +820,28 @@ def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
     assert not window._category_groups[ModuleCategory.REPAIR].isHidden()
 
 
+def test_winget_category_builds_dynamic_update_panel_without_crashing(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    from portablefix.models import ModuleCategory
+
+    _write_module(tmp_path, "m20_test", "WINGET", "wtest_action")
+    settings = Settings(language="en", dry_run=True)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_winget")
+    qtbot.addWidget(window)
+
+    assert ModuleCategory.WINGET in window._category_groups
+    card = window._category_groups[ModuleCategory.WINGET]
+
+    def scan_settled() -> bool:
+        texts = [label.text() for label in card.findChildren(QLabel)]
+        return any("No winget updates" in t or "Updates found" in t for t in texts)
+
+    # The background winget scan (real subprocess call) must finish and
+    # settle on either outcome without the window ever crashing.
+    qtbot.waitUntil(scan_settled, timeout=20000)
+
+
 def test_checkbox_state_survives_category_switch(qtbot, tmp_path):
     _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
     _write_module(tmp_path, "m04_integrity", "REPAIR", "a2")

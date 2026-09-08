@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater
+from .. import elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -388,6 +388,8 @@ class MainWindow(QMainWindow):
             heading_row.addWidget(cat_none)
             self._category_select_buttons[category] = (cat_all, cat_safe, cat_none)
             card_layout.addLayout(heading_row)
+            if category == ModuleCategory.WINGET:
+                card_layout.addWidget(self._build_winget_updates_panel())
             self._category_action_ids[category] = []
             for module in self.modules:
                 if module.category != category:
@@ -931,6 +933,148 @@ class MainWindow(QMainWindow):
                 self.category_list.setCurrentRow(index)
                 break
         dialog.close()
+
+    def _build_winget_updates_panel(self) -> QWidget:
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 8)
+        panel_layout.setSpacing(6)
+
+        search_box = QLineEdit()
+        search_box.setObjectName("searchBox")
+        search_box.setPlaceholderText(self._t("winget_search_placeholder"))
+        panel_layout.addWidget(search_box)
+
+        status_label = QLabel(self._t("winget_scanning"))
+        status_label.setObjectName("selectionScope")
+        panel_layout.addWidget(status_label)
+
+        list_container = QWidget()
+        list_layout = QVBoxLayout(list_container)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(2)
+        list_scroll = QScrollArea()
+        list_scroll.setWidgetResizable(True)
+        list_scroll.setMaximumHeight(220)
+        list_scroll.setWidget(list_container)
+        list_scroll.setVisible(False)
+        panel_layout.addWidget(list_scroll)
+
+        select_row = QHBoxLayout()
+        select_all_btn = QPushButton(self._t("select_all"))
+        select_all_btn.setObjectName("selectionBtn")
+        select_row.addWidget(select_all_btn)
+        select_none_btn = QPushButton(self._t("select_none"))
+        select_none_btn.setObjectName("selectionBtn")
+        select_row.addWidget(select_none_btn)
+        refresh_btn = QPushButton(self._t("winget_refresh_button"))
+        refresh_btn.setObjectName("selectionBtn")
+        select_row.addWidget(refresh_btn)
+        select_row.addStretch(1)
+        update_btn = QPushButton(self._t("winget_update_selected_button"))
+        update_btn.setObjectName("runButton")
+        update_btn.setEnabled(False)
+        select_row.addWidget(update_btn)
+        select_row_widget = QWidget()
+        select_row_widget.setLayout(select_row)
+        select_row_widget.setVisible(False)
+        panel_layout.addWidget(select_row_widget)
+
+        console = QPlainTextEdit()
+        console.setObjectName("console")
+        console.setReadOnly(True)
+        console.setMaximumHeight(120)
+        console.setVisible(False)
+        panel_layout.addWidget(console)
+
+        row_checkboxes: dict[str, QCheckBox] = {}
+        package_by_id: dict[str, object] = {}
+
+        def update_button_state() -> None:
+            update_btn.setEnabled(any(cb.isChecked() for cb in row_checkboxes.values()))
+
+        def apply_search(text: str) -> None:
+            needle = text.strip().lower()
+            for pkg_id, checkbox in row_checkboxes.items():
+                checkbox.setHidden(bool(needle) and needle not in checkbox.text().lower() and needle not in pkg_id.lower())
+
+        search_box.textChanged.connect(apply_search)
+
+        def populate(packages: list) -> None:
+            while list_layout.count():
+                item = list_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            row_checkboxes.clear()
+            package_by_id.clear()
+            if not packages:
+                status_label.setText(self._t("winget_no_updates"))
+                list_scroll.setVisible(False)
+                select_row_widget.setVisible(False)
+                return
+            status_label.setText(self._t("winget_updates_found").format(count=len(packages)))
+            for package in packages:
+                label = f"{package.name}  {package.installed_version} → {package.available_version}"
+                checkbox = QCheckBox(label)
+                checkbox.setToolTip(package.id)
+                checkbox.stateChanged.connect(lambda _state=0: update_button_state())
+                row_checkboxes[package.id] = checkbox
+                package_by_id[package.id] = package
+                list_layout.addWidget(checkbox)
+            list_layout.addStretch(1)
+            list_scroll.setVisible(True)
+            select_row_widget.setVisible(True)
+            update_button_state()
+
+        def start_scan() -> None:
+            status_label.setText(self._t("winget_scanning"))
+            list_scroll.setVisible(False)
+            select_row_widget.setVisible(False)
+            runner = winget_updates.WingetScanRunner(parent=panel)
+            panel._winget_scan_runner = runner
+            runner.scan_finished.connect(populate)
+            runner.start()
+
+        def start_update() -> None:
+            selected_ids = [pid for pid, cb in row_checkboxes.items() if cb.isChecked()]
+            if not selected_ids:
+                return
+            update_btn.setEnabled(False)
+            select_all_btn.setEnabled(False)
+            select_none_btn.setEnabled(False)
+            refresh_btn.setEnabled(False)
+            console.setVisible(True)
+            console.appendPlainText(self._t("winget_updating"))
+            runner = winget_updates.WingetUpdateRunner(selected_ids, parent=panel)
+            panel._winget_update_runner = runner
+
+            def on_package_finished(package_id: str, ok: bool, output: str) -> None:
+                package = package_by_id.get(package_id)
+                name = package.name if package is not None else package_id
+                status = self._t("status_ok") if ok else self._t("status_failed")
+                console.appendPlainText(f"[{status}] {name}")
+                if output:
+                    console.appendPlainText(output)
+
+            def on_all_finished() -> None:
+                select_all_btn.setEnabled(True)
+                select_none_btn.setEnabled(True)
+                refresh_btn.setEnabled(True)
+                start_scan()
+
+            runner.package_finished.connect(on_package_finished)
+            runner.all_finished.connect(on_all_finished)
+            runner.start()
+
+        select_all_btn.clicked.connect(
+            lambda _checked=False: [cb.setChecked(True) for cb in row_checkboxes.values() if not cb.isHidden()]
+        )
+        select_none_btn.clicked.connect(lambda _checked=False: [cb.setChecked(False) for cb in row_checkboxes.values()])
+        refresh_btn.clicked.connect(lambda _checked=False: start_scan())
+        update_btn.clicked.connect(lambda _checked=False: start_update())
+
+        start_scan()
+        return panel
 
     def _build_uninstaller_card(self) -> QFrame:
         card = QFrame()
