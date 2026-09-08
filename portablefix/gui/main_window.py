@@ -191,7 +191,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
         self.setStyleSheet(style.STYLE)
-        self.resize(1000, 700)
+        self.resize(1200, 760)
         central = QWidget(self)
         central.setObjectName("central")
         self.setCentralWidget(central)
@@ -1356,8 +1356,8 @@ class MainWindow(QMainWindow):
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("actionCard")
-        panel.setMinimumWidth(400)
-        panel.setMaximumWidth(600)
+        panel.setMinimumWidth(460)
+        panel.setMaximumWidth(640)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
@@ -1378,22 +1378,17 @@ class MainWindow(QMainWindow):
                 caption.setToolTip(tooltip)
                 value.setToolTip(tooltip)
             self._sysinfo_labels[key] = value
-            if long:
-                # Names like a full CPU/GPU model string are too long to
-                # share a row with their caption at any reasonable panel
-                # width - stack them so the value gets the full row width
-                # to itself and stays on one line instead of wrapping.
-                value.setWordWrap(False)
-                layout.addWidget(caption)
-                layout.addWidget(value)
-            else:
-                value.setWordWrap(True)
-                row = QHBoxLayout()
-                row.setSpacing(6)
-                row.addWidget(caption)
-                row.addStretch(1)
-                row.addWidget(value)
-                layout.addLayout(row)
+            # "long" fields (full CPU/GPU model names, disk health list,
+            # VPN status) must stay on one line rather than wrap - the
+            # panel is wide enough for that now (400-600px), unlike the
+            # fixed 345px it used to be capped at.
+            value.setWordWrap(not long)
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            row.addWidget(caption)
+            row.addStretch(1)
+            row.addWidget(value)
+            layout.addLayout(row)
 
         add_row("os", "sysinfo_os", long=True)
         add_row("uptime", "sysinfo_uptime")
