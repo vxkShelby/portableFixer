@@ -581,8 +581,8 @@ def test_build_swap_script_logs_to_a_temp_file_under_pid(tmp_path, monkeypatch):
 def test_build_swap_script_aborts_without_swapping_if_process_still_running_after_wait():
     # If the old exe hasn't exited by the time the wait loop gives up, its
     # files are still locked - Move-Item would fail silently. The script
-    # must check again and bail out BEFORE touching App/Modules/Vendor,
-    # rather than proceeding into a doomed swap.
+    # must set the abort flag BEFORE touching App/Modules/Vendor, rather
+    # than proceeding into a doomed swap.
     script = build_swap_script(
         current_pid=42,
         install_dir=Path(r"C:\App"),
@@ -591,9 +591,35 @@ def test_build_swap_script_aborts_without_swapping_if_process_still_running_afte
     abort_pos = script.index("ABORT: pid 42 did not exit")
     first_move_pos = script.index("Move-Item -Path 'C:\\App\\App' -Destination 'C:\\App\\App.old'")
     assert abort_pos < first_move_pos
-    # the abort branch must exit before the swap, not after
-    exit_pos = script.index("exit 1", abort_pos)
-    assert exit_pos < first_move_pos
+    swap_aborted_pos = script.index("$swapAborted = $true", abort_pos)
+    assert swap_aborted_pos < first_move_pos
+
+
+def test_build_swap_script_still_relaunches_after_pid_wait_abort():
+    # A hard `exit 1` on abort used to skip the relaunch entirely - the app
+    # would quit and never come back, even though nothing on disk was
+    # touched. The abort must only skip the swap, never the relaunch.
+    script = build_swap_script(
+        current_pid=42,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    abort_pos = script.index("ABORT: pid 42 did not exit")
+    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\PortableFix.cmd'")
+    assert abort_pos < relaunch_pos
+    # the abort branch must not exit the script early
+    assert "\n    exit 1\n" not in script[abort_pos:relaunch_pos]
+
+
+def test_build_swap_script_verifies_relaunch_and_falls_back(tmp_path):
+    script = build_swap_script(
+        current_pid=1,
+        install_dir=Path(r"C:\App"),
+        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
+    )
+    assert "$relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object { $_.Path -eq 'C:\\App\\App\\PortableFix.exe' })" in script
+    assert "if (-not $relaunchOk) {" in script
+    assert "retrying via cmd.exe" in script
 
 
 def _make_release_zip(tmp_path: Path, exe_marker: bytes = b"new-exe") -> Path:

@@ -225,10 +225,12 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         # would make Move-Item fail silently and leave a half-swapped
         # install. Nothing has been touched on disk yet, so aborting here
         # is a clean no-op, not a rollback.
+        f"$swapAborted = $false\n"
         f"if (Get-Process -Id {current_pid} -EA SilentlyContinue) {{\n"
-        f"    Log 'ABORT: pid {current_pid} did not exit in time, files likely still locked'\n"
-        "    exit 1\n"
+        f"    Log 'ABORT: pid {current_pid} did not exit in time, files likely still locked - skipping swap, relaunching old version'\n"
+        "    $swapAborted = $true\n"
         "}\n"
+        "if (-not $swapAborted) {\n"
         f"Log 'old process exited, proceeding with swap'\n"
         f"if (Test-Path {settings_json}) {{ Copy-Item -Path {settings_json} -Destination {settings_bak} -Force }}\n"
         f"Log \"settings.json backed up: $(Test-Path {settings_bak})\"\n"
@@ -281,11 +283,26 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"        Log \"rollback done, App.exe present=$(Test-Path {app_exe})\"\n"
         "    }\n"
         "}\n"
+        "}\n"
         # Relaunch first, then clean up temp files - a freshly-downloaded
         # zip can sit under active AV scanning for many seconds, and that
         # must never delay the user seeing their updated app come back.
+        # This runs unconditionally, even if the swap above was aborted or
+        # rolled back - the user must always get their app back, updated
+        # or not, rather than being left with nothing after it quit.
         f"Log \"relaunching via {cmd_path}\"\n"
-        f"Start-Process -FilePath {cmd_path}\n"
+        # PassThru's PID is cmd.exe running the .cmd, not PortableFix.exe -
+        # cmd.exe exits right after launching the (non-waited-on) GUI exe,
+        # so checking that PID would false-negative even on success. Check
+        # for the actual exe by path instead.
+        f"Start-Process -FilePath {cmd_path} -EA SilentlyContinue\n"
+        "Start-Sleep -Milliseconds 1500\n"
+        f"$relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object {{ $_.Path -eq {app_exe} }})\n"
+        f"Log \"relaunch verified: $relaunchOk\"\n"
+        "if (-not $relaunchOk) {\n"
+        f"    Log 'relaunch via Start-Process failed, retrying via cmd.exe'\n"
+        f"    Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c start \"\" ' + {cmd_path}) -EA SilentlyContinue\n"
+        "}\n"
         f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
         "for ($i = 0; $i -lt 30; $i++) {\n"
         f"    if (-not (Test-Path {zip_p})) {{ break }}\n"
