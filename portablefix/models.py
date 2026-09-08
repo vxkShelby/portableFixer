@@ -17,6 +17,7 @@ class ModuleCategory(str, Enum):
     DRIVER_UPDATES = "DRIVER_UPDATES"
     WINGET = "WINGET"
     UNINSTALLER = "UNINSTALLER"
+    DASHBOARD = "DASHBOARD"
 
 
 @dataclass

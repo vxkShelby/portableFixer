@@ -247,6 +247,7 @@ class MainWindow(QMainWindow):
             ModuleCategory.DRIVER_UPDATES: "category_driver_updates",
             ModuleCategory.WINGET: "category_winget",
             ModuleCategory.UNINSTALLER: "category_uninstaller",
+            ModuleCategory.DASHBOARD: "category_dashboard",
         }
         self._categories_order: list[ModuleCategory] = []
         for module in self.modules:
@@ -257,6 +258,9 @@ class MainWindow(QMainWindow):
         # catalog) - always show its sidebar entry regardless of modules.
         if ModuleCategory.UNINSTALLER not in self._categories_order:
             self._categories_order.append(ModuleCategory.UNINSTALLER)
+        # Dashboard is a pure navigation/overview screen, not module-backed -
+        # always shown first so it's the default landing view.
+        self._categories_order.insert(0, ModuleCategory.DASHBOARD)
 
         risk_tab_order = [RiskLevel.SAFE, RiskLevel.MODERATE, RiskLevel.DESTRUCTIVE, RiskLevel.REQUIRES_REBOOT]
         self._risk_action_ids: dict[RiskLevel, list[str]] = {r: [] for r in risk_tab_order}
@@ -355,7 +359,20 @@ class MainWindow(QMainWindow):
         self._category_groups: dict[ModuleCategory, QWidget] = {}
         self._category_action_ids: dict[ModuleCategory, list[str]] = {}
         self._category_select_buttons: dict[ModuleCategory, tuple[QPushButton, QPushButton, QPushButton]] = {}
+        self._category_module_action_counts: dict[ModuleCategory, int] = {}
+        for module in self.modules:
+            self._category_module_action_counts[module.category] = (
+                self._category_module_action_counts.get(module.category, 0) + len(module.actions)
+            )
+        self._dashboard_tile_badges: dict[ModuleCategory, QLabel] = {}
+        self._dashboard_score_label: QLabel | None = None
         for category in self._categories_order:
+            if category == ModuleCategory.DASHBOARD:
+                self._category_action_ids[category] = []
+                card = self._build_dashboard_card(category_i18n_keys)
+                self._category_groups[category] = card
+                scroll_layout.addWidget(card)
+                continue
             if category == ModuleCategory.UNINSTALLER:
                 self._category_action_ids[category] = []
                 card = self._build_uninstaller_card()
@@ -1076,6 +1093,97 @@ class MainWindow(QMainWindow):
         start_scan()
         return panel
 
+    def _build_dashboard_card(self, category_i18n_keys: dict) -> QFrame:
+        card = QFrame()
+        card.setObjectName("actionCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 10, 14, 10)
+        card_layout.setSpacing(10)
+
+        heading = QLabel(self._t("category_dashboard"))
+        heading.setObjectName("cardHeading")
+        card_layout.addWidget(heading)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(16)
+        score_box = QVBoxLayout()
+        score_box.setSpacing(0)
+        score_value = QLabel(self._t("dashboard_no_run_yet"))
+        score_value.setObjectName("summaryHeader")
+        score_caption = QLabel(self._t("dashboard_score_label"))
+        score_caption.setObjectName("selectionScope")
+        score_box.addWidget(score_value)
+        score_box.addWidget(score_caption)
+        self._dashboard_score_label = score_value
+        top_row.addLayout(score_box)
+        analyze_button = QPushButton(self._t("dashboard_analyze_button"))
+        analyze_button.setObjectName("runButton")
+        analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
+        top_row.addWidget(analyze_button)
+        top_row.addStretch(1)
+        card_layout.addLayout(top_row)
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        tile_categories = [c for c in self._categories_order if c != ModuleCategory.DASHBOARD]
+        columns = 4
+        for index, category in enumerate(tile_categories):
+            tile = QFrame()
+            tile.setObjectName("actionCard")
+            tile.setCursor(Qt.CursorShape.PointingHandCursor)
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(10, 8, 10, 8)
+            tile_layout.setSpacing(2)
+            name_label = QLabel(self._t(category_i18n_keys.get(category, "")))
+            name_label.setObjectName("cardHeading")
+            name_label.setWordWrap(True)
+            tile_layout.addWidget(name_label)
+            count = self._category_module_action_counts.get(category, 0)
+            count_text = self._t("dashboard_actions_count").format(count=count) if count else ""
+            count_label = QLabel(count_text)
+            count_label.setObjectName("selectionScope")
+            tile_layout.addWidget(count_label)
+            badge = QLabel("")
+            badge.setObjectName("riskBadge")
+            badge.setProperty("risk", "MODERATE")
+            badge.setVisible(False)
+            tile_layout.addWidget(badge)
+            self._dashboard_tile_badges[category] = badge
+            tile.mousePressEvent = lambda _event, c=category: self._dashboard_tile_clicked(c)
+            grid.addWidget(tile, index // columns, index % columns)
+        card_layout.addLayout(grid)
+        card_layout.addStretch(1)
+        return card
+
+    def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
+        if category in self._categories_order:
+            self.category_list.setCurrentRow(self._categories_order.index(category))
+
+    def _run_dashboard_analysis(self) -> None:
+        if "full_diagnostic" in PRESETS:
+            self._apply_preset("full_diagnostic")
+            self.run_selected_actions()
+
+    def _refresh_dashboard(self) -> None:
+        if self._dashboard_score_label is not None:
+            unique_recommended = len(self._recommended_action_ids)
+            score = max(40, 100 - unique_recommended * 10)
+            self._dashboard_score_label.setText(str(score))
+        counts: dict[ModuleCategory, int] = {}
+        for action_id in self._recommended_action_ids:
+            try:
+                module, _ = self._find_action(action_id)
+            except KeyError:
+                continue
+            counts[module.category] = counts.get(module.category, 0) + 1
+        for category, badge in self._dashboard_tile_badges.items():
+            count = counts.get(category, 0)
+            if count:
+                badge.setText(str(count))
+                badge.setVisible(True)
+            else:
+                badge.setVisible(False)
+
     def _build_uninstaller_card(self) -> QFrame:
         card = QFrame()
         card.setObjectName("actionCard")
@@ -1474,6 +1582,7 @@ class MainWindow(QMainWindow):
                     html_path = None
                     if not self._closed:
                         self.console.appendPlainText(self._t("disk_write_failed"))
+                self._refresh_dashboard()
                 if html_path is not None and not self._closed:
                     self._show_batch_summary(html_path)
             return

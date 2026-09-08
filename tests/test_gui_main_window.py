@@ -120,7 +120,8 @@ def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path)
     window.activateWindow()
     qtbot.waitActive(window, timeout=5000)
 
-    window.category_list.setCurrentRow(1)
+    # row 0 is the always-present Dashboard, row 1 Diagnostics, row 2 Cleanup.
+    window.category_list.setCurrentRow(2)
     window._action_checkboxes["clean_action"].setFocus()
     # hasFocus() only reflects reality once the OS has actually handed this
     # window keyboard focus, which is asynchronous even after activateWindow().
@@ -128,7 +129,7 @@ def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path)
 
     window._on_toggle_language()
 
-    assert window.category_list.currentRow() == 1
+    assert window.category_list.currentRow() == 2
     qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
 
 
@@ -783,10 +784,11 @@ def test_category_list_deduplicates_same_category_across_modules(qtbot, tmp_path
     settings = Settings(language="en", dry_run=True)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat1")
     qtbot.addWidget(window)
-    # +1 for the always-present Uninstaller category, +1 for the "Risk:
-    # SAFE" tab appended after the categories (both test actions are SAFE).
-    assert window.category_list.count() == 3
-    assert window.category_list.item(0).text() == "Diagnostics"
+    # +1 for the always-present Dashboard (first), +1 for the always-present
+    # Uninstaller, +1 for the "Risk: SAFE" tab (both test actions are SAFE).
+    assert window.category_list.count() == 4
+    assert window.category_list.item(0).text() == "Dashboard"
+    assert window.category_list.item(1).text() == "Diagnostics"
 
 
 def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tmp_path):
@@ -795,11 +797,11 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     settings = Settings(language="en", dry_run=True)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat2")
     qtbot.addWidget(window)
-    # +1 for the always-present Uninstaller category, +1 for the "Risk:
-    # SAFE" tab appended after the categories (both test actions are SAFE).
-    assert window.category_list.count() == 4
+    # +1 for the always-present Dashboard, +1 for the always-present
+    # Uninstaller, +1 for the "Risk: SAFE" tab (both test actions are SAFE).
+    assert window.category_list.count() == 5
     labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
-    assert labels == {"Diagnostics", "System repair", "Uninstall programs", "Risk: SAFE"}
+    assert labels == {"Dashboard", "Diagnostics", "System repair", "Uninstall programs", "Risk: SAFE"}
 
 
 def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
@@ -811,11 +813,18 @@ def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_filter")
     qtbot.addWidget(window)
 
+    # row 0 is the always-present Dashboard by default.
     assert window.category_list.currentRow() == 0
+    assert window._category_groups[ModuleCategory.DASHBOARD].isHidden() is False
+
+    diag_row = window._categories_order.index(ModuleCategory.DIAGNOSTICS)
+    repair_row = window._categories_order.index(ModuleCategory.REPAIR)
+
+    window.category_list.setCurrentRow(diag_row)
     assert not window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden()
     assert window._category_groups[ModuleCategory.REPAIR].isHidden()
 
-    window.category_list.setCurrentRow(1)
+    window.category_list.setCurrentRow(repair_row)
     assert window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden()
     assert not window._category_groups[ModuleCategory.REPAIR].isHidden()
 
