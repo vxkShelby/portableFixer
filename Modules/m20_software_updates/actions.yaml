@@ -1,5 +1,5 @@
 module_id: m20_software_updates
-category: REPAIR
+category: WINGET
 actions:
   - id: winget_list_installed
     label_sk: "Zoznam nainstalovaneho softveru (winget)"

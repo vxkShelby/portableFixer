@@ -6,10 +6,10 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m20_software_updates" / "actions.yaml"
 
 
-def test_m20_catalog_loads_6_actions_in_repair_category():
+def test_m20_catalog_loads_6_actions_in_winget_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m20_software_updates"
-    assert module.category == ModuleCategory.REPAIR
+    assert module.category == ModuleCategory.WINGET
     assert len(module.actions) == 6
 
 

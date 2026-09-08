@@ -14,6 +14,9 @@ class ModuleCategory(str, Enum):
     CLEANUP = "CLEANUP"
     REPAIR = "REPAIR"
     SECURITY = "SECURITY"
+    DRIVER_UPDATES = "DRIVER_UPDATES"
+    WINGET = "WINGET"
+    UNINSTALLER = "UNINSTALLER"
 
 
 @dataclass

@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import elevation, i18n, paths, report, restore_point, sysinfo, undo, updater
+from .. import elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -244,11 +244,19 @@ class MainWindow(QMainWindow):
             ModuleCategory.CLEANUP: "category_cleanup",
             ModuleCategory.REPAIR: "category_repair",
             ModuleCategory.SECURITY: "category_security",
+            ModuleCategory.DRIVER_UPDATES: "category_driver_updates",
+            ModuleCategory.WINGET: "category_winget",
+            ModuleCategory.UNINSTALLER: "category_uninstaller",
         }
         self._categories_order: list[ModuleCategory] = []
         for module in self.modules:
             if module.category not in self._categories_order:
                 self._categories_order.append(module.category)
+        # Uninstaller has no YAML-declared actions of its own (installed
+        # programs are dynamic, discovered at dialog-open time, not a fixed
+        # catalog) - always show its sidebar entry regardless of modules.
+        if ModuleCategory.UNINSTALLER not in self._categories_order:
+            self._categories_order.append(ModuleCategory.UNINSTALLER)
 
         risk_tab_order = [RiskLevel.SAFE, RiskLevel.MODERATE, RiskLevel.DESTRUCTIVE, RiskLevel.REQUIRES_REBOOT]
         self._risk_action_ids: dict[RiskLevel, list[str]] = {r: [] for r in risk_tab_order}
@@ -348,6 +356,12 @@ class MainWindow(QMainWindow):
         self._category_action_ids: dict[ModuleCategory, list[str]] = {}
         self._category_select_buttons: dict[ModuleCategory, tuple[QPushButton, QPushButton, QPushButton]] = {}
         for category in self._categories_order:
+            if category == ModuleCategory.UNINSTALLER:
+                self._category_action_ids[category] = []
+                card = self._build_uninstaller_card()
+                self._category_groups[category] = card
+                scroll_layout.addWidget(card)
+                continue
             card = QFrame()
             card.setObjectName("actionCard")
             card_layout = QVBoxLayout(card)
@@ -918,6 +932,172 @@ class MainWindow(QMainWindow):
                 break
         dialog.close()
 
+    def _build_uninstaller_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("actionCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 10, 14, 10)
+        card_layout.setSpacing(8)
+        heading = QLabel(self._t("category_uninstaller"))
+        heading.setObjectName("cardHeading")
+        card_layout.addWidget(heading)
+        description = QLabel(self._t("uninstaller_intro"))
+        description.setObjectName("selectionScope")
+        description.setWordWrap(True)
+        card_layout.addWidget(description)
+        open_button = QPushButton(self._t("uninstaller_open_button"))
+        open_button.setObjectName("runButton")
+        open_button.clicked.connect(lambda _checked=False: self._open_uninstaller_dialog())
+        card_layout.addWidget(open_button)
+        card_layout.addStretch(1)
+        return card
+
+    def _open_uninstaller_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("category_uninstaller"))
+        dialog.setStyleSheet(style.STYLE)
+        dialog.setMinimumSize(560, 520)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(8)
+
+        search_box = QLineEdit()
+        search_box.setObjectName("searchBox")
+        search_box.setPlaceholderText(self._t("uninstaller_search_placeholder"))
+        layout.addWidget(search_box)
+
+        programs = uninstaller.list_installed_programs()
+        row_checkboxes: dict[str, QCheckBox] = {}
+        program_by_name: dict[str, uninstaller.InstalledProgram] = {}
+
+        list_container = QWidget()
+        list_layout = QVBoxLayout(list_container)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(2)
+        for program in programs:
+            label = program.name
+            if program.version:
+                label += f"  v{program.version}"
+            if program.publisher:
+                label += f"  ({program.publisher})"
+            checkbox = QCheckBox(label)
+            checkbox.setToolTip(program.install_location or "")
+            row_checkboxes[program.name] = checkbox
+            program_by_name[program.name] = program
+            list_layout.addWidget(checkbox)
+        list_layout.addStretch(1)
+
+        list_scroll = QScrollArea()
+        list_scroll.setWidgetResizable(True)
+        list_scroll.setWidget(list_container)
+        layout.addWidget(list_scroll, 1)
+
+        def apply_search(text: str) -> None:
+            needle = text.strip().lower()
+            for name, checkbox in row_checkboxes.items():
+                checkbox.setHidden(bool(needle) and needle not in name.lower())
+
+        search_box.textChanged.connect(apply_search)
+
+        select_row = QHBoxLayout()
+        select_all_btn = self._make_selection_button(
+            self._t("select_all"), lambda: [cb.setChecked(True) for cb in row_checkboxes.values() if not cb.isHidden()]
+        )
+        select_row.addWidget(select_all_btn)
+        select_none_btn = self._make_selection_button(
+            self._t("select_none"), lambda: [cb.setChecked(False) for cb in row_checkboxes.values()]
+        )
+        select_row.addWidget(select_none_btn)
+        select_row.addStretch(1)
+        layout.addLayout(select_row)
+
+        console = QPlainTextEdit()
+        console.setObjectName("console")
+        console.setReadOnly(True)
+        console.setMaximumHeight(140)
+        console.setVisible(False)
+        layout.addWidget(console)
+
+        cleanup_container = QWidget()
+        cleanup_layout = QVBoxLayout(cleanup_container)
+        cleanup_layout.setContentsMargins(0, 0, 0, 0)
+        cleanup_layout.setSpacing(2)
+        cleanup_container.setVisible(False)
+        layout.addWidget(cleanup_container)
+
+        uninstall_button = QPushButton(self._t("uninstaller_uninstall_button"))
+        uninstall_button.setObjectName("runButton")
+        layout.addWidget(uninstall_button)
+
+        def show_orphan_cleanup() -> None:
+            while cleanup_layout.count():
+                item = cleanup_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            orphans = uninstaller.find_orphaned_uninstall_entries()
+            if not orphans:
+                cleanup_container.setVisible(False)
+                return
+            heading = QLabel(self._t("uninstaller_leftovers_heading"))
+            heading.setObjectName("cardHeading")
+            cleanup_layout.addWidget(heading)
+            orphan_checkboxes: dict[uninstaller.InstalledProgram, QCheckBox] = {}
+            for orphan in orphans:
+                cb = QCheckBox(orphan.name)
+                cb.setChecked(True)
+                orphan_checkboxes[orphan] = cb
+                cleanup_layout.addWidget(cb)
+            clean_button = QPushButton(self._t("uninstaller_clean_leftovers_button"))
+            clean_button.setObjectName("selectionBtn")
+
+            def do_clean() -> None:
+                removed = 0
+                for orphan, cb in orphan_checkboxes.items():
+                    if cb.isChecked() and uninstaller.remove_registry_key(orphan.registry_hive, orphan.registry_path):
+                        removed += 1
+                console.appendPlainText(self._t("uninstaller_leftovers_removed").format(count=removed))
+                cleanup_container.setVisible(False)
+
+            clean_button.clicked.connect(lambda _checked=False: do_clean())
+            cleanup_layout.addWidget(clean_button)
+            cleanup_container.setVisible(True)
+
+        def start_uninstall() -> None:
+            selected = [program_by_name[name] for name, cb in row_checkboxes.items() if cb.isChecked()]
+            if not selected:
+                return
+            uninstall_button.setEnabled(False)
+            select_all_btn.setEnabled(False)
+            select_none_btn.setEnabled(False)
+            console.setVisible(True)
+            console.appendPlainText(self._t("uninstaller_running"))
+            runner = uninstaller.UninstallRunner(selected, parent=dialog)
+            dialog._uninstall_runner = runner  # keep a reference alive
+
+            def on_program_finished(name: str, ok: bool, output: str) -> None:
+                status = self._t("status_ok") if ok else self._t("status_failed")
+                console.appendPlainText(f"[{status}] {name}")
+                if output:
+                    console.appendPlainText(output)
+
+            def on_all_finished() -> None:
+                uninstall_button.setEnabled(True)
+                select_all_btn.setEnabled(True)
+                select_none_btn.setEnabled(True)
+                for program in selected:
+                    checkbox = row_checkboxes.pop(program.name, None)
+                    if checkbox is not None:
+                        checkbox.setParent(None)
+                        checkbox.deleteLater()
+                show_orphan_cleanup()
+
+            runner.program_finished.connect(on_program_finished)
+            runner.all_finished.connect(on_all_finished)
+            runner.start()
+
+        uninstall_button.clicked.connect(lambda _checked=False: start_uninstall())
+        dialog.exec()
+
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
 
@@ -1055,6 +1235,8 @@ class MainWindow(QMainWindow):
             return action.risk == RiskLevel.DESTRUCTIVE or module.category in (
                 ModuleCategory.REPAIR,
                 ModuleCategory.SECURITY,
+                ModuleCategory.DRIVER_UPDATES,
+                ModuleCategory.WINGET,
             )
 
         self._queue = [aid for aid in self._queue if not _is_high_risk(aid)]
@@ -1193,6 +1375,8 @@ class MainWindow(QMainWindow):
         needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
             ModuleCategory.REPAIR,
             ModuleCategory.SECURITY,
+            ModuleCategory.DRIVER_UPDATES,
+            ModuleCategory.WINGET,
         )
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True

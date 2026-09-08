@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m10_drivers" / "actions.yaml"
 
 
-def test_m10_catalog_loads_7_actions_in_diagnostics_category():
+def test_m10_catalog_loads_8_actions_in_driver_updates_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m10_drivers"
-    assert module.category == ModuleCategory.DIAGNOSTICS
-    assert len(module.actions) == 7
+    assert module.category == ModuleCategory.DRIVER_UPDATES
+    assert len(module.actions) == 8
 
 
 def test_m10_catalog_risk_distribution():
@@ -27,8 +27,8 @@ def test_m10_catalog_risk_distribution():
         "drv_unsigned_report",
     }
     assert set(by_risk[RiskLevel.MODERATE]) == {"drv_restore_backup"}
+    assert set(by_risk[RiskLevel.REQUIRES_REBOOT]) == {"drv_install_updates"}
     assert RiskLevel.DESTRUCTIVE not in by_risk
-    assert RiskLevel.REQUIRES_REBOOT not in by_risk
 
 
 def test_m10_catalog_no_undo_commands():
@@ -48,7 +48,17 @@ def test_m10_catalog_covers_expected_ids():
         "drv_restore_backup",
         "drv_duplicate_packages_report",
         "drv_unsigned_report",
+        "drv_install_updates",
     }
+
+
+def test_m10_catalog_install_updates_uses_windows_update_agent_api():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "drv_install_updates")
+    assert action.risk == RiskLevel.REQUIRES_REBOOT
+    assert "Microsoft.Update.Session" in action.command
+    assert "Type='Driver'" in action.command
+    assert "exit 1" in action.command
 
 
 def test_m10_catalog_duplicate_packages_report_is_report_only():

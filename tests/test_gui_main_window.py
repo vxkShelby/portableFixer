@@ -783,9 +783,9 @@ def test_category_list_deduplicates_same_category_across_modules(qtbot, tmp_path
     settings = Settings(language="en", dry_run=True)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat1")
     qtbot.addWidget(window)
-    # +1 for the "Risk: SAFE" tab appended after the categories (both test
-    # actions are risk SAFE).
-    assert window.category_list.count() == 2
+    # +1 for the always-present Uninstaller category, +1 for the "Risk:
+    # SAFE" tab appended after the categories (both test actions are SAFE).
+    assert window.category_list.count() == 3
     assert window.category_list.item(0).text() == "Diagnostics"
 
 
@@ -795,11 +795,11 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     settings = Settings(language="en", dry_run=True)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_cat2")
     qtbot.addWidget(window)
-    # +1 for the "Risk: SAFE" tab appended after the categories (both test
-    # actions are risk SAFE).
-    assert window.category_list.count() == 3
+    # +1 for the always-present Uninstaller category, +1 for the "Risk:
+    # SAFE" tab appended after the categories (both test actions are SAFE).
+    assert window.category_list.count() == 4
     labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
-    assert labels == {"Diagnostics", "System repair", "Risk: SAFE"}
+    assert labels == {"Diagnostics", "System repair", "Uninstall programs", "Risk: SAFE"}
 
 
 def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):

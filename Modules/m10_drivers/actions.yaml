@@ -1,5 +1,5 @@
 module_id: m10_drivers
-category: DIAGNOSTICS
+category: DRIVER_UPDATES
 actions:
   - id: drv_problem_devices
     label_sk: "Zariadenia s problemami"
@@ -43,6 +43,13 @@ actions:
     command: "$out = pnputil /enum-drivers; $text = ($out -join \"`n\"); $blocks = $text -split \"(?:`r?`n){2,}\" | Where-Object { $_.Trim() }; $groups = @{}; foreach ($b in $blocks) { $lines = $b -split \"`r?`n\" | Where-Object { $_.Trim() }; if ($lines.Count -ge 2) { $orig = ($lines[1] -split ':', 2)[1].Trim(); if ($orig) { if (-not $groups.ContainsKey($orig)) { $groups[$orig] = 0 }; $groups[$orig]++ } } }; $dupes = $groups.GetEnumerator() | Where-Object { $_.Value -gt 1 }; if ($dupes) { foreach ($d in $dupes) { Write-Output ('--- ' + $d.Key + ' (' + $d.Value + ' versions published) ---') }; Write-Output 'Review with \"pnputil /enum-drivers\" for full details; remove old ones manually with \"pnputil /delete-driver <oemN.inf> /uninstall\" if you are sure they are unused.' } else { Write-Output 'No duplicate driver package versions found.' }"
     description_sk: "Iba nahlasi ovladacie balicky s viacerymi publikovanymi verziami pre to iste povodne meno (mozny zvysok po aktualizaciach). Parsuje vystup pnputil podla pevnej poradovej pozicie riadkov, nie podla textu popisku, takze funguje bez ohladu na jazyk Windows. Nic neodstranuje - ak je niektory zbytocny, odstrante ho sami prikazom 'pnputil /delete-driver <oemN.inf> /uninstall' po overeni cez 'pnputil /enum-drivers'."
     description_en: "Only reports driver packages with multiple published versions for the same original name (possible leftovers from updates). Parses pnputil's output by fixed line position, not label text, so it works regardless of the Windows display language. Removes nothing - if one is unused, delete it yourself with 'pnputil /delete-driver <oemN.inf> /uninstall' after checking with 'pnputil /enum-drivers'."
+  - id: drv_install_updates
+    label_sk: "Nainstalovat aktualizacie ovladacov"
+    label_en: "Install driver updates"
+    risk: REQUIRES_REBOOT
+    command: "try { $session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $result = $searcher.Search(\"IsInstalled=0 and Type='Driver'\"); if ($result.Updates.Count -eq 0) { Write-Output 'No optional driver updates found via Windows Update.'; exit 0 }; $toInstall = New-Object -ComObject Microsoft.Update.UpdateColl; foreach ($u in $result.Updates) { if (-not $u.EulaAccepted) { $u.AcceptEula() | Out-Null }; $toInstall.Add($u) | Out-Null; Write-Output ('Found: ' + $u.Title) }; $downloader = $session.CreateUpdateDownloader(); $downloader.Updates = $toInstall; $downloader.Download() | Out-Null; $installer = $session.CreateUpdateInstaller(); $installer.Updates = $toInstall; $installResult = $installer.Install(); Write-Output ('Install result code: ' + $installResult.ResultCode + ' (2=Succeeded, 3=SucceededWithErrors, 4=Failed, 5=Cancelled)'); if ($installResult.RebootRequired) { Write-Output 'A reboot is required to finish installing the driver update(s).' }; if ($installResult.ResultCode -eq 4) { exit 1 } } catch { Write-Output ('Driver update via Windows Update failed: ' + $_.Exception.Message + ' (needs administrator).'); exit 1 }"
+    description_sk: "Vyhlada a nainstaluje voliteľne aktualizacie ovladacov ponukane cez Windows Update (rovnaky zdroj ako Nastavenia > Windows Update > Volitelne aktualizacie), stiahne a nainstaluje ich cez oficialne Windows Update Agent API. Vyzaduje administratora, moze vyzadovat restart. Bez univerzalneho undo - ovladac odinstalujte cez Spravcu zariadeni, ak sposobi problem."
+    description_en: "Finds and installs optional driver updates offered via Windows Update (the same source as Settings > Windows Update > Optional updates), downloads and installs them through the official Windows Update Agent API. Needs administrator, may require a reboot. No generic undo - uninstall the driver via Device Manager if it causes a problem."
   - id: drv_unsigned_report
     label_sk: "Nepodpisane ovladace"
     label_en: "Unsigned drivers"
