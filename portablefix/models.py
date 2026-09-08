@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -29,6 +29,8 @@ class ActionDef:
     undo_command: str | None = None
     inactivity_timeout_sec: int | None = None
     hard_cap_sec: int | None = None
+    problem_keywords: list[str] = field(default_factory=list)
+    recommended_action_ids: list[str] = field(default_factory=list)
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

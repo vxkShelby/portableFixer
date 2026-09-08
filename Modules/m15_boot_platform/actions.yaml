@@ -30,6 +30,10 @@ actions:
     label_en: "Safe Mode boot check"
     risk: SAFE
     command: "$out = & bcdedit.exe /enum '{current}' 2>&1 | Select-String -Pattern 'safeboot'; if ($out) { Write-Output ('Machine is currently configured to boot into SAFE MODE: ' + ($out -join '; ')) } else { Write-Output 'Normal boot (no safeboot flag set).' }"
+    problem_keywords:
+      - "Machine is currently configured to boot into SAFE MODE"
+    recommended_action_ids:
+      - boot_clear_safe_mode_flag
     description_sk: "Zisti, ci je pocitac nastaveny na zavodenie do Bezpecneho rezimu (caste zabudnuty priznak po predchadzajucej diagnostike). Nic nemeni."
     description_en: "Checks whether the machine is set to boot into Safe Mode (a commonly forgotten leftover flag from earlier troubleshooting). Changes nothing."
 

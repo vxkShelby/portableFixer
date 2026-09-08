@@ -274,6 +274,35 @@ def test_load_module_without_hard_cap_sec_defaults_to_none(tmp_path):
     assert module.actions[0].hard_cap_sec is None
 
 
+def test_load_module_parses_problem_keywords_and_recommended_action_ids(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"Akcia 1\"\n"
+        "    label_en: \"Action 1\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'hi'\"\n"
+        "    problem_keywords:\n"
+        "      - \"BAD STATE\"\n"
+        "    recommended_action_ids:\n"
+        "      - a2\n",
+        encoding="utf-8",
+    )
+    module = load_module(yaml_path)
+    assert module.actions[0].problem_keywords == ["BAD STATE"]
+    assert module.actions[0].recommended_action_ids == ["a2"]
+
+
+def test_load_module_without_problem_keywords_defaults_to_empty_lists(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML, encoding="utf-8")
+    module = load_module(yaml_path)
+    assert module.actions[0].problem_keywords == []
+    assert module.actions[0].recommended_action_ids == []
+
+
 def test_load_module_without_undo_command_defaults_to_none(tmp_path):
     yaml_path = tmp_path / "actions.yaml"
     yaml_path.write_text(

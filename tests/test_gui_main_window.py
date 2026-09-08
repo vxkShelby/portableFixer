@@ -151,6 +151,50 @@ def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
     assert entry["exit_code"] == 0
 
 
+_PROBLEM_KEYWORD_ACTIONS_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: diag_check
+    label_sk: "Kontrola"
+    label_en: "Check"
+    risk: SAFE
+    command: "Write-Output 'STATE: BROKEN'"
+    problem_keywords:
+      - "STATE: BROKEN"
+    recommended_action_ids:
+      - fix_it
+  - id: fix_it
+    label_sk: "Oprava"
+    label_en: "Fix"
+    risk: MODERATE
+    command: "Write-Output 'fixed'"
+"""
+
+
+def test_diagnostic_action_with_matching_output_recommends_fix(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _PROBLEM_KEYWORD_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(dry_run=False), is_admin=True, run_id="testrun")
+    qtbot.addWidget(window)
+    window._action_checkboxes["diag_check"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
+    assert "fix_it" in window._recommended_action_ids
+
+
+def test_diagnostic_action_with_no_matching_output_recommends_nothing(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(dry_run=False), is_admin=True, run_id="testrun")
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
+    assert window._recommended_action_ids == set()
+
+
 _USER_TEMP_ACTIONS_YAML = """
 module_id: m02_cleanup
 actions:

@@ -6,6 +6,10 @@ actions:
     label_en: "PawnIO sensor driver status"
     risk: SAFE
     command: "$k = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PawnIO' -EA SilentlyContinue; if (-not $k) { $k = Get-ItemProperty 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PawnIO' -EA SilentlyContinue }; if ($k) { Write-Output ('PawnIO installed, version ' + $k.DisplayVersion) } else { Write-Output 'PawnIO not installed - CPU temperature/clock speed sensors are unavailable until it is installed.' }"
+    problem_keywords:
+      - "PawnIO not installed"
+    recommended_action_ids:
+      - pawnio_install
     description_sk: "Zisti, ci je nainstalovany PawnIO (potrebny pre CPU teplotu/hodinky v system info paneli appky). Nic nemeni."
     description_en: "Checks whether PawnIO is installed (needed for CPU temperature/clock speed in the app's system info panel). Changes nothing."
 

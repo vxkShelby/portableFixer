@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self._snapshot_before: dict = {}
         self._undo_steps: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
+        self._recommended_action_ids: set[str] = set()
         self._summary_dialog: QDialog | None = None
         self._closed = False
         self._cancel_requested = False
@@ -487,8 +488,8 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         run_row.addWidget(self.cancel_button)
         center_layout.addLayout(run_row)
-        body_layout.addLayout(center_layout, 1)
-        body_layout.addWidget(self._build_sysinfo_panel())
+        body_layout.addLayout(center_layout, 2)
+        body_layout.addWidget(self._build_sysinfo_panel(), 1)
         body_widget = QWidget()
         body_widget.setLayout(body_layout)
 
@@ -846,6 +847,43 @@ class MainWindow(QMainWindow):
         rows_scroll.setWidget(rows_container)
         layout.addWidget(rows_scroll)
 
+        recommended_ids = [aid for aid in self._recommended_action_ids if aid in self._action_checkboxes]
+        if recommended_ids:
+            rec_header = QLabel(self._t("recommended_fixes_title"))
+            rec_header.setObjectName("summaryHeader")
+            layout.addWidget(rec_header)
+
+            rec_checkboxes: dict[str, QCheckBox] = {}
+            rec_container = QWidget()
+            rec_layout = QVBoxLayout(rec_container)
+            rec_layout.setContentsMargins(0, 0, 0, 0)
+            rec_layout.setSpacing(4)
+            for action_id in recommended_ids:
+                _, rec_action = self._find_action(action_id)
+                cb = QCheckBox(rec_action.label(self.settings.language))
+                cb.setChecked(True)
+                rec_checkboxes[action_id] = cb
+                rec_layout.addWidget(cb)
+            rec_layout.addStretch(1)
+
+            rec_scroll = QScrollArea()
+            rec_scroll.setWidgetResizable(True)
+            rec_scroll.setMaximumHeight(160)
+            rec_scroll.setWidget(rec_container)
+            layout.addWidget(rec_scroll)
+
+            rec_button_row = QHBoxLayout()
+            rec_button_row.addStretch(1)
+            apply_rec_button = QPushButton(self._t("recommended_fixes_apply_button"))
+            apply_rec_button.setObjectName("runButton")
+            apply_rec_button.clicked.connect(
+                lambda: self._apply_recommended_selection(
+                    [aid for aid, cb in rec_checkboxes.items() if cb.isChecked()], dialog
+                )
+            )
+            rec_button_row.addWidget(apply_rec_button)
+            layout.addLayout(rec_button_row)
+
         button_row = QHBoxLayout()
         button_row.addStretch(1)
         open_button = QPushButton(self._t("open_report"))
@@ -858,6 +896,19 @@ class MainWindow(QMainWindow):
 
         dialog.show()
         self._summary_dialog = dialog
+
+    def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog) -> None:
+        if not action_ids:
+            dialog.close()
+            return
+        self._apply_selection(list(self._action_checkboxes), "none")
+        self._apply_selection(action_ids, "all")
+        wanted_set = set(action_ids)
+        for index, category in enumerate(self._categories_order):
+            if wanted_set.intersection(self._category_action_ids.get(category, [])):
+                self.category_list.setCurrentRow(index)
+                break
+        dialog.close()
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
@@ -1040,6 +1091,7 @@ class MainWindow(QMainWindow):
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
+        self._recommended_action_ids = set()
         self._summary_dialog = None
         self._cancel_requested = False
         for action_id in self._queue:
@@ -1274,6 +1326,12 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
         self._batch_results.append((action_id, exit_code))
+        if action.problem_keywords and action.recommended_action_ids:
+            output_lower = output.lower()
+            if any(keyword.lower() in output_lower for keyword in action.problem_keywords):
+                self._recommended_action_ids.update(
+                    rid for rid in action.recommended_action_ids if rid in self._action_checkboxes
+                )
         elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
@@ -1290,7 +1348,8 @@ class MainWindow(QMainWindow):
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("actionCard")
-        panel.setFixedWidth(345)
+        panel.setMinimumWidth(345)
+        panel.setMaximumWidth(600)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)

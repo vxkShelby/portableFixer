@@ -37,3 +37,22 @@ def test_action_ids_unique_across_all_catalogs():
         for action in module.actions:
             assert action.id not in seen, f"duplicate action id '{action.id}' in {module.module_id} and {seen[action.id]}"
             seen[action.id] = module.module_id
+
+
+def test_recommended_action_ids_reference_real_actions_and_are_never_self_or_empty():
+    modules, errors = load_all_modules(MODULES_DIR)
+    assert errors == []
+    all_ids = {action.id for module in modules for action in module.actions}
+    for module in modules:
+        for action in module.actions:
+            # Both-or-neither: a diagnostic with problem_keywords but no fix
+            # to point at is a dead end for the user, and the reverse
+            # (recommended_action_ids with no keywords to trigger it) can
+            # never fire - either is a sign the catalog entry is half-done.
+            assert bool(action.problem_keywords) == bool(action.recommended_action_ids), (
+                f"{module.module_id}/{action.id}: problem_keywords and recommended_action_ids "
+                "must both be set or both be empty"
+            )
+            for rid in action.recommended_action_ids:
+                assert rid in all_ids, f"{module.module_id}/{action.id}: recommended_action_ids references unknown id '{rid}'"
+                assert rid != action.id, f"{module.module_id}/{action.id}: recommends itself"
