@@ -384,29 +384,43 @@ class MainWindow(QMainWindow):
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(14, 10, 14, 10)
             card_layout.setSpacing(2)
+            def _make_select_buttons_row(c=category) -> QHBoxLayout:
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                row.addStretch(1)
+                all_btn = self._make_selection_button(
+                    self._t("select_all"), lambda: self._apply_selection(self._category_action_ids[c], "all")
+                )
+                row.addWidget(all_btn)
+                safe_btn = self._make_selection_button(
+                    self._t("select_safe_only"),
+                    lambda: self._apply_selection(self._category_action_ids[c], RiskLevel.SAFE.value),
+                )
+                row.addWidget(safe_btn)
+                none_btn = self._make_selection_button(
+                    self._t("select_none"), lambda: self._apply_selection(self._category_action_ids[c], "none")
+                )
+                row.addWidget(none_btn)
+                self._category_select_buttons[c] = (all_btn, safe_btn, none_btn)
+                return row
+
             heading_row = QHBoxLayout()
             heading_row.setSpacing(6)
             heading = QLabel(self._t(category_i18n_keys[category]))
             heading.setObjectName("cardHeading")
             heading_row.addWidget(heading)
-            heading_row.addStretch(1)
-            cat_all = self._make_selection_button(
-                self._t("select_all"), lambda c=category: self._apply_selection(self._category_action_ids[c], "all")
-            )
-            heading_row.addWidget(cat_all)
-            cat_safe = self._make_selection_button(
-                self._t("select_safe_only"),
-                lambda c=category: self._apply_selection(self._category_action_ids[c], RiskLevel.SAFE.value),
-            )
-            heading_row.addWidget(cat_safe)
-            cat_none = self._make_selection_button(
-                self._t("select_none"), lambda c=category: self._apply_selection(self._category_action_ids[c], "none")
-            )
-            heading_row.addWidget(cat_none)
-            self._category_select_buttons[category] = (cat_all, cat_safe, cat_none)
+            if category != ModuleCategory.WINGET:
+                heading_row.addLayout(_make_select_buttons_row())
+            else:
+                heading_row.addStretch(1)
             card_layout.addLayout(heading_row)
             if category == ModuleCategory.WINGET:
                 card_layout.addWidget(self._build_winget_updates_panel())
+                # The select-all/safe/none row belongs to the static action
+                # list below, not the dynamic update panel above - placing
+                # it here (right above that list) keeps "buttons control
+                # whatever is directly below them" true throughout the card.
+                card_layout.addLayout(_make_select_buttons_row())
             self._category_action_ids[category] = []
             for module in self.modules:
                 if module.category != category:
@@ -1567,6 +1581,7 @@ class MainWindow(QMainWindow):
                     self.language_button.setEnabled(True)
                     self.progress_bar.setValue(self._queue_total)
                     self.progress_bar.setVisible(False)
+                    self._apply_selection(list(self._action_checkboxes), "none")
                     self._update_status_bar()
                 snapshot_after = self._take_snapshot()
                 try:
