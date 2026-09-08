@@ -1,3 +1,4 @@
+import ctypes
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -41,7 +42,28 @@ def _write_startup_diagnostics(raw_base_dir, base_dir, used_fallback: bool, run_
         pass
 
 
+_SINGLE_INSTANCE_MUTEX_NAME = "Global\\PortableFix_SingleInstance_Mutex"
+_ERROR_ALREADY_EXISTS = 183
+
+
+def _acquire_single_instance_lock() -> bool:
+    """Named Win32 mutex, held for the process lifetime (never explicitly
+    released - Windows tears it down on exit). Returns False when another
+    instance already holds it, so a second launch can bail out before it
+    locks the .exe file a running instance needs to be replaceable/updatable."""
+    ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+    return ctypes.windll.kernel32.GetLastError() != _ERROR_ALREADY_EXISTS
+
+
 def main() -> int:
+    if not _acquire_single_instance_lock():
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "PortableFix uz bezi (skontroluj taskbar/tray).\nPortableFix is already running (check taskbar/tray).",
+            "PortableFix",
+            0x40,
+        )
+        return 0
     try:
         app = QApplication(sys.argv)
         app.setStyleSheet(style.STYLE)
