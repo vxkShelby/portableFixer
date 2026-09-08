@@ -1209,6 +1209,16 @@ class MainWindow(QMainWindow):
         for category, (label, action_count) in self._dashboard_tile_count_labels.items():
             label.setText(self._dashboard_count_text(action_count, counts.get(category, 0)))
 
+    def _uninstaller_row_label(self, program: "uninstaller.InstalledProgram") -> str:
+        parts = [program.name]
+        if program.version:
+            parts.append(f"v{program.version}")
+        if program.estimated_size_kb:
+            parts.append(f"{program.estimated_size_kb / 1024:.1f} MB")
+        if program.install_date:
+            parts.append(program.install_date)
+        return "  |  ".join(parts)
+
     def _build_uninstaller_card(self) -> QFrame:
         card = QFrame()
         card.setObjectName("actionCard")
@@ -1218,30 +1228,11 @@ class MainWindow(QMainWindow):
         heading = QLabel(self._t("category_uninstaller"))
         heading.setObjectName("cardHeading")
         card_layout.addWidget(heading)
-        description = QLabel(self._t("uninstaller_intro"))
-        description.setObjectName("selectionScope")
-        description.setWordWrap(True)
-        card_layout.addWidget(description)
-        open_button = QPushButton(self._t("uninstaller_open_button"))
-        open_button.setObjectName("runButton")
-        open_button.clicked.connect(lambda _checked=False: self._open_uninstaller_dialog())
-        card_layout.addWidget(open_button)
-        card_layout.addStretch(1)
-        return card
-
-    def _open_uninstaller_dialog(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle(self._t("category_uninstaller"))
-        dialog.setStyleSheet(style.STYLE)
-        dialog.setMinimumSize(560, 520)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(8)
 
         search_box = QLineEdit()
         search_box.setObjectName("searchBox")
         search_box.setPlaceholderText(self._t("uninstaller_search_placeholder"))
-        layout.addWidget(search_box)
+        card_layout.addWidget(search_box)
 
         programs = uninstaller.list_installed_programs()
         row_checkboxes: dict[str, QCheckBox] = {}
@@ -1252,13 +1243,11 @@ class MainWindow(QMainWindow):
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(2)
         for program in programs:
-            label = program.name
-            if program.version:
-                label += f"  v{program.version}"
+            checkbox = QCheckBox(self._uninstaller_row_label(program))
+            tooltip = program.install_location or ""
             if program.publisher:
-                label += f"  ({program.publisher})"
-            checkbox = QCheckBox(label)
-            checkbox.setToolTip(program.install_location or "")
+                tooltip = f"{program.publisher}\n{tooltip}" if tooltip else program.publisher
+            checkbox.setToolTip(tooltip)
             row_checkboxes[program.name] = checkbox
             program_by_name[program.name] = program
             list_layout.addWidget(checkbox)
@@ -1266,8 +1255,9 @@ class MainWindow(QMainWindow):
 
         list_scroll = QScrollArea()
         list_scroll.setWidgetResizable(True)
+        list_scroll.setMaximumHeight(320)
         list_scroll.setWidget(list_container)
-        layout.addWidget(list_scroll, 1)
+        card_layout.addWidget(list_scroll)
 
         def apply_search(text: str) -> None:
             needle = text.strip().lower()
@@ -1286,25 +1276,25 @@ class MainWindow(QMainWindow):
         )
         select_row.addWidget(select_none_btn)
         select_row.addStretch(1)
-        layout.addLayout(select_row)
+        card_layout.addLayout(select_row)
 
         console = QPlainTextEdit()
         console.setObjectName("console")
         console.setReadOnly(True)
         console.setMaximumHeight(140)
         console.setVisible(False)
-        layout.addWidget(console)
+        card_layout.addWidget(console)
 
         cleanup_container = QWidget()
         cleanup_layout = QVBoxLayout(cleanup_container)
         cleanup_layout.setContentsMargins(0, 0, 0, 0)
         cleanup_layout.setSpacing(2)
         cleanup_container.setVisible(False)
-        layout.addWidget(cleanup_container)
+        card_layout.addWidget(cleanup_container)
 
         uninstall_button = QPushButton(self._t("uninstaller_uninstall_button"))
         uninstall_button.setObjectName("runButton")
-        layout.addWidget(uninstall_button)
+        card_layout.addWidget(uninstall_button)
 
         def show_orphan_cleanup() -> None:
             while cleanup_layout.count():
@@ -1348,8 +1338,8 @@ class MainWindow(QMainWindow):
             select_none_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("uninstaller_running"))
-            runner = uninstaller.UninstallRunner(selected, parent=dialog)
-            dialog._uninstall_runner = runner  # keep a reference alive
+            runner = uninstaller.UninstallRunner(selected, parent=card)
+            card._uninstall_runner = runner  # keep a reference alive
 
             def on_program_finished(name: str, ok: bool, output: str) -> None:
                 status = self._t("status_ok") if ok else self._t("status_failed")
@@ -1373,7 +1363,7 @@ class MainWindow(QMainWindow):
             runner.start()
 
         uninstall_button.clicked.connect(lambda _checked=False: start_uninstall())
-        dialog.exec()
+        return card
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked

@@ -23,6 +23,7 @@ class InstalledProgram:
     version: str
     estimated_size_kb: int | None
     install_location: str | None
+    install_date: str | None
     uninstall_string: str | None
     quiet_uninstall_string: str | None
     registry_hive: int
@@ -34,6 +35,16 @@ def _query(key, name: str):
         return winreg.QueryValueEx(key, name)[0]
     except OSError:
         return None
+
+
+def _format_install_date(raw: object) -> str | None:
+    # Windows stores this as an unpunctuated "YYYYMMDD" string (not a real
+    # date type) - reformat to something readable, but never invent a date
+    # out of a value that doesn't actually match that shape.
+    text = str(raw) if raw else ""
+    if len(text) == 8 and text.isdigit():
+        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+    return None
 
 
 def list_installed_programs(reg_paths=_UNINSTALL_REG_PATHS) -> list[InstalledProgram]:
@@ -72,6 +83,7 @@ def list_installed_programs(reg_paths=_UNINSTALL_REG_PATHS) -> list[InstalledPro
                                 version=str(_query(sk, "DisplayVersion") or ""),
                                 estimated_size_kb=_query(sk, "EstimatedSize"),
                                 install_location=_query(sk, "InstallLocation") or None,
+                                install_date=_format_install_date(_query(sk, "InstallDate")),
                                 uninstall_string=_query(sk, "UninstallString"),
                                 quiet_uninstall_string=_query(sk, "QuietUninstallString"),
                                 registry_hive=hive,

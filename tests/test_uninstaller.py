@@ -46,18 +46,27 @@ def test_list_installed_programs_reads_fields():
         DisplayVersion="1.2.3",
         EstimatedSize=4096,
         InstallLocation=r"C:\Program Files\Test App",
+        InstallDate="20240315",
         UninstallString=r'"C:\Program Files\Test App\uninstall.exe"',
     )
     programs = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)
     assert len(programs) == 1
     p = programs[0]
     assert p.name == "Test App"
+    assert p.install_date == "2024-03-15"
     assert p.publisher == "Test Publisher"
     assert p.version == "1.2.3"
     assert p.estimated_size_kb == 4096
     assert p.install_location == r"C:\Program Files\Test App"
     assert p.uninstall_string == r'"C:\Program Files\Test App\uninstall.exe"'
     assert p.registry_hive == winreg.HKEY_CURRENT_USER
+
+
+def test_list_installed_programs_leaves_install_date_none_when_missing_or_malformed():
+    _make_entry("App1", DisplayName="No Date")
+    _make_entry("App2", DisplayName="Bad Date", InstallDate="not-a-date")
+    programs = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)
+    assert all(p.install_date is None for p in programs)
 
 
 def test_list_installed_programs_skips_entries_without_display_name():
