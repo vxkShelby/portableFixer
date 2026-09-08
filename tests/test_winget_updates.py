@@ -1,4 +1,6 @@
-from portablefix.winget_updates import parse_winget_upgrade_table
+from unittest.mock import patch
+
+from portablefix.winget_updates import parse_winget_upgrade_table, update_package
 
 _SAMPLE_TABLE = (
     "Name                    Id                                Version      Available    Source\n"
@@ -40,6 +42,21 @@ def test_parse_winget_upgrade_table_empty_when_no_updates():
 
 def test_parse_winget_upgrade_table_empty_when_no_header_found():
     assert parse_winget_upgrade_table("some unrelated error text\n") == []
+
+
+def test_update_package_includes_unknown_version_packages():
+    # winget refuses to upgrade a package whose currently-installed version
+    # it can't determine unless --include-unknown is passed - the scan
+    # command already used it, the actual upgrade call must too, or every
+    # such package fails with "This package's version number cannot be
+    # determined" even though the scan found a real update for it.
+    with patch("portablefix.winget_updates.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = ""
+        update_package("Some.Package")
+    args = mock_run.call_args[0][0]
+    assert "--include-unknown" in args
 
 
 def test_parse_winget_upgrade_table_skips_blank_rows_and_dashes():

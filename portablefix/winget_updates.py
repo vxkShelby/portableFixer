@@ -89,7 +89,7 @@ def update_package(package_id: str, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> t
     try:
         result = subprocess.run(
             [
-                "winget", "upgrade", "--id", package_id, "--silent",
+                "winget", "upgrade", "--id", package_id, "--silent", "--include-unknown",
                 "--accept-package-agreements", "--accept-source-agreements",
                 "--disable-interactivity",
             ],
@@ -118,6 +118,7 @@ class WingetScanRunner(QThread):
 class WingetUpdateRunner(QThread):
     # Each winget upgrade is a blocking subprocess call - runs off the GUI
     # thread so the window stays responsive, mirroring uninstaller.py.
+    package_started = Signal(str)
     package_finished = Signal(str, bool, str)
     all_finished = Signal()
 
@@ -128,6 +129,7 @@ class WingetUpdateRunner(QThread):
 
     def run(self) -> None:
         for package_id in self._package_ids:
+            self.package_started.emit(package_id)
             ok, output = update_package(package_id)
             self.package_finished.emit(package_id, ok, output)
         self.all_finished.emit()

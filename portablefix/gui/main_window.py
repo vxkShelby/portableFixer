@@ -1094,6 +1094,14 @@ class MainWindow(QMainWindow):
             runner = winget_updates.WingetUpdateRunner(selected_ids, parent=panel)
             panel._winget_update_runner = runner
 
+            def on_package_started(package_id: str) -> None:
+                package = package_by_id.get(package_id)
+                name = package.name if package is not None else package_id
+                # Without this, a slow (or hung) winget call left the panel
+                # showing nothing at all until it finished or timed out -
+                # easy to mistake for the app having frozen.
+                console.appendPlainText(self._t("winget_updating_one").format(name=name))
+
             def on_package_finished(package_id: str, ok: bool, output: str) -> None:
                 package = package_by_id.get(package_id)
                 name = package.name if package is not None else package_id
@@ -1103,11 +1111,13 @@ class MainWindow(QMainWindow):
                     console.appendPlainText(output)
 
             def on_all_finished() -> None:
+                update_btn.setEnabled(True)
                 select_all_btn.setEnabled(True)
                 select_none_btn.setEnabled(True)
                 refresh_btn.setEnabled(True)
                 start_scan()
 
+            runner.package_started.connect(on_package_started)
             runner.package_finished.connect(on_package_finished)
             runner.all_finished.connect(on_all_finished)
             runner.start()
