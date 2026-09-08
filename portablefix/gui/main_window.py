@@ -991,7 +991,8 @@ class MainWindow(QMainWindow):
         list_layout.setSpacing(2)
         list_scroll = QScrollArea()
         list_scroll.setWidgetResizable(True)
-        list_scroll.setMaximumHeight(220)
+        list_scroll.setMinimumHeight(380)
+        list_scroll.setMaximumHeight(420)
         list_scroll.setWidget(list_container)
         list_scroll.setVisible(False)
         panel_layout.addWidget(list_scroll)
@@ -1029,11 +1030,14 @@ class MainWindow(QMainWindow):
         console = QPlainTextEdit()
         console.setObjectName("console")
         console.setReadOnly(True)
-        console.setMaximumHeight(120)
+        console.setMinimumHeight(200)
+        console.setMaximumHeight(260)
         console.setVisible(False)
         panel_layout.addWidget(console)
 
         row_checkboxes: dict[str, QCheckBox] = {}
+        row_progress: dict[str, QProgressBar] = {}
+        row_widgets: dict[str, QWidget] = {}
         package_by_id: dict[str, object] = {}
 
         def update_button_state() -> None:
@@ -1052,6 +1056,8 @@ class MainWindow(QMainWindow):
                 if item.widget():
                     item.widget().deleteLater()
             row_checkboxes.clear()
+            row_progress.clear()
+            row_widgets.clear()
             package_by_id.clear()
             if not packages:
                 status_label.setText(self._t("winget_no_updates"))
@@ -1061,12 +1067,27 @@ class MainWindow(QMainWindow):
             status_label.setText(self._t("winget_updates_found").format(count=len(packages)))
             for package in packages:
                 label = f"{package.name}  {package.installed_version} → {package.available_version}"
+                row_widget = QWidget()
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(8)
                 checkbox = QCheckBox(label)
                 checkbox.setToolTip(package.id)
                 checkbox.stateChanged.connect(lambda _state=0: update_button_state())
+                row.addWidget(checkbox, 1)
+                progress = QProgressBar()
+                progress.setObjectName("batchProgress")
+                progress.setFixedWidth(70)
+                progress.setMaximumHeight(10)
+                progress.setTextVisible(False)
+                progress.setRange(0, 0)
+                progress.setVisible(False)
+                row.addWidget(progress)
                 row_checkboxes[package.id] = checkbox
+                row_progress[package.id] = progress
+                row_widgets[package.id] = row_widget
                 package_by_id[package.id] = package
-                list_layout.addWidget(checkbox)
+                list_layout.addWidget(row_widget)
             list_layout.addStretch(1)
             list_scroll.setVisible(True)
             select_row_widget.setVisible(True)
@@ -1101,6 +1122,9 @@ class MainWindow(QMainWindow):
                 # showing nothing at all until it finished or timed out -
                 # easy to mistake for the app having frozen.
                 console.appendPlainText(self._t("winget_updating_one").format(name=name))
+                progress = row_progress.get(package_id)
+                if progress is not None:
+                    progress.setVisible(True)
 
             def on_package_finished(package_id: str, ok: bool, output: str) -> None:
                 package = package_by_id.get(package_id)
@@ -1109,6 +1133,21 @@ class MainWindow(QMainWindow):
                 console.appendPlainText(f"[{status}] {name}")
                 if output:
                     console.appendPlainText(output)
+                if ok:
+                    # Successfully updated - it's no longer outdated, so drop
+                    # it from the list right away instead of waiting for the
+                    # post-batch rescan to quietly remove it later.
+                    row_widget = row_widgets.pop(package_id, None)
+                    row_checkboxes.pop(package_id, None)
+                    row_progress.pop(package_id, None)
+                    if row_widget is not None:
+                        row_widget.setParent(None)
+                        row_widget.deleteLater()
+                    update_button_state()
+                else:
+                    progress = row_progress.get(package_id)
+                    if progress is not None:
+                        progress.setVisible(False)
 
             def on_all_finished() -> None:
                 update_btn.setEnabled(True)
