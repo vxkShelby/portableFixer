@@ -1,0 +1,43 @@
+module_id: m23_antivirus
+category: ANTIVIRUS
+actions:
+  - id: sec_defender_status
+    label_sk: "Stav Windows Defender"
+    label_en: "Windows Defender status"
+    risk: SAFE
+    command: "Get-MpComputerStatus | Select-Object AMServiceEnabled,RealTimeProtectionEnabled,AntivirusEnabled,AntivirusSignatureLastUpdated,QuickScanAge,FullScanAge | Format-List"
+    description_sk: "Zobrazi stav ochrany Defendera a vek definicii, nic nemeni."
+    description_en: "Shows Defender protection status and signature age, changes nothing."
+
+  - id: sec_defender_update
+    label_sk: "Aktualizacia definicii Defendera"
+    label_en: "Update Defender signatures"
+    risk: MODERATE
+    command: "Update-MpSignature"
+    description_sk: "Stiahne najnovsie definicie hrozieb pre Windows Defender. Vyzaduje internet."
+    description_en: "Downloads the latest threat definitions for Windows Defender. Requires internet access."
+
+  - id: sec_defender_quickscan
+    label_sk: "Rychly sken Defenderom"
+    label_en: "Defender quick scan"
+    risk: MODERATE
+    command: "Start-MpScan -ScanType QuickScan"
+    description_sk: "Spusti rychly antivirovy sken. Moze trvat niekolko minut a najdene hrozby presunie do karanteny."
+    description_en: "Runs a quick antivirus scan. May take several minutes; detected threats are moved to quarantine."
+
+  - id: sec_defender_exclusions_list
+    label_sk: "Vynimky Windows Defenderu"
+    label_en: "Windows Defender exclusions"
+    risk: SAFE
+    command: "try { Get-MpPreference -EA Stop | Select-Object ExclusionPath,ExclusionExtension,ExclusionProcess,ExclusionIpAddress | Format-List } catch { Write-Output 'Could not read Defender preferences (Defender may be disabled by another antivirus).' }"
+    description_sk: "Vypise vynimky Defenderu (cesty, procesy, pripony). Malware sa tam casto samo pridava, aby unikol detekcii. Nic nemeni."
+    description_en: "Lists Defender exclusions (paths, processes, extensions). Malware often adds itself here to evade detection. Changes nothing."
+
+  - id: hard_defender_clear_exclusions
+    label_sk: "Vycistenie vynimiek Defenderu"
+    label_en: "Clear Defender exclusions"
+    risk: MODERATE
+    command: "try { $p = Get-MpPreference -EA Stop; $bk = \"$env:ProgramData\\PortableFix\\defender_exclusions_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; [PSCustomObject]@{ Path = $p.ExclusionPath; Extension = $p.ExclusionExtension; Process = $p.ExclusionProcess; IpAddress = $p.ExclusionIpAddress } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; if ($p.ExclusionPath) { Remove-MpPreference -ExclusionPath $p.ExclusionPath }; if ($p.ExclusionExtension) { Remove-MpPreference -ExclusionExtension $p.ExclusionExtension }; if ($p.ExclusionProcess) { Remove-MpPreference -ExclusionProcess $p.ExclusionProcess }; if ($p.ExclusionIpAddress) { Remove-MpPreference -ExclusionIpAddress $p.ExclusionIpAddress }; Write-Output 'Defender exclusions cleared (backup saved).' } catch { Write-Output 'Could not modify Defender exclusions (Defender may be disabled by another antivirus).' }"
+    undo_command: "$bk = \"$env:ProgramData\\PortableFix\\defender_exclusions_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; if ($b.Path) { Add-MpPreference -ExclusionPath $b.Path }; if ($b.Extension) { Add-MpPreference -ExclusionExtension $b.Extension }; if ($b.Process) { Add-MpPreference -ExclusionProcess $b.Process }; if ($b.IpAddress) { Add-MpPreference -ExclusionIpAddress $b.IpAddress }; Write-Output 'Defender exclusions restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
+    description_sk: "Odstrani vsetky vynimky Defenderu (mozne skryvacky pre malware) po zalohovani aktualneho stavu do PortableFix\\defender_exclusions_backup.json - zaloha sa prepisuje pri kazdom behu, takze vzdy odraza stav tesne pred poslednym vycistenim a undo obnovi presne ten."
+    description_en: "Removes all Defender exclusions (a common malware hiding spot) after backing up the current state to PortableFix\\defender_exclusions_backup.json - the backup is overwritten on every run, so it always reflects the state right before the most recent clear, and undo restores exactly that."

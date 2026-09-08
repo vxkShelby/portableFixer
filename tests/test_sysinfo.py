@@ -265,3 +265,22 @@ def test_run_speed_test_computes_mbps_from_elapsed_time():
 def test_run_speed_test_returns_none_on_failure():
     with patch("portablefix.sysinfo.urllib.request.urlopen", side_effect=OSError("network down")):
         assert sysinfo.run_speed_test() is None
+
+
+def test_run_upload_test_computes_mbps_from_elapsed_time():
+    fake_resp = MagicMock()
+    fake_resp.__enter__.return_value = fake_resp
+
+    def fake_urlopen(req, timeout):
+        time.sleep(0.1)
+        return fake_resp
+
+    with patch("portablefix.sysinfo.urllib.request.urlopen", side_effect=fake_urlopen):
+        mbps = sysinfo.run_upload_test(size_bytes=1_000_000)
+    assert mbps is not None
+    assert mbps > 0
+
+
+def test_run_upload_test_returns_none_on_failure():
+    with patch("portablefix.sysinfo.urllib.request.urlopen", side_effect=OSError("network down")):
+        assert sysinfo.run_upload_test() is None

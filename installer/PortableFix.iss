@@ -3,7 +3,7 @@
 ;   ISCC installer\PortableFix.iss
 ; Bump MyAppVersion together with portablefix/version.py on every release.
 #define MyAppName "PortableFix"
-#define MyAppVersion "1.5.2"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "vxkShelby"
 #define MyAppURL "https://github.com/vxkShelby/portableFixer"
 #define RepoRoot ".."

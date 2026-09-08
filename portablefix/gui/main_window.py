@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
             ModuleCategory.CLEANUP: "category_cleanup",
             ModuleCategory.REPAIR: "category_repair",
             ModuleCategory.SECURITY: "category_security",
+            ModuleCategory.ANTIVIRUS: "category_antivirus",
             ModuleCategory.DRIVER_UPDATES: "category_driver_updates",
             ModuleCategory.WINGET: "category_winget",
             ModuleCategory.UNINSTALLER: "category_uninstaller",
@@ -415,11 +416,9 @@ class MainWindow(QMainWindow):
                 heading_row.addStretch(1)
             card_layout.addLayout(heading_row)
             if category == ModuleCategory.WINGET:
-                card_layout.addWidget(self._build_winget_updates_panel())
-                # The select-all/safe/none row belongs to the static action
-                # list below, not the dynamic update panel above - placing
-                # it here (right above that list) keeps "buttons control
-                # whatever is directly below them" true throughout the card.
+                # The live update panel now lives on the Prehlad dashboard
+                # card - this page keeps only the static winget actions
+                # (list installed, export, source management).
                 card_layout.addLayout(_make_select_buttons_row())
             self._category_action_ids[category] = []
             for module in self.modules:
@@ -1145,9 +1144,20 @@ class MainWindow(QMainWindow):
                         row_widget.deleteLater()
                     update_button_state()
                 else:
+                    row_widget = row_widgets.get(package_id)
                     progress = row_progress.get(package_id)
                     if progress is not None:
                         progress.setVisible(False)
+                    if row_widget is not None and package is not None:
+                        def open_app(_checked=False, name=package.name) -> None:
+                            found = uninstaller.find_program_by_name(name)
+                            if found is not None:
+                                uninstaller.launch_program(found)
+
+                        manual_btn = QPushButton(self._t("winget_manual_update_button"))
+                        manual_btn.setObjectName("selectionBtn")
+                        manual_btn.clicked.connect(open_app)
+                        row_widget.layout().addWidget(manual_btn)
 
             def on_all_finished() -> None:
                 update_btn.setEnabled(True)
@@ -1225,6 +1235,12 @@ class MainWindow(QMainWindow):
             tile.mousePressEvent = lambda _event, c=category: self._dashboard_tile_clicked(c)
             grid.addWidget(tile, index // columns, index % columns)
         card_layout.addLayout(grid)
+
+        winget_heading = QLabel(self._t("category_winget"))
+        winget_heading.setObjectName("cardHeading")
+        card_layout.addWidget(winget_heading)
+        card_layout.addWidget(self._build_winget_updates_panel())
+
         card_layout.addStretch(1)
         return card
 
@@ -2049,14 +2065,43 @@ class MainWindow(QMainWindow):
             return
         self._speed_test_busy = True
         self.speed_test_button.setEnabled(False)
-        self.speed_test_result_label.setText(self._t("sysinfo_speed_testing"))
+        self._speed_test_stage_values = {"download": None, "upload": None, "ping": None}
+        self._speed_test_stage_done: set[str] = set()
+        self._render_speed_test_result()
         self._speed_test_runner = sysinfo.SpeedTestRunner(parent=self)
-        self._speed_test_runner.speed_test_ready.connect(self._on_speed_test_ready)
+        self._speed_test_runner.stage_ready.connect(self._on_speed_test_stage_ready)
+        self._speed_test_runner.all_finished.connect(self._on_speed_test_all_finished)
         self._speed_test_runner.start()
 
-    def _on_speed_test_ready(self, mbps: float | None) -> None:
+    def _on_speed_test_stage_ready(self, stage: str, value: object) -> None:
+        if self._closed:
+            return
+        self._speed_test_stage_values[stage] = value
+        self._speed_test_stage_done.add(stage)
+        self._render_speed_test_result()
+
+    def _render_speed_test_result(self) -> None:
+        stage_labels = {
+            "download": self._t("sysinfo_speed_download"),
+            "upload": self._t("sysinfo_speed_upload"),
+            "ping": self._t("sysinfo_ping"),
+        }
+        lines = []
+        for stage in ("download", "upload", "ping"):
+            value = self._speed_test_stage_values.get(stage)
+            if stage not in self._speed_test_stage_done:
+                text = self._t("sysinfo_speed_testing")
+            elif value is None:
+                text = self._t("sysinfo_na")
+            elif stage == "ping":
+                text = f"{value:.0f} ms"
+            else:
+                text = f"{value:.1f} Mbit/s"
+            lines.append(f"{stage_labels[stage]}: {text}")
+        self.speed_test_result_label.setText("\n".join(lines))
+
+    def _on_speed_test_all_finished(self) -> None:
         self._speed_test_busy = False
         if self._closed:
             return
         self.speed_test_button.setEnabled(True)
-        self.speed_test_result_label.setText(f"{mbps:.1f} Mbps" if mbps is not None else self._t("sysinfo_na"))

@@ -1,4 +1,5 @@
 import ctypes
+import os
 import socket
 import subprocess
 import sys
@@ -320,7 +321,26 @@ def read_hardware_sensors(assets_dir: Path) -> dict:
             gpu_candidates,
             key=lambda g: g["gpu_load_percent"] if g["gpu_load_percent"] is not None else -1,
         ))
+    if result["cpu_clock_mhz"] is None:
+        # LibreHardwareMonitor's per-core clock sensors need its ring0
+        # driver, which Windows blocks when Core Isolation/Memory Integrity
+        # (HVCI) is on - common on Windows 11. WMI's CurrentClockSpeed needs
+        # no driver and works either way, just less precise (no turbo).
+        result["cpu_clock_mhz"] = _wmi_cpu_clock_mhz()
     return result
+
+
+def _wmi_cpu_clock_mhz() -> float | None:
+    try:
+        import win32com.client
+
+        wmi = win32com.client.GetObject("winmgmts:")
+        for cpu in wmi.InstancesOf("Win32_Processor"):
+            if cpu.CurrentClockSpeed:
+                return float(cpu.CurrentClockSpeed)
+    except Exception:
+        pass
+    return None
 
 
 def ping_once(host: str = "8.8.8.8", timeout_ms: int = 1000) -> float | None:
@@ -397,6 +417,24 @@ def run_speed_test(size_bytes: int = 25_000_000, timeout: float = 20.0) -> float
         return None
 
 
+def run_upload_test(size_bytes: int = 10_000_000, timeout: float = 20.0) -> float | None:
+    """Uploads a fixed-size random payload to Cloudflare's public speed-test
+    endpoint and returns the measured throughput in Mbps, or None on failure."""
+    url = "https://speed.cloudflare.com/__up"
+    payload = os.urandom(size_bytes)
+    req = urllib.request.Request(url, data=payload, method="POST", headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        start = time.monotonic()
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
+        elapsed = time.monotonic() - start
+        if elapsed <= 0:
+            return None
+        return round((size_bytes * 8) / elapsed / 1_000_000, 1)
+    except Exception:
+        return None
+
+
 class StaticInfoRunner(QThread):
     """One-shot: static info includes a subprocess call (RAM speed), so it
     runs off the GUI thread even though it only happens once at startup."""
@@ -459,11 +497,18 @@ class VpnStatusRunner(QThread):
 
 
 class SpeedTestRunner(QThread):
-    speed_test_ready = Signal(object)
+    # Emits each stage's result as soon as it's measured (download, then
+    # upload, then ping) so the UI can show live progress instead of one
+    # frozen "Testing..." label for the whole ~10-15s run.
+    stage_ready = Signal(str, object)
+    all_finished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
-        self.speed_test_ready.emit(run_speed_test())
+        self.stage_ready.emit("download", run_speed_test())
+        self.stage_ready.emit("upload", run_upload_test())
+        self.stage_ready.emit("ping", ping_once())
+        self.all_finished.emit()

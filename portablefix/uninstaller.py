@@ -1,3 +1,4 @@
+import os
 import subprocess
 import winreg
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ class InstalledProgram:
     install_date: str | None
     uninstall_string: str | None
     quiet_uninstall_string: str | None
+    display_icon: str | None
     registry_hive: int
     registry_path: str
 
@@ -86,6 +88,7 @@ def list_installed_programs(reg_paths=_UNINSTALL_REG_PATHS) -> list[InstalledPro
                                 install_date=_format_install_date(_query(sk, "InstallDate")),
                                 uninstall_string=_query(sk, "UninstallString"),
                                 quiet_uninstall_string=_query(sk, "QuietUninstallString"),
+                                display_icon=_query(sk, "DisplayIcon") or None,
                                 registry_hive=hive,
                                 registry_path=full_path,
                             )
@@ -94,6 +97,38 @@ def list_installed_programs(reg_paths=_UNINSTALL_REG_PATHS) -> list[InstalledPro
                     continue
     programs.sort(key=lambda p: p.name.lower())
     return programs
+
+
+def find_program_by_name(name: str) -> InstalledProgram | None:
+    target = name.strip().lower()
+    for program in list_installed_programs():
+        if program.name.strip().lower() == target:
+            return program
+    return None
+
+
+def launch_program(program: InstalledProgram) -> bool:
+    # DisplayIcon is usually "C:\...\app.exe" or "C:\...\app.exe,0" (icon
+    # index suffix) - strip it. Falls back to the first .exe directly under
+    # InstallLocation when there's no usable DisplayIcon.
+    exe_path: str | None = None
+    if program.display_icon:
+        candidate = program.display_icon.rsplit(",", 1)[0].strip('"')
+        if Path(candidate).is_file():
+            exe_path = candidate
+    if exe_path is None and program.install_location:
+        install_dir = Path(program.install_location)
+        if install_dir.is_dir():
+            exes = list(install_dir.glob("*.exe"))
+            if len(exes) == 1:
+                exe_path = str(exes[0])
+    if exe_path is None:
+        return False
+    try:
+        os.startfile(exe_path)
+        return True
+    except OSError:
+        return False
 
 
 def uninstall_program(program: InstalledProgram, timeout_sec: int = 300) -> tuple[bool, str]:

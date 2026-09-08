@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_17_actions_in_security_category():
+def test_m08_catalog_loads_12_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 17
+    assert len(module.actions) == 12
 
 
 def test_m08_catalog_risk_distribution():
@@ -18,11 +18,8 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 11
+    assert len(by_risk[RiskLevel.SAFE]) == 9
     assert set(by_risk[RiskLevel.MODERATE]) == {
-        "sec_defender_quickscan",
-        "sec_defender_update",
-        "hard_defender_clear_exclusions",
         "hard_uac_restore_default",
         "sec_wpbt_disable",
         "sec_restore_taskmgr_regedit",
@@ -35,19 +32,14 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
     for undoable in (
-        "hard_defender_clear_exclusions",
         "hard_uac_restore_default",
         "sec_wpbt_disable",
         "sec_restore_taskmgr_regedit",
     ):
         assert by_id[undoable].undo_command is not None, undoable
     for not_undoable in (
-        "sec_defender_status",
         "sec_firewall_status",
-        "sec_defender_quickscan",
-        "sec_defender_update",
         "sec_uac_status",
-        "sec_defender_exclusions_list",
         "sec_rdp_status",
         "sec_autologon_check",
         "sec_listening_ports_audit",
@@ -71,15 +63,10 @@ def test_m08_catalog_covers_expected_audit_surfaces():
     module = load_module(CATALOG_PATH)
     ids = {a.id for a in module.actions}
     assert ids == {
-        "sec_defender_status",
         "sec_firewall_status",
-        "sec_defender_quickscan",
-        "sec_defender_update",
         "sec_uac_status",
-        "sec_defender_exclusions_list",
         "sec_rdp_status",
         "sec_autologon_check",
-        "hard_defender_clear_exclusions",
         "hard_uac_restore_default",
         "sec_wpbt_disable",
         "sec_listening_ports_audit",
