@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from portablefix.winget_updates import parse_winget_upgrade_table, update_package
+from portablefix.winget_updates import OutdatedPackage, parse_winget_upgrade_table, update_package
 
 _SAMPLE_TABLE = (
     "Name                    Id                                Version      Available    Source\n"
@@ -50,13 +50,39 @@ def test_update_package_includes_unknown_version_packages():
     # command already used it, the actual upgrade call must too, or every
     # such package fails with "This package's version number cannot be
     # determined" even though the scan found a real update for it.
+    package = OutdatedPackage(name="Some App", id="Some.Package", installed_version="1", available_version="2", source="winget")
     with patch("portablefix.winget_updates.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = ""
         mock_run.return_value.stderr = ""
-        update_package("Some.Package")
+        update_package(package)
     args = mock_run.call_args[0][0]
     assert "--include-unknown" in args
+
+
+def test_update_package_retries_with_location_when_required():
+    package = OutdatedPackage(name="Battle.net", id="Blizzard.BattleNet", installed_version="1", available_version="2", source="winget")
+    fail_result = type("R", (), {"returncode": 1, "stdout": "Install location is required by the package but it was not provided", "stderr": ""})()
+    ok_result = type("R", (), {"returncode": 0, "stdout": "Successfully installed", "stderr": ""})()
+    fake_program = type("P", (), {"name": "Battle.net", "install_location": r"C:\Games\Battle.net"})()
+    with patch("portablefix.winget_updates.subprocess.run", side_effect=[fail_result, ok_result]) as mock_run, \
+         patch("portablefix.uninstaller.list_installed_programs", return_value=[fake_program]):
+        ok, output = update_package(package)
+    assert ok is True
+    assert output == "Successfully installed"
+    second_call_args = mock_run.call_args_list[1][0][0]
+    assert "--location" in second_call_args
+    assert r"C:\Games\Battle.net" in second_call_args
+
+
+def test_update_package_does_not_retry_when_no_install_location_found():
+    package = OutdatedPackage(name="Mystery App", id="Mystery.App", installed_version="1", available_version="2", source="winget")
+    fail_result = type("R", (), {"returncode": 1, "stdout": "Install location is required by the package but it was not provided", "stderr": ""})()
+    with patch("portablefix.winget_updates.subprocess.run", return_value=fail_result) as mock_run, \
+         patch("portablefix.uninstaller.list_installed_programs", return_value=[]):
+        ok, _ = update_package(package)
+    assert ok is False
+    assert mock_run.call_count == 1
 
 
 def test_parse_winget_upgrade_table_skips_blank_rows_and_dashes():

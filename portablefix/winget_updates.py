@@ -85,19 +85,44 @@ def list_outdated_packages() -> list[OutdatedPackage]:
     return parse_winget_upgrade_table(result.stdout)
 
 
-def update_package(package_id: str, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str]:
+def _find_install_location(package_name: str) -> str | None:
+    # A handful of packages (Blizzard's Battle.net is the common one) don't
+    # publish an install location winget can infer on its own and refuse to
+    # upgrade without --location. The registry Uninstall entry for the same
+    # program (matched by display name) already has it.
+    from . import uninstaller
+
+    target = package_name.strip().lower()
+    for program in uninstaller.list_installed_programs():
+        if program.name.strip().lower() == target and program.install_location:
+            return program.install_location
+    return None
+
+
+def _run_winget_upgrade(package_id: str, timeout_sec: int, extra_args: list[str] | None = None) -> tuple[bool, str]:
+    args = [
+        "winget", "upgrade", "--id", package_id, "--silent", "--include-unknown",
+        "--accept-package-agreements", "--accept-source-agreements",
+        "--disable-interactivity",
+    ]
+    if extra_args:
+        args.extend(extra_args)
+    result = subprocess.run(
+        args, capture_output=True, text=True, timeout=timeout_sec,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str]:
     try:
-        result = subprocess.run(
-            [
-                "winget", "upgrade", "--id", package_id, "--silent", "--include-unknown",
-                "--accept-package-agreements", "--accept-source-agreements",
-                "--disable-interactivity",
-            ],
-            capture_output=True, text=True, timeout=timeout_sec,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        output = (result.stdout + result.stderr).strip()
-        return result.returncode == 0, output
+        ok, output = _run_winget_upgrade(package.id, timeout_sec)
+        if not ok and "install location is required" in output.lower():
+            location = _find_install_location(package.name)
+            if location:
+                ok, output = _run_winget_upgrade(package.id, timeout_sec, ["--location", location])
+        return ok, output
     except subprocess.TimeoutExpired:
         return False, "Update timed out."
     except OSError as exc:
@@ -122,14 +147,14 @@ class WingetUpdateRunner(QThread):
     package_finished = Signal(str, bool, str)
     all_finished = Signal()
 
-    def __init__(self, package_ids: list[str], parent=None):
+    def __init__(self, packages: list[OutdatedPackage], parent=None):
         super().__init__(parent)
-        self._package_ids = package_ids
+        self._packages = packages
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
-        for package_id in self._package_ids:
-            self.package_started.emit(package_id)
-            ok, output = update_package(package_id)
-            self.package_finished.emit(package_id, ok, output)
+        for package in self._packages:
+            self.package_started.emit(package.id)
+            ok, output = update_package(package)
+            self.package_finished.emit(package.id, ok, output)
         self.all_finished.emit()

@@ -1103,8 +1103,8 @@ class MainWindow(QMainWindow):
             runner.start()
 
         def start_update() -> None:
-            selected_ids = [pid for pid, cb in row_checkboxes.items() if cb.isChecked()]
-            if not selected_ids:
+            selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
+            if not selected_packages:
                 return
             update_btn.setEnabled(False)
             select_all_btn.setEnabled(False)
@@ -1112,7 +1112,7 @@ class MainWindow(QMainWindow):
             refresh_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("winget_updating"))
-            runner = winget_updates.WingetUpdateRunner(selected_ids, parent=panel)
+            runner = winget_updates.WingetUpdateRunner(selected_packages, parent=panel)
             panel._winget_update_runner = runner
 
             def on_package_started(package_id: str) -> None:
