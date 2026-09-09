@@ -1,6 +1,12 @@
 from unittest.mock import patch
 
-from portablefix.winget_updates import OutdatedPackage, parse_winget_upgrade_table, update_package
+from portablefix.winget_updates import (
+    OutdatedPackage,
+    export_package_list,
+    import_package_ids,
+    parse_winget_upgrade_table,
+    update_package,
+)
 
 _SAMPLE_TABLE = (
     "Name                    Id                                Version      Available    Source\n"
@@ -92,3 +98,20 @@ def test_parse_winget_upgrade_table_skips_blank_rows_and_dashes():
         "\n"
     )
     assert parse_winget_upgrade_table(text) == []
+
+
+def test_export_then_import_package_list_round_trip(tmp_path):
+    packages = [
+        OutdatedPackage(name="AnyDesk", id="AnyDeskSoftwareGmbH.AnyDesk", installed_version="1", available_version="2", source="winget"),
+        OutdatedPackage(name="CPUID CPU-Z", id="CPUID.CPU-Z", installed_version="1", available_version="2", source="winget"),
+    ]
+    path = tmp_path / "packages.json"
+    export_package_list(packages, path)
+    imported_ids = import_package_ids(path)
+    assert imported_ids == {"AnyDeskSoftwareGmbH.AnyDesk", "CPUID.CPU-Z"}
+
+
+def test_import_package_ids_ignores_malformed_entries(tmp_path):
+    path = tmp_path / "packages.json"
+    path.write_text('[{"id": "Good.Id"}, "not a dict", {"name": "no id"}]', encoding="utf-8")
+    assert import_package_ids(path) == {"Good.Id"}

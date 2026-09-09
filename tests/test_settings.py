@@ -29,3 +29,10 @@ def test_load_settings_returns_defaults_on_corrupted_file(tmp_path):
     path.write_bytes(b"\xff\xfe{not json at all")
     loaded = load_settings(tmp_path)
     assert loaded == Settings()
+
+
+def test_winget_ignored_and_auto_check_round_trip(tmp_path):
+    save_settings(tmp_path, Settings(winget_ignored_ids=["Vendor.App"], winget_auto_check_minutes=30))
+    loaded = load_settings(tmp_path)
+    assert loaded.winget_ignored_ids == ["Vendor.App"]
+    assert loaded.winget_auto_check_minutes == 30

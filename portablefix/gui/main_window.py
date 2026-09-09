@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -1005,9 +1007,38 @@ class MainWindow(QMainWindow):
         refresh_btn.setObjectName("selectionBtn")
         refresh_row.addWidget(refresh_btn)
         refresh_row.addStretch(1)
+        export_btn = QPushButton(self._t("winget_export_button"))
+        export_btn.setObjectName("selectionBtn")
+        refresh_row.addWidget(export_btn)
+        import_btn = QPushButton(self._t("winget_import_button"))
+        import_btn.setObjectName("selectionBtn")
+        refresh_row.addWidget(import_btn)
+        manage_ignored_btn = QPushButton(self._t("winget_manage_ignored_button"))
+        manage_ignored_btn.setObjectName("selectionBtn")
+        refresh_row.addWidget(manage_ignored_btn)
         refresh_row_widget = QWidget()
         refresh_row_widget.setLayout(refresh_row)
         panel_layout.addWidget(refresh_row_widget)
+
+        auto_check_row = QHBoxLayout()
+        auto_check_checkbox = QCheckBox(self._t("winget_auto_check_label"))
+        auto_check_row.addWidget(auto_check_checkbox)
+        auto_check_interval = QComboBox()
+        _AUTO_CHECK_MINUTES = [15, 30, 60, 120]
+        for minutes in _AUTO_CHECK_MINUTES:
+            auto_check_interval.addItem(f"{minutes} min", minutes)
+        auto_check_row.addWidget(auto_check_interval)
+        auto_check_row.addStretch(1)
+        auto_check_row_widget = QWidget()
+        auto_check_row_widget.setLayout(auto_check_row)
+        panel_layout.addWidget(auto_check_row_widget)
+
+        ignored_panel = QWidget()
+        ignored_panel_layout = QVBoxLayout(ignored_panel)
+        ignored_panel_layout.setContentsMargins(0, 0, 0, 0)
+        ignored_panel_layout.setSpacing(2)
+        ignored_panel.setVisible(False)
+        panel_layout.addWidget(ignored_panel)
 
         select_row = QHBoxLayout()
         select_all_btn = QPushButton(self._t("select_all"))
@@ -1036,8 +1067,10 @@ class MainWindow(QMainWindow):
 
         row_checkboxes: dict[str, QCheckBox] = {}
         row_progress: dict[str, QProgressBar] = {}
+        row_ignore_buttons: dict[str, QPushButton] = {}
         row_widgets: dict[str, QWidget] = {}
         package_by_id: dict[str, object] = {}
+        known_packages: dict[str, object] = {}
 
         def update_button_state() -> None:
             update_btn.setEnabled(any(cb.isChecked() for cb in row_checkboxes.values()))
@@ -1049,6 +1082,53 @@ class MainWindow(QMainWindow):
 
         search_box.textChanged.connect(apply_search)
 
+        def remove_row(package_id: str) -> None:
+            row_widget = row_widgets.pop(package_id, None)
+            row_checkboxes.pop(package_id, None)
+            row_progress.pop(package_id, None)
+            row_ignore_buttons.pop(package_id, None)
+            if row_widget is not None:
+                row_widget.setParent(None)
+                row_widget.deleteLater()
+            update_button_state()
+
+        def ignore_package(package_id: str) -> None:
+            if package_id not in self.settings.winget_ignored_ids:
+                self.settings.winget_ignored_ids.append(package_id)
+            remove_row(package_id)
+            refresh_ignored_panel()
+
+        def unignore_package(package_id: str) -> None:
+            if package_id in self.settings.winget_ignored_ids:
+                self.settings.winget_ignored_ids.remove(package_id)
+            refresh_ignored_panel()
+            start_scan()
+
+        def refresh_ignored_panel() -> None:
+            while ignored_panel_layout.count():
+                item = ignored_panel_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            ignored_ids = self.settings.winget_ignored_ids
+            heading = QLabel(self._t("winget_ignored_heading"))
+            heading.setObjectName("selectionScope")
+            ignored_panel_layout.addWidget(heading)
+            if not ignored_ids:
+                ignored_panel_layout.addWidget(QLabel(self._t("winget_ignored_empty")))
+                return
+            for pid in ignored_ids:
+                package = known_packages.get(pid)
+                name = package.name if package is not None else pid
+                row_widget = QWidget()
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.addWidget(QLabel(name), 1)
+                unignore_btn = QPushButton(self._t("winget_unignore_button"))
+                unignore_btn.setObjectName("selectionBtn")
+                unignore_btn.clicked.connect(lambda _checked=False, p=pid: unignore_package(p))
+                row.addWidget(unignore_btn)
+                ignored_panel_layout.addWidget(row_widget)
+
         def populate(packages: list) -> None:
             while list_layout.count():
                 item = list_layout.takeAt(0)
@@ -1056,15 +1136,20 @@ class MainWindow(QMainWindow):
                     item.widget().deleteLater()
             row_checkboxes.clear()
             row_progress.clear()
+            row_ignore_buttons.clear()
             row_widgets.clear()
             package_by_id.clear()
-            if not packages:
+            for package in packages:
+                known_packages[package.id] = package
+            ignored_ids = set(self.settings.winget_ignored_ids)
+            visible_packages = [p for p in packages if p.id not in ignored_ids]
+            if not visible_packages:
                 status_label.setText(self._t("winget_no_updates"))
                 list_scroll.setVisible(False)
                 select_row_widget.setVisible(False)
                 return
-            status_label.setText(self._t("winget_updates_found").format(count=len(packages)))
-            for package in packages:
+            status_label.setText(self._t("winget_updates_found").format(count=len(visible_packages)))
+            for package in visible_packages:
                 label = f"{package.name}  {package.installed_version} → {package.available_version}"
                 row_widget = QWidget()
                 row = QHBoxLayout(row_widget)
@@ -1082,8 +1167,13 @@ class MainWindow(QMainWindow):
                 progress.setRange(0, 0)
                 progress.setVisible(False)
                 row.addWidget(progress)
+                ignore_btn = QPushButton(self._t("winget_ignore_button"))
+                ignore_btn.setObjectName("selectionBtn")
+                ignore_btn.clicked.connect(lambda _checked=False, pid=package.id: ignore_package(pid))
+                row.addWidget(ignore_btn)
                 row_checkboxes[package.id] = checkbox
                 row_progress[package.id] = progress
+                row_ignore_buttons[package.id] = ignore_btn
                 row_widgets[package.id] = row_widget
                 package_by_id[package.id] = package
                 list_layout.addWidget(row_widget)
@@ -1100,6 +1190,59 @@ class MainWindow(QMainWindow):
             panel._winget_scan_runner = runner
             runner.scan_finished.connect(populate)
             runner.start()
+
+        def export_list() -> None:
+            packages = list(package_by_id.values())
+            if not packages:
+                return
+            path_str, _ = QFileDialog.getSaveFileName(
+                panel, self._t("winget_export_button"), "winget_packages.json", "JSON (*.json)"
+            )
+            if not path_str:
+                return
+            winget_updates.export_package_list(packages, Path(path_str))
+            status_label.setText(self._t("winget_export_success").format(count=len(packages)))
+
+        def import_list() -> None:
+            path_str, _ = QFileDialog.getOpenFileName(
+                panel, self._t("winget_import_button"), "", "JSON (*.json)"
+            )
+            if not path_str:
+                return
+            try:
+                imported_ids = winget_updates.import_package_ids(Path(path_str))
+            except (OSError, ValueError):
+                status_label.setText(self._t("winget_import_failed"))
+                return
+            checked = 0
+            for pid, checkbox in row_checkboxes.items():
+                if pid in imported_ids:
+                    checkbox.setChecked(True)
+                    checked += 1
+            status_label.setText(self._t("winget_import_success").format(count=checked))
+
+        def apply_auto_check_setting() -> None:
+            minutes = auto_check_interval.currentData() if auto_check_checkbox.isChecked() else 0
+            self.settings.winget_auto_check_minutes = minutes
+            auto_check_interval.setEnabled(auto_check_checkbox.isChecked())
+            if minutes:
+                auto_check_timer.start(minutes * 60_000)
+            else:
+                auto_check_timer.stop()
+
+        auto_check_timer = QTimer(panel)
+        auto_check_timer.timeout.connect(lambda: start_scan())
+        saved_minutes = self.settings.winget_auto_check_minutes
+        if saved_minutes in _AUTO_CHECK_MINUTES:
+            auto_check_checkbox.setChecked(True)
+            auto_check_interval.setCurrentIndex(_AUTO_CHECK_MINUTES.index(saved_minutes))
+        else:
+            auto_check_interval.setEnabled(False)
+        apply_auto_check_setting()
+        auto_check_checkbox.toggled.connect(lambda _checked=False: apply_auto_check_setting())
+        auto_check_interval.currentIndexChanged.connect(lambda _index=0: apply_auto_check_setting())
+
+        refresh_ignored_panel()
 
         def start_update() -> None:
             selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
@@ -1124,6 +1267,9 @@ class MainWindow(QMainWindow):
                 progress = row_progress.get(package_id)
                 if progress is not None:
                     progress.setVisible(True)
+                ignore_btn = row_ignore_buttons.get(package_id)
+                if ignore_btn is not None:
+                    ignore_btn.setVisible(False)
 
             def on_package_finished(package_id: str, ok: bool, output: str) -> None:
                 package = package_by_id.get(package_id)
@@ -1136,13 +1282,7 @@ class MainWindow(QMainWindow):
                     # Successfully updated - it's no longer outdated, so drop
                     # it from the list right away instead of waiting for the
                     # post-batch rescan to quietly remove it later.
-                    row_widget = row_widgets.pop(package_id, None)
-                    row_checkboxes.pop(package_id, None)
-                    row_progress.pop(package_id, None)
-                    if row_widget is not None:
-                        row_widget.setParent(None)
-                        row_widget.deleteLater()
-                    update_button_state()
+                    remove_row(package_id)
                 else:
                     row_widget = row_widgets.get(package_id)
                     progress = row_progress.get(package_id)
@@ -1177,6 +1317,9 @@ class MainWindow(QMainWindow):
         select_none_btn.clicked.connect(lambda _checked=False: [cb.setChecked(False) for cb in row_checkboxes.values()])
         refresh_btn.clicked.connect(lambda _checked=False: start_scan())
         update_btn.clicked.connect(lambda _checked=False: start_update())
+        export_btn.clicked.connect(lambda _checked=False: export_list())
+        import_btn.clicked.connect(lambda _checked=False: import_list())
+        manage_ignored_btn.clicked.connect(lambda _checked=False: ignored_panel.setVisible(not ignored_panel.isVisible()))
 
         start_scan()
         return panel

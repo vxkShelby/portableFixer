@@ -1,5 +1,7 @@
+import json
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -71,6 +73,16 @@ def parse_winget_upgrade_table(text: str) -> list[OutdatedPackage]:
             )
         )
     return packages
+
+
+def export_package_list(packages: list[OutdatedPackage], path: Path) -> None:
+    data = [{"id": p.id, "name": p.name} for p in packages]
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def import_package_ids(path: Path) -> set[str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {item["id"] for item in data if isinstance(item, dict) and "id" in item}
 
 
 def list_outdated_packages() -> list[OutdatedPackage]:

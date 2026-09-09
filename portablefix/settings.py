@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_LANGUAGE = "sk"
@@ -9,6 +9,8 @@ DEFAULT_LANGUAGE = "sk"
 class Settings:
     language: str = DEFAULT_LANGUAGE
     dry_run: bool = True
+    winget_ignored_ids: list[str] = field(default_factory=list)
+    winget_auto_check_minutes: int = 0
 
 
 def settings_path(base_dir: Path) -> Path:
@@ -26,6 +28,8 @@ def load_settings(base_dir: Path) -> Settings:
     return Settings(
         language=data.get("language", DEFAULT_LANGUAGE),
         dry_run=data.get("dry_run", True),
+        winget_ignored_ids=list(data.get("winget_ignored_ids", [])),
+        winget_auto_check_minutes=data.get("winget_auto_check_minutes", 0),
     )
 
 

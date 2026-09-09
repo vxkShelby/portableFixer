@@ -839,8 +839,10 @@ def test_winget_category_builds_dynamic_update_panel_without_crashing(qtbot, tmp
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_winget")
     qtbot.addWidget(window)
 
-    assert ModuleCategory.WINGET in window._category_groups
-    card = window._category_groups[ModuleCategory.WINGET]
+    # The live update panel lives on the Prehlad/Dashboard card, not the
+    # Winget category page (which only keeps the static winget actions).
+    assert ModuleCategory.DASHBOARD in window._category_groups
+    card = window._category_groups[ModuleCategory.DASHBOARD]
 
     def scan_settled() -> bool:
         texts = [label.text() for label in card.findChildren(QLabel)]

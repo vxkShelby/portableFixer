@@ -91,6 +91,25 @@ def test_temp_wiping_actions_use_pfprotect_equality_guard():
             assert "$_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)" in command, action_id
 
 
+def test_temp_wiping_actions_skip_recent_items_and_running_programs():
+    # A user's freshly installed/extracted portable app (living directly
+    # under %TEMP% or %WINDIR%\Temp, which some installers do) got deleted
+    # by a SAFE-labeled "clean temp files" run - the exclude list only knew
+    # about PortableFix's own artifacts and a handful of named CLI tools, not
+    # arbitrary third-party software. Fixed generically: skip any top-level
+    # item still owned by a currently running process, and skip anything
+    # modified in the last 3 days regardless of what it is.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("user_temp", "system_temp"):
+        action = by_id[action_id]
+        for command in (action.command, action.preview_command):
+            assert "Get-Process" in command, action_id
+            assert "$runningNames -notcontains $_.Name" in command, action_id
+            assert "$_.LastWriteTime -lt $cutoff" in command, action_id
+            assert "AddDays(-3)" in command, action_id
+
+
 def test_shadow_copies_and_windows_old_commands_avoid_interactive_prompts():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
