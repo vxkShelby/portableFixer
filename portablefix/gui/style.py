@@ -31,9 +31,9 @@ QWidget {
 }
 
 QLabel#appTitle {
-    font-family: 'Segoe UI Semibold', 'Segoe UI';
+    font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
     font-size: 14pt;
-    font-weight: bold;
+    font-weight: 700;
     color: #2fe6ff;
 }
 QLabel#adminPill {
@@ -104,9 +104,9 @@ QFrame#actionCard {
     border-radius: 14px;
 }
 QLabel#cardHeading {
-    font-family: 'Segoe UI Semibold', 'Segoe UI';
+    font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
     font-size: 11pt;
-    font-weight: bold;
+    font-weight: 600;
     color: #2fe6ff;
     padding: 2px 0;
 }
@@ -191,8 +191,8 @@ QPushButton#cancelButton:disabled {
 }
 
 QPushButton#selectionBtn {
-    background: transparent;
-    border: 1px dashed #232d3a;
+    background-color: #141a24;
+    border: 1px dashed #2a3542;
     border-radius: 10px;
     padding: 3px 10px;
     font-family: 'Consolas', 'Cascadia Mono';
@@ -202,7 +202,7 @@ QPushButton#selectionBtn {
 QPushButton#selectionBtn:hover {
     border: 1px solid #2fe6ff;
     color: #2fe6ff;
-    background: transparent;
+    background-color: #182028;
 }
 QPushButton#selectionBtn[danger="true"]:enabled {
     border: 1px solid #ff2d6f;
@@ -218,8 +218,8 @@ QPushButton#selectionBtn[danger="true"]:disabled {
     color: #3a4250;
 }
 QPushButton#presetBtn {
-    background: transparent;
-    border: 1px dashed #232d3a;
+    background-color: #141a24;
+    border: 1px dashed #2a3542;
     border-radius: 10px;
     padding: 3px 10px;
     font-family: 'Consolas', 'Cascadia Mono';
@@ -229,7 +229,7 @@ QPushButton#presetBtn {
 QPushButton#presetBtn:hover {
     border: 1px solid #2fe6ff;
     color: #2fe6ff;
-    background: transparent;
+    background-color: #182028;
 }
 QPushButton#presetBtn:checked {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -318,10 +318,16 @@ QWidget#updateBanner {
     border-radius: 2px;
 }
 QLabel#summaryHeader {
-    font-family: 'Segoe UI Semibold', 'Segoe UI';
+    font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
     font-size: 12pt;
-    font-weight: bold;
+    font-weight: 700;
     color: #2fe6ff;
+}
+QLabel#dashboardScoreValue {
+    font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
+    font-size: 26pt;
+    font-weight: 700;
+    color: #39ff88;
 }
 QLabel#summaryDryRunNote {
     font-family: 'Consolas', 'Cascadia Mono';

@@ -3,7 +3,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import i18n
@@ -71,9 +71,18 @@ def main() -> int:
         # hover states on most widgets - Fusion is the standard Qt style
         # that actually respects a custom stylesheet.
         app.setStyle("Fusion")
-        app.setStyleSheet(style.STYLE)
 
         raw_base_dir = get_base_dir()
+        # Segoe UI (the system fallback) reads as generic - Sora gives
+        # headings/the wordmark the same distinct look as the approved
+        # mockup. Bundled rather than loaded from Google Fonts since this
+        # is an offline portable app with no guaranteed internet access.
+        for font_file in ("Sora-SemiBold.ttf", "Sora-Bold.ttf"):
+            font_path = raw_base_dir / "Vendor" / "Fonts" / font_file
+            if font_path.exists():
+                QFontDatabase.addApplicationFont(str(font_path))
+        app.setStyleSheet(style.STYLE)
+
         icon_path = raw_base_dir / "portablefix.ico"
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))

@@ -1398,7 +1398,7 @@ class MainWindow(QMainWindow):
         score_box = QVBoxLayout()
         score_box.setSpacing(0)
         score_value = QLabel(self._t("dashboard_no_run_yet"))
-        score_value.setObjectName("summaryHeader")
+        score_value.setObjectName("dashboardScoreValue")
         score_caption = QLabel(self._t("dashboard_score_label"))
         score_caption.setObjectName("selectionScope")
         score_box.addWidget(score_value)
