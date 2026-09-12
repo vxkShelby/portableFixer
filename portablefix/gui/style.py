@@ -2,12 +2,14 @@
 
 Design direction: near-black dashboard chrome, one signature duo-accent
 (electric cyan + magenta) for structural/interactive UI, monospace readouts
-on anything numeric or status-like, and sharp/mixed corner radii instead of
-uniform pill-rounding. Risk-level colors stay their own neon family so
-color-coding meaning is never confused with the brand accent. SAFE badges
-are an outline (not filled) since almost every action is SAFE - a filled
-neon pill on every single row drowned out the handful of rows that actually
-need attention (MODERATE/DESTRUCTIVE/REQUIRES_REBOOT).
+on anything numeric or status-like. Cards, buttons and the category list use
+soft/pill rounding (rounded-consumer-app feel, modeled on Ashampoo
+WinOptimizer / IObit) rather than the sharp corners of an earlier pass.
+Risk-level colors stay their own neon family so color-coding meaning is
+never confused with the brand accent. SAFE badges are an outline (not
+filled) since almost every action is SAFE - a filled neon pill on every
+single row drowned out the handful of rows that actually need attention
+(MODERATE/DESTRUCTIVE/REQUIRES_REBOOT).
 """
 
 RISK_COLORS = {
@@ -37,7 +39,7 @@ QLabel#appTitle {
     padding-left: 8px;
 }
 QLabel#adminPill {
-    border-radius: 2px;
+    border-radius: 10px;
     padding: 3px 12px;
     font-family: 'Consolas', 'Cascadia Mono';
     font-weight: bold;
@@ -61,18 +63,14 @@ QListWidget#categoryList {
 }
 QListWidget#categoryList::item {
     padding: 10px 12px;
-    border-radius: 0px;
-    border-left: 3px solid transparent;
-    margin: 2px 0;
+    border-radius: 14px;
+    margin: 2px 4px;
 }
 QListWidget#categoryList::item:hover {
-    background-color: rgba(47, 230, 255, 18);
-    border-left: 3px solid #1c6b78;
+    background-color: rgba(255, 255, 255, 10);
 }
 QListWidget#categoryList::item:selected {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 rgba(47, 230, 255, 45), stop:1 rgba(47, 230, 255, 5));
-    border-left: 3px solid #2fe6ff;
+    background-color: rgba(47, 230, 255, 32);
     color: #8ff2ff;
     font-weight: bold;
 }
@@ -105,7 +103,7 @@ QFrame#actionCard {
     background-color: #10141c;
     border: 1px solid #1c2530;
     border-top: 1px solid #26323f;
-    border-radius: 3px;
+    border-radius: 14px;
 }
 QLabel#cardHeading {
     font-family: 'Segoe UI Semibold', 'Segoe UI';
@@ -122,7 +120,7 @@ QCheckBox {
 QCheckBox::indicator {
     width: 16px;
     height: 16px;
-    border-radius: 0px;
+    border-radius: 4px;
     border: 2px solid #232d3a;
     background: #06080c;
 }
@@ -135,7 +133,7 @@ QCheckBox::indicator:checked {
 }
 
 QLabel#riskBadge {
-    border-radius: 2px;
+    border-radius: 8px;
     padding: 1px 8px;
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 8pt;
@@ -154,7 +152,7 @@ QLabel#riskBadge[risk="REQUIRES_REBOOT"] { background-color: #b26bff; color: #06
 QPushButton {
     background-color: #141a24;
     border: 1px solid #232d3a;
-    border-radius: 4px;
+    border-radius: 10px;
     padding: 7px 16px;
 }
 QPushButton:hover {
@@ -165,7 +163,7 @@ QPushButton#runButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 #00d9ff, stop:1 #00ffa3);
     border: none;
-    border-radius: 3px;
+    border-radius: 18px;
     color: #06080c;
     font-weight: bold;
     padding: 9px 24px;
@@ -182,7 +180,7 @@ QPushButton#cancelButton {
     background-color: #10141c;
     color: #ff2d6f;
     border: 1px solid #ff2d6f;
-    border-radius: 4px;
+    border-radius: 18px;
     padding: 9px 18px;
 }
 QPushButton#cancelButton:hover {
@@ -197,7 +195,7 @@ QPushButton#cancelButton:disabled {
 QPushButton#selectionBtn {
     background: transparent;
     border: 1px dashed #232d3a;
-    border-radius: 2px;
+    border-radius: 10px;
     padding: 3px 10px;
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 8.5pt;
@@ -224,7 +222,7 @@ QPushButton#selectionBtn[danger="true"]:disabled {
 QPushButton#presetBtn {
     background: transparent;
     border: 1px dashed #232d3a;
-    border-radius: 2px;
+    border-radius: 10px;
     padding: 3px 10px;
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 8.5pt;
@@ -302,7 +300,7 @@ QPlainTextEdit#actionDetailCommand {
 QLineEdit#searchBox {
     background-color: #06080c;
     border: 1px solid #232d3a;
-    border-radius: 2px;
+    border-radius: 10px;
     padding: 5px 10px;
     font-family: 'Consolas', 'Cascadia Mono';
     color: #d6e2f0;
@@ -357,7 +355,7 @@ QSplitter::handle:hover {
 QProgressBar#batchProgress {
     background-color: #06080c;
     border: 1px solid #1c2530;
-    border-radius: 2px;
+    border-radius: 8px;
     text-align: center;
     font-family: 'Consolas', 'Cascadia Mono';
     font-weight: bold;
@@ -371,5 +369,38 @@ QProgressBar#batchProgress::chunk {
         stop:0 #00e5ff, stop:1 #ff2bd6);
     width: 8px;
     margin: 1px;
+}
+
+QLabel#countPill {
+    border-radius: 9px;
+    padding: 1px 9px;
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-weight: bold;
+    font-size: 8.5pt;
+}
+QLabel#countPill[state="ok"] {
+    background-color: rgba(57, 255, 136, 30);
+    color: #39ff88;
+}
+QLabel#countPill[state="warn"] {
+    background-color: rgba(255, 176, 32, 30);
+    color: #ffb020;
+}
+
+QLabel#wingetBanner {
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 9pt;
+}
+QLabel#wingetBanner[state="warn"] {
+    background-color: rgba(255, 176, 32, 22);
+    border: 1px solid rgba(255, 176, 32, 90);
+    color: #d6e2f0;
+}
+QLabel#wingetBanner[state="ok"] {
+    background: transparent;
+    border: none;
+    color: #6b7686;
+    font-family: 'Consolas', 'Cascadia Mono';
 }
 """

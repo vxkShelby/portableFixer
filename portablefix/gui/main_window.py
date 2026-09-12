@@ -367,7 +367,7 @@ class MainWindow(QMainWindow):
             self._category_module_action_counts[module.category] = (
                 self._category_module_action_counts.get(module.category, 0) + len(module.actions)
             )
-        self._dashboard_tile_count_labels: dict[ModuleCategory, tuple[QLabel, int]] = {}
+        self._dashboard_tile_count_labels: dict[ModuleCategory, QLabel] = {}
         self._dashboard_score_label: QLabel | None = None
         for category in self._categories_order:
             if category == ModuleCategory.DASHBOARD:
@@ -983,8 +983,15 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(search_box)
 
         status_label = QLabel(self._t("winget_scanning"))
-        status_label.setObjectName("selectionScope")
+        status_label.setObjectName("wingetBanner")
+        status_label.setProperty("state", "ok")
         panel_layout.addWidget(status_label)
+
+        def set_status(text: str, state: str) -> None:
+            status_label.setText(text)
+            status_label.setProperty("state", state)
+            status_label.style().unpolish(status_label)
+            status_label.style().polish(status_label)
 
         list_container = QWidget()
         list_layout = QVBoxLayout(list_container)
@@ -1144,17 +1151,18 @@ class MainWindow(QMainWindow):
             ignored_ids = set(self.settings.winget_ignored_ids)
             visible_packages = [p for p in packages if p.id not in ignored_ids]
             if not visible_packages:
-                status_label.setText(self._t("winget_no_updates"))
+                set_status(self._t("winget_no_updates"), "ok")
                 list_scroll.setVisible(False)
                 select_row_widget.setVisible(False)
                 return
-            status_label.setText(self._t("winget_updates_found").format(count=len(visible_packages)))
+            set_status(self._t("winget_updates_found").format(count=len(visible_packages)), "warn")
             for package in visible_packages:
                 label = f"{package.name}  {package.installed_version} → {package.available_version}"
                 row_widget = QWidget()
                 row = QHBoxLayout(row_widget)
                 row.setContentsMargins(0, 0, 0, 0)
                 row.setSpacing(8)
+                row.addWidget(self._make_avatar(package.name))
                 checkbox = QCheckBox(label)
                 checkbox.setToolTip(package.id)
                 checkbox.stateChanged.connect(lambda _state=0: update_button_state())
@@ -1183,7 +1191,7 @@ class MainWindow(QMainWindow):
             update_button_state()
 
         def start_scan() -> None:
-            status_label.setText(self._t("winget_scanning"))
+            set_status(self._t("winget_scanning"), "ok")
             list_scroll.setVisible(False)
             select_row_widget.setVisible(False)
             runner = winget_updates.WingetScanRunner(parent=panel)
@@ -1201,7 +1209,7 @@ class MainWindow(QMainWindow):
             if not path_str:
                 return
             winget_updates.export_package_list(packages, Path(path_str))
-            status_label.setText(self._t("winget_export_success").format(count=len(packages)))
+            set_status(self._t("winget_export_success").format(count=len(packages)), "ok")
 
         def import_list() -> None:
             path_str, _ = QFileDialog.getOpenFileName(
@@ -1212,14 +1220,14 @@ class MainWindow(QMainWindow):
             try:
                 imported_ids = winget_updates.import_package_ids(Path(path_str))
             except (OSError, ValueError):
-                status_label.setText(self._t("winget_import_failed"))
+                set_status(self._t("winget_import_failed"), "warn")
                 return
             checked = 0
             for pid, checkbox in row_checkboxes.items():
                 if pid in imported_ids:
                     checkbox.setChecked(True)
                     checked += 1
-            status_label.setText(self._t("winget_import_success").format(count=checked))
+            set_status(self._t("winget_import_success").format(count=checked), "ok")
 
         def apply_auto_check_setting() -> None:
             minutes = auto_check_interval.currentData() if auto_check_checkbox.isChecked() else 0
@@ -1365,16 +1373,21 @@ class MainWindow(QMainWindow):
             tile_layout = QVBoxLayout(tile)
             tile_layout.setContentsMargins(10, 8, 10, 8)
             tile_layout.setSpacing(2)
+            tile_top = QHBoxLayout()
             name_label = QLabel(self._t(category_i18n_keys.get(category, "")))
             name_label.setObjectName("cardHeading")
             name_label.setWordWrap(True)
-            tile_layout.addWidget(name_label)
+            tile_top.addWidget(name_label, 1)
+            count_pill = QLabel("0")
+            count_pill.setObjectName("countPill")
+            count_pill.setProperty("state", "ok")
+            tile_top.addWidget(count_pill)
+            tile_layout.addLayout(tile_top)
             count = self._category_module_action_counts.get(category, 0)
-            count_label = QLabel(self._dashboard_count_text(count, 0))
-            count_label.setObjectName("selectionScope")
-            count_label.setTextFormat(Qt.TextFormat.RichText)
-            tile_layout.addWidget(count_label)
-            self._dashboard_tile_count_labels[category] = (count_label, count)
+            sub_label = QLabel(self._t("dashboard_actions_count").format(count=count) if count else "")
+            sub_label.setObjectName("selectionScope")
+            tile_layout.addWidget(sub_label)
+            self._dashboard_tile_count_labels[category] = count_pill
             tile.mousePressEvent = lambda _event, c=category: self._dashboard_tile_clicked(c)
             grid.addWidget(tile, index // columns, index % columns)
         card_layout.addLayout(grid)
@@ -1386,12 +1399,6 @@ class MainWindow(QMainWindow):
 
         card_layout.addStretch(1)
         return card
-
-    def _dashboard_count_text(self, action_count: int, needs_fix_count: int) -> str:
-        base = self._t("dashboard_actions_count").format(count=action_count) if action_count else ""
-        if needs_fix_count:
-            base += f' <span style="color:#ffb020">({needs_fix_count})</span>'
-        return base
 
     def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
         if category in self._categories_order:
@@ -1414,8 +1421,26 @@ class MainWindow(QMainWindow):
             except KeyError:
                 continue
             counts[module.category] = counts.get(module.category, 0) + 1
-        for category, (label, action_count) in self._dashboard_tile_count_labels.items():
-            label.setText(self._dashboard_count_text(action_count, counts.get(category, 0)))
+        for category, pill in self._dashboard_tile_count_labels.items():
+            needs_fix_count = counts.get(category, 0)
+            pill.setText(str(needs_fix_count))
+            pill.setProperty("state", "warn" if needs_fix_count else "ok")
+            pill.style().unpolish(pill)
+            pill.style().polish(pill)
+
+    _AVATAR_COLORS = ["#5ee6ff", "#39c2ff", "#6bd4c2", "#8f7cff", "#4dd0e1", "#64b5f6"]
+
+    def _make_avatar(self, name: str) -> QLabel:
+        color = self._AVATAR_COLORS[sum(ord(c) for c in name) % len(self._AVATAR_COLORS)]
+        words = name.split()
+        initials = "".join(w[0] for w in words[:2]).upper() if words else "?"
+        avatar = QLabel(initials)
+        avatar.setFixedSize(28, 28)
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setStyleSheet(
+            f"background:{color}; color:#06141a; border-radius:14px; font-weight:bold; font-size:9pt;"
+        )
+        return avatar
 
     def _uninstaller_row_label(self, program: "uninstaller.InstalledProgram") -> str:
         parts = [program.name]
@@ -1444,6 +1469,7 @@ class MainWindow(QMainWindow):
 
         programs = uninstaller.list_installed_programs()
         row_checkboxes: dict[str, QCheckBox] = {}
+        row_widgets: dict[str, QWidget] = {}
         program_by_name: dict[str, uninstaller.InstalledProgram] = {}
 
         list_container = QWidget()
@@ -1451,14 +1477,21 @@ class MainWindow(QMainWindow):
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(2)
         for program in programs:
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            row.addWidget(self._make_avatar(program.name))
             checkbox = QCheckBox(self._uninstaller_row_label(program))
             tooltip = program.install_location or ""
             if program.publisher:
                 tooltip = f"{program.publisher}\n{tooltip}" if tooltip else program.publisher
             checkbox.setToolTip(tooltip)
+            row.addWidget(checkbox, 1)
             row_checkboxes[program.name] = checkbox
+            row_widgets[program.name] = row_widget
             program_by_name[program.name] = program
-            list_layout.addWidget(checkbox)
+            list_layout.addWidget(row_widget)
         list_layout.addStretch(1)
 
         list_scroll = QScrollArea()
@@ -1469,14 +1502,15 @@ class MainWindow(QMainWindow):
 
         def apply_search(text: str) -> None:
             needle = text.strip().lower()
-            for name, checkbox in row_checkboxes.items():
-                checkbox.setHidden(bool(needle) and needle not in name.lower())
+            for name, row_widget in row_widgets.items():
+                row_widget.setHidden(bool(needle) and needle not in name.lower())
 
         search_box.textChanged.connect(apply_search)
 
         select_row = QHBoxLayout()
         select_all_btn = self._make_selection_button(
-            self._t("select_all"), lambda: [cb.setChecked(True) for cb in row_checkboxes.values() if not cb.isHidden()]
+            self._t("select_all"),
+            lambda: [cb.setChecked(True) for name, cb in row_checkboxes.items() if not row_widgets[name].isHidden()],
         )
         select_row.addWidget(select_all_btn)
         select_none_btn = self._make_selection_button(
@@ -1560,10 +1594,11 @@ class MainWindow(QMainWindow):
                 select_all_btn.setEnabled(True)
                 select_none_btn.setEnabled(True)
                 for program in selected:
-                    checkbox = row_checkboxes.pop(program.name, None)
-                    if checkbox is not None:
-                        checkbox.setParent(None)
-                        checkbox.deleteLater()
+                    row_checkboxes.pop(program.name, None)
+                    row_widget = row_widgets.pop(program.name, None)
+                    if row_widget is not None:
+                        row_widget.setParent(None)
+                        row_widget.deleteLater()
                 show_orphan_cleanup()
 
             runner.program_finished.connect(on_program_finished)
