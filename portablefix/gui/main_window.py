@@ -117,6 +117,8 @@ class MainWindow(QMainWindow):
         self._vpn_runner = None
         self._speed_test_runner = None
         self._hw_sensor_runner = None
+        self._winget_scan_runner = None
+        self._winget_update_runner = None
         self._ping_busy = False
         self._vpn_busy = False
         self._speed_test_busy = False
@@ -149,6 +151,8 @@ class MainWindow(QMainWindow):
         self._queue = []
         if self._runner is not None:
             self._runner.cancel()
+        if self._winget_update_runner is not None:
+            self._winget_update_runner.request_stop()
         # Destroying self while a runner's native thread is still mid-flight
         # is a use-after-free risk - wait for each to actually finish first.
         # A one-shot runner may already be auto-deleted by Qt once its thread
@@ -170,6 +174,14 @@ class MainWindow(QMainWindow):
         slow_runners = (
             (self._speed_test_runner, 25_000),
             (self._update_download_runner, updater.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000),
+            # These two were previously stored on the winget panel QWidget,
+            # not self - closeEvent had no way to know about them, so a scan
+            # or update still in flight left this process alive indefinitely.
+            # That in turn made the in-app "restart to install update" flow
+            # silently fail: the swap script waits ~15s for this PID to
+            # exit, gives up, and relaunches the still-old exe.
+            (self._winget_scan_runner, 65_000),
+            (self._winget_update_runner, winget_updates._UPDATE_TIMEOUT_SEC * 1000 + 10_000),
         )
         for runner in quick_runners:
             if runner is None:
@@ -979,7 +991,6 @@ class MainWindow(QMainWindow):
 
     def _build_winget_updates_panel(self) -> QWidget:
         panel = QWidget()
-        panel._winget_update_runner = None
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(0, 0, 0, 8)
         panel_layout.setSpacing(6)
@@ -1202,7 +1213,7 @@ class MainWindow(QMainWindow):
             list_scroll.setVisible(False)
             select_row_widget.setVisible(False)
             runner = winget_updates.WingetScanRunner(parent=panel)
-            panel._winget_scan_runner = runner
+            self._winget_scan_runner = runner
             runner.scan_finished.connect(populate)
             runner.start()
 
@@ -1249,7 +1260,7 @@ class MainWindow(QMainWindow):
             # A scan mid-batch would clear row_checkboxes/row_progress/
             # row_widgets out from under the update in progress (populate()
             # rebuilds them from scratch), visibly resetting the panel.
-            runner = panel._winget_update_runner
+            runner = self._winget_update_runner
             if runner is None or not runner.isRunning():
                 start_scan()
 
@@ -1278,7 +1289,7 @@ class MainWindow(QMainWindow):
             console.setVisible(True)
             console.appendPlainText(self._t("winget_updating"))
             runner = winget_updates.WingetUpdateRunner(selected_packages, parent=panel)
-            panel._winget_update_runner = runner
+            self._winget_update_runner = runner
 
             # A single winget call can legitimately take minutes with only a
             # busy/indeterminate bar to show for it - a ticking elapsed-time

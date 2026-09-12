@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from portablefix.winget_updates import (
     OutdatedPackage,
+    WingetUpdateRunner,
     export_package_list,
     import_package_ids,
     parse_winget_upgrade_table,
@@ -115,6 +116,25 @@ def test_run_winget_upgrade_kills_process_tree_on_timeout():
     assert output == "Update timed out."
     taskkill_args = mock_taskkill.call_args[0][0]
     assert taskkill_args == ["taskkill", "/F", "/T", "/PID", "4242"]
+
+
+def test_winget_update_runner_request_stop_skips_remaining_packages():
+    # A scan/update runner that main_window.py can't tell closeEvent about
+    # (they used to live on the panel QWidget, not self) left the app
+    # process alive indefinitely on quit, which silently broke the in-app
+    # "restart to install update" flow (the swap script gives up waiting
+    # for this process to exit and just relaunches the old version).
+    # request_stop() lets closeEvent bound the wait to at most one more
+    # package's worst case instead of the whole remaining batch.
+    packages = [
+        OutdatedPackage(name="A", id="A.A", installed_version="1", available_version="2", source="winget"),
+        OutdatedPackage(name="B", id="B.B", installed_version="1", available_version="2", source="winget"),
+    ]
+    runner = WingetUpdateRunner(packages)
+    runner.request_stop()
+    with patch("portablefix.winget_updates.update_package") as mock_update:
+        runner.run()
+    mock_update.assert_not_called()
 
 
 def test_parse_winget_upgrade_table_skips_blank_rows_and_dashes():

@@ -173,10 +173,21 @@ class WingetUpdateRunner(QThread):
     def __init__(self, packages: list[OutdatedPackage], parent=None):
         super().__init__(parent)
         self._packages = packages
+        self._stop_requested = False
         self.finished.connect(self.deleteLater)
+
+    def request_stop(self) -> None:
+        # The in-flight package's subprocess call can't be interrupted (and
+        # now has its own taskkill-on-timeout bound), but this stops the
+        # loop from starting any further package - the app can shut down
+        # after at most one more package's worst-case duration instead of
+        # the whole remaining batch's.
+        self._stop_requested = True
 
     def run(self) -> None:
         for package in self._packages:
+            if self._stop_requested:
+                break
             self.package_started.emit(package.id)
             ok, output = update_package(package)
             self.package_finished.emit(package.id, ok, output)
