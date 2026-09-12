@@ -119,12 +119,23 @@ def _run_winget_upgrade(package_id: str, timeout_sec: int, extra_args: list[str]
     ]
     if extra_args:
         args.extend(extra_args)
-    result = subprocess.run(
-        args, capture_output=True, text=True, timeout=timeout_sec,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+    process = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
     )
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+    try:
+        output, _ = process.communicate(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        # winget can spawn a child installer/MSI that outlives winget.exe
+        # itself - a plain process.kill() (what subprocess.run's own timeout
+        # handling does) only kills winget.exe, leaving that child running
+        # and possibly holding a file lock. taskkill /T reaps the whole tree.
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        raise
+    return process.returncode == 0, (output or "").strip()
 
 
 def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str]:

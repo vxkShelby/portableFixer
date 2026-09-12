@@ -1,4 +1,5 @@
-from unittest.mock import patch
+import subprocess
+from unittest.mock import MagicMock, patch
 
 from portablefix.winget_updates import (
     OutdatedPackage,
@@ -57,38 +58,63 @@ def test_update_package_includes_unknown_version_packages():
     # such package fails with "This package's version number cannot be
     # determined" even though the scan found a real update for it.
     package = OutdatedPackage(name="Some App", id="Some.Package", installed_version="1", available_version="2", source="winget")
-    with patch("portablefix.winget_updates.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = ""
-        mock_run.return_value.stderr = ""
+    with patch("portablefix.winget_updates.subprocess.Popen") as mock_popen:
+        mock_popen.return_value.communicate.return_value = ("", None)
+        mock_popen.return_value.returncode = 0
         update_package(package)
-    args = mock_run.call_args[0][0]
+    args = mock_popen.call_args[0][0]
     assert "--include-unknown" in args
+
+
+def _fake_process(returncode: int, output: str) -> MagicMock:
+    process = MagicMock()
+    process.communicate.return_value = (output, None)
+    process.returncode = returncode
+    return process
 
 
 def test_update_package_retries_with_location_when_required():
     package = OutdatedPackage(name="Battle.net", id="Blizzard.BattleNet", installed_version="1", available_version="2", source="winget")
-    fail_result = type("R", (), {"returncode": 1, "stdout": "Install location is required by the package but it was not provided", "stderr": ""})()
-    ok_result = type("R", (), {"returncode": 0, "stdout": "Successfully installed", "stderr": ""})()
+    fail_process = _fake_process(1, "Install location is required by the package but it was not provided")
+    ok_process = _fake_process(0, "Successfully installed")
     fake_program = type("P", (), {"name": "Battle.net", "install_location": r"C:\Games\Battle.net"})()
-    with patch("portablefix.winget_updates.subprocess.run", side_effect=[fail_result, ok_result]) as mock_run, \
+    with patch("portablefix.winget_updates.subprocess.Popen", side_effect=[fail_process, ok_process]) as mock_popen, \
          patch("portablefix.uninstaller.list_installed_programs", return_value=[fake_program]):
         ok, output = update_package(package)
     assert ok is True
     assert output == "Successfully installed"
-    second_call_args = mock_run.call_args_list[1][0][0]
+    second_call_args = mock_popen.call_args_list[1][0][0]
     assert "--location" in second_call_args
     assert r"C:\Games\Battle.net" in second_call_args
 
 
 def test_update_package_does_not_retry_when_no_install_location_found():
     package = OutdatedPackage(name="Mystery App", id="Mystery.App", installed_version="1", available_version="2", source="winget")
-    fail_result = type("R", (), {"returncode": 1, "stdout": "Install location is required by the package but it was not provided", "stderr": ""})()
-    with patch("portablefix.winget_updates.subprocess.run", return_value=fail_result) as mock_run, \
+    fail_process = _fake_process(1, "Install location is required by the package but it was not provided")
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=fail_process) as mock_popen, \
          patch("portablefix.uninstaller.list_installed_programs", return_value=[]):
         ok, _ = update_package(package)
     assert ok is False
-    assert mock_run.call_count == 1
+    assert mock_popen.call_count == 1
+
+
+def test_run_winget_upgrade_kills_process_tree_on_timeout():
+    # winget can spawn a child installer/MSI that outlives winget.exe -
+    # killing just the immediate process on timeout leaves that child
+    # running and possibly holding a file lock. taskkill /T must be used
+    # to reap the whole tree instead of relying on subprocess's own
+    # single-process kill.
+    package = OutdatedPackage(name="Slow App", id="Slow.App", installed_version="1", available_version="2", source="winget")
+    process = MagicMock()
+    process.pid = 4242
+    process.communicate.side_effect = subprocess.TimeoutExpired(cmd="winget", timeout=1)
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=process), \
+         patch("portablefix.winget_updates.subprocess.run") as mock_taskkill:
+        ok, output = update_package(package, timeout_sec=1)
+    assert ok is False
+    assert output == "Update timed out."
+    taskkill_args = mock_taskkill.call_args[0][0]
+    assert taskkill_args == ["taskkill", "/F", "/T", "/PID", "4242"]
 
 
 def test_parse_winget_upgrade_table_skips_blank_rows_and_dashes():

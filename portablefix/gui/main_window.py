@@ -973,6 +973,7 @@ class MainWindow(QMainWindow):
 
     def _build_winget_updates_panel(self) -> QWidget:
         panel = QWidget()
+        panel._winget_update_runner = None
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(0, 0, 0, 8)
         panel_layout.setSpacing(6)
@@ -1238,8 +1239,16 @@ class MainWindow(QMainWindow):
             else:
                 auto_check_timer.stop()
 
+        def auto_check_tick() -> None:
+            # A scan mid-batch would clear row_checkboxes/row_progress/
+            # row_widgets out from under the update in progress (populate()
+            # rebuilds them from scratch), visibly resetting the panel.
+            runner = panel._winget_update_runner
+            if runner is None or not runner.isRunning():
+                start_scan()
+
         auto_check_timer = QTimer(panel)
-        auto_check_timer.timeout.connect(lambda: start_scan())
+        auto_check_timer.timeout.connect(auto_check_tick)
         saved_minutes = self.settings.winget_auto_check_minutes
         if saved_minutes in _AUTO_CHECK_MINUTES:
             auto_check_checkbox.setChecked(True)
@@ -1265,6 +1274,23 @@ class MainWindow(QMainWindow):
             runner = winget_updates.WingetUpdateRunner(selected_packages, parent=panel)
             panel._winget_update_runner = runner
 
+            # A single winget call can legitimately take minutes with only a
+            # busy/indeterminate bar to show for it - a ticking elapsed-time
+            # counter is concrete evidence it's still alive, not frozen.
+            elapsed_timer = QTimer(panel)
+            elapsed_state = {"package_id": None, "seconds": 0}
+
+            def tick_elapsed() -> None:
+                pid = elapsed_state["package_id"]
+                progress = row_progress.get(pid) if pid is not None else None
+                if progress is None:
+                    return
+                elapsed_state["seconds"] += 1
+                progress.setTextVisible(True)
+                progress.setFormat(f"{elapsed_state['seconds']}s")
+
+            elapsed_timer.timeout.connect(tick_elapsed)
+
             def on_package_started(package_id: str) -> None:
                 package = package_by_id.get(package_id)
                 name = package.name if package is not None else package_id
@@ -1275,11 +1301,18 @@ class MainWindow(QMainWindow):
                 progress = row_progress.get(package_id)
                 if progress is not None:
                     progress.setVisible(True)
+                    progress.setTextVisible(True)
+                    progress.setFormat("0s")
+                elapsed_state["package_id"] = package_id
+                elapsed_state["seconds"] = 0
+                elapsed_timer.start(1000)
                 ignore_btn = row_ignore_buttons.get(package_id)
                 if ignore_btn is not None:
                     ignore_btn.setVisible(False)
 
             def on_package_finished(package_id: str, ok: bool, output: str) -> None:
+                elapsed_timer.stop()
+                elapsed_state["package_id"] = None
                 package = package_by_id.get(package_id)
                 name = package.name if package is not None else package_id
                 status = self._t("status_ok") if ok else self._t("status_failed")
