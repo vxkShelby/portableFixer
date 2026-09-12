@@ -595,20 +595,27 @@ def test_build_swap_script_aborts_without_swapping_if_process_still_running_afte
     assert swap_aborted_pos < first_move_pos
 
 
-def test_build_swap_script_still_relaunches_after_pid_wait_abort():
-    # A hard `exit 1` on abort used to skip the relaunch entirely - the app
-    # would quit and never come back, even though nothing on disk was
-    # touched. The abort must only skip the swap, never the relaunch.
+def test_build_swap_script_skips_relaunch_on_pid_wait_abort():
+    # $swapAborted means the OLD process is still alive right now (that's
+    # the abort condition) - relaunching would spawn a second instance that
+    # immediately loses to the single-instance mutex in main.py and exits
+    # silently, which is exactly "clicked restart, nothing happened, still
+    # old version". An earlier version of this test asserted the opposite
+    # (relaunch must always fire) - that was true only before main.py
+    # gained a single-instance mutex; unconditional relaunch is what broke
+    # the update flow once that mutex existed.
     script = build_swap_script(
         current_pid=42,
         install_dir=Path(r"C:\App"),
         zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
     abort_pos = script.index("ABORT: pid 42 did not exit")
-    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\PortableFix.cmd'")
-    assert abort_pos < relaunch_pos
+    guard_pos = script.index("if (-not $swapAborted) {\n    Log \"relaunching via")
+    assert abort_pos < guard_pos
     # the abort branch must not exit the script early
+    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\PortableFix.cmd'")
     assert "\n    exit 1\n" not in script[abort_pos:relaunch_pos]
+    assert "skipping relaunch - old process is still running" in script
 
 
 def test_build_swap_script_verifies_relaunch_and_falls_back(tmp_path):

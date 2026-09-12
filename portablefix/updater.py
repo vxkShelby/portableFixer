@@ -215,7 +215,11 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"New-Item -ItemType Directory -Force -Path {log_dir} | Out-Null\n"
         f"function Log([string]$msg) {{ Add-Content -Path {log_file} -Value ((Get-Date -Format o) + ' ' + $msg) -EA SilentlyContinue }}\n"
         f"Log 'update swap started, waiting for pid {current_pid} to exit'\n"
-        f"for ($i = 0; $i -lt 30; $i++) {{\n"
+        # A PyInstaller --onefile bootloader keeps the PID alive while it
+        # deletes its own _MEI* extraction folder after the interpreter
+        # finalizes - AV real-time scanning of that delete can push this
+        # past several seconds on some machines. 60 x 500ms = 30s, not 15s.
+        f"for ($i = 0; $i -lt 60; $i++) {{\n"
         f"    if (-not (Get-Process -Id {current_pid} -EA SilentlyContinue)) {{ break }}\n"
         "    Start-Sleep -Milliseconds 500\n"
         "}\n"
@@ -284,24 +288,31 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         "    }\n"
         "}\n"
         "}\n"
-        # Relaunch first, then clean up temp files - a freshly-downloaded
-        # zip can sit under active AV scanning for many seconds, and that
-        # must never delay the user seeing their updated app come back.
-        # This runs unconditionally, even if the swap above was aborted or
-        # rolled back - the user must always get their app back, updated
-        # or not, rather than being left with nothing after it quit.
-        f"Log \"relaunching via {cmd_path}\"\n"
+        # Relaunch, then clean up temp files - a freshly-downloaded zip can
+        # sit under active AV scanning for many seconds, and that must never
+        # delay the user seeing their updated app come back. Runs even if
+        # the swap above was rolled back (files restored, but the old
+        # process DID exit by that point, so it needs relaunching) - but
+        # NOT if $swapAborted, because that means the old process is still
+        # the one alive right now: relaunching would spawn a second
+        # instance that immediately loses to the single-instance mutex and
+        # silently exits, which looks exactly like "the restart did nothing".
+        "if (-not $swapAborted) {\n"
+        f"    Log \"relaunching via {cmd_path}\"\n"
         # PassThru's PID is cmd.exe running the .cmd, not PortableFix.exe -
         # cmd.exe exits right after launching the (non-waited-on) GUI exe,
         # so checking that PID would false-negative even on success. Check
         # for the actual exe by path instead.
-        f"Start-Process -FilePath {cmd_path} -EA SilentlyContinue\n"
-        "Start-Sleep -Milliseconds 1500\n"
-        f"$relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object {{ $_.Path -eq {app_exe} }})\n"
-        f"Log \"relaunch verified: $relaunchOk\"\n"
-        "if (-not $relaunchOk) {\n"
-        f"    Log 'relaunch via Start-Process failed, retrying via cmd.exe'\n"
-        f"    Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c start \"\" ' + {cmd_path}) -EA SilentlyContinue\n"
+        f"    Start-Process -FilePath {cmd_path} -EA SilentlyContinue\n"
+        "    Start-Sleep -Milliseconds 1500\n"
+        f"    $relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object {{ $_.Path -eq {app_exe} }})\n"
+        f"    Log \"relaunch verified: $relaunchOk\"\n"
+        "    if (-not $relaunchOk) {\n"
+        f"        Log 'relaunch via Start-Process failed, retrying via cmd.exe'\n"
+        f"        Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c start \"\" ' + {cmd_path}) -EA SilentlyContinue\n"
+        "    }\n"
+        "} else {\n"
+        "    Log 'skipping relaunch - old process is still running (that is why the swap was aborted), it is already the running instance'\n"
         "}\n"
         f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
         "for ($i = 0; $i -lt 30; $i++) {\n"
