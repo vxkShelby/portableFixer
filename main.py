@@ -66,6 +66,11 @@ def main() -> int:
         return 0
     try:
         app = QApplication(sys.argv)
+        # The native Windows style (windowsvista/windows11) paints its own
+        # chrome and ignores/misrenders QSS border-radius, gradients and
+        # hover states on most widgets - Fusion is the standard Qt style
+        # that actually respects a custom stylesheet.
+        app.setStyle("Fusion")
         app.setStyleSheet(style.STYLE)
 
         raw_base_dir = get_base_dir()
