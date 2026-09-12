@@ -35,8 +35,6 @@ QLabel#appTitle {
     font-size: 14pt;
     font-weight: bold;
     color: #2fe6ff;
-    border-left: 3px solid #2fe6ff;
-    padding-left: 8px;
 }
 QLabel#adminPill {
     border-radius: 10px;

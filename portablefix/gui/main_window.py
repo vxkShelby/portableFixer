@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Qt
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -202,6 +202,12 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
 
         top_bar = QHBoxLayout()
+        top_bar.setSpacing(10)
+        icon_path = self.assets_dir / "portablefix.ico"
+        if icon_path.exists():
+            logo_label = QLabel()
+            logo_label.setPixmap(QIcon(str(icon_path)).pixmap(28, 28))
+            top_bar.addWidget(logo_label)
         title_label = QLabel(self._t("app_title"))
         title_label.setObjectName("appTitle")
         top_bar.addWidget(title_label)
