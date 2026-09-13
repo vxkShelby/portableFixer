@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import i18n
 from portablefix.audit_log import append_entry, make_entry
+from portablefix.diagnostics import install_excepthook
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
@@ -87,6 +88,7 @@ def main() -> int:
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
         base_dir, used_fallback = resolve_writable_base_dir(raw_base_dir)
+        install_excepthook(base_dir)
         settings = load_settings(base_dir)
 
         if used_fallback:

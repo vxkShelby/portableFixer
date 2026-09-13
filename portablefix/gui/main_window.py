@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
+from .. import diagnostics, elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -2161,8 +2161,27 @@ class MainWindow(QMainWindow):
         self.speed_test_result_label = QLabel("")
         self.speed_test_result_label.setWordWrap(True)
         layout.addWidget(self.speed_test_result_label)
+
+        export_diag_button = self._make_selection_button(
+            self._t("export_diagnostics_button"), self._on_export_diagnostics_clicked
+        )
+        layout.addWidget(export_diag_button)
         layout.addStretch(1)
         return panel
+
+    def _on_export_diagnostics_clicked(self) -> None:
+        default_name = f"PortableFix-diagnostics-{self.run_id}.zip"
+        dest, _ = QFileDialog.getSaveFileName(
+            self, self._t("export_diagnostics_button"), default_name, "Zip (*.zip)"
+        )
+        if not dest:
+            return
+        try:
+            diagnostics.export_diagnostics_zip(self.state_dir, Path(dest))
+        except OSError as exc:
+            QMessageBox.critical(self, self._t("app_title"), f"{self._t('export_diagnostics_failed')}\n{exc}")
+            return
+        QMessageBox.information(self, self._t("app_title"), self._t("export_diagnostics_done"))
 
     def _start_sysinfo_polling(self) -> None:
         self._static_info_runner = sysinfo.StaticInfoRunner(parent=self)
