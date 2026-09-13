@@ -42,29 +42,30 @@ scripts/self_improve.py  — "signal gatherer"
       └─ Logs/crash.log → diff od posledného zaznamenaného offsetu
       │
       ▼
-  signál nájdený? ──ne──► zapíš "quiet" riadok do docs/SOUL.md, koniec
+  signál nájdený? ──ne──► zapíš riadok do Logs/self_improve.log, koniec
       │ áno
       ▼
-archon workflow run archon-implement
-  (providers.claude — existujúca claude CLI session, žiadny API kľúč)
-  kontext: čo presne signál gatherer našiel (failing test names,
-  súbor s opakovanými fixmi, nový crash traceback)
-  max 5 iterácií (rovnaký cap ako fix-loop v subagent-driven-development)
-      │
-      ▼
-výstup na branch `self-improve/<YYYY-MM-DD>-<slug>`
+archon workflow run self-improve "<trigger text>"
+  (vlastný workflow v .archon/workflows/self-improve.yaml;
+  providers.claude — existujúca claude CLI session, žiadny API kľúč)
+  Archon sám: izoluje beh do vlastného git worktree/branch,
+  opravuje kód v slučke (max 5 iterácií, until_bash: pytest),
+  commitne, pushne, otvorí PR cez `gh pr create` — NIKDY nemergne
       │
       ▼
 append záznam do docs/SOUL.md:
-  dátum, čo spustilo beh, čo Archon zmenil (súbory), výsledok testov
-  na novej branch, meno branch, stav = "čaká na review"
+  dátum, čo spustilo beh, PR link/branch meno, výsledok testov,
+  stav = "čaká na review"
       │
       ▼
-človek prezrie branch (git diff / PR), rozhodne merge alebo zahodiť
-      │
-      ▼
-záznam v docs/SOUL.md sa doplní o rozhodnutie (merged/discarded + dátum)
+človek prezrie PR na GitHube, rozhodne merge alebo zavrieť
 ```
+
+**Prečo nie manuálne vytváranie branch v našom skripte:** Archon pri
+`workflow run` sám izoluje každý beh do vlastného git worktree (overené
+v oficiálnej dokumentácii, nie predpoklad) — náš orchestrátor teda
+nepotrebuje vlastnú `git checkout -b` logiku ani vlastný "vytvor PR"
+krok, len zavolá Archon a zaznamená výsledok.
 
 ## Komponenty
 
@@ -89,11 +90,51 @@ Zodpovednosti:
 - načítaj `Logs/crash.log`, porovnaj s uloženým offsetom v
   `docs/.self_improve_state.json` (posledný spracovaný byte offset —
   jednoduchý spôsob "čo je nové od minula")
-- ak nič z toho nenašlo signál → zapíš tichý riadok do SOUL.md
-  (voliteľné, pozri "Otvorené otázky") a skonči
-- ak signál → zostav krátky kontext text a zavolaj `archon workflow
-  run archon-implement --context <text>` (presný tvar CLI argumentov
-  sa musí overiť pri `archon doctor`/inštalácii — pozri riziká nižšie)
+- ak nič z toho nenašlo signál → zapíš riadok do `Logs/self_improve.log`
+  a skonči (SOUL.md sa nedotýka — pozri nižšie prečo)
+- ak signál → zostav krátky text popisujúci čo sa našlo a zavolaj
+  `archon workflow run self-improve "<text>"` (overený tvar príkazu,
+  pozri "Archon CLI — overené fakty" nižšie)
+
+### 2a. `.archon/workflows/self-improve.yaml` — vlastný Archon workflow
+Žiadny vstavaný Archon workflow sa nevolá `archon-implement` — treba
+vlastný, uložený v repo (Archon podporuje custom workflows presne
+takto: `.yaml` súbor v `.archon/workflows/`, prepíše rovnomenný
+vstavaný ak by existoval). Kostra (overená proti reálnej syntaxi
+z dokumentácie, nie vymyslená):
+
+```yaml
+name: self-improve
+description: Preskúma nahlásený signál, opraví ho, overí testami, otvorí PR. Nikdy nemerguje.
+
+nodes:
+  - id: investigate-and-fix
+    loop:
+      prompt: |
+        Lokálny signal-gatherer skript našiel tento problém v repo:
+
+        $ARGUMENTS
+
+        Nájdi root cause, oprav ho. Po každej zmene spusti `pytest`.
+        Drž zmeny minimálne, drž sa existujúcich konvencií repo.
+      max_iterations: 5
+      until_bash: "pytest --tb=no -q"
+      fresh_context: false
+
+  - id: create-pr
+    depends_on: [investigate-and-fix]
+    prompt: |
+      Commitni zmeny (jednoriadková imperatívna správa, fix:/feat:
+      prefix podľa štýlu `git log` tohto repo). Pushni branch a otvor
+      pull request cez `gh pr create` proti `main`, telo PR nech
+      sumarizuje aký signál to spustil a čo sa zmenilo. Nemerguj ho.
+```
+
+`max_iterations: 5` + `until_bash` je presne mechanizmus zo skutočnej
+Archon dokumentácie na "slučka končí keď bash check prejde, inak po
+N pokusoch" — pytest je tu ten skutočný exit kritérium, preto sa
+nepoužíva textový `until:` promise (dokumentácia explicitne odporúča
+nepoužívať oba naraz, keď je bash check ten skutočný gate).
 
 ### 3. `docs/SOUL.md`
 Markdown, append-only štýl (nové záznamy na koniec alebo na začiatok —
@@ -103,20 +144,30 @@ rozhodneme pri review). Formát jedného záznamu:
 ## 2026-09-14 — self-improve run
 
 **Trigger:** 2 failing tests v tests/test_executor.py po commite abc123
-**Archon návrh:** oprava race condition v ActionRunner.cancel()
-**Branch:** self-improve/2026-09-14-executor-race-fix
-**Testy na branch:** 494 passed
+**Archon výstup:** posledných ~500 znakov stdoutu z `archon workflow run`
+(obsahuje spravidla PR link, ak sa create-pr krok dokončil)
+**Testy:** 494 passed
 **Rozhodnutie:** _(čaká na review)_
 ```
 
+Zapisuje sa LEN beh so signálom (Archon sa reálne zavolal); tichý beh
+ide iba do `Logs/self_improve.log`, nikdy do SOUL.md.
+
 ### 4. Bezpečnostné zábrany
-- žiadny auto-merge, žiadny auto-push do `main`/`origin` bez človeka
-- max 5 iterácií Archon slučky (zabráni nekonečnému/drahému behu)
-- ak Archon po 5 iteráciách nedosiahne zelené testy, branch sa aj tak
-  vytvorí (na diagnostiku), ale SOUL.md záznam jasne označí "needs
-  human — tests still red"
+- žiadny auto-merge — `create-pr` krok len otvorí PR cez `gh pr
+  create`, nikdy nevolá `gh pr merge`; merge je vždy manuálny krok
+  človeka na GitHube
+- max 5 iterácií Archon slučky (`max_iterations: 5` + `until_bash`,
+  zabráni nekonečnému/drahému behu)
+- ak po 5 iteráciách testy stále nie sú zelené, `investigate-and-fix`
+  skončí aj tak (Archon loop cap), `create-pr` beží ďalej a PR sa
+  otvorí s aktuálnym (možno nedokončeným) stavom — reviewer to uvidí
+  v CI/testoch na PR, žiadne špeciálne značenie netreba
 - hook beží len lokálne u vývojára, nikdy v CI (aby sa nezdvojoval a
   neplatilo sa za claude usage v CI behoch)
+- Archon vlastná telemetria sa vypína (`ARCHON_TELEMETRY_DISABLED=1`
+  v prostredí, kde beží hook) — konzistentné s tým, že appka samotná
+  tiež nič neposiela domov
 
 ## Testovanie
 
@@ -128,16 +179,44 @@ rozhodneme pri review). Formát jedného záznamu:
 - `docs/SOUL.md` writer: jednotkový test že append vytvorí správne
   formátovaný záznam.
 
-## Otvorené otázky / riziká na overenie pred plánom
+## Archon CLI — overené fakty (2026-09-14, z archon.diy/docs)
 
-1. **Presné správanie `archon workflow run`** (accepted flags, ako sa
-   mu odovzdáva kontext, čo presne robí `archon-implement` workflow
-   oproti `archon-review`) nie je overené v tomto repo — bolo overené
-   v inej (Ultron) session, nie tu. Prvý implementačný task musí byť
-   `archon doctor` + skúšobný ručný beh, skôr než sa naň stavia zvyšok
-   slučky. Ak sa správanie líši od predpokladu vyššie, táto sekcia sa
-   musí prepísať pred pokračovaním.
-2. **Windows-špecifiká:** `.githooks/post-commit` na Windows potrebuje
+Pôvodný predpoklad (`archon-implement` workflow, `--context` flag,
+manuálne vytváranie branch) bol nesprávny — Archon v2 (aktuálna verzia,
+`coleam00/Archon`) funguje inak, overené priamo z oficiálnej
+dokumentácie:
+
+- **Inštalácia (Windows):** `irm https://archon.diy/install.ps1 | iex`
+  (standalone binary). Binárka nebalí Claude Code — treba mať `claude`
+  CLI nainštalovaný zvlášť a buď na PATH, alebo `CLAUDE_BIN_PATH`
+  nastavený / `assistants.claude.claudeBinaryPath` v `~/.archon/config.yaml`.
+- **`archon doctor`** — health check, exit 0 = OK, exit 1 = kritická
+  chyba. `archon doctor --full` navyše skontroluje aj nepoužívané
+  providery.
+- **Spustenie workflow:** `archon workflow run <name> "<message>"` —
+  `<message>` je celý text, dostupný vo workflow prompte ako
+  `$ARGUMENTS`/`$USER_MESSAGE`. Žiadne pozičné `$1`/`$2` argumenty,
+  žiadny `--context` flag.
+- **Worktree izolácia je default správanie** — každý `workflow run`
+  dostane vlastný git worktree/branch automaticky (`--no-worktree` by
+  to vypol, ale to nechceme). Náš orchestrátor teda nikdy sám nevytvára
+  branch.
+- **Vlastné workflow súbory:** `.archon/workflows/<name>.yaml` v repo,
+  `name:` + `nodes:` (DAG, `depends_on`), `loop:` blok s `prompt`,
+  `max_iterations`, `until_bash` (deterministický shell-exit gate —
+  presne to čo potrebujeme pre pytest) alebo `until:` (textový
+  `<promise>` signál od AI). Dokumentácia explicitne odporúča použiť
+  LEN `until_bash` keď je test suite skutočné kritérium — presne náš
+  prípad.
+- **PR vytvorenie nie je vstavaná Archon funkcia** — agent v prompte
+  dostane inštrukciu spustiť `gh pr create` sám (Archon pre "folder"/
+  git repo projekty nezasahuje do git/gh, necháva to na agenta).
+- **Telemetria:** Archon posiela anonymné usage eventy, vypnuteľné cez
+  `ARCHON_TELEMETRY_DISABLED=1` alebo `DO_NOT_TRACK=1` v prostredí.
+
+## Zostávajúce riziká
+
+1. **Windows-špecifiká:** `.githooks/post-commit` na Windows potrebuje
    buď byť `.sh` spúšťaný cez Git Bash (git hooks fungujú cez shebang
    aj na Windows vďaka Git for Windows), alebo `.cmd`/`.ps1` wrapper.
    Over funkčnosť background/detached spustenia na Windows (`Start-Process
