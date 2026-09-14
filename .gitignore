@@ -12,3 +12,4 @@ Logs/*
 !Logs/.gitkeep
 Reports/*
 !Reports/.gitkeep
+docs/.self_improve_state.json
