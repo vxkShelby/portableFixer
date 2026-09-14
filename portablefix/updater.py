@@ -337,7 +337,19 @@ def apply_update(zip_path: Path, install_dir: Path) -> bool:
         script_path.write_text(script_text, encoding="utf-8-sig")
         subprocess.Popen(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            # DETACHED_PROCESS/CREATE_NEW_PROCESS_GROUP only affect console
+            # and Ctrl+Break group membership - neither exempts the child
+            # from a Job Object the parent belongs to (common when this exe
+            # is launched from Windows Terminal or certain elevation
+            # wrappers, which assign JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
+            # Without this flag, the swap script gets killed the instant
+            # this process exits - before it can run a single line - which
+            # looks exactly like "the app just closes, update never happens".
+            creationflags=(
+                subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_BREAKAWAY_FROM_JOB
+            ),
             close_fds=True,
         )
         return True

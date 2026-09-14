@@ -313,6 +313,26 @@ def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
     assert scripts[0].read_bytes()[:3] == b"\xef\xbb\xbf"
 
 
+def test_apply_update_breaks_away_from_parent_job_object(tmp_path, monkeypatch):
+    # Regression test: without CREATE_BREAKAWAY_FROM_JOB, the swap script
+    # dies with the parent when the parent is inside a Job Object with
+    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (e.g. launched from Windows
+    # Terminal) - the update then silently never happens.
+    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        updater_module.subprocess, "Popen", lambda *a, **k: calls.append(k) or MagicMock()
+    )
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+
+    apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
+
+    assert len(calls) == 1
+    flags = calls[0]["creationflags"]
+    assert flags & updater_module.subprocess.CREATE_BREAKAWAY_FROM_JOB
+
+
 def test_apply_update_returns_true_on_success(tmp_path, monkeypatch):
     monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
