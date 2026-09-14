@@ -3,5 +3,12 @@
 # never waits on it. Output goes to Logs/self_improve.log, not the terminal
 # (see scripts/self_improve.py). Never runs in CI - this is a local-only
 # convenience hook, activated per-machine via `git config core.hooksPath`.
+#
+# Re-entrancy guard: core.hooksPath is shared repo-wide config, but Archon
+# isolates each self-improve run into its own linked worktree of this same
+# repo. Without this guard, that worktree's own commits would re-trigger
+# this hook and recursively spawn nested Archon runs. Only run from the
+# main checkout, never from a linked worktree.
+[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0
+
 ARCHON_TELEMETRY_DISABLED=1 python scripts/self_improve.py >> Logs/self_improve.log 2>&1 &
-disown

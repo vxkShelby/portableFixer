@@ -20,6 +20,14 @@ def test_count_pytest_failures_zero_when_all_passed():
     assert count_pytest_failures("493 passed in 10.1s") == 0
 
 
+def test_count_pytest_failures_counts_collection_errors():
+    assert count_pytest_failures("2 errors in 3.2s") == 2
+
+
+def test_count_pytest_failures_combines_failed_and_errors():
+    assert count_pytest_failures("3 failed, 1 error, 490 passed in 12.3s") == 4
+
+
 def test_parse_fix_commit_files_extracts_first_file_per_fix_commit():
     git_log_output = (
         "fix: race condition in executor\n"
@@ -64,6 +72,17 @@ def test_read_new_crash_log_entries_missing_file_returns_empty(tmp_path):
     text, offset = read_new_crash_log_entries(missing, 5)
     assert text == ""
     assert offset == 5
+
+
+def test_read_new_crash_log_entries_resets_when_offset_past_file_size(tmp_path):
+    log = tmp_path / "crash.log"
+    log.write_text("rotated log, short now\n", encoding="utf-8")
+
+    # Stale offset from before rotation/truncation, now past current size.
+    new_text, new_offset = read_new_crash_log_entries(log, last_offset=99999)
+
+    assert new_text == "rotated log, short now\n"
+    assert new_offset == log.stat().st_size
 
 
 def test_has_signal_true_when_any_source_fires():

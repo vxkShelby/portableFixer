@@ -21,6 +21,15 @@ SOUL_FILE = REPO_ROOT / "docs" / "SOUL.md"
 SELF_IMPROVE_LOG = LOGS_DIR / "self_improve.log"
 FIX_COMMIT_WINDOW = 20
 REPEAT_THRESHOLD = 3
+PYTEST_TIMEOUT_SEC = 300
+# Mirrors the deselect pattern documented in README.md and
+# .github/workflows/tests.yml: these files spawn real powershell.exe
+# processes and can crash the whole pytest run (STATUS_STACK_BUFFER_OVERRUN),
+# which would otherwise silently zero out signal detection.
+PYTEST_DESELECT = [
+    "--deselect", "tests/test_gui_main_window.py",
+    "--deselect", "tests/test_executor.py",
+]
 
 sys.path.insert(0, str(REPO_ROOT))
 from scripts.self_improve_lib import (  # noqa: E402
@@ -44,13 +53,16 @@ def _log(message: str) -> None:
 def gather_signal() -> tuple[bool, str, int]:
     """Returns (signal_found, trigger_description, new_crash_log_offset)."""
     pytest_result = subprocess.run(
-        ["pytest", "--tb=no", "-q"], cwd=REPO_ROOT, capture_output=True, text=True
+        [sys.executable, "-m", "pytest", "--tb=no", "-q", *PYTEST_DESELECT],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        timeout=PYTEST_TIMEOUT_SEC, creationflags=subprocess.CREATE_NO_WINDOW,
     )
     fail_count = count_pytest_failures(pytest_result.stdout)
 
     git_result = subprocess.run(
         ["git", "log", "--name-only", "--pretty=format:%s", f"-{FIX_COMMIT_WINDOW}"],
         cwd=REPO_ROOT, capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     fix_files = parse_fix_commit_files(git_result.stdout)
     repeated_file = find_repeated_fix_file(fix_files, min_repeats=REPEAT_THRESHOLD)
@@ -73,12 +85,14 @@ def gather_signal() -> tuple[bool, str, int]:
     return signal_found, trigger, new_offset
 
 
-def run_archon(trigger: str) -> str:
+def run_archon(trigger: str) -> tuple[bool, str]:
+    """Returns (succeeded, stdout)."""
     result = subprocess.run(
         ["archon", "workflow", "run", "self-improve", trigger],
         cwd=REPO_ROOT, capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
-    return result.stdout
+    return result.returncode == 0, result.stdout
 
 
 def main() -> None:
@@ -88,7 +102,14 @@ def main() -> None:
         return
 
     _log(f"signal found: {trigger}")
-    archon_stdout = run_archon(trigger)
+    archon_ok, archon_stdout = run_archon(trigger)
+
+    if not archon_ok:
+        # Don't write a "done" SOUL.md entry for a failed run, and don't
+        # advance the crash-log offset - that would permanently lose
+        # crash entries that were never actually reviewed by Archon.
+        _log("archon run failed, skipping SOUL.md entry and state save")
+        return
 
     append_soul_entry(SOUL_FILE, trigger, archon_stdout.strip()[-500:])
     save_state(STATE_FILE, {"crash_log_offset": new_offset})

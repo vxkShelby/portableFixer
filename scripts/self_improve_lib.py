@@ -15,9 +15,13 @@ from pathlib import Path
 
 def count_pytest_failures(pytest_stdout: str) -> int:
     """Parses the trailing pytest summary line, e.g. '3 failed, 490 passed
-    in 12.3s'. Returns 0 if no 'N failed' substring is present."""
-    match = re.search(r"(\d+) failed", pytest_stdout)
-    return int(match.group(1)) if match else 0
+    in 12.3s' or '2 errors in 3.2s' (collection failures). Returns the sum
+    of both counts; 0 if neither substring is present."""
+    failed_match = re.search(r"(\d+) failed", pytest_stdout)
+    error_match = re.search(r"(\d+) error", pytest_stdout)
+    failed = int(failed_match.group(1)) if failed_match else 0
+    errors = int(error_match.group(1)) if error_match else 0
+    return failed + errors
 
 
 def parse_fix_commit_files(git_log_output: str) -> list[str]:
@@ -50,11 +54,14 @@ def find_repeated_fix_file(fix_commit_files: list[str], min_repeats: int = 3) ->
 
 def read_new_crash_log_entries(path: Path, last_offset: int) -> tuple[str, int]:
     """Returns (new_text, new_offset). A missing file means no new crashes,
-    not an error — returns ("", last_offset) unchanged."""
+    not an error — returns ("", last_offset) unchanged. A stale offset past
+    the current file size (log deleted/rotated/truncated) is clamped back
+    to 0 instead of silently returning nothing forever."""
     if not path.exists():
         return "", last_offset
+    offset = last_offset if last_offset <= path.stat().st_size else 0
     with path.open("r", encoding="utf-8") as f:
-        f.seek(last_offset)
+        f.seek(offset)
         new_text = f.read()
         new_offset = f.tell()
     return new_text, new_offset

@@ -13,7 +13,7 @@ nodes:
         Drz zmeny minimalne, drz sa existujucich konvencii repo (over
         CLAUDE.md alebo existujuci kod pred pisanim noveho stylu).
       max_iterations: 5
-      until_bash: "pytest --tb=no -q"
+      until_bash: "pytest --tb=no -q --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py"
       fresh_context: false
 
   - id: create-pr
@@ -23,4 +23,6 @@ nodes:
       prefix podla stylu `git log` tohto repo). Pushni branch a otvor
       pull request cez `gh pr create` proti `main`, telo PR nech
       sumarizuje aky signal to spustil a co sa zmenilo. Nemerguj ho -
-      merge je vzdy manualny krok cloveka.
+      merge je vzdy manualny krok cloveka. Do tela PR nikdy nekopiruj
+      surovy obsah Logs/crash.log ani absolutne cesty z vyvojarovho
+      stroja - len strucne zhrnutie.

@@ -46,10 +46,15 @@ def test_gather_signal_quiet_when_nothing_found(mock_run, tmp_path, monkeypatch)
 @patch("scripts.self_improve.run_archon")
 @patch("scripts.self_improve.gather_signal")
 def test_main_calls_archon_and_logs_soul_only_on_signal(
-    mock_gather, mock_archon, mock_append_soul, mock_save_state
+    mock_gather, mock_archon, mock_append_soul, mock_save_state, tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(self_improve, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(self_improve, "LOGS_DIR", tmp_path / "Logs")
+    monkeypatch.setattr(self_improve, "SELF_IMPROVE_LOG", tmp_path / "Logs" / "self_improve.log")
+    monkeypatch.setattr(self_improve, "STATE_FILE", tmp_path / "docs" / ".self_improve_state.json")
+    monkeypatch.setattr(self_improve, "SOUL_FILE", tmp_path / "docs" / "SOUL.md")
     mock_gather.return_value = (True, "2 failing test(s)", 42)
-    mock_archon.return_value = "PR: https://github.com/x/y/pull/1"
+    mock_archon.return_value = (True, "PR: https://github.com/x/y/pull/1")
 
     self_improve.main()
 
@@ -58,10 +63,37 @@ def test_main_calls_archon_and_logs_soul_only_on_signal(
     mock_save_state.assert_called_once_with(self_improve.STATE_FILE, {"crash_log_offset": 42})
 
 
+@patch("scripts.self_improve.save_state")
 @patch("scripts.self_improve.append_soul_entry")
 @patch("scripts.self_improve.run_archon")
 @patch("scripts.self_improve.gather_signal")
-def test_main_skips_archon_and_soul_when_quiet(mock_gather, mock_archon, mock_append_soul):
+def test_main_skips_soul_and_state_when_archon_fails(
+    mock_gather, mock_archon, mock_append_soul, mock_save_state, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(self_improve, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(self_improve, "LOGS_DIR", tmp_path / "Logs")
+    monkeypatch.setattr(self_improve, "SELF_IMPROVE_LOG", tmp_path / "Logs" / "self_improve.log")
+    monkeypatch.setattr(self_improve, "STATE_FILE", tmp_path / "docs" / ".self_improve_state.json")
+    monkeypatch.setattr(self_improve, "SOUL_FILE", tmp_path / "docs" / "SOUL.md")
+    mock_gather.return_value = (True, "2 failing test(s)", 42)
+    mock_archon.return_value = (False, "traceback: archon blew up")
+
+    self_improve.main()
+
+    mock_archon.assert_called_once_with("2 failing test(s)")
+    mock_append_soul.assert_not_called()
+    mock_save_state.assert_not_called()
+
+
+@patch("scripts.self_improve.append_soul_entry")
+@patch("scripts.self_improve.run_archon")
+@patch("scripts.self_improve.gather_signal")
+def test_main_skips_archon_and_soul_when_quiet(
+    mock_gather, mock_archon, mock_append_soul, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(self_improve, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(self_improve, "LOGS_DIR", tmp_path / "Logs")
+    monkeypatch.setattr(self_improve, "SELF_IMPROVE_LOG", tmp_path / "Logs" / "self_improve.log")
     mock_gather.return_value = (False, "none", 10)
 
     self_improve.main()
