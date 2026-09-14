@@ -203,6 +203,23 @@ chyba kódu. Ak sa to stane, spusti postihnuté testy jednotlivo
 (`python -m pytest tests/test_gui_main_window.py::test_name`) s jedným
 opakovaním pri zlyhaní, namiesto celého súboru naraz.
 
+## Dev tooling: self-improve loop
+
+Jednorazové nastavenie pre každý klon, na zapnutie lokálneho
+self-improve git hooku (pozri
+`docs/superpowers/specs/2026-09-13-self-improve-loop-design.md`):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Po každom commite toto skontroluje reálne signály (zlyhávajúce testy,
+opakované fix commity, nové záznamy v crash.log) a — len ak nejaký
+nájde — zavolá lokálny Archon CLI workflow, ktorý vec preskúma,
+opraví a otvorí PR. Nikdy nič nemerguje a nikdy nebeží v CI. Vyžaduje
+lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
+`docs/superpowers/specs/2026-09-13-archon-cli-findings.md`).
+
 ## Známe obmedzenia
 
 - Undo pokrýva len akcie so statickým vratným príkazom; DISM/SFC/chkdsk

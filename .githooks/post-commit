@@ -1,0 +1,7 @@
+#!/bin/sh
+# Runs the signal-gated self-improve loop in the background so `git commit`
+# never waits on it. Output goes to Logs/self_improve.log, not the terminal
+# (see scripts/self_improve.py). Never runs in CI - this is a local-only
+# convenience hook, activated per-machine via `git config core.hooksPath`.
+ARCHON_TELEMETRY_DISABLED=1 python scripts/self_improve.py >> Logs/self_improve.log 2>&1 &
+disown
