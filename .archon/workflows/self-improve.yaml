@@ -1,0 +1,26 @@
+name: self-improve
+description: Preskuma nahlaseny signal, opravi ho, overi testami, otvori PR. Nikdy nemerguje.
+
+nodes:
+  - id: investigate-and-fix
+    loop:
+      prompt: |
+        Lokalny signal-gatherer skript nasiel tento problem v repo:
+
+        $ARGUMENTS
+
+        Najdi root cause, oprav ho. Po kazdej zmene spusti `pytest`.
+        Drz zmeny minimalne, drz sa existujucich konvencii repo (over
+        CLAUDE.md alebo existujuci kod pred pisanim noveho stylu).
+      max_iterations: 5
+      until_bash: "pytest --tb=no -q"
+      fresh_context: false
+
+  - id: create-pr
+    depends_on: [investigate-and-fix]
+    prompt: |
+      Commitni zmeny (jednoriadkova imperativna sprava, fix:/feat:
+      prefix podla stylu `git log` tohto repo). Pushni branch a otvor
+      pull request cez `gh pr create` proti `main`, telo PR nech
+      sumarizuje aky signal to spustil a co sa zmenilo. Nemerguj ho -
+      merge je vzdy manualny krok cloveka.
