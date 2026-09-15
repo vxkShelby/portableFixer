@@ -4,6 +4,9 @@ import traceback
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
+
+BUG_REPORT_URL = "https://github.com/vxkShelby/portableFixer/issues/new"
 
 
 def crash_log_path(base_dir: Path) -> Path:
@@ -29,6 +32,18 @@ def install_excepthook(base_dir: Path) -> None:
         previous_hook(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _hook
+
+
+def build_bug_report_url(version: str) -> str:
+    """GitHub issues are English-only by convention, so the pre-filled
+    title/body stay untranslated regardless of the app's UI language."""
+    title = f"Bug report (v{version})"
+    body = (
+        "Please attach the diagnostics zip (Export diagnostics button) "
+        f"and describe what happened.\n\nOS: {platform.platform()}"
+    )
+    query = urlencode({"title": title, "body": body})
+    return f"{BUG_REPORT_URL}?{query}"
 
 
 def export_diagnostics_zip(base_dir: Path, dest_path: Path) -> None:

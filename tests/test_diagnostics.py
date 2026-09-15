@@ -1,7 +1,25 @@
 import sys
 import zipfile
+from urllib.parse import parse_qs, urlparse
 
-from portablefix.diagnostics import crash_log_path, export_diagnostics_zip, install_excepthook
+from portablefix.diagnostics import (
+    build_bug_report_url,
+    crash_log_path,
+    export_diagnostics_zip,
+    install_excepthook,
+)
+
+
+def test_build_bug_report_url_points_at_github_issues_with_title_and_body():
+    url = build_bug_report_url("1.10.0")
+
+    parsed = urlparse(url)
+    assert parsed.netloc == "github.com"
+    assert parsed.path == "/vxkShelby/portableFixer/issues/new"
+
+    query = parse_qs(parsed.query)
+    assert "1.10.0" in query["title"][0]
+    assert "diagnostics" in query["body"][0].lower()
 
 
 def test_export_diagnostics_zip_bundles_logs_and_reports(tmp_path):

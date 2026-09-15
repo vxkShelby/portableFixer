@@ -2166,6 +2166,11 @@ class MainWindow(QMainWindow):
             self._t("export_diagnostics_button"), self._on_export_diagnostics_clicked
         )
         layout.addWidget(export_diag_button)
+
+        report_bug_button = self._make_selection_button(
+            self._t("report_bug_button"), self._on_report_bug_clicked
+        )
+        layout.addWidget(report_bug_button)
         layout.addStretch(1)
         return panel
 
@@ -2182,6 +2187,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, self._t("app_title"), f"{self._t('export_diagnostics_failed')}\n{exc}")
             return
         QMessageBox.information(self, self._t("app_title"), self._t("export_diagnostics_done"))
+
+    def _on_report_bug_clicked(self) -> None:
+        QDesktopServices.openUrl(QUrl(diagnostics.build_bug_report_url(APP_VERSION)))
 
     def _start_sysinfo_polling(self) -> None:
         self._static_info_runner = sysinfo.StaticInfoRunner(parent=self)
