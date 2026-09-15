@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m09_tuning" / "actions.yaml"
 
 
-def test_m09_catalog_loads_12_actions_in_repair_category():
+def test_m09_catalog_loads_15_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m09_tuning"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 12
+    assert len(module.actions) == 15
 
 
 def test_m09_catalog_risk_distribution():
@@ -19,7 +19,7 @@ def test_m09_catalog_risk_distribution():
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
     assert len(by_risk[RiskLevel.SAFE]) == 2
-    assert len(by_risk[RiskLevel.MODERATE]) == 9
+    assert len(by_risk[RiskLevel.MODERATE]) == 12
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
     assert RiskLevel.DESTRUCTIVE not in by_risk
 
@@ -40,7 +40,29 @@ def test_m09_catalog_covers_expected_ids():
         "tune_sticky_keys_disable",
         "tune_classic_context_menu",
         "tune_pause_background_services",
+        "tune_bluetooth_service_restart",
+        "tune_audio_service_restart",
+        "tune_camera_service_restart",
     }
+
+
+def test_m09_catalog_new_service_restart_actions_have_no_undo_and_verify_success():
+    # Stop-Service/Start-Service silently no-op without administrator - each
+    # new service-restart action must check actual post-restart status
+    # rather than claim success on a no-op (same pattern already required
+    # of tune_pause_background_services). None have a meaningful undo -
+    # "restart the service again" is its own undo.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in (
+        "tune_bluetooth_service_restart",
+        "tune_audio_service_restart",
+        "tune_camera_service_restart",
+    ):
+        action = by_id[action_id]
+        assert action.risk == RiskLevel.MODERATE, action_id
+        assert action.undo_command is None, action_id
+        assert "exit 1" in action.command, action_id
 
 
 def test_m09_catalog_undo_commands_on_all_moderate_and_reboot_actions():

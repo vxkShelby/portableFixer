@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m06_network" / "actions.yaml"
 
 
-def test_m06_catalog_loads_16_actions_in_repair_category():
+def test_m06_catalog_loads_18_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m06_network"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 16
+    assert len(module.actions) == 18
 
 
 def test_m06_catalog_risk_distribution():
@@ -19,7 +19,7 @@ def test_m06_catalog_risk_distribution():
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
     assert len(by_risk[RiskLevel.SAFE]) == 5
-    assert len(by_risk[RiskLevel.MODERATE]) == 8
+    assert len(by_risk[RiskLevel.MODERATE]) == 10
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 3
     assert RiskLevel.DESTRUCTIVE not in by_risk
 
@@ -44,6 +44,8 @@ def test_m06_catalog_covers_expected_ids():
         "net_print_spooler_reset",
         "net_adapter_power_disable",
         "net_set_public_dns",
+        "net_time_sync_repair",
+        "net_dns_client_restart",
     }
 
 
@@ -70,8 +72,23 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_winsock_reset",
         "net_tcpip_reset",
         "net_print_spooler_reset",
+        "net_time_sync_repair",
+        "net_dns_client_restart",
     ):
         assert by_id[action_id].undo_command is None, action_id
+
+
+def test_m06_catalog_new_service_repair_actions_verify_the_restart_worked():
+    # Stop-Service/Start-Service silently no-op without administrator - both
+    # new actions must check the service's actual status afterward rather
+    # than claim success on a no-op (same pattern already required of
+    # net_set_public_dns and m09's tune_pause_background_services).
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("net_time_sync_repair", "net_dns_client_restart"):
+        action = by_id[action_id]
+        assert action.risk == RiskLevel.MODERATE
+        assert "exit 1" in action.command
 
 
 def test_m06_catalog_new_latency_tweaks_refresh_backup_on_every_run():

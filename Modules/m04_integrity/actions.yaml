@@ -65,3 +65,24 @@ actions:
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\wmi_backup.bin\"; if (Test-Path $bk) { winmgmt /restore $bk 1; Write-Output 'WMI repository restored from backup.' } else { Write-Output 'No WMI backup found - nothing to restore.' }"
     description_sk: "Pokusi sa opravit poskodeny WMI repozitar. Robit len po zalohe (akcia wmi_backup), moze stratit vlastne WMI rozsirenia. Undo obnovi zo zalohy, ak existuje."
     description_en: "Attempts to repair a corrupted WMI repository. Only after a backup (the wmi_backup action) - may lose custom WMI extensions. Undo restores from the backup, if one exists."
+  - id: search_index_rebuild
+    label_sk: "Znovuvytvorenie indexu vyhladavania"
+    label_en: "Rebuild Windows Search index"
+    risk: MODERATE
+    command: "$svc = Get-Service -Name WSearch -EA SilentlyContinue; if (-not $svc) { Write-Output 'Windows Search service (WSearch) not found on this system.'; exit 1 }; Stop-Service -Name WSearch -Force -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -ne 'Stopped') { Write-Output 'Could not stop Windows Search service (needs administrator).'; exit 1 }; Remove-Item -Path \"$env:ProgramData\\Microsoft\\Search\\Data\\Applications\\Windows\\Windows.edb\" -Force -EA SilentlyContinue; Start-Service -Name WSearch -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Running') { Write-Output 'Search index database removed - Windows will rebuild it automatically in the background.' } else { Write-Output 'Search index removed but the service failed to restart (needs administrator).'; exit 1 }"
+    description_sk: "Zastavi sluzbu Windows Search, odstrani poskodenu databazu indexu (Windows.edb) a sluzbu znova spusti - Windows index znova vytvori na pozadi. Vyzaduje administratora. Bez undo (nie je co obnovit - index sa len znova vybuduje)."
+    description_en: "Stops the Windows Search service, deletes the corrupted index database (Windows.edb), and restarts the service - Windows rebuilds the index automatically in the background. Needs administrator. No undo (there is nothing to restore to - the index just gets rebuilt)."
+  - id: store_cache_reset
+    label_sk: "Vycistenie cache Microsoft Store"
+    label_en: "Clear Microsoft Store cache"
+    risk: MODERATE
+    command: "if (Get-Command wsreset.exe -EA SilentlyContinue) { & wsreset.exe; Write-Output 'Microsoft Store cache reset triggered (the Store window may briefly appear and close on its own).' } else { Write-Output 'wsreset.exe not found - Microsoft Store is not installed on this system (e.g. LTSC/Server editions).'; exit 1 }"
+    description_sk: "Vycisti cache Microsoft Store cez zabudovany nastroj wsreset.exe - lahsi a cielenejsi prvy krok ako plna re-registracia (appx_reregister). Kratko sa zobrazi a zavrie okno Store."
+    description_en: "Clears the Microsoft Store cache via the built-in wsreset.exe tool - a lighter, more targeted first step than the full re-registration (appx_reregister). Briefly shows and closes the Store window."
+  - id: perf_counters_rebuild
+    label_sk: "Znovuvytvorenie pocitadiel vykonu"
+    label_en: "Rebuild performance counters"
+    risk: MODERATE
+    command: "lodctr /R | Out-Null; $lodctrExit = $LASTEXITCODE; winmgmt /resyncperf | Out-Null; $resyncExit = $LASTEXITCODE; if ($lodctrExit -eq 0 -and $resyncExit -eq 0) { Write-Output 'Performance counters rebuilt (lodctr /R) and WMI perf classes resynced (winmgmt /resyncperf).' } else { Write-Output ('Rebuild completed with issues - lodctr exit: ' + $lodctrExit + ', resyncperf exit: ' + $resyncExit + '. Needs administrator.'); exit 1 }"
+    description_sk: "Znovu vytvori definicie pocitadiel vykonu z registrovej zalohy (lodctr /R) a resynchronizuje WMI vykonnostne triedy (winmgmt /resyncperf) - standardna oprava pre chybajuce/poskodene pocitadla v Performance Monitor alebo monitorovacich agentoch. Vyzaduje administratora. Bez undo (nie je lepsi 'predchadzajuci' stav, na ktory sa vratit)."
+    description_en: "Rebuilds performance counter definitions from the registry backup (lodctr /R) and resyncs WMI's performance classes (winmgmt /resyncperf) - the standard fix for missing/corrupt counters in Performance Monitor or monitoring agents. Needs administrator. No undo (there is no better 'previous' state to roll back to)."
