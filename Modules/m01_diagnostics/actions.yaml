@@ -153,3 +153,59 @@ actions:
     command: "$apps = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -EA SilentlyContinue | Where-Object DisplayName | Select-Object DisplayName,DisplayVersion,Publisher,InstallDate | Sort-Object DisplayName; if ($apps) { $apps | Format-Table -AutoSize } else { Write-Output 'No installed software found in the registry uninstall keys.' }"
     description_sk: "Vypise nainstalovane programy zo systemoveho registra, nic nemeni."
     description_en: "Lists installed programs from the system registry, changes nothing."
+
+  - id: activation_status
+    label_sk: "Stav aktivacie/licencie Windows"
+    label_en: "Windows activation/license status"
+    risk: SAFE
+    command: "$lic = Get-CimInstance SoftwareLicensingProduct -Filter \"ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL\" -EA SilentlyContinue; if ($lic) { $lic | Select-Object Name,Description,LicenseStatus,PartialProductKey | Format-List } else { Write-Output 'No licensing information available.' }"
+    description_sk: "Zobrazi stav aktivacie a ciastocny licencny kluc Windows, nic nemeni."
+    description_en: "Shows the Windows activation status and partial product key, changes nothing."
+
+  - id: restore_points
+    label_sk: "Zoznam obnovovacich bodov"
+    label_en: "System Restore point list"
+    risk: SAFE
+    command: "$rp = Get-ComputerRestorePoint -EA SilentlyContinue; if ($rp) { $rp | Select-Object SequenceNumber,CreationTime,Description,RestorePointType | Format-Table -AutoSize } else { Write-Output 'No system restore points found (System Protection may be disabled).' }"
+    description_sk: "Vypise dostupne obnovovacie body systemu, nic nemeni."
+    description_en: "Lists available System Restore points, changes nothing."
+
+  - id: uptime_faststartup
+    label_sk: "Doba behu a rychle spustenie"
+    label_en: "Uptime and Fast Startup status"
+    risk: SAFE
+    command: "$os = Get-CimInstance Win32_OperatingSystem; $uptime = (Get-Date) - $os.LastBootUpTime; Write-Output ('Last boot: ' + $os.LastBootUpTime); Write-Output ('Uptime: {0}d {1}h {2}m' -f $uptime.Days,$uptime.Hours,$uptime.Minutes); $fs = Get-ItemPropertyValue -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -EA SilentlyContinue; if ($null -eq $fs) { Write-Output 'Fast Startup: not configured on this system.' } else { Write-Output ('Fast Startup enabled: ' + [bool]$fs) }"
+    description_sk: "Zobrazi dobu behu od posledneho startu a stav rychleho spustenia (Fast Startup), nic nemeni."
+    description_en: "Shows uptime since last boot and the Fast Startup (Hiberboot) status, changes nothing."
+
+  - id: os_edition_eol
+    label_sk: "Edicia, build a podpora Windows"
+    label_en: "Windows edition, build, and support status"
+    risk: SAFE
+    command: "$cv = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' -EA SilentlyContinue; Write-Output ($cv.ProductName + ' ' + $cv.DisplayVersion + ' (build ' + $cv.CurrentBuildNumber + '.' + $cv.UBR + ')'); if ([int]$cv.CurrentBuildNumber -lt 22000) { Write-Output 'Windows 10: mainstream support ended 2025-10-14 - verify ESU enrollment or plan an upgrade.' }"
+    description_sk: "Zobrazi ediciu, presny build (vratane UBR) a upozorni, ak ide o Windows 10 po ukonceni podpory. Nic nemeni."
+    description_en: "Shows the edition, exact build (including UBR), and flags Windows 10 past end of support. Changes nothing."
+
+  - id: bitlocker_status
+    label_sk: "Stav sifrovania BitLocker"
+    label_en: "BitLocker encryption status"
+    risk: SAFE
+    command: "try { $bl = Get-BitLockerVolume -EA Stop; if ($bl) { $bl | Select-Object MountPoint,VolumeStatus,ProtectionStatus,EncryptionPercentage,KeyProtector | Format-List } else { Write-Output 'No BitLocker volumes found.' } } catch { Write-Output 'BitLocker status unavailable on this system.' }"
+    description_sk: "Zobrazi stav sifrovania BitLocker na zvazkoch, nic nemeni."
+    description_en: "Shows BitLocker encryption status per volume, changes nothing."
+
+  - id: tpm_status
+    label_sk: "Stav TPM cipu"
+    label_en: "TPM status"
+    risk: SAFE
+    command: "try { Get-Tpm -EA Stop | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated,ManufacturerVersion | Format-List } catch { Write-Output 'TPM status unavailable on this system.' }"
+    description_sk: "Zobrazi pritomnost a stav TPM cipu, nic nemeni."
+    description_en: "Shows the presence and status of the TPM chip, changes nothing."
+
+  - id: pagefile_info
+    label_sk: "Konfiguracia odkladacieho suboru"
+    label_en: "Page file configuration and usage"
+    risk: SAFE
+    command: "$pf = Get-CimInstance Win32_PageFileUsage -EA SilentlyContinue; if ($pf) { $pf | Select-Object Name,AllocatedBaseSize,CurrentUsage,PeakUsage | Format-Table -AutoSize } else { Write-Output 'No page file currently configured.' }; Get-CimInstance Win32_ComputerSystem | Select-Object AutomaticManagedPagefile | Format-List"
+    description_sk: "Zobrazi konfiguraciu a vyuzitie odkladacieho suboru (pagefile), nic nemeni."
+    description_en: "Shows page file configuration and usage, changes nothing."
