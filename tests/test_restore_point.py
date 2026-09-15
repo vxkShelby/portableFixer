@@ -13,8 +13,9 @@ class _FakeResult:
 def test_create_restore_point_success(monkeypatch):
     captured = {}
 
-    def fake_run(argv, capture_output, timeout):
+    def fake_run(argv, capture_output, timeout, creationflags):
         captured["argv"] = argv
+        captured["creationflags"] = creationflags
         return _FakeResult(0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -27,10 +28,26 @@ def test_create_restore_point_success(monkeypatch):
     assert "Checkpoint-Computer" in command
 
 
+def test_create_restore_point_suppresses_console_window(monkeypatch):
+    # Regression test: without creationflags=CREATE_NO_WINDOW, this call
+    # pops a visible console window every time a restore point is created
+    # (which happens automatically before every destructive/repair/security
+    # batch).
+    captured = {}
+
+    def fake_run(argv, capture_output, timeout, creationflags):
+        captured["creationflags"] = creationflags
+        return _FakeResult(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    create_restore_point("test checkpoint")
+    assert captured["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
 def test_create_restore_point_nonzero_returncode_is_false_with_stderr_detail(monkeypatch):
     monkeypatch.setattr(
         subprocess, "run",
-        lambda argv, capture_output, timeout: _FakeResult(1, stderr=b"Access is denied."),
+        lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"Access is denied."),
     )
     success, detail = create_restore_point("x")
     assert success is False
@@ -38,7 +55,7 @@ def test_create_restore_point_nonzero_returncode_is_false_with_stderr_detail(mon
 
 
 def test_create_restore_point_exception_is_false_with_exception_detail(monkeypatch):
-    def raise_error(argv, capture_output, timeout):
+    def raise_error(argv, capture_output, timeout, creationflags):
         raise OSError("boom")
 
     monkeypatch.setattr(subprocess, "run", raise_error)
@@ -52,7 +69,7 @@ def test_create_restore_point_keeps_embedded_double_quotes_literal(monkeypatch):
     # description is wrapped in single quotes, so an embedded " is literal.
     captured = {}
 
-    def fake_run(argv, capture_output, timeout):
+    def fake_run(argv, capture_output, timeout, creationflags):
         captured["argv"] = argv
         return _FakeResult(0)
 
@@ -68,7 +85,7 @@ def test_create_restore_point_escapes_embedded_single_quote(monkeypatch):
     # _ps_quote was written to prevent, now shared here too.
     captured = {}
 
-    def fake_run(argv, capture_output, timeout):
+    def fake_run(argv, capture_output, timeout, creationflags):
         captured["argv"] = argv
         return _FakeResult(0)
 
@@ -83,7 +100,7 @@ def test_create_restore_point_single_quotes_do_not_interpolate_dollar_sign(monke
     # PowerShell variable reference - single-quoted strings never interpolate.
     captured = {}
 
-    def fake_run(argv, capture_output, timeout):
+    def fake_run(argv, capture_output, timeout, creationflags):
         captured["argv"] = argv
         return _FakeResult(0)
 

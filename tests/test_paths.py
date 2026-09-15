@@ -177,6 +177,7 @@ def test_compute_temp_protected_child_refuses_when_temp_itself_is_a_junction(mon
         ["cmd", "/c", "mklink", "/J", str(junction_temp), str(real_temp)],
         check=True,
         capture_output=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     monkeypatch.setenv("TEMP", str(junction_temp))
     app_dir = junction_temp / "AppFolder" / "bin"

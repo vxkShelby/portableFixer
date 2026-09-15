@@ -428,6 +428,7 @@ def test_build_swap_script_parses_as_valid_powershell():
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
          "[scriptblock]::Create($env:PFCMD) | Out-Null; Write-Output OK"],
         env=env, capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     assert "OK" in result.stdout, result.stderr
 
@@ -465,6 +466,7 @@ def test_build_swap_script_single_quotes_do_not_interpolate_dollar_sign():
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
          "[scriptblock]::Create($env:PFCMD) | Out-Null; Write-Output OK"],
         env=env, capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     assert "OK" in result.stdout, result.stderr
 
@@ -689,6 +691,7 @@ def _run_script(script_text: str, tmp_path: Path) -> None:
     subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
         capture_output=True, text=True, timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
 
 

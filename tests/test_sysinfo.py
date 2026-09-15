@@ -241,6 +241,7 @@ def test_check_vpn_status_script_is_valid_powershell_and_checks_native_and_adapt
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
          f"[scriptblock]::Create(@'\n{script}\n'@) | Out-Null; Write-Output 'OK'"],
         capture_output=True, text=True, timeout=15,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     assert "OK" in result.stdout, result.stderr
     assert "Get-VpnConnection" in script

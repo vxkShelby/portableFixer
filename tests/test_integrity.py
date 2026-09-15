@@ -102,6 +102,7 @@ def test_check_integrity_skips_junctions_instead_of_following_them(tmp_path):
     result = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link_path), str(real_dir)],
         capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if result.returncode != 0:
         pytest.skip("mklink /J not available in this environment")
@@ -123,6 +124,7 @@ def test_check_integrity_skips_a_junction_that_cycles_back_to_an_ancestor(tmp_pa
     result = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link_path), str(tmp_path / "App")],
         capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if result.returncode != 0:
         pytest.skip("mklink /J not available in this environment")
