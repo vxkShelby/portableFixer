@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml"
 
 
-def test_m01_catalog_loads_19_actions_in_diagnostics_category():
+def test_m01_catalog_loads_26_actions_in_diagnostics_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m01_diagnostics"
     assert module.category == ModuleCategory.DIAGNOSTICS
-    assert len(module.actions) == 19
+    assert len(module.actions) == 26
 
 
 def test_m01_catalog_all_actions_safe_readonly():
@@ -36,6 +36,15 @@ def test_m01_catalog_covers_core_system_info_actions():
         "bsod_summary", "disk_reliability_counters", "installed_software",
         "boot_time_breakdown", "battery_health_report", "eventlog_full_export",
         "full_system_snapshot_report",
+    }.issubset(ids)
+
+
+def test_m01_catalog_covers_new_system_state_gap_actions():
+    module = load_module(CATALOG_PATH)
+    ids = {a.id for a in module.actions}
+    assert {
+        "activation_status", "restore_points", "uptime_faststartup",
+        "os_edition_eol", "bitlocker_status", "tpm_status", "pagefile_info",
     }.issubset(ids)
 
 
