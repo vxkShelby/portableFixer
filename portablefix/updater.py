@@ -298,35 +298,25 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         # instance that immediately loses to the single-instance mutex and
         # silently exits, which looks exactly like "the restart did nothing".
         "if (-not $swapAborted) {\n"
-        f"    Log \"relaunching via {cmd_path}\"\n"
-        # PassThru's PID is cmd.exe running the .cmd, not PortableFix.exe -
-        # cmd.exe exits right after launching the (non-waited-on) GUI exe,
-        # so checking that PID would false-negative even on success. Check
-        # for the actual exe by path instead.
-        # -WindowStyle Hidden is the one flag that reliably suppresses the
-        # console window regardless of how Windows resolves launching a
-        # .cmd target (a plain ShellExecute of a batch file can allocate
-        # its own visible console with no inherited one to reuse - observed
-        # directly on this machine as a lingering 'cmd /K PortableFix.cmd'
-        # window with neither -EA nor a plain 'start' argument suppressing
-        # it). PortableFix.cmd only launches the GUI exe - a console should
-        # never be visible for it in the first place.
-        f"    Start-Process -FilePath {cmd_path} -WindowStyle Hidden -EA SilentlyContinue\n"
+        f"    Log \"relaunching via {app_exe}\"\n"
+        # Relaunch the GUI exe directly - NOT via PortableFix.cmd. Start-Process
+        # -FilePath on a .cmd target goes through ShellExecute's batfile
+        # handler, which spawns cmd.exe; on Windows 11 with Windows Terminal
+        # set as the default terminal app, -WindowStyle Hidden on that
+        # Start-Process is not reliably honored for the resulting console -
+        # observed directly on this machine as a visible/lingering
+        # 'cmd /K PortableFix.cmd' window regardless of /B, /C, or
+        # -WindowStyle. PortableFix.exe is a GUI app with no console of its
+        # own, so launching it directly removes cmd.exe from this path
+        # entirely - there is no console for any window-style setting to
+        # fail to hide.
+        f"    Start-Process -FilePath {app_exe} -WindowStyle Hidden -EA SilentlyContinue\n"
         "    Start-Sleep -Milliseconds 1500\n"
         f"    $relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object {{ $_.Path -eq {app_exe} }})\n"
         f"    Log \"relaunch verified: $relaunchOk\"\n"
         "    if (-not $relaunchOk) {\n"
-        f"        Log 'relaunch via Start-Process failed, retrying via cmd.exe'\n"
-        # No 'start' here on purpose: cmd's own 'start' builtin, when its
-        # target is a script rather than a native .exe, spawns its OWN
-        # fresh interpreter process for that script - a grandchild with a
-        # brand new console that -WindowStyle Hidden on THIS Start-Process
-        # can't reach, observed directly as a lingering 'cmd /K
-        # PortableFix.cmd' window regardless of /B or -WindowStyle here.
-        # Running the .cmd directly via this single cmd.exe avoids spawning
-        # that grandchild entirely - -WindowStyle Hidden then controls the
-        # only console in the chain.
-        f"        Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c \"' + {cmd_path} + '\"') -WindowStyle Hidden -EA SilentlyContinue\n"
+        f"        Log 'relaunch via Start-Process failed, retrying once'\n"
+        f"        Start-Process -FilePath {app_exe} -WindowStyle Hidden -EA SilentlyContinue\n"
         "    }\n"
         "} else {\n"
         "    Log 'skipping relaunch - old process is still running (that is why the swap was aborted), it is already the running instance'\n"

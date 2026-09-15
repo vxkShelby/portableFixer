@@ -547,7 +547,7 @@ def test_build_swap_script_relaunches_before_cleaning_up_temp_files():
         install_dir=Path(r"C:\App"),
         zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\PortableFix.cmd'")
+    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\App\\PortableFix.exe'")
     zip_cleanup_pos = script.index("Remove-Item -Path 'C:\\Temp\\PortableFix-update.zip'")
     assert relaunch_pos < zip_cleanup_pos
 
@@ -635,7 +635,7 @@ def test_build_swap_script_skips_relaunch_on_pid_wait_abort():
     guard_pos = script.index("if (-not $swapAborted) {\n    Log \"relaunching via")
     assert abort_pos < guard_pos
     # the abort branch must not exit the script early
-    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\PortableFix.cmd'")
+    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\App\\PortableFix.exe'")
     assert "\n    exit 1\n" not in script[abort_pos:relaunch_pos]
     assert "skipping relaunch - old process is still running" in script
 
@@ -648,7 +648,7 @@ def test_build_swap_script_verifies_relaunch_and_falls_back(tmp_path):
     )
     assert "$relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object { $_.Path -eq 'C:\\App\\App\\PortableFix.exe' })" in script
     assert "if (-not $relaunchOk) {" in script
-    assert "retrying via cmd.exe" in script
+    assert "retrying once" in script
 
 
 def _make_release_zip(tmp_path: Path, exe_marker: bytes = b"new-exe") -> Path:
@@ -737,13 +737,18 @@ def test_swap_script_aborts_without_false_positive_when_old_app_dir_is_locked(tm
     assert locked_file.read_bytes() == b"old-exe"
 
 
-def test_build_swap_script_restarts_via_portablefix_cmd():
+def test_build_swap_script_restarts_via_portablefix_exe_directly():
+    # Relaunch must target the GUI exe directly, not PortableFix.cmd - a
+    # Start-Process on the .cmd goes through cmd.exe, whose console window
+    # isn't reliably hidden on Windows 11 with Windows Terminal as the
+    # default terminal app (see build_swap_script's relaunch comment).
     script = build_swap_script(
         current_pid=1,
         install_dir=Path(r"C:\App"),
         zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert "Start-Process -FilePath 'C:\\App\\PortableFix.cmd'" in script
+    assert "Start-Process -FilePath 'C:\\App\\App\\PortableFix.exe'" in script
+    assert "Start-Process -FilePath 'C:\\App\\PortableFix.cmd'" not in script
 
 
 from portablefix.updater import UpdateCheckRunner, UpdateDownloadRunner
