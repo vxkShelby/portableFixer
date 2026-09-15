@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_12_actions_in_security_category():
+def test_m08_catalog_loads_18_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 12
+    assert len(module.actions) == 18
 
 
 def test_m08_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 9
+    assert len(by_risk[RiskLevel.SAFE]) == 15
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "hard_uac_restore_default",
         "sec_wpbt_disable",
@@ -47,6 +47,12 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
         "sec_bootsector_check",
         "sec_hidden_process_heuristic",
         "sec_process_signature_audit",
+        "sec_local_admins",
+        "sec_recent_local_accounts",
+        "sec_password_never_expires",
+        "sec_windows_update_last",
+        "sec_hosts_anomaly",
+        "sec_suspicious_scheduled_tasks",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
 
@@ -75,6 +81,12 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "sec_hidden_process_heuristic",
         "sec_process_signature_audit",
         "sec_restore_taskmgr_regedit",
+        "sec_local_admins",
+        "sec_recent_local_accounts",
+        "sec_password_never_expires",
+        "sec_windows_update_last",
+        "sec_hosts_anomaly",
+        "sec_suspicious_scheduled_tasks",
     }
 
 
@@ -89,6 +101,41 @@ def test_m08_catalog_rootkit_adjacent_heuristics_disclose_their_own_limits():
     assert "not real bootkit detection" in by_id["sec_bootsector_check"].description_en.lower()
     for action_id in ("sec_bootsector_check", "sec_hidden_process_heuristic", "sec_process_signature_audit"):
         assert by_id[action_id].risk == RiskLevel.SAFE, action_id
+
+
+def test_m08_catalog_new_account_and_network_audits_are_safe_and_reversible_dont_apply():
+    # sec_local_admins / sec_recent_local_accounts / sec_password_never_expires /
+    # sec_windows_update_last / sec_hosts_anomaly / sec_suspicious_scheduled_tasks
+    # are read-only account/network audit additions (research-security-additions.md
+    # Bucket A) - all SAFE, none mutate anything so none need an undo_command.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in (
+        "sec_local_admins",
+        "sec_recent_local_accounts",
+        "sec_password_never_expires",
+        "sec_windows_update_last",
+        "sec_hosts_anomaly",
+        "sec_suspicious_scheduled_tasks",
+    ):
+        assert by_id[action_id].risk == RiskLevel.SAFE, action_id
+        assert by_id[action_id].undo_command is None, action_id
+
+
+def test_m08_catalog_noisy_new_audits_disclose_their_false_positive_risk():
+    # Both of these routinely flag entirely benign, common cases (a household
+    # with its own ad-block hosts file; legit auto-updaters running from
+    # AppData) - the description must say so, not present raw output as a verdict.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert "benign" in by_id["sec_hosts_anomaly"].description_en.lower()
+    assert "not an automatic verdict" in by_id["sec_suspicious_scheduled_tasks"].description_en.lower()
+
+
+def test_m08_catalog_password_never_expires_only_flags_enabled_accounts():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "sec_password_never_expires")
+    assert "$_.Enabled -eq $true" in action.command
 
 
 def test_m08_catalog_uac_restore_verifies_the_registry_write_actually_worked():
