@@ -18,7 +18,10 @@ def create_restore_point(description: str) -> tuple[bool, str]:
         f'Checkpoint-Computer -Description {_ps_quote(description)} -RestorePointType MODIFY_SETTINGS'
     )
     try:
-        result = subprocess.run(POWERSHELL_PREFIX + [command], capture_output=True, timeout=120)
+        result = subprocess.run(
+            POWERSHELL_PREFIX + [command], capture_output=True, timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         if result.returncode == 0:
             return True, ""
         return False, result.stderr.decode("utf-8", errors="replace").strip()
