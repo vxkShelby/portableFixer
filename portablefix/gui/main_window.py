@@ -1000,6 +1000,11 @@ class MainWindow(QMainWindow):
         search_box.setPlaceholderText(self._t("winget_search_placeholder"))
         panel_layout.addWidget(search_box)
 
+        search_status_label = QLabel("")
+        search_status_label.setObjectName("selectionScope")
+        search_status_label.setVisible(False)
+        panel_layout.addWidget(search_status_label)
+
         status_label = QLabel(self._t("winget_scanning"))
         status_label.setObjectName("wingetBanner")
         status_label.setProperty("state", "ok")
@@ -1102,8 +1107,20 @@ class MainWindow(QMainWindow):
 
         def apply_search(text: str) -> None:
             needle = text.strip().lower()
+            visible_count = 0
             for pkg_id, checkbox in row_checkboxes.items():
-                checkbox.setHidden(bool(needle) and needle not in checkbox.text().lower() and needle not in pkg_id.lower())
+                is_match = not needle or needle in checkbox.text().lower() or needle in pkg_id.lower()
+                checkbox.setHidden(not is_match)
+                if is_match:
+                    visible_count += 1
+            # Only the zero-match case needs a message - a non-empty result
+            # is already visible feedback, an empty one looks like the scan
+            # silently found nothing (or is broken) without this.
+            if needle and visible_count == 0 and row_checkboxes:
+                search_status_label.setText(self._t("search_no_matches").format(query=text.strip()))
+                search_status_label.setVisible(True)
+            else:
+                search_status_label.setVisible(False)
 
         search_box.textChanged.connect(apply_search)
 
@@ -1517,6 +1534,11 @@ class MainWindow(QMainWindow):
         search_box.setPlaceholderText(self._t("uninstaller_search_placeholder"))
         card_layout.addWidget(search_box)
 
+        list_status_label = QLabel("")
+        list_status_label.setObjectName("selectionScope")
+        list_status_label.setVisible(False)
+        card_layout.addWidget(list_status_label)
+
         programs = uninstaller.list_installed_programs()
         row_checkboxes: dict[str, QCheckBox] = {}
         row_widgets: dict[str, QWidget] = {}
@@ -1552,10 +1574,25 @@ class MainWindow(QMainWindow):
 
         def apply_search(text: str) -> None:
             needle = text.strip().lower()
+            visible_count = 0
             for name, row_widget in row_widgets.items():
-                row_widget.setHidden(bool(needle) and needle not in name.lower())
+                is_match = not needle or needle in name.lower()
+                row_widget.setHidden(not is_match)
+                if is_match:
+                    visible_count += 1
+            if not row_widgets:
+                # No installed programs at all (registry gave nothing back) -
+                # an empty scroll area with no explanation looks broken.
+                list_status_label.setText(self._t("uninstaller_no_programs"))
+                list_status_label.setVisible(True)
+            elif needle and visible_count == 0:
+                list_status_label.setText(self._t("search_no_matches").format(query=text.strip()))
+                list_status_label.setVisible(True)
+            else:
+                list_status_label.setVisible(False)
 
         search_box.textChanged.connect(apply_search)
+        apply_search("")
 
         select_row = QHBoxLayout()
         select_all_btn = self._make_selection_button(
