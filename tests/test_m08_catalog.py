@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_12_actions_in_security_category():
+def test_m08_catalog_loads_18_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 12
+    assert len(module.actions) == 18
 
 
 def test_m08_catalog_risk_distribution():
@@ -23,9 +23,14 @@ def test_m08_catalog_risk_distribution():
         "hard_uac_restore_default",
         "sec_wpbt_disable",
         "sec_restore_taskmgr_regedit",
+        "hard_disable_smb1",
+        "hard_disable_rdp",
+        "hard_firewall_enable_all",
+        "hard_disable_autologon",
+        "hard_smartscreen_default",
     }
+    assert set(by_risk[RiskLevel.REQUIRES_REBOOT]) == {"hard_lsa_protection_enable"}
     assert RiskLevel.DESTRUCTIVE not in by_risk
-    assert RiskLevel.REQUIRES_REBOOT not in by_risk
 
 
 def test_m08_catalog_only_hardening_actions_have_undo_command():
@@ -35,6 +40,12 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
         "hard_uac_restore_default",
         "sec_wpbt_disable",
         "sec_restore_taskmgr_regedit",
+        "hard_disable_smb1",
+        "hard_disable_rdp",
+        "hard_firewall_enable_all",
+        "hard_disable_autologon",
+        "hard_lsa_protection_enable",
+        "hard_smartscreen_default",
     ):
         assert by_id[undoable].undo_command is not None, undoable
     for not_undoable in (
@@ -49,6 +60,44 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
         "sec_process_signature_audit",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
+
+
+def test_m08_catalog_rdp_and_lsa_protection_excluded_from_select_all():
+    # hard_disable_rdp can self-lockout an active RDP session the instant it
+    # runs, and hard_lsa_protection_enable can break older AV/backup/VPN
+    # drivers at the *next* boot when the technician may not be present -
+    # both must require a deliberate, individual checkbox, never get swept
+    # in by a bulk "select all" in their risk tab or category.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert by_id["hard_disable_rdp"].exclude_from_select_all is True
+    assert by_id["hard_lsa_protection_enable"].exclude_from_select_all is True
+    for action_id in (
+        "hard_disable_smb1",
+        "hard_firewall_enable_all",
+        "hard_disable_autologon",
+        "hard_smartscreen_default",
+    ):
+        assert by_id[action_id].exclude_from_select_all is False, action_id
+
+
+def test_m08_catalog_lsa_protection_uses_reversible_non_uefi_locked_value():
+    # RunAsPPL=2 UEFI-locks the setting so a plain registry undo can no
+    # longer turn it off - only 1 keeps the promised undo_command honest.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "hard_lsa_protection_enable")
+    assert "-Value 1" in action.command
+    assert "-Value 2" not in action.command
+
+
+def test_m08_catalog_autologon_undo_never_restores_the_password():
+    # Deliberate design choice from the source research: persisting the
+    # recovered plaintext password anywhere (registry or our own backup
+    # file) would just relocate the exact secret-at-rest problem this
+    # action exists to fix.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "hard_disable_autologon")
+    assert "DefaultPassword" not in action.undo_command
 
 
 def test_m08_catalog_autologon_check_never_prints_the_password_itself():
@@ -75,6 +124,12 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "sec_hidden_process_heuristic",
         "sec_process_signature_audit",
         "sec_restore_taskmgr_regedit",
+        "hard_disable_smb1",
+        "hard_disable_rdp",
+        "hard_firewall_enable_all",
+        "hard_disable_autologon",
+        "hard_lsa_protection_enable",
+        "hard_smartscreen_default",
     }
 
 

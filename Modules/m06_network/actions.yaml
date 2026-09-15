@@ -126,3 +126,17 @@ actions:
     undo_command: "$adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }; if (-not $adapters) { Write-Output 'No active network adapters found.'; exit 1 }; $ok = @(); $failed = @(); foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -EA Stop; $ok += $a.Name } catch { $failed += $a.Name } }; if ($ok) { Write-Output ('DNS reset to automatic (DHCP) on: ' + ($ok -join ', ')) }; if ($failed) { Write-Output ('Could not reset DNS (needs administrator): ' + ($failed -join ', ')) }; if ($failed -and -not $ok) { exit 1 }"
     description_sk: "Nastavi DNS na verejny Cloudflare resolver (1.1.1.1 / 1.0.0.1) na vsetkych aktivnych adapteroch - vhodne, ak DNS poskytovatela pripojenia/routera je pomaly alebo nefunguje spravne. Vyzaduje administratora. Undo vrati automaticke DNS pridelovane cez DHCP."
     description_en: "Sets DNS to Cloudflare's public resolver (1.1.1.1 / 1.0.0.1) on all active adapters - useful when the ISP's/router's own DNS is slow or broken. Needs administrator. Undo restores automatic (DHCP-assigned) DNS."
+  - id: net_time_sync_repair
+    label_sk: "Oprava synchronizacie casu"
+    label_en: "Repair time synchronization"
+    risk: MODERATE
+    command: "Set-Service -Name W32Time -StartupType Automatic -EA SilentlyContinue; Start-Service -Name W32Time -EA SilentlyContinue; $svc = Get-Service -Name W32Time -EA SilentlyContinue; if (-not $svc -or $svc.Status -ne 'Running') { Write-Output 'Could not start Windows Time service (needs administrator).'; exit 1 }; w32tm /resync /force | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Time service started and clock resynchronized.' } else { Write-Output 'Time service running but resync failed (no time server reachable, or needs administrator).'; exit 1 }"
+    description_sk: "Zapne a spusti sluzbu Windows Time (W32Time) a vynuti okamzitu synchronizaciu hodin (w32tm /resync /force). Posun hodin ticho lamie Kerberos/TLS overovanie a prihlasovanie - neocakavany, ale caste zdroj problemov. Vyzaduje administratora. Bez undo (opraveny cas nie je co vracat spat)."
+    description_en: "Enables and starts the Windows Time service (W32Time) and forces an immediate clock resync (w32tm /resync /force). Clock drift silently breaks Kerberos/TLS validation and sign-in - a non-obvious but common root cause. Needs administrator. No undo (a corrected clock isn't something to roll back)."
+  - id: net_dns_client_restart
+    label_sk: "Restart sluzby DNS Client"
+    label_en: "Restart DNS Client service"
+    risk: MODERATE
+    command: "$svc = Get-Service -Name Dnscache -EA SilentlyContinue; if (-not $svc) { Write-Output 'DNS Client service (Dnscache) not found.'; exit 1 }; Stop-Service -Name Dnscache -Force -EA SilentlyContinue; $svc.Refresh(); Start-Service -Name Dnscache -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Running') { Write-Output 'DNS Client service restarted.' } else { Write-Output 'Could not restart DNS Client service (needs administrator).'; exit 1 }"
+    description_sk: "Zastavi a znovu spusti sluzbu DNS Client (Dnscache) - na rozdiel od net_flush_dns (ktory len vycisti cache) toto pomoze, ak je zaseknuta samotna sluzba. Vyzaduje administratora. Bez undo."
+    description_en: "Stops and restarts the DNS Client service (Dnscache) - unlike net_flush_dns (which only clears the cache), this helps when the service itself is wedged, not just the cache. Needs administrator. No undo."

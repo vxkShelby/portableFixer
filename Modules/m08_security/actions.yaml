@@ -105,3 +105,59 @@ actions:
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name DisableWpbtExecution -EA SilentlyContinue; Write-Output 'WPBT setting removed (back to Windows default).'"
     description_sk: "Vypne WPBT (Windows Platform Binary Table) - mechanizmus, cez ktory vyrobca notebooku/PC moze spustit program hned pri starte Windows (napr. anti-theft softver), niekedy aj bez suhlasu pouzivatela. Znama cesta zneuzitia predinstalovanym OEM softverom. Undo nastavenie odstrani."
     description_en: "Disables WPBT (Windows Platform Binary Table) - the mechanism that lets a PC/laptop vendor auto-run a program at Windows boot (e.g. anti-theft software), sometimes without user consent. A known abuse vector for preinstalled OEM software. Undo removes the setting."
+
+  - id: hard_disable_smb1
+    label_sk: "Vypnutie SMBv1"
+    label_en: "Disable SMBv1"
+    risk: MODERATE
+    command: "try { Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -EA Stop; Write-Output 'SMB1 server component disabled (takes effect immediately for new connections; does not remove the SMB1 client, only inbound file sharing).' } catch { Write-Output ('Could not disable SMB1 (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "try { Set-SmbServerConfiguration -EnableSMB1Protocol $true -Force -EA Stop; Write-Output 'SMB1 server component re-enabled.' } catch { Write-Output ('Could not re-enable SMB1: ' + $_.Exception.Message); exit 1 }"
+    description_sk: "Vypne serverovu (zdielaciu) cast protokolu SMBv1 - zatvara vektor utoku WannaCry/EternalBlue. Klientsku cast SMBv1 (pripajanie sa von na cudzie stare zdielania) nemeni. Kompatibilita: velmi stare NAS/tlaciarne/konzoly, ktore vediat komunikovat len cez SMBv1 ako server, prestanu byt dostupne z tohto PC. Vyzaduje administratora."
+    description_en: "Disables the server (sharing) half of the SMBv1 protocol - closes the WannaCry/EternalBlue attack vector. Does not touch the SMB1 client half (connecting out to someone else's old share). Compatibility: very old NAS boxes/printers/consoles that only speak SMB1 as a server will stop being reachable from this PC. Needs administrator."
+
+  - id: hard_disable_rdp
+    label_sk: "Vypnutie vzdialenej plochy (RDP)"
+    label_en: "Disable Remote Desktop (RDP)"
+    risk: MODERATE
+    exclude_from_select_all: true
+    command: "try { Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 1 -Type DWord -EA Stop; Disable-NetFirewallRule -DisplayGroup 'Remote Desktop' -EA SilentlyContinue; Write-Output 'Remote Desktop disabled (registry + firewall rule group). WARNING: if you are connected to this PC over RDP right now, this drops your session immediately.' } catch { Write-Output ('Could not disable Remote Desktop (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "try { Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 0 -Type DWord -EA Stop; Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -EA SilentlyContinue; Write-Output 'Remote Desktop re-enabled.' } catch { Write-Output ('Could not re-enable Remote Desktop: ' + $_.Exception.Message); exit 1 }"
+    description_sk: "Vypne vzdialenu plochu (registry fDenyTSConnections + firewall pravidla) - exponovane RDP je jeden z najcastejsich vstupnych vektorov ransomvéru. POZOR: ak ste prave pripojeny cez RDP na tento pocitac, spustenie tejto akcie vas okamzite odpoji. Zamerne vylucene z hromadneho 'vybrat vsetko' vyberu - musi sa zaskrtnut samostatne. Vyzaduje administratora."
+    description_en: "Disables Remote Desktop (fDenyTSConnections registry value + firewall rule group) - exposed RDP is one of the most common ransomware entry vectors. WARNING: if you are currently connected to this PC over RDP, running this drops your session immediately. Deliberately excluded from bulk 'select all' - must be checked individually. Needs administrator."
+
+  - id: hard_firewall_enable_all
+    label_sk: "Zapnutie firewallu na vsetkych profiloch"
+    label_en: "Enable firewall on all profiles"
+    risk: MODERATE
+    command: "$bk = \"$env:ProgramData\\PortableFix\\fw_profile_backup.csv\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; if (-not (Test-Path $bk)) { Get-NetFirewallProfile | Select-Object Name,Enabled | Export-Csv -Path $bk -NoTypeInformation }; try { Set-NetFirewallProfile -All -Enabled True -EA Stop; Write-Output 'Firewall enabled on all profiles (Domain/Private/Public).' } catch { Write-Output ('Could not enable firewall profiles (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "$bk = \"$env:ProgramData\\PortableFix\\fw_profile_backup.csv\"; if (Test-Path $bk) { try { Import-Csv $bk | ForEach-Object { Set-NetFirewallProfile -Name $_.Name -Enabled ([System.Convert]::ToBoolean($_.Enabled)) -EA Stop }; Write-Output 'Firewall profile enabled-state restored from backup.' } catch { Write-Output ('Could not restore firewall profile state: ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - firewall left enabled.' }"
+    description_sk: "Zalohuje aktualny stav Enabled/Disabled kazdeho firewall profilu (len pri prvom behu) a zapne firewall na vsetkych troch (Domain/Private/Public). Meni iba Enabled, nie DefaultInboundAction/DefaultOutboundAction, aby nezrusilo vlastne pravidla ineho softveru. Priamo opravuje zistenie z sec_firewall_status. Vyzaduje administratora."
+    description_en: "Backs up the current Enabled/Disabled state of every firewall profile (only on first run) and enables the firewall on all three (Domain/Private/Public). Only touches Enabled, not DefaultInboundAction/DefaultOutboundAction, so it doesn't clobber another product's custom rules. Directly remediates the sec_firewall_status finding. Needs administrator."
+
+  - id: hard_disable_autologon
+    label_sk: "Vypnutie automatickeho prihlasenia"
+    label_en: "Disable autologon"
+    risk: MODERATE
+    command: "$w = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'; try { Set-ItemProperty -Path $w -Name AutoAdminLogon -Value '0' -Type String -EA Stop; Remove-ItemProperty -Path $w -Name DefaultPassword -EA SilentlyContinue; Write-Output 'Autologon disabled; stored plaintext password removed from the registry.' } catch { Write-Output ('Could not disable autologon (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "try { Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value '1' -Type String -EA Stop; Write-Output 'Autologon re-enabled. The password was NOT restored (by design) - set it again via netplwiz if truly needed.' } catch { Write-Output ('Could not re-enable autologon: ' + $_.Exception.Message); exit 1 }"
+    description_sk: "Vypne automaticke prihlasenie a odstrani ulozene heslo v ciston texte z registra - priamo opravuje zistenie sec_autologon_check. Undo zamerne neobnovi heslo (aby sa nepremiestnilo na ine miesto v rovnako neistej forme) - ak je autologon naozaj potrebny, treba ho znova nastavit cez netplwiz. Vyzaduje administratora."
+    description_en: "Disables autologon and removes the plaintext-stored password from the registry - directly remediates the sec_autologon_check finding. Undo deliberately does not restore the password (so it isn't just relocated to another spot in the same insecure form) - if autologon is genuinely wanted, set it again via netplwiz. Needs administrator."
+
+  - id: hard_lsa_protection_enable
+    label_sk: "Zapnutie ochrany LSA (RunAsPPL)"
+    label_en: "Enable LSA protection (RunAsPPL)"
+    risk: REQUIRES_REBOOT
+    exclude_from_select_all: true
+    command: "try { Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -Value 1 -Type DWord -EA Stop; Write-Output 'LSA protection (RunAsPPL) enabled. Requires a restart to take effect. WARNING: older AV/backup/VPN drivers that inject into LSASS can fail to load or crash at the next boot - do not run unattended on an unknown software stack.' } catch { Write-Output ('Could not enable LSA protection (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -EA SilentlyContinue; Write-Output 'LSA protection setting removed (requires a restart to take effect).'"
+    description_sk: "Zapne ochranu LSASS (RunAsPPL=1, nie UEFI-locked hodnota 2, aby undo ostal skutocne funkcny) - vyrazne stazuje nastroje typu Mimikatz na kradnutie credentialov z pamate. Riziko: starsie AV/zalohovacie/VPN ovladace, ktore sa injektuju do LSASS, mozu pri najblizsom starte zlyhat alebo sposobit BSOD - zamerne vylucene z hromadneho 'vybrat vsetko' vyberu. Vyzaduje administratora a restart."
+    description_en: "Enables LSASS protection (RunAsPPL=1, not the UEFI-locked value 2, so the undo stays genuinely honest) - significantly raises the bar against Mimikatz-style credential-dumping tools. Risk: older AV/backup/VPN drivers that inject into LSASS can fail to load or blue-screen at the next boot - deliberately excluded from bulk 'select all'. Needs administrator and a restart."
+
+  - id: hard_smartscreen_default
+    label_sk: "Obnovenie SmartScreen na predvolene nastavenie"
+    label_en: "Restore SmartScreen to default"
+    risk: MODERATE
+    command: "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer'; $bk = \"$env:ProgramData\\PortableFix\\smartscreen_backup.txt\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; if (-not (Test-Path $bk)) { $cur = (Get-ItemProperty -Path $k -Name SmartScreenEnabled -EA SilentlyContinue).SmartScreenEnabled; if ($cur) { Set-Content -Path $bk -Value $cur -Encoding UTF8 } }; try { Set-ItemProperty -Path $k -Name SmartScreenEnabled -Value 'RequireAdmin' -Type String -EA Stop; Write-Output 'SmartScreen restored to the Windows default (RequireAdmin).' } catch { Write-Output ('Could not restore SmartScreen setting (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer'; $bk = \"$env:ProgramData\\PortableFix\\smartscreen_backup.txt\"; if (Test-Path $bk) { $v = (Get-Content $bk -Raw).Trim(); try { Set-ItemProperty -Path $k -Name SmartScreenEnabled -Value $v -Type String -EA Stop; Write-Output 'SmartScreen setting restored from backup.' } catch { Write-Output ('Could not restore SmartScreen setting: ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found.' }"
+    description_sk: "Nastavi SmartScreen na predvoleny rezim Windows (RequireAdmin) po zalohe aktualnej hodnoty (len pri prvom behu) - uzatvara trik niektorych bundleware instalatorov, ktore SmartScreen ticho vypnu, aby dalsie instalacie neboli oznacene. Vyzaduje administratora."
+    description_en: "Sets SmartScreen to the Windows default mode (RequireAdmin) after backing up the current value (only on first run) - closes a common bundleware-installer trick that silently flips SmartScreen off so subsequent junk installs don't get flagged. Needs administrator."
