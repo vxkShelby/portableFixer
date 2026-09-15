@@ -132,6 +132,9 @@ _STRINGS = {
         "console_fullscreen_toggle": "Cez cele okno / vratit velkost",
         "console_popout": "Otvorit v samostatnom okne",
         "console_popout_title": "Vystup - PortableFix",
+        "confirm_close_during_batch": "Prave bezi davka akcii. Naozaj chcete zatvorit aplikaciu a prerusit ju?",
+        "summary_space_freed": "Uvolnene miesto: {delta}",
+        "open_undo_script": "Otvorit undo skript",
     },
     "en": {
         "app_title": "PortableFix",
@@ -266,6 +269,9 @@ _STRINGS = {
         "console_fullscreen_toggle": "Fill window / restore size",
         "console_popout": "Open in a separate window",
         "console_popout_title": "Output - PortableFix",
+        "confirm_close_during_batch": "A batch of actions is currently running. Close the app and interrupt it anyway?",
+        "summary_space_freed": "Space freed: {delta}",
+        "open_undo_script": "Open undo script",
     },
 }
 

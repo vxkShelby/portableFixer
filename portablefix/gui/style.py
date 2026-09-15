@@ -72,6 +72,9 @@ QListWidget#categoryList::item:selected {
     color: #8ff2ff;
     font-weight: bold;
 }
+QListWidget#categoryList::item:focus {
+    outline: 2px solid #2fe6ff;
+}
 
 QScrollArea {
     border: none;
@@ -129,6 +132,9 @@ QCheckBox::indicator:checked {
     background-color: #2fe6ff;
     border-color: #2fe6ff;
 }
+QCheckBox::indicator:focus {
+    outline: 2px solid #2fe6ff;
+}
 
 QLabel#riskBadge {
     border-radius: 8px;
@@ -156,6 +162,10 @@ QPushButton {
 QPushButton:hover {
     background-color: #1a212d;
     border-color: #2fe6ff;
+}
+QPushButton:focus {
+    outline: 2px solid #2fe6ff;
+    outline-offset: 1px;
 }
 QPushButton#runButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

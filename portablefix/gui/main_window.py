@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
         self._batch_active = False
         self._snapshot_before: dict = {}
+        self._snapshot_after: dict = {}
         self._undo_steps: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
         self._recommended_action_ids: set[str] = set()
@@ -127,11 +128,47 @@ class MainWindow(QMainWindow):
         self._hw_sensor_timer = None
         self._ping_timer = None
         self._vpn_timer = None
+        self._undo_script_path: Path | None = None
         self._build_ui()
         self._start_update_check()
         self._start_sysinfo_polling()
+        # Bound to self (the window), not any widget rebuilt by _build_ui -
+        # created once here rather than inside _build_ui, which reruns on
+        # every language toggle and would otherwise stack up a fresh
+        # duplicate QShortcut (each one firing) on every toggle.
+        self._select_all_shortcut = QShortcut(QKeySequence("Ctrl+A"), self)
+        self._select_all_shortcut.activated.connect(self._on_select_all_shortcut)
+        self._run_shortcut = QShortcut(QKeySequence("F5"), self)
+        self._run_shortcut.activated.connect(self._on_run_shortcut)
+
+    def _on_select_all_shortcut(self) -> None:
+        # Qt.WindowShortcut fires regardless of which child widget has focus,
+        # so without this guard, Ctrl+A while typing in the search box (or
+        # any text field) would select every action instead of the text.
+        focused = QApplication.focusWidget()
+        if isinstance(focused, (QLineEdit, QPlainTextEdit)):
+            return
+        self._apply_selection(list(self._action_checkboxes), "all")
+
+    def _on_run_shortcut(self) -> None:
+        # run_button.setEnabled(False) during a batch stops a stray mouse
+        # click from re-entering run_selected_actions, but a keyboard
+        # shortcut bypasses disabled-widget protection entirely - guard here.
+        if self._batch_active or self._update_in_progress:
+            return
+        self.run_selected_actions()
 
     def closeEvent(self, event) -> None:
+        if self._batch_active:
+            proceed = QMessageBox.question(
+                self,
+                self._t("app_title"),
+                self._t("confirm_close_during_batch"),
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if proceed != QMessageBox.Yes:
+                event.ignore()
+                return
         # ponytail: plain-Python flag (safe even if a delayed cross-thread
         # callback fires after the C++ widgets are gone) so async batch-completion
         # handlers know not to touch self.run_button once the window is closing.
@@ -902,6 +939,19 @@ class MainWindow(QMainWindow):
         header.setObjectName("summaryHeader")
         layout.addWidget(header)
 
+        # Reuses the exact free-space delta computation report.py already
+        # does for the HTML report - the in-app dialog never showed it,
+        # only ok/fail counts, even though the numbers were already on self.
+        if not self.settings.dry_run:
+            free_before = self._snapshot_before.get("free_gb")
+            free_after = self._snapshot_after.get("free_gb")
+            if isinstance(free_before, (int, float)) and isinstance(free_after, (int, float)):
+                diff = round(free_after - free_before, 2)
+                sign = "+" if diff >= 0 else ""
+                space_label = QLabel(self._t("summary_space_freed").format(delta=f"{sign}{diff} GB"))
+                space_label.setObjectName("selectionScope")
+                layout.addWidget(space_label)
+
         if self.settings.dry_run:
             note = QLabel(self._t("dry_run_batch_note"))
             note.setObjectName("summaryDryRunNote")
@@ -971,6 +1021,17 @@ class MainWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path)))
         )
         button_row.addWidget(open_button)
+        if self._undo_steps and self._undo_script_path is not None:
+            # Mirrors the "Open report" button above exactly - the undo
+            # script already exists on disk whenever there are reversible
+            # steps, but until now there was no UI entry point to find it.
+            undo_script_path = self._undo_script_path
+            open_undo_button = QPushButton(self._t("open_undo_script"))
+            open_undo_button.setObjectName("selectionBtn")
+            open_undo_button.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(undo_script_path)))
+            )
+            button_row.addWidget(open_undo_button)
         layout.addLayout(button_row)
 
         dialog.show()
@@ -1915,6 +1976,7 @@ class MainWindow(QMainWindow):
                     self._apply_selection(list(self._action_checkboxes), "none")
                     self._update_status_bar()
                 snapshot_after = self._take_snapshot()
+                self._snapshot_after = snapshot_after
                 try:
                     html_path, _ = report.generate_report(
                         self.state_dir,
@@ -1980,7 +2042,9 @@ class MainWindow(QMainWindow):
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
             try:
-                undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
+                self._undo_script_path = undo.create_undo_script(
+                    self.state_dir, self.run_id, steps=list(reversed(self._undo_steps))
+                )
             except OSError:
                 if not self._closed:
                     self.console.appendPlainText(self._t("disk_write_failed"))
@@ -2130,7 +2194,9 @@ class MainWindow(QMainWindow):
             if action.undo_command:
                 self._undo_steps.append(action.undo_command)
                 try:
-                    undo.create_undo_script(self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)))
+                    self._undo_script_path = undo.create_undo_script(
+                        self.state_dir, self.run_id, steps=list(reversed(self._undo_steps))
+                    )
                 except OSError:
                     if not self._closed:
                         self.console.appendPlainText(self._t("disk_write_failed"))

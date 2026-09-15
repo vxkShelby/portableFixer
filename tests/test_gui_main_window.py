@@ -2298,3 +2298,154 @@ def test_expand_state_is_independent_between_category_and_risk_tab_views(qtbot, 
 
     assert window._action_detail_panels["detailed_action"].isHidden() is False
     assert window._risk_view_detail_panels["detailed_action"].isHidden() is True
+
+
+def test_close_during_active_batch_prompts_and_can_be_cancelled(qtbot, tmp_path, monkeypatch):
+    # Regression test for the closeEvent gap: closing the window mid-batch
+    # used to proceed immediately with no prompt, even though a subprocess
+    # could still be running.
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_close_confirm")
+    qtbot.addWidget(window)
+    window.show()
+    window._batch_active = True
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+
+    window.close()
+
+    assert window.isVisible() is True
+    assert window._closed is False
+
+
+def test_close_during_active_batch_confirmed_closes_normally(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_close_confirm_yes")
+    qtbot.addWidget(window)
+    window.show()
+    window._batch_active = True
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+
+    window.close()
+
+    assert window._closed is True
+
+
+def test_batch_summary_shows_space_freed_delta(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_space_delta")
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+
+    snapshots = iter([{"free_gb": 100.0, "total_gb": 200.0}, {"free_gb": 101.5, "total_gb": 200.0}])
+    monkeypatch.setattr(window, "_take_snapshot", lambda: next(snapshots))
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: window._summary_dialog is not None, timeout=10000)
+    texts = [w.text() for w in window._summary_dialog.findChildren(QLabel)]
+    assert any("+1.5 GB" in t for t in texts)
+
+
+def test_batch_summary_open_undo_script_button_present_when_undo_steps_exist(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+
+    from portablefix import restore_point
+
+    # REPAIR-category actions trigger a real System Restore Point attempt
+    # (Checkpoint-Computer) before dispatch - must be mocked or this test
+    # would hang on/actually invoke a real Windows system call.
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
+
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m05_windows_update\n"
+        "category: REPAIR\n"
+        "actions:\n"
+        "  - id: step_one\n"
+        "    label_sk: \"X\"\n"
+        "    label_en: \"X\"\n"
+        "    risk: SAFE\n"
+        "    command: \"Write-Output 'one'\"\n"
+        "    undo_command: \"Write-Output 'undo-one'\"\n",
+        encoding="utf-8",
+    )
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_undo_button")
+    qtbot.addWidget(window)
+    window._action_checkboxes["step_one"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: window._summary_dialog is not None, timeout=10000)
+    buttons = [b.text() for b in window._summary_dialog.findChildren(QPushButton)]
+    assert "Open undo script" in buttons
+    assert window._undo_script_path is not None
+    assert window._undo_script_path.exists()
+
+
+def test_batch_summary_has_no_open_undo_script_button_when_no_undo_steps(qtbot, tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    base_dir = _make_base_dir(tmp_path)  # "hello" action has no undo_command
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_no_undo_button")
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: window._summary_dialog is not None, timeout=10000)
+    buttons = [b.text() for b in window._summary_dialog.findChildren(QPushButton)]
+    assert "Open undo script" not in buttons
+
+
+def test_select_all_shortcut_guard_skips_when_search_box_focused(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    settings = Settings(language="en")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_shortcut_guard")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitActive(window, timeout=5000)
+
+    window.search_box.setFocus()
+    qtbot.waitUntil(lambda: window.search_box.hasFocus(), timeout=5000)
+    window._on_select_all_shortcut()
+    assert not window._action_checkboxes["first_action"].isChecked()
+
+    window.search_box.clearFocus()
+    window.category_list.setFocus()
+    qtbot.waitUntil(lambda: window.category_list.hasFocus(), timeout=5000)
+    window._on_select_all_shortcut()
+    assert window._action_checkboxes["first_action"].isChecked()
+
+
+def test_f5_shortcut_runs_selected_but_not_while_batch_already_active(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", dry_run=False)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_f5")
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+
+    # F5 while a batch is already flagged active must not re-enter
+    # run_selected_actions - the run_button.setEnabled(False) guard that
+    # protects a stray mouse click doesn't stop a keyboard shortcut.
+    window._batch_active = True
+    window._on_run_shortcut()
+    assert window._queue == []
+    window._batch_active = False
+
+    window._on_run_shortcut()
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
+    assert "hello-from-gui-test" in window.console.toPlainText()
+
+
+def test_focus_qss_rules_present_for_keyboard_accessibility():
+    from portablefix.gui import style
+
+    assert "QPushButton:focus" in style.STYLE
+    assert "QListWidget#categoryList::item:focus" in style.STYLE
+    assert "QCheckBox::indicator:focus" in style.STYLE
