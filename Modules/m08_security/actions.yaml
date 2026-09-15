@@ -105,3 +105,51 @@ actions:
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name DisableWpbtExecution -EA SilentlyContinue; Write-Output 'WPBT setting removed (back to Windows default).'"
     description_sk: "Vypne WPBT (Windows Platform Binary Table) - mechanizmus, cez ktory vyrobca notebooku/PC moze spustit program hned pri starte Windows (napr. anti-theft softver), niekedy aj bez suhlasu pouzivatela. Znama cesta zneuzitia predinstalovanym OEM softverom. Undo nastavenie odstrani."
     description_en: "Disables WPBT (Windows Platform Binary Table) - the mechanism that lets a PC/laptop vendor auto-run a program at Windows boot (e.g. anti-theft software), sometimes without user consent. A known abuse vector for preinstalled OEM software. Undo removes the setting."
+
+  - id: sec_local_admins
+    label_sk: "Zoznam clenov skupiny Administrators"
+    label_en: "Local administrators group members"
+    risk: SAFE
+    command: "Get-LocalGroupMember -Group 'Administrators' -EA SilentlyContinue | Select-Object Name,PrincipalSource,ObjectClass | Format-Table -AutoSize"
+    description_sk: "Vypise clenov lokalnej skupiny Administrators (meno, zdroj, typ objektu) - klasicka kontrola 'preco ma toto konto admin prava'. Na domenovom pocitaci moze zoznam obsahovat aj skupiny AD (napr. Domain Admins), co je ocakavane. Nic nemeni."
+    description_en: "Lists members of the local Administrators group (name, source, object type) - the classic 'why does this account have admin rights' check. On a domain-joined machine the list can also include AD groups (e.g. Domain Admins), which is expected. Changes nothing."
+
+  - id: sec_recent_local_accounts
+    label_sk: "Nedavno vytvorene lokalne ucty"
+    label_en: "Recently created local accounts"
+    risk: SAFE
+    command: "$u = Get-LocalUser -EA SilentlyContinue | Select-Object Name,Enabled,PasswordLastSet | Sort-Object PasswordLastSet -Descending; Write-Output '--- Local user accounts (by PasswordLastSet, newest first) ---'; $u | Format-Table -AutoSize; Write-Output '--- Profile folder creation time (heuristic proxy for account age, not authoritative) ---'; Get-ChildItem \"$env:SystemDrive\\Users\" -Directory -EA SilentlyContinue | Where-Object { $_.Name -notin @('Public','Default','Default User','All Users','defaultuser0') } | Select-Object Name,CreationTime | Sort-Object CreationTime -Descending | Format-Table -AutoSize"
+    description_sk: "Vypise lokalne ucty podla PasswordLastSet a datum vytvorenia priecinka profilu ako priblizny odhad veku uctu - Windows nikde priamo neuklada skutocny datum vytvorenia lokalneho uctu. Novy neocakavany ucet/admin je bezna technika perzistencie malware. Nic nemeni."
+    description_en: "Lists local accounts by PasswordLastSet plus each profile folder's creation time as an approximate account-age proxy - Windows does not store a real local-account creation date anywhere. A surprise new account/admin is a classic malware persistence technique. Changes nothing."
+
+  - id: sec_password_never_expires
+    label_sk: "Ucty s neexpirujucim heslom"
+    label_en: "Accounts with non-expiring passwords"
+    risk: SAFE
+    command: "Get-LocalUser -EA SilentlyContinue | Where-Object { $_.Enabled -eq $true -and $_.PasswordExpires -eq $null } | Select-Object Name,Enabled,PasswordLastSet | Format-Table -AutoSize"
+    description_sk: "Vypise povolene lokalne ucty, ktorych heslo nikdy neexpiruje. Na domacom PC s jednym pouzivatelom je to bezne a ocakavane - toto je informacia na preverenie, nie problem sam o sebe. Nic nemeni."
+    description_en: "Lists enabled local accounts whose password never expires. On a single-user home PC this is normal and expected - this is information to review, not a problem by itself. Changes nothing."
+
+  - id: sec_windows_update_last
+    label_sk: "Datum poslednej aktualizacie Windows"
+    label_en: "Last Windows Update install date"
+    risk: SAFE
+    command: "try { $r = (New-Object -ComObject Microsoft.Update.AutoUpdate).Results; Write-Output ('Last successful search: ' + $r.LastSearchSuccessDate); Write-Output ('Last successful install: ' + $r.LastInstallationSuccessDate) } catch { Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 5 HotFixID,Description,InstalledOn | Format-Table -AutoSize }"
+    description_sk: "Zobrazi datum posledneho uspesneho vyhladania a instalacie aktualizacii cez Windows Update (fallback na Get-HotFix, ak COM objekt nie je dostupny). Davno neaktualizovany pocitac je zranitelny bez ohladu na ine kontroly. Nic nemeni."
+    description_en: "Shows the date of the last successful Windows Update search and install (falls back to Get-HotFix if the COM object is unavailable). A machine that hasn't updated in a long time is exploitable regardless of every other control. Changes nothing."
+
+  - id: sec_hosts_anomaly
+    label_sk: "Anomalie v subore hosts"
+    label_en: "Hosts file anomaly summary"
+    risk: SAFE
+    command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; $lines = Get-Content $hostsPath -EA SilentlyContinue | Where-Object { $_ -match '\\S' -and $_ -notmatch '^\\s*#' -and $_ -notmatch '127\\.0\\.0\\.1\\s+localhost' -and $_ -notmatch '::1\\s+localhost' }; Write-Output ('Non-default active hosts entries: ' + $lines.Count); if ($lines) { $lines }"
+    description_sk: "Spocita a vypise riadky v hosts subore mimo standardnych localhost zaznamov. Doplnok k net_hosts_reset (M06), ktory subor rovno prepise - toto ukaze, o co vlastne ide, pred pripadnym resetom. Domacnost s vlastnym ad-block hosts suborom bude mat vysoke, ale nezavadne cislo. Nic nemeni."
+    description_en: "Counts and lists hosts file entries beyond the standard localhost lines. Complements net_hosts_reset (M06), which overwrites the file outright - this shows what's actually there before a potential reset. A household running its own ad-block hosts file will show a high but benign count. Changes nothing."
+
+  - id: sec_suspicious_scheduled_tasks
+    label_sk: "Podozrive naplanovane ulohy (Temp/AppData)"
+    label_en: "Suspicious scheduled tasks (Temp/AppData)"
+    risk: SAFE
+    command: "Get-ScheduledTask -EA SilentlyContinue | Where-Object { $_.State -ne 'Disabled' } | ForEach-Object { $t = $_; $t.Actions | Where-Object { $_.Execute -match 'Temp\\\\|AppData\\\\|Users\\\\Public\\\\' } | Select-Object @{n='Task';e={$t.TaskName}},@{n='Path';e={$t.TaskPath}},@{n='Execute';e={$_.Execute}},@{n='Arguments';e={$_.Arguments}} } | Format-Table -AutoSize -Wrap"
+    description_sk: "Vypise aktivne naplanovane ulohy, ktore spustaju program z Temp/AppData/Public - bezny perzistencny vzor malware. Vela legitimnych auto-updaterov (Chrome, Discord, OneDrive a pod.) sa spusta z rovnakych priecinkov, takze toto je zoznam na rucne preverenie mien uloh, nie automaticky verdikt. Nic nemeni."
+    description_en: "Lists active scheduled tasks that execute a program from Temp/AppData/Public - a common malware persistence pattern. Many legitimate auto-updaters (Chrome, Discord, OneDrive, etc) also run from those same folders, so this is a list for a human to eyeball task names against, not an automatic verdict. Changes nothing."
