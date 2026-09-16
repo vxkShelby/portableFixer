@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m09_tuning" / "actions.yaml"
 
 
-def test_m09_catalog_loads_15_actions_in_repair_category():
+def test_m09_catalog_loads_17_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m09_tuning"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 15
+    assert len(module.actions) == 17
 
 
 def test_m09_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m09_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 2
+    assert len(by_risk[RiskLevel.SAFE]) == 4
     assert len(by_risk[RiskLevel.MODERATE]) == 12
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -43,7 +43,20 @@ def test_m09_catalog_covers_expected_ids():
         "tune_bluetooth_service_restart",
         "tune_audio_service_restart",
         "tune_camera_service_restart",
+        "tune_memory_usage_report",
+        "tune_clear_working_sets",
     }
+
+
+def test_m09_catalog_memory_actions_are_safe_and_undoless():
+    # Both are non-destructive: the report only reads state, and the
+    # working-set trim is a transient OS-level hint (processes reclaim
+    # memory as needed) - neither persists anything worth undoing.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("tune_memory_usage_report", "tune_clear_working_sets"):
+        assert by_id[action_id].risk == RiskLevel.SAFE, action_id
+        assert by_id[action_id].undo_command is None, action_id
 
 
 def test_m09_catalog_new_service_restart_actions_have_no_undo_and_verify_success():

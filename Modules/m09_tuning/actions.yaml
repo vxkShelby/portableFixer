@@ -127,3 +127,19 @@ actions:
     command: "$names = 'FrameServer','FrameServerMonitor'; $present = @($names | Where-Object { Get-Service -Name $_ -EA SilentlyContinue }); if (-not $present) { Write-Output 'Camera Frame Server services not found on this system.'; exit 1 }; Stop-Service -Name $present -Force -EA SilentlyContinue; Start-Service -Name $present -EA SilentlyContinue; $ok = @(); $failed = @(); foreach ($n in $present) { $s = Get-Service -Name $n -EA SilentlyContinue; if ($s -and $s.Status -eq 'Running') { $ok += $n } else { $failed += $n } }; if ($failed) { Write-Output ('Could not restart: ' + ($failed -join ', ') + ' (needs administrator).'); exit 1 } else { Write-Output ('Camera services restarted: ' + ($ok -join ', ')) }"
     description_sk: "Zastavi a znovu spusti sluzby Frame Server / Frame Server Monitor - opravuje situaciu, ked aplikacia nevie ziskat obraz z kamery aj ked su povolenia v Nastaveniach v poriadku. Vyzaduje administratora. Bez undo."
     description_en: "Stops and restarts the Frame Server / Frame Server Monitor services - fixes apps unable to get camera frames even when Settings privacy permissions look correct. Needs administrator. No undo."
+
+  - id: tune_memory_usage_report
+    label_sk: "Prehlad vyuzitia pamate RAM"
+    label_en: "Memory (RAM) usage report"
+    risk: SAFE
+    command: "$os = Get-CimInstance Win32_OperatingSystem; $totalMB = [math]::Round($os.TotalVisibleMemorySize/1024); $freeMB = [math]::Round($os.FreePhysicalMemory/1024); $usedMB = $totalMB - $freeMB; $pct = [math]::Round(($usedMB/$totalMB)*100,1); Write-Output ('Total: ' + $totalMB + ' MB | Used: ' + $usedMB + ' MB (' + $pct + '%) | Free: ' + $freeMB + ' MB')"
+    description_sk: "Vypise celkovu, pouzitu a volnu fyzicku pamat (RAM) v MB, nic nemeni."
+    description_en: "Lists total, used, and free physical memory (RAM) in MB, changes nothing."
+
+  - id: tune_clear_working_sets
+    label_sk: "Uvolnenie nevyuzitej pamate procesov (working set)"
+    label_en: "Trim unused process memory (working set)"
+    risk: SAFE
+    command: "$procs = Get-Process -EA SilentlyContinue; $before = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024); $trimmed = 0; $skipped = 0; foreach ($p in $procs) { try { $p.MinWorkingSet = $p.MinWorkingSet; $trimmed++ } catch { $skipped++ } }; Start-Sleep -Milliseconds 300; $after = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024); $freed = $after - $before; Write-Output ('Trimmed working set on ' + $trimmed + ' processes (' + $skipped + ' skipped - other users/system, needs administrator for those). Free memory: ' + $before + ' MB -> ' + $after + ' MB (' + $freed + ' MB change).')"
+    description_sk: "Prinuti kazdy dostupny proces vratit nevyuzitu fyzicku pamat operacnemu systemu (working set trim cez .NET Process triedu - rovnaky princip ako 'Empty working set' v nastrojoch tretich stran). Bez administratorskych prav sa tyka len vlastnych procesov pouzivatela, cudzie/systemove sa preskocia. Docasny efekt - procesy si pamat postupne zoberu spat podla potreby, nic sa netrvalo nemeni. Bez undo (netreba)."
+    description_en: "Forces every accessible process to return unused physical memory to the OS (working-set trim via the .NET Process class - same principle as the 'Empty working set' trick in third-party tools). Without administrator rights this only affects the current user's own processes; other users'/system processes are skipped. The effect is temporary - processes reclaim memory as needed, nothing is permanently changed. No undo (not needed)."
