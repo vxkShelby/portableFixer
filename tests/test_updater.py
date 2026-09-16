@@ -333,6 +333,32 @@ def test_apply_update_breaks_away_from_parent_job_object(tmp_path, monkeypatch):
     assert flags & updater_module.subprocess.CREATE_BREAKAWAY_FROM_JOB
 
 
+def test_apply_update_redirects_popen_stdout_and_stderr_to_a_launch_log(tmp_path, monkeypatch):
+    # DETACHED_PROCESS gives the child no console/inherited std handles - an
+    # unredirected startup failure (e.g. an execution-policy refusal) prints
+    # to nowhere and is silently lost. The log dir/file must exist BEFORE
+    # Popen runs (created here in Python), since the failure this is meant
+    # to diagnose can happen before the script's own first line ever runs.
+    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        updater_module.subprocess, "Popen", lambda *a, **k: calls.append(k) or MagicMock()
+    )
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+
+    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
+
+    assert result is True
+    assert len(calls) == 1
+    assert calls[0]["stdout"] is not None
+    assert calls[0]["stdout"].closed
+    assert calls[0]["stderr"] == updater_module.subprocess.STDOUT
+    assert calls[0]["stdin"] == updater_module.subprocess.DEVNULL
+    log_files = list((tmp_path / "PortableFixUpdate").glob("popen_launch_*.log"))
+    assert len(log_files) == 1
+
+
 def test_apply_update_returns_true_on_success(tmp_path, monkeypatch):
     monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())

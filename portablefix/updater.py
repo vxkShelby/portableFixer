@@ -339,26 +339,42 @@ def apply_update(zip_path: Path, install_dir: Path) -> bool:
     script_text = build_swap_script(current_pid, install_dir, zip_path)
     fd, script_path_str = tempfile.mkstemp(prefix=f"portablefix_update_{current_pid}_", suffix=".ps1")
     script_path = Path(script_path_str)
+    # Created here in Python, not by the script's own New-Item (its first
+    # line) - so this directory exists even if powershell.exe is killed
+    # before running line 1. DETACHED_PROCESS gives the child no console
+    # and no inherited std handles, so without an explicit redirect any
+    # startup failure (execution policy refusal, a missing DLL, anything
+    # printed before the script itself runs) has nowhere to go and is
+    # silently lost - confirmed live on a machine where the script never
+    # wrote its own log, with every non-code cause (Job Object breakaway,
+    # AppLocker/WDAC/ASR, Defender, GPO execution policy) ruled out.
+    log_dir = Path(tempfile.gettempdir()) / "PortableFixUpdate"
+    launch_log_path = log_dir / f"popen_launch_{current_pid}.log"
     try:
         os.close(fd)
         script_path.write_text(script_text, encoding="utf-8-sig")
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
-            # DETACHED_PROCESS/CREATE_NEW_PROCESS_GROUP only affect console
-            # and Ctrl+Break group membership - neither exempts the child
-            # from a Job Object the parent belongs to (common when this exe
-            # is launched from Windows Terminal or certain elevation
-            # wrappers, which assign JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
-            # Without this flag, the swap script gets killed the instant
-            # this process exits - before it can run a single line - which
-            # looks exactly like "the app just closes, update never happens".
-            creationflags=(
-                subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_BREAKAWAY_FROM_JOB
-            ),
-            close_fds=True,
-        )
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(launch_log_path, "wb") as launch_log:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
+                # DETACHED_PROCESS/CREATE_NEW_PROCESS_GROUP only affect console
+                # and Ctrl+Break group membership - neither exempts the child
+                # from a Job Object the parent belongs to (common when this exe
+                # is launched from Windows Terminal or certain elevation
+                # wrappers, which assign JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
+                # Without this flag, the swap script gets killed the instant
+                # this process exits - before it can run a single line - which
+                # looks exactly like "the app just closes, update never happens".
+                creationflags=(
+                    subprocess.DETACHED_PROCESS
+                    | subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_BREAKAWAY_FROM_JOB
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=launch_log,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
+            )
         return True
     except OSError:
         return False
