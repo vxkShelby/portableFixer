@@ -1,5 +1,6 @@
 import ctypes
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -348,24 +349,37 @@ def _wmi_cpu_clock_mhz() -> float | None:
     return None
 
 
+# ping.exe's reply line is localized ("time=21ms", "čas=21ms", "Zeit=21ms",
+# "temps=21 ms", "время=21мс", "時間 =21ms") and printed in the console's OEM
+# code page - but every locale keeps the literal "TTL=" right after the
+# round-trip time (an IPv4 reply always carries it; timeouts, "unreachable"
+# and the statistics lines never do). So the number is the "=21" / "<1" just
+# before "TTL=", whatever word and unit (glued on or, in French, spaced off)
+# surround it. Matched on the raw bytes: no decoding, so no code page guess
+# can garble the text or raise UnicodeDecodeError in the ping thread.
+_PING_REPLY_TIME = re.compile(rb"[=<]\s*(\d+)\s*[^\s=<]*\s+TTL=")
+
+
+def parse_ping_latency(output: bytes) -> float | None:
+    """Round-trip time in ms from ping.exe's output in any display language,
+    None when no reply came back. "<1ms" reads as 1.0, as it always did."""
+    match = _PING_REPLY_TIME.search(output)
+    return float(match.group(1)) if match else None
+
+
 def ping_once(host: str = "8.8.8.8", timeout_ms: int = 1000) -> float | None:
+    # Runs every few seconds - one ping.exe, parsed in Python, is far cheaper
+    # than starting PowerShell for Test-Connection on every tick. -4: an IPv6
+    # reply has no "TTL=" to anchor on (a hostname can resolve to either).
     try:
         result = subprocess.run(
-            ["ping", "-n", "1", "-w", str(timeout_ms), host],
-            capture_output=True, text=True, timeout=(timeout_ms / 1000) + 2,
+            ["ping", "-4", "-n", "1", "-w", str(timeout_ms), host],
+            capture_output=True, timeout=(timeout_ms / 1000) + 2,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    for line in result.stdout.splitlines():
-        if "time=" in line:
-            try:
-                return float(line.split("time=")[1].split("ms")[0].strip("<="))
-            except (IndexError, ValueError):
-                return None
-        if "time<" in line:
-            return 1.0
-    return None
+    return parse_ping_latency(result.stdout or b"")
 
 
 _VPN_ADAPTER_PATTERN = (

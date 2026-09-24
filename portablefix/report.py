@@ -163,13 +163,38 @@ def _frozen_risk(entry: dict, action: ActionDef | None) -> str:
     return action.risk.value if action else "UNKNOWN"
 
 
-def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
-    subject = entry.get("subject") or ""
-    subject_label = ""
+# Subjects main_window gives the Programs/winget panels' events - not catalog
+# "module/action" pairs (catalog module ids never start with "_").
+_UNINSTALL_SUBJECT = "_uninstaller/"
+_LEFTOVER_SUBJECT = "_uninstaller/orphan_cleanup:"
+_WINGET_SUBJECT = "_winget/"
+
+
+def _is_panel_subject(subject: str) -> bool:
+    return subject.startswith("_")
+
+
+def _subject_label(subject: str, modules: list[ModuleDef], language: str) -> str:
+    # What the event was about, in the report's language: "Uninstall: 7-Zip"
+    # rather than the raw "_uninstaller/7-Zip" key. Order matters - the
+    # leftover-cleanup prefix is itself an uninstaller subject.
+    if subject.startswith(_LEFTOVER_SUBJECT):
+        return translate("report_subject_leftover", language).format(name=subject[len(_LEFTOVER_SUBJECT):])
+    if subject.startswith(_UNINSTALL_SUBJECT):
+        return translate("report_subject_uninstall", language).format(name=subject[len(_UNINSTALL_SUBJECT):])
+    if subject.startswith(_WINGET_SUBJECT):
+        return translate("report_subject_winget", language).format(package=subject[len(_WINGET_SUBJECT):])
     if "/" in subject:
         module_id, _, action_id = subject.partition("/")
         action = _find_action(modules, module_id, action_id)
-        subject_label = action.label(language) if action else action_id
+        return action.label(language) if action else action_id
+    return ""
+
+
+def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
+    # str(): a corrupted log can hold any JSON value here.
+    subject = str(entry.get("subject") or "")
+    subject_label = _subject_label(subject, modules, language)
     return {
         "timestamp": entry["timestamp"],
         "kind": entry["action_id"],
@@ -187,10 +212,16 @@ def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
 
 
 def _summarize_restore_points(events: list[dict]) -> list[dict]:
-    # One restore point per batch; the technician's "continue anyway?"
-    # answer (only asked when it failed) is the decision event after it.
+    # One restore point per batch, plus one before each real uninstall /
+    # leftover cleanup / winget update started from a panel (G01). A panel's
+    # point is marked and names what it guarded - otherwise the report
+    # header showed it as if the batch had a restore point. The
+    # technician's "continue anyway?" answer (only asked when it failed)
+    # belongs to the latest point of the same subject; logs without
+    # subjects pair it with the latest point, as before.
     points: list[dict] = []
     for event in events:
+        subject = event.get("subject") or ""
         if event["kind"] == "restore_point":
             points.append({
                 "timestamp": event["timestamp"],
@@ -198,9 +229,16 @@ def _summarize_restore_points(events: list[dict]) -> list[dict]:
                 "detail": event["output"],
                 "decision": None,
                 "sequence": event.get("restore_point_sequence"),
+                "subject": subject,
+                "subject_label": event.get("subject_label") or "",
+                "panel": _is_panel_subject(subject),
             })
-        elif event["kind"] == "restore_point_decision" and points and points[-1]["decision"] is None:
-            points[-1]["decision"] = event["decision"] or None
+        elif event["kind"] == "restore_point_decision":
+            for point in reversed(points):
+                if not subject or not point["subject"] or point["subject"] == subject:
+                    if point["decision"] is None:
+                        point["decision"] = event["decision"] or None
+                    break
     return points
 
 
@@ -684,18 +722,25 @@ def _restore_point_text(point: dict, language: str) -> str:
         return html.escape(translate(key, language))
 
     when = html.escape(_format_timestamp(point["timestamp"]))
+    title = t("report_restore_point")
+    # point.get(): report JSON written before panels had restore points.
+    if point.get("panel"):
+        # A panel's point guarded that one change, not the batch.
+        title += f" ({html.escape(str(point.get('subject_label') or point.get('subject') or '?'))})"
     if point["created"]:
         # "#123" is the SequenceNumber rstrui / Get-ComputerRestorePoint
         # show - lets anyone find the exact point later. Omitted when not
         # recorded (older logs, or the lookup failed).
         sequence = point.get("sequence")
         number = f" (#{sequence})" if isinstance(sequence, int) and not isinstance(sequence, bool) else ""
-        return f"{t('report_restore_point')}: {t('report_rp_created')}{number} ({when})"
-    text = f"{t('report_restore_point')}: <span class=\"rp-fail\">{t('report_rp_failed')}</span> ({when})"
+        return f"{title}: {t('report_rp_created')}{number} ({when})"
+    text = f"{title}: <span class=\"rp-fail\">{t('report_rp_failed')}</span> ({when})"
     if point.get("decision") == "proceed":
         text += f" &mdash; {t('report_rp_proceeded')}"
     elif point.get("decision") == "skip":
-        text += f" &mdash; {t('report_rp_skipped')}"
+        # A panel's "No" stopped that one change; the batch's "No" skipped
+        # its high-risk actions and ran the rest.
+        text += f" &mdash; {t('report_rp_skipped_panel' if point.get('panel') else 'report_rp_skipped')}"
     return text
 
 
@@ -711,15 +756,50 @@ def _restore_point_failure_reason(output: str) -> str:
     return output[match.end():] if match else output
 
 
+# The fixed English sentences main_window writes for these events (its own
+# text, never Windows' - so matching them is not parsing localized output).
+# Display only, like the restore-point prefix above; anything else is shown
+# verbatim.
+_HIVE_PREFIX_OK = re.compile(r"\s*Registry hive backup saved(?::\s*|\.\s*$|$)")
+_HIVE_PREFIX_FAILED = re.compile(r"\s*Registry hive backup failed(?::\s*|\.\s*$|$)")
+_HIVE_REQUESTED = "Full registry hive backup requested"
+# "Uninstall refused - protected program (gpu_driver)." - the reason code
+# names an uninstaller_protected_* text the uninstaller panel showed.
+_PROTECTED_REASON = re.compile(r"\(([a-z0-9_]+)\)\.?\s*$")
+
+
+def _strip_prefix(pattern: re.Pattern, output: str) -> str:
+    match = pattern.match(output)
+    return output[match.end():] if match else output
+
+
+def _protected_reason(output: str, language: str) -> str:
+    match = _PROTECTED_REASON.search(output)
+    if not match:
+        return ""
+    key = f"uninstaller_protected_{match.group(1)}"
+    text = translate(key, language)
+    # translate() returns the key itself when unknown - show the bare code.
+    return match.group(1) if text == key else text
+
+
 def _render_event(event: dict, language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
 
     kind = event.get("kind")
+    subject = str(event.get("subject") or "")
+    panel = _is_panel_subject(subject)
+    label = html.escape(str(event.get("subject_label") or subject or "?"))
+    risk = f' <span class="mod">[{html.escape(str(event["risk"]))}]</span>' if event.get("risk") else ""
+    quote = ""
+    if event.get("warning_text"):
+        quote = f'<div class="warn-text">&bdquo;{html.escape(str(event["warning_text"]))}&ldquo;</div>'
     if kind == "restore_point":
         point = {
             "timestamp": event["timestamp"], "created": event["exit_code"] == 0,
             "sequence": event.get("restore_point_sequence"),
+            "subject": subject, "subject_label": event.get("subject_label"), "panel": panel,
         }
         body = _restore_point_text(point, language)
         reason = _restore_point_failure_reason(str(event.get("output") or "")) if event["exit_code"] != 0 else ""
@@ -729,15 +809,39 @@ def _render_event(event: dict, language: str) -> str:
         return f"<li>{body}</li>"
     when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"]))}</span>'
     if kind == "restore_point_decision":
-        key = "report_rp_proceeded" if event.get("decision") == "proceed" else "report_rp_skipped"
-        return f"<li>{when}{t('report_restore_point')}: {t(key)}</li>"
+        if event.get("decision") == "proceed":
+            key = "report_rp_proceeded"
+        else:
+            key = "report_rp_skipped_panel" if panel else "report_rp_skipped"
+        title = t("report_restore_point") + (f" ({label})" if panel else "")
+        return f"<li>{when}{title}: {t(key)}</li>"
     if kind == "risk_declined":
-        label = event.get("subject_label") or event.get("subject") or "?"
-        risk = f' <span class="mod">[{html.escape(event["risk"])}]</span>' if event.get("risk") else ""
-        quote = ""
-        if event.get("warning_text"):
-            quote = f'<div class="warn-text">&bdquo;{html.escape(event["warning_text"])}&ldquo;</div>'
-        return f"<li>{when}{t('report_declined')}: <strong>{html.escape(label)}</strong>{risk}{quote}</li>"
+        return f"<li>{when}{t('report_declined')}: <strong>{label}</strong>{risk}{quote}</li>"
+    if kind == "running_programs_decision":
+        # "Ignore" on the "program is still running" warning (G01) - the
+        # technician went on anyway; the warning quoted lists the processes.
+        return f"<li>{when}{t('report_running_proceeded')}: <strong>{label}</strong>{risk}{quote}</li>"
+    if kind == "protected_program":
+        # Named by the program itself - "Uninstall refused: Uninstall: X"
+        # would say it twice.
+        name = subject[len(_UNINSTALL_SUBJECT):] if subject.startswith(_UNINSTALL_SUBJECT) else subject
+        reason = _protected_reason(str(event.get("output") or ""), language)
+        reason_html = f' <span class="mod">({html.escape(reason)})</span>' if reason else ""
+        return f"<li>{when}{t('report_protected_program')}: <strong>{html.escape(name or '?')}</strong>{reason_html}</li>"
+    if kind == "hive_backup":
+        ok = event["exit_code"] == 0
+        state = t("report_hive_saved") if ok else f'<span class="rp-fail">{t("report_hive_failed")}</span>'
+        before = ""
+        if subject:
+            before = f' <span class="mod">{html.escape(translate("report_hive_before", language).format(action=event.get("subject_label") or subject))}</span>'
+        # Where it was saved (the folder undo.ps1 and a technician restore
+        # from), or why it failed - without main_window's English sentence.
+        detail = _strip_prefix(_HIVE_PREFIX_OK if ok else _HIVE_PREFIX_FAILED, str(event.get("output") or ""))
+        detail_html = f'<div class="warn-text">{html.escape(detail)}</div>' if detail else ""
+        return f"<li>{when}{t('report_hive_backup')}: {state}{before}{detail_html}</li>"
+    if kind == "hive_backup_decision":
+        key = "report_hive_proceeded" if event.get("decision") == "proceed" else "report_hive_skipped"
+        return f"<li>{when}{t('report_hive_backup')}: {t(key)}</li>"
     if kind == "batch_review":
         # The one review screen (G12): the answer, and the pre-flight
         # findings it was given on, in the report's language - the codes in
@@ -747,10 +851,10 @@ def _render_event(event: dict, language: str) -> str:
             "override": "report_review_override",
         }.get(event.get("decision"), "report_review_cancelled")
         css = ' class="rp-fail"' if event.get("decision") == "override" else ""
-        quote = ""
-        if event.get("warning_text"):
-            quote = f'<div class="warn-text">&bdquo;{html.escape(event["warning_text"])}&ldquo;</div>'
-        return f"<li>{when}{t('report_review')}: <span{css}>{t(key)}</span>{quote}</li>"
+        hive = ""
+        if event.get("decision") in ("confirmed", "override") and _HIVE_REQUESTED in str(event.get("output") or ""):
+            hive = f" &mdash; {t('report_review_hive_requested')}"
+        return f"<li>{when}{t('report_review')}: <span{css}>{t(key)}</span>{hive}{quote}</li>"
     if kind == "integrity_guard":
         return f"<li>{when}<span class=\"rp-fail\">{t('report_integrity_guard')}</span></li>"
     # Unknown/future system event - still show it rather than drop evidence.

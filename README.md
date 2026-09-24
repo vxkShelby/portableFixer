@@ -69,7 +69,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   priamo na detail), prehľadom podľa modulov/kategórií, filtrom
   (všetky / len zlyhané / len zmeny) a vyhľadávaním. Tlačidlo **Tlačiť /
   uložiť ako PDF** dá čistý biely výtlačok pre klienta. Report je jeden
-  samostatný súbor bez internetu.
+  samostatný súbor bez internetu. Sekcia **Bezpečnostný záznam** uvádza
+  body obnovenia (bod vytvorený panelom odinštalovania, zvyškov v registri
+  alebo winget je označený programom, ktorý chránil - nevydáva sa za bod
+  obnovenia dávky), zálohu registra, odmietnuté chránené programy
+  a pokračovanie napriek bežiacemu programu.
 - **Balík pre klienta:** tlačidlo **Uložiť balík pre klienta** (v súhrne
   dávky aj pri každom behu v histórii) uloží jeden ZIP
   `PortableFix_<PC>_<run-id>.zip` s HTML/JSON reportom, audit logom,

@@ -1,0 +1,8 @@
+
+Príkaz ping na 192.168.0.1 s 32 bajtmi údajov:
+Odpoveď od 192.168.0.1: bajty=32 čas<1ms TTL=64
+
+Štatistika príkazu ping pre 192.168.0.1:
+    Pakety: odoslané = 1, prijaté = 1, stratené = 0 (strata 0%),
+Približný čas cyklu v milisekundách:
+    Minimum = 0ms, Maximum = 0ms, Priemer = 0ms

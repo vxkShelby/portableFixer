@@ -626,7 +626,7 @@ def test_report_shows_failed_restore_point_and_proceed_decision(tmp_path):
     assert data["restore_points"] == [{
         "timestamp": data["restore_points"][0]["timestamp"], "created": False,
         "detail": "System Restore Point creation failed: disabled", "decision": "proceed",
-        "sequence": None,
+        "sequence": None, "subject": "", "subject_label": "", "panel": False,
     }]
     content = html_path.read_text(encoding="utf-8")
     assert "NEPODARIL SA" in content
@@ -996,19 +996,195 @@ def test_restore_point_failure_reason_strips_only_the_english_prefix(output, rea
     assert _restore_point_failure_reason(output) == reason
 
 
+def _system_event(tmp_path, run_id, action_id, exit_code, output, **fields):
+    append_entry(tmp_path, run_id, make_entry("_system", action_id, "", exit_code, output, False, run_id, **fields))
+
+
+def _safety_items(content: str) -> str:
+    start = content.index('<ul class="events">')
+    return content[start:content.index("</ul>", start)]
+
+
 def test_hive_backup_and_panel_safety_events_reach_the_reports_safety_section(tmp_path):
     # G24/G01: the full registry backup, a refused protected program and an
-    # "uninstall anyway while it runs" answer are safety facts on record.
+    # "uninstall anyway while it runs" answer are safety facts on record -
+    # in the report's language, not as the raw event kind.
     folder = r"D:\PortableFix\Backups\run_hive\hives-20260924-100000"
-    for action_id, output, decision in (
-        ("hive_backup", f"Registry hive backup saved: {folder} (SOFTWARE.hiv, SYSTEM.hiv).", ""),
-        ("protected_program", "Uninstall refused - protected program (gpu_driver).", ""),
-        ("running_programs_decision", "Technician chose to continue while the program was still running.", "proceed"),
-    ):
-        append_entry(tmp_path, "run_hive", make_entry(
-            "_system", action_id, "", 0, output, False, "run_hive", decision=decision, subject="m/a",
-        ))
-    content = generate_report(tmp_path, "run_hive", [], "en", {}, {})[0].read_text(encoding="utf-8")
-    assert "hive_backup" in content and folder in content
-    assert "protected_program" in content and "gpu_driver" in content
-    assert "running_programs_decision" in content
+    _system_event(tmp_path, "run_hive", "hive_backup", 0,
+                  f"Registry hive backup saved: {folder} (SOFTWARE.hiv, SYSTEM.hiv).", subject="m02_cleanup/user_temp")
+    _system_event(tmp_path, "run_hive", "protected_program", None,
+                  "Uninstall refused - protected program (gpu_driver).", risk="DESTRUCTIVE",
+                  subject="_uninstaller/NVIDIA Graphics Driver 555.85")
+    _system_event(tmp_path, "run_hive", "running_programs_decision", 0,
+                  "Technician chose to continue while the program was still running.", risk="DESTRUCTIVE",
+                  warned=True, warning_text="7-Zip: 7zFM.exe (PID 42)", subject="_uninstaller/7-Zip 24.08",
+                  decision="proceed")
+    content = generate_report(tmp_path, "run_hive", _fixture_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
+    items = _safety_items(content)
+    assert "Registry backup (SOFTWARE and SYSTEM hives): saved" in items
+    assert "before Temp files" in items
+    assert f'<div class="warn-text">{folder} (SOFTWARE.hiv, SYSTEM.hiv).</div>' in items
+    assert ("Uninstall refused - protected program: <strong>NVIDIA Graphics Driver 555.85</strong> "
+            '<span class="mod">(graphics driver – removing it can leave a black screen)</span>') in items
+    assert ("Continued while the program was still running: <strong>Uninstall: 7-Zip 24.08</strong> "
+            '<span class="mod">[DESTRUCTIVE]</span>') in items
+    assert "7-Zip: 7zFM.exe (PID 42)" in items
+    for raw in ("hive_backup", "protected_program", "running_programs_decision", "Registry hive backup saved"):
+        assert raw not in items
+
+
+def test_new_safety_events_are_slovak(tmp_path):
+    _system_event(tmp_path, "run_hsk", "hive_backup", 1, "Registry hive backup failed: reg.exe exit 1",
+                  subject="m02_cleanup/user_temp")
+    _system_event(tmp_path, "run_hsk", "hive_backup_decision", 0, "Technician declined ...", decision="skip",
+                  subject="m02_cleanup/user_temp")
+    _system_event(tmp_path, "run_hsk", "protected_program", None, "Uninstall refused - protected program (self).",
+                  subject="_uninstaller/PortableFix")
+    _system_event(tmp_path, "run_hsk", "running_programs_decision", 0, "continue", decision="proceed",
+                  subject="_winget/7zip.7zip")
+    items = _safety_items(generate_report(tmp_path, "run_hsk", _fixture_modules(), "sk", {}, {})[0]
+                          .read_text(encoding="utf-8"))
+    assert 'Záloha registra (úly SOFTWARE a SYSTEM): <span class="rp-fail">NEPODARILA SA</span>' in items
+    assert "pred akciou Docasne subory" in items
+    assert '<div class="warn-text">reg.exe exit 1</div>' in items
+    assert "technik odmietol pokračovať - akcie DESTRUCTIVE boli vynechané" in items
+    assert "Odinštalovanie odmietnuté - chránený program: <strong>PortableFix</strong>" in items
+    assert "samotný PortableFix" in items
+    assert "Pokračovanie napriek bežiacemu programu: <strong>Aktualizácia cez winget: 7zip.7zip</strong>" in items
+
+
+def test_hive_backup_decision_proceed_and_unknown_protected_reason(tmp_path):
+    _system_event(tmp_path, "run_hp", "hive_backup_decision", 0, "go", decision="proceed")
+    # A reason code this version has no text for is shown bare, not dropped.
+    _system_event(tmp_path, "run_hp", "protected_program", None, "Uninstall refused - protected program (future_kind).",
+                  subject="_uninstaller/X")
+    # An output without a code adds no empty "()".
+    _system_event(tmp_path, "run_hp", "protected_program", None, "Uninstall refused.", subject="_uninstaller/Y")
+    items = _safety_items(generate_report(tmp_path, "run_hp", [], "en", {}, {})[0].read_text(encoding="utf-8"))
+    assert "Registry backup (SOFTWARE and SYSTEM hives): technician confirmed continuing without the registry backup" in items
+    assert '<strong>X</strong> <span class="mod">(future_kind)</span>' in items
+    assert "<strong>Y</strong></li>" in items
+
+
+@pytest.mark.parametrize(("output", "shown"), [
+    ("Pre-flight: ok. Technician confirmed the batch on the review screen. "
+     "Full registry hive backup requested before the first DESTRUCTIVE action.", True),
+    ("Pre-flight: ok. Technician confirmed the batch on the review screen.", False),
+])
+def test_batch_review_says_when_a_registry_backup_was_requested(tmp_path, output, shown):
+    _system_event(tmp_path, "run_brh", "batch_review", 0, output, decision="confirmed")
+    items = _safety_items(generate_report(tmp_path, "run_brh", [], "en", {}, {})[0].read_text(encoding="utf-8"))
+    assert ("full registry backup requested before the first DESTRUCTIVE action" in items) is shown
+
+
+def test_report_sentences_match_what_main_window_logs():
+    # report.py recognises main_window's own fixed English audit sentences
+    # (display only) - pin them so a rewording there can't silently turn
+    # the translated lines back into raw English.
+    from pathlib import Path
+
+    from portablefix import report
+
+    source = (Path(report.__file__).parent / "gui" / "main_window.py").read_text(encoding="utf-8")
+    assert '"Registry hive backup saved: ' in source
+    assert '"Registry hive backup failed: ' in source and '"Registry hive backup failed."' in source
+    assert f'" {report._HIVE_REQUESTED} before the first DESTRUCTIVE action."' in source
+    assert '"Uninstall refused - protected program ({protected[program.name]})."' in source
+    for prefix in (report._UNINSTALL_SUBJECT, report._LEFTOVER_SUBJECT, report._WINGET_SUBJECT):
+        assert f'f"{prefix}' in source
+
+
+@pytest.mark.parametrize(("subject", "language", "label"), [
+    ("_uninstaller/7-Zip 24.08", "en", "Uninstall: 7-Zip 24.08"),
+    ("_uninstaller/orphan_cleanup:Old App", "sk", "Vyčistenie zvyškov v registri: Old App"),
+    ("_winget/Mozilla.Firefox", "en", "winget update: Mozilla.Firefox"),
+    ("_winget/Mozilla.Firefox", "sk", "Aktualizácia cez winget: Mozilla.Firefox"),
+    ("m02_cleanup/user_temp", "en", "Temp files"),
+    ("m99/unknown", "en", "unknown"),
+    ("", "en", ""),
+])
+def test_event_subject_labels_name_panel_targets(tmp_path, subject, language, label):
+    _system_event(tmp_path, "run_lbl", "risk_declined", None, "declined", subject=subject, decision="declined")
+    data = build_report_data(tmp_path, "run_lbl", _fixture_modules(), language, {}, {})
+    assert data["events"][0]["subject_label"] == label
+
+
+def test_panel_declined_confirmation_names_the_program_not_the_raw_subject(tmp_path):
+    _system_event(tmp_path, "run_pdecl", "risk_declined", None, "declined", risk="DESTRUCTIVE",
+                  subject="_uninstaller/orphan_cleanup:Old <App>", decision="declined")
+    items = _safety_items(generate_report(tmp_path, "run_pdecl", [], "en", {}, {})[0].read_text(encoding="utf-8"))
+    assert "<strong>Registry leftover cleanup: Old &lt;App&gt;</strong>" in items
+    assert "orphan_cleanup" not in items
+
+
+def _rp(tmp_path, run_id, exit_code, subject, sequence=None):
+    output = "System Restore Point created." if exit_code == 0 else "System Restore Point creation failed: disabled"
+    _system_event(tmp_path, run_id, "restore_point", exit_code, output, subject=subject,
+                  restore_point_sequence=sequence)
+
+
+def test_panel_restore_point_is_not_presented_as_the_batchs(tmp_path):
+    # G01: the uninstaller made a restore point, the batch did not - the
+    # header must not read "Restore point: created" as if the batch had one.
+    _rp(tmp_path, "run_prp", 0, "_uninstaller/7-Zip 24.08", sequence=77)
+    html_path, json_path = generate_report(tmp_path, "run_prp", [], "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    [point] = data["restore_points"]
+    assert point["panel"] is True
+    assert point["subject"] == "_uninstaller/7-Zip 24.08"
+    assert point["subject_label"] == "Uninstall: 7-Zip 24.08"
+    content = html_path.read_text(encoding="utf-8")
+    assert "Restore point: created" not in content
+    # Header and safety log both name what it guarded.
+    assert content.count("Restore point (Uninstall: 7-Zip 24.08): created (#77) (") == 2
+
+
+def test_batch_restore_point_keeps_its_plain_header_line(tmp_path):
+    _rp(tmp_path, "run_brp", 0, "m02_cleanup/user_temp", sequence=5)
+    html_path, json_path = generate_report(tmp_path, "run_brp", _fixture_modules(), "sk", {}, {})
+    [point] = json.loads(json_path.read_text(encoding="utf-8"))["restore_points"]
+    assert point["panel"] is False
+    assert html_path.read_text(encoding="utf-8").count("Bod obnovenia: vytvorený (#5) (") == 2
+
+
+def test_panel_restore_point_decision_pairs_with_its_own_point(tmp_path):
+    # The batch's point failed and was answered; later a winget update's
+    # point failed and was declined - each answer stays with its own point,
+    # and the panel's "No" reads "nothing was changed", not "high-risk
+    # actions were skipped".
+    _rp(tmp_path, "run_pair", 1, "m02_cleanup/user_temp")
+    _system_event(tmp_path, "run_pair", "restore_point_decision", 0, "go", decision="proceed",
+                  subject="m02_cleanup/user_temp")
+    _rp(tmp_path, "run_pair", 1, "_winget/Mozilla.Firefox")
+    _system_event(tmp_path, "run_pair", "restore_point_decision", 0, "stop", decision="skip",
+                  subject="_winget/Mozilla.Firefox")
+    html_path, json_path = generate_report(tmp_path, "run_pair", _fixture_modules(), "en", {}, {})
+    batch, panel = json.loads(json_path.read_text(encoding="utf-8"))["restore_points"]
+    assert (batch["panel"], batch["decision"]) == (False, "proceed")
+    assert (panel["panel"], panel["decision"]) == (True, "skip")
+    content = html_path.read_text(encoding="utf-8")
+    assert "technician confirmed continuing without a restore point" in content
+    assert ("Restore point (winget update: Mozilla.Firefox): <span class=\"rp-fail\">FAILED</span>"
+            in content)
+    assert "technician declined to continue - nothing was changed" in content
+    assert "high-risk actions were skipped" not in content
+
+
+def test_decision_for_another_subject_does_not_attach_to_the_wrong_point(tmp_path):
+    _rp(tmp_path, "run_other", 1, "_uninstaller/A")
+    _system_event(tmp_path, "run_other", "restore_point_decision", 0, "stop", decision="skip",
+                  subject="_uninstaller/B")
+    [point] = build_report_data(tmp_path, "run_other", [], "en", {}, {})["restore_points"]
+    assert point["decision"] is None
+
+
+def test_render_html_old_report_restore_point_without_panel_keys(tmp_path):
+    # Report JSON written before panel restore points existed.
+    from portablefix.report import _render_html
+
+    data = build_report_data(tmp_path, "run_oldrp", [], "en", {}, {})
+    data["restore_points"] = [{"timestamp": "2026-01-01T10:00:00+00:00", "created": False,
+                               "detail": "x", "decision": "skip", "sequence": None}]
+    content = _render_html(data)
+    assert "Restore point: <span class=\"rp-fail\">FAILED</span>" in content
+    assert "high-risk actions were skipped" in content
