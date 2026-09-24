@@ -47,7 +47,7 @@ PowerShell.
 | M12 | Diagnostics | Online: layered connectivity test, DNS, proxy |
 | M13 | Cleanup | Debloat: telemetry, scheduled tasks, Fast Startup, Explorer ads, Recall/Click to Do |
 | M14 | Repair | Printing: printers, drivers, offline/ghost printers, spooler reset |
-| M15 | Repair | Boot/platform: BCD, TPM, Secure Boot, BitLocker, Safe Mode, F8 recovery |
+| M15 | Repair | Boot/platform: BCD, TPM, Secure Boot, Secure Boot 2023 certificate verdict (2026-10-19 deadline), WinRE and Quick Machine Recovery readiness, BitLocker, Safe Mode, F8 recovery |
 | M16 | Repair | Office: version/channel, Outlook add-ins, OST/PST, quick/full repair |
 | M17 | Repair | Browsers: extensions, policy, homepage hijack, profile reset |
 | M18 | Repair | Back up user folders (Desktop/Documents/Pictures/Favorites) |

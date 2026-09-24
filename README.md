@@ -46,7 +46,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
 | M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri, Recall/Click to Do |
 | M14 | Oprava | Tlač: tlačiarne, ovládače, offline/ghost tlačiarne, reset spooleru |
-| M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, BitLocker, Bezpečný režim, F8 recovery |
+| M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, verdikt pre Secure Boot certifikáty 2023 (termín 19. 10. 2026), pripravenosť WinRE a Quick Machine Recovery, BitLocker, Bezpečný režim, F8 recovery |
 | M16 | Oprava | Office: verzia/kanál, doplnky Outlooku, OST/PST, rýchla/úplná oprava |
 | M17 | Oprava | Prehliadače: rozšírenia, policy, únos domovskej stránky, reset profilu |
 | M18 | Oprava | Záloha používateľských priečinkov (Desktop/Documents/Pictures/Favorites) |
