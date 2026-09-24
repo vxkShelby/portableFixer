@@ -3576,3 +3576,352 @@ def test_handoff_write_failure_shows_disk_write_message(qtbot, tmp_path, monkeyp
     assert len(warnings) == 1 and window._t("handoff_failed") in warnings[0] and "USB gone" in warnings[0]
     assert window._t("handoff_failed") in window.console.toPlainText()
     assert not (tmp_path / "x.zip").exists()
+
+
+def _fake_installed_program(name, quiet=None, plain="uninst.exe /x", location=None, registry_path=None):
+    from portablefix import uninstaller
+
+    return uninstaller.InstalledProgram(
+        name=name, publisher="", version="1.0", estimated_size_kb=None, install_location=location,
+        install_date=None, uninstall_string=plain, quiet_uninstall_string=quiet, display_icon=None,
+        registry_hive=uninstaller.winreg.HKEY_LOCAL_MACHINE,
+        registry_path=registry_path or rf"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{name}",
+    )
+
+
+def _uninstaller_window(qtbot, tmp_path, monkeypatch, run_id, programs, dry_run, orphans=()):
+    # The card reads the registry once, when it is built - fake it first.
+    # No real winget scan either: on a Windows runner that takes seconds.
+    from portablefix import uninstaller, winget_updates
+    from portablefix.models import ModuleCategory
+
+    monkeypatch.setattr(uninstaller, "list_installed_programs", lambda *a, **k: list(programs))
+    monkeypatch.setattr(uninstaller, "find_orphaned_uninstall_entries", lambda *a, **k: list(orphans))
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [])
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=dry_run),
+        is_admin=True, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    return window, window._category_groups[ModuleCategory.UNINSTALLER]
+
+
+def _panel_button(container, text):
+    from PySide6.QtWidgets import QPushButton
+
+    return next(b for b in container.findChildren(QPushButton) if b.text() == text)
+
+
+def _panel_checkbox(container, prefix):
+    from PySide6.QtWidgets import QCheckBox
+
+    return next(cb for cb in container.findChildren(QCheckBox) if cb.text().startswith(prefix))
+
+
+def _panel_console_text(container) -> str:
+    from PySide6.QtWidgets import QPlainTextEdit
+
+    return "\n".join(w.toPlainText() for w in container.findChildren(QPlainTextEdit) if w.objectName() == "console")
+
+
+def _refuse_runner(label):
+    def _raise(*args, **kwargs):
+        raise AssertionError(f"{label} must not be started")
+
+    return _raise
+
+
+def test_uninstaller_dry_run_previews_the_command_and_logs_without_uninstalling(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    program = _fake_installed_program("Ghost Tool", quiet="ghost-uninst.exe /S")
+    calls = []
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: calls.append(p) or (True, ""))
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_uninst_dry", [program], dry_run=True)
+
+    _panel_checkbox(card, "Ghost Tool").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    assert calls == []
+    console_text = _panel_console_text(card)
+    assert "[DRY-RUN]" in console_text and "ghost-uninst.exe /S" in console_text
+    entries = [e for e in _audit_entries(audit_log_path(tmp_path, "run_uninst_dry")) if e["module_id"] == "_uninstaller"]
+    assert len(entries) == 1
+    assert entries[0]["dry_run"] is True
+    assert entries[0]["action_id"] == "Ghost Tool"
+    assert entries[0]["command"] == "ghost-uninst.exe /S"
+    assert entries[0]["risk"] == "DESTRUCTIVE"
+    # Nothing was uninstalled, so the row stays.
+    assert _panel_checkbox(card, "Ghost Tool").isChecked()
+
+
+def test_uninstaller_declined_confirmation_uninstalls_nothing_and_logs_the_decline(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    silent = _fake_installed_program("Silent App", quiet="silent.exe /S")
+    loud = _fake_installed_program("Loud App")
+    calls = []
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: calls.append(p) or (True, ""))
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_uninst_no", [silent, loud], dry_run=False)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: shown.append(text) or QMessageBox.No)
+
+    _panel_checkbox(card, "Silent App").setChecked(True)
+    _panel_checkbox(card, "Loud App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    assert calls == []
+    assert len(shown) == 1
+    # The dialog says which uninstall runs silently (no uninstaller window).
+    marker = window._t("uninstaller_confirm_silent_marker")
+    lines = shown[0].splitlines()
+    assert any("Silent App" in line and marker in line for line in lines)
+    assert any("Loud App" in line and marker not in line for line in lines)
+    log_path = audit_log_path(tmp_path, "run_uninst_no")
+    declined = _system_events(log_path, "risk_declined")
+    assert sorted(e["subject"] for e in declined) == ["_uninstaller/Loud App", "_uninstaller/Silent App"]
+    assert all(
+        e["decision"] == "declined" and e["warned"] is True and e["warning_text"] == shown[0] and e["risk"] == "DESTRUCTIVE"
+        for e in declined
+    )
+    assert not [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+
+
+def test_uninstaller_confirmed_run_logs_each_program_as_warned_and_irreversible(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    program = _fake_installed_program("Real App", plain="realapp-uninst.exe")
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_uninst_yes", [program], dry_run=False)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: shown.append(text) or QMessageBox.Yes)
+
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+
+    log_path = audit_log_path(tmp_path, "run_uninst_yes")
+
+    def uninstall_logged() -> bool:
+        return button.isEnabled() and any(e["module_id"] == "_uninstaller" for e in _audit_entries(log_path))
+
+    qtbot.waitUntil(uninstall_logged, timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(card._uninstall_runner), timeout=10000)
+    entries = [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action_id"] == "Real App"
+    assert entry["command"] == "realapp-uninst.exe"
+    assert entry["exit_code"] == 0
+    assert entry["warned"] is True and entry["warning_text"] == shown[0]
+    assert entry["dry_run"] is False and entry["risk"] == "DESTRUCTIVE"
+    undo_text = (tmp_path / "Backups" / "run_uninst_yes" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "NOT reversible" in undo_text and "Real App" in undo_text
+
+
+def test_orphan_cleanup_dry_run_starts_unchecked_and_deletes_nothing(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix import uninstaller
+
+    program = _fake_installed_program("Some App", quiet="someapp.exe /S")
+    # Same DisplayName in HKLM and WOW6432Node: the rows must be keyed by
+    # registry location (the dataclass itself is unhashable - TypeError).
+    orphans = [
+        _fake_installed_program("Old Tool", location=r"C:\Gone\OldTool"),
+        _fake_installed_program(
+            "Old Tool", location=r"C:\Gone\OldTool",
+            registry_path=r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Old Tool",
+        ),
+    ]
+    removed, backed_up = [], []
+    monkeypatch.setattr(uninstaller, "remove_registry_key", lambda *a: removed.append(a) or True)
+    monkeypatch.setattr(uninstaller, "backup_registry_key", lambda *a, **k: backed_up.append(a) or True)
+    window, card = _uninstaller_window(
+        qtbot, tmp_path, monkeypatch, "run_orphan_dry", [program], dry_run=True, orphans=orphans,
+    )
+
+    _panel_checkbox(card, "Some App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    orphan_boxes = [cb for cb in card.findChildren(QCheckBox) if cb.text() == "Old Tool"]
+    assert len(orphan_boxes) == 2
+    assert not any(cb.isChecked() for cb in orphan_boxes)
+    clean_button = _panel_button(card, window._t("uninstaller_clean_leftovers_button"))
+    log_path = audit_log_path(tmp_path, "run_orphan_dry")
+
+    clean_button.click()  # nothing ticked - nothing happens
+    assert not [e for e in _audit_entries(log_path) if e["action_id"].startswith("orphan_cleanup:")]
+
+    orphan_boxes[0].setChecked(True)
+    clean_button.click()
+
+    assert removed == [] and backed_up == []
+    assert "[DRY-RUN] reg delete" in _panel_console_text(card)
+    entries = [e for e in _audit_entries(log_path) if e["action_id"] == "orphan_cleanup:Old Tool"]
+    assert len(entries) == 1
+    assert entries[0]["module_id"] == "_uninstaller" and entries[0]["dry_run"] is True
+
+
+def test_orphan_cleanup_deletes_only_entries_whose_registry_backup_succeeded(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    program = _fake_installed_program("Some App", quiet="someapp.exe /S")
+    orphans = [
+        _fake_installed_program("Tool Unbackupable", location=r"C:\Gone\A"),
+        _fake_installed_program("Tool Backed Up", location=r"C:\Gone\B"),
+    ]
+    removed = []
+
+    def fake_backup(hive, path, dest_file):
+        if "Unbackupable" in path:
+            return False
+        Path(dest_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest_file).write_text("REGEDIT", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(uninstaller, "backup_registry_key", fake_backup)
+    monkeypatch.setattr(uninstaller, "remove_registry_key", lambda hive, path: removed.append(path) or True)
+    # Reach the leftover panel through a DRY-RUN preview, then switch
+    # DRY-RUN off like the technician would before cleaning for real.
+    window, card = _uninstaller_window(
+        qtbot, tmp_path, monkeypatch, "run_orphan_real", [program], dry_run=True, orphans=orphans,
+    )
+    _panel_checkbox(card, "Some App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    window.dry_run_checkbox.setChecked(False)
+    assert window.settings.dry_run is False
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: shown.append(text) or QMessageBox.Yes)
+    _panel_checkbox(card, "Tool Unbackupable").setChecked(True)
+    _panel_checkbox(card, "Tool Backed Up").setChecked(True)
+
+    _panel_button(card, window._t("uninstaller_clean_leftovers_button")).click()
+
+    assert len(shown) == 1 and "Tool Unbackupable" in shown[0] and "Tool Backed Up" in shown[0]
+    assert removed == [orphans[1].registry_path]
+    backup_file = tmp_path / "Backups" / "run_orphan_real" / "uninstall_Tool_Backed_Up.reg"
+    assert backup_file.is_file()
+    assert window._t("uninstaller_orphan_backup_failed").format(name="Tool Unbackupable") in _panel_console_text(card)
+    entries = {
+        e["action_id"]: e for e in _audit_entries(audit_log_path(tmp_path, "run_orphan_real"))
+        if e["action_id"].startswith("orphan_cleanup:") and e["dry_run"] is False
+    }
+    assert entries["orphan_cleanup:Tool Unbackupable"]["exit_code"] == 1
+    assert entries["orphan_cleanup:Tool Backed Up"]["exit_code"] == 0
+    assert str(backup_file) in entries["orphan_cleanup:Tool Backed Up"]["output"]
+    assert all(e["warned"] is True and e["warning_text"] == shown[0] for e in entries.values())
+    # The backup makes the deletion reversible - undo.ps1 re-imports it.
+    undo_text = (tmp_path / "Backups" / "run_orphan_real" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert f"reg import '{backup_file}'" in undo_text
+
+
+def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package):
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix import winget_updates
+    from portablefix.models import ModuleCategory
+
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [package])
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=dry_run),
+        is_admin=True, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    card = window._category_groups[ModuleCategory.DASHBOARD]
+
+    def package_row():
+        return next((cb for cb in card.findChildren(QCheckBox) if cb.toolTip() == package.id), None)
+
+    qtbot.waitUntil(lambda: package_row() is not None, timeout=10000)
+    return window, card, package_row()
+
+
+def _fake_outdated_package():
+    from portablefix import winget_updates
+
+    return winget_updates.OutdatedPackage(
+        name="Fake Editor", id="Fake.Editor", installed_version="1.0", available_version="2.0", source="winget",
+    )
+
+
+def test_winget_update_dry_run_starts_no_runner_and_logs_each_package(qtbot, tmp_path, monkeypatch):
+    from portablefix import winget_updates
+
+    updated = []
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: updated.append(p) or (True, ""))
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_dry", True, _fake_outdated_package())
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    assert updated == [] and window._winget_update_runner is None
+    assert "[DRY-RUN] winget upgrade --id Fake.Editor" in _panel_console_text(card)
+    entries = [e for e in _audit_entries(audit_log_path(tmp_path, "run_winget_dry")) if e["module_id"] == "_winget"]
+    assert len(entries) == 1
+    assert entries[0]["action_id"] == "Fake.Editor" and entries[0]["dry_run"] is True
+    assert entries[0]["command"].startswith("winget upgrade --id Fake.Editor")
+
+
+def test_winget_update_declined_confirmation_starts_no_runner_and_logs_the_decline(qtbot, tmp_path, monkeypatch):
+    from portablefix import winget_updates
+
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_no", False, _fake_outdated_package())
+    shown = []
+    monkeypatch.setattr(QMessageBox, "question", lambda parent, title, text, *a: shown.append(text) or QMessageBox.No)
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    assert len(shown) == 1 and "Fake Editor" in shown[0]
+    assert window._winget_update_runner is None
+    declined = _system_events(audit_log_path(tmp_path, "run_winget_no"), "risk_declined")
+    assert [e["subject"] for e in declined] == ["_winget/Fake.Editor"]
+    assert declined[0]["decision"] == "declined" and declined[0]["warning_text"] == shown[0]
+
+
+def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monkeypatch):
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_yes", False, _fake_outdated_package())
+    shown = []
+    monkeypatch.setattr(QMessageBox, "question", lambda parent, title, text, *a: shown.append(text) or QMessageBox.Yes)
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    log_path = audit_log_path(tmp_path, "run_winget_yes")
+    qtbot.waitUntil(lambda: any(e["module_id"] == "_winget" for e in _audit_entries(log_path)), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_update_runner), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    entries = [e for e in _audit_entries(log_path) if e["module_id"] == "_winget"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action_id"] == "Fake.Editor" and entry["exit_code"] == 0 and entry["dry_run"] is False
+    assert entry["warned"] is True and entry["warning_text"] == shown[0]
+    assert entry["output"] == "Successfully installed"
+    undo_text = (tmp_path / "Backups" / "run_winget_yes" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "NOT reversible" in undo_text and "Fake.Editor" in undo_text
+
+
+def test_panel_confirmation_list_is_capped(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_confirm_cap")
+    qtbot.addWidget(window)
+
+    text = window._panel_confirm_list([f"Program {i}" for i in range(25)])
+
+    lines = text.splitlines()
+    assert len(lines) == 21
+    assert lines[0] == "• Program 0" and lines[19] == "• Program 19"
+    assert lines[20] == window._t("uninstaller_and_more").format(count=5)
+    assert window._panel_confirm_list(["Only one"]) == "• Only one"

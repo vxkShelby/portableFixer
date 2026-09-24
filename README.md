@@ -83,6 +83,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   s počtom OK/zlyhaných akcií.
 - **Klávesové skratky:** F5 spustiť, Ctrl+A vybrať všetko, Ctrl+F hľadať,
   Esc vymazať hľadanie, Ctrl+S uložiť predvoľbu, Ctrl+J zákazka, F1 prehľad.
+- **Odinštalovanie programov a winget aktualizácie:** tieto panely
+  rešpektujú DRY-RUN (len vypíšu príkazy), pred akoukoľvek zmenou sa
+  opýtajú a každý program, balík aj vymazaný zvyšok v registri (ten sa
+  pred vymazaním zálohuje do `Backups/<run-id>/*.reg`) sa zapíše do
+  audit logu.
 
 ## Bezpečnostné mechanizmy
 

@@ -157,3 +157,140 @@ def test_uninstall_program_reports_failure_on_nonzero_exit():
     program = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)[0]
     ok, _ = uninstaller.uninstall_program(program)
     assert ok is False
+
+
+def _program(name: str, **fields) -> uninstaller.InstalledProgram:
+    values = dict(
+        name=name, publisher="", version="", estimated_size_kb=None, install_location=None,
+        install_date=None, uninstall_string=None, quiet_uninstall_string=None, display_icon=None,
+        registry_hive=winreg.HKEY_CURRENT_USER, registry_path=f"{_TEST_BASE}\\{name}",
+    )
+    values.update(fields)
+    return uninstaller.InstalledProgram(**values)
+
+
+def _completed(args, returncode: int):
+    import subprocess
+
+    return subprocess.CompletedProcess(args, returncode, b"", b"")
+
+
+def test_find_orphaned_uninstall_entries_skips_programs_on_missing_drives_or_shares(monkeypatch):
+    # An unplugged USB disk (Q:) or an unmapped share looks exactly like a
+    # deleted install folder - those entries must never be offered for
+    # deletion. Only a folder missing from a drive that is there counts.
+    programs = [
+        _program("Gone From C", install_location=r"C:\PortableFixTest\Gone"),
+        _program("On Unplugged USB", install_location=r"Q:\Apps\Tool"),
+        _program("On Unmapped Share", install_location=r"\\nas\apps\Tool"),
+        _program("Still Installed", install_location=r"C:\PortableFixTest\Present"),
+        _program("Quoted Location", install_location='"C:\\PortableFixTest\\Present"'),
+        _program("Unexpanded Variable", install_location=r"%ProgramFiles%\Tool"),
+    ]
+    monkeypatch.setattr(uninstaller, "list_installed_programs", lambda reg_paths=None: programs)
+    existing = {"C:\\", r"C:\PortableFixTest\Present"}
+    faked = existing | {"Q:\\", "\\\\nas\\apps\\", r"C:\PortableFixTest\Gone"}
+    real_exists = uninstaller.Path.exists
+    queried = []
+
+    def fake_exists(self, *args, **kwargs):
+        text = str(self)
+        if text not in faked:
+            return real_exists(self, *args, **kwargs)
+        queried.append(text)
+        return text in existing
+
+    monkeypatch.setattr(uninstaller.Path, "exists", fake_exists)
+
+    orphans = uninstaller.find_orphaned_uninstall_entries()
+
+    assert [p.name for p in orphans] == ["Gone From C"]
+    # The missing roots were checked - and the folders on them never were.
+    assert "Q:\\" in queried and "\\\\nas\\apps\\" in queried
+    assert r"Q:\Apps\Tool" not in queried
+
+
+def test_orphan_location_is_verifiable_rejects_paths_it_cannot_check():
+    for location in ("", r"Program Files\Tool", r"%ProgramFiles%\Tool", r"C:Tool", r"\\server"):
+        assert uninstaller.orphan_location_is_verifiable(location) is False, location
+
+
+def test_program_command_prefers_the_quiet_string():
+    program = _program("App", uninstall_string="app.exe /uninstall", quiet_uninstall_string="app.exe /S")
+    assert uninstaller.program_command(program) == "app.exe /S"
+    program.quiet_uninstall_string = None
+    assert uninstaller.program_command(program) == "app.exe /uninstall"
+    program.uninstall_string = ""
+    assert uninstaller.program_command(program) is None
+
+
+def test_backup_registry_key_runs_reg_export_and_requires_the_file(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        (tmp_path / "Backups" / "run1" / "uninstall_App.reg").write_text("REGEDIT", encoding="utf-16")
+        return _completed(args, 0)
+
+    monkeypatch.setattr(uninstaller.subprocess, "run", fake_run)
+    dest = tmp_path / "Backups" / "run1" / "uninstall_App.reg"
+
+    assert uninstaller.backup_registry_key(winreg.HKEY_CURRENT_USER, rf"{_TEST_BASE}\App", dest) is True
+
+    args, kwargs = calls[0]
+    assert args == ["reg", "export", rf"HKCU\{_TEST_BASE}\App", str(dest), "/y"]
+    assert kwargs["creationflags"] == uninstaller.subprocess.CREATE_NO_WINDOW
+    assert kwargs["timeout"] > 0
+
+
+@pytest.mark.skipif(
+    winreg.HKEY_LOCAL_MACHINE == winreg.HKEY_CURRENT_USER, reason="winreg stand-in without distinct hive handles"
+)
+def test_backup_registry_key_maps_hklm_to_its_reg_exe_root(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        (tmp_path / "x.reg").write_text("REGEDIT", encoding="utf-8")
+        return _completed(args, 0)
+
+    monkeypatch.setattr(uninstaller.subprocess, "run", fake_run)
+    assert uninstaller.backup_registry_key(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\X", tmp_path / "x.reg") is True
+    assert calls[0][2] == r"HKLM\SOFTWARE\X"
+
+
+def test_backup_registry_key_returns_false_on_failure(monkeypatch, tmp_path):
+    def failed_export(args, **kwargs):
+        # A failed export may still leave a (partial) file behind.
+        (tmp_path / "a.reg").write_text("partial", encoding="utf-8")
+        return _completed(args, 1)
+
+    monkeypatch.setattr(uninstaller.subprocess, "run", failed_export)
+    assert uninstaller.backup_registry_key(winreg.HKEY_CURRENT_USER, r"SOFTWARE\X", tmp_path / "a.reg") is False
+
+    # Exit 0 but no file written: still not a backup.
+    monkeypatch.setattr(uninstaller.subprocess, "run", lambda args, **kwargs: _completed(args, 0))
+    assert uninstaller.backup_registry_key(winreg.HKEY_CURRENT_USER, r"SOFTWARE\X", tmp_path / "b.reg") is False
+
+    def missing_reg_exe(args, **kwargs):
+        raise FileNotFoundError("reg")
+
+    monkeypatch.setattr(uninstaller.subprocess, "run", missing_reg_exe)
+    assert uninstaller.backup_registry_key(winreg.HKEY_CURRENT_USER, r"SOFTWARE\X", tmp_path / "c.reg") is False
+
+
+def test_backup_registry_key_refuses_an_unknown_hive(monkeypatch, tmp_path):
+    monkeypatch.setattr(uninstaller.subprocess, "run", lambda *a, **k: pytest.fail("reg.exe must not run"))
+    assert uninstaller.backup_registry_key(0x7FFF_0001, r"SOFTWARE\X", tmp_path / "x.reg") is False
+
+
+def test_orphan_backup_path_sanitizes_the_name_and_never_reuses_a_file(tmp_path):
+    first = uninstaller.orphan_backup_path(tmp_path, 'Ghost: App / "x64" Čeština')
+    assert first == tmp_path / "uninstall_Ghost_App_x64_Čeština.reg"
+    first.write_text("x", encoding="utf-8")
+    # Same DisplayName in HKLM and WOW6432Node - the second backup must not
+    # overwrite the first.
+    assert uninstaller.orphan_backup_path(tmp_path, 'Ghost: App / "x64" Čeština') == (
+        tmp_path / "uninstall_Ghost_App_x64_Čeština_2.reg"
+    )
+    assert uninstaller.orphan_backup_path(tmp_path, "???").name == "uninstall_entry.reg"

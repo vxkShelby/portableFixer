@@ -1768,6 +1768,46 @@ class MainWindow(QMainWindow):
             selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected_packages:
                 return
+            # Installs a newer version with no way back - a MODERATE change
+            # by the catalog's own yardstick, confirmed like one.
+            risk = RiskLevel.MODERATE.value
+
+            def upgrade_command(package_id: str) -> str:
+                # Same argv as winget_updates._run_winget_upgrade; its
+                # "--location" retry, when needed, shows up in the output.
+                return (
+                    f"winget upgrade --id {package_id} --silent --include-unknown "
+                    "--accept-package-agreements --accept-source-agreements --disable-interactivity"
+                )
+
+            if self.settings.dry_run:
+                # Nothing is started: DRY-RUN must never install anything,
+                # so this only shows (and logs) what would have run.
+                console.setVisible(True)
+                console.appendPlainText(self._t("winget_update_dry_run_notice"))
+                for package in selected_packages:
+                    command = upgrade_command(package.id)
+                    console.appendPlainText(f"[DRY-RUN] {command}")
+                    self._log_panel_action("_winget", package.id, command, 0, f"[DRY-RUN] {command}", True, risk)
+                return
+            warning_text = self._t("winget_update_confirm_text").format(
+                count=len(selected_packages),
+                packages=self._panel_confirm_list(
+                    [f"{p.name}  {p.installed_version} → {p.available_version}" for p in selected_packages]
+                ),
+            )
+            answer = QMessageBox.question(
+                self, self._t("category_winget"), warning_text, QMessageBox.Yes | QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                # Logged like a declined catalog action (_dispatch_action).
+                for package in selected_packages:
+                    self._log_system_event(
+                        "risk_declined", None, "Technician declined the winget update confirmation - package not updated.",
+                        risk=risk, warned=True, warning_text=warning_text,
+                        subject=f"_winget/{package.id}", decision="declined",
+                    )
+                return
             update_btn.setEnabled(False)
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
@@ -1814,10 +1854,24 @@ class MainWindow(QMainWindow):
                     ignore_btn.setVisible(False)
 
             def on_package_finished(package_id: str, ok: bool, output: str) -> None:
-                elapsed_timer.stop()
-                elapsed_state["package_id"] = None
                 package = package_by_id.get(package_id)
                 name = package.name if package is not None else package_id
+                # Recorded before any widget is touched, so a console error
+                # can never leave a real update out of the log.
+                self._log_panel_action(
+                    "_winget", package_id, upgrade_command(package_id), 0 if ok else 1, output,
+                    False, risk, True, warning_text,
+                )
+                # winget has no rollback to the previous version - undo.ps1
+                # says so rather than implying the update can be undone. A
+                # failed update is listed too: the installer may have run.
+                irreversible = f"[{risk}] {self._t('category_winget')}: {name} ({package_id})"
+                if not ok:
+                    irreversible += " - exit 1"
+                self._irreversible_actions.append(irreversible)
+                self._write_undo_script()
+                elapsed_timer.stop()
+                elapsed_state["package_id"] = None
                 status = self._t("status_ok") if ok else self._t("status_failed")
                 console.appendPlainText(f"[{status}] {name}")
                 if output:
@@ -2223,22 +2277,99 @@ class MainWindow(QMainWindow):
             heading = QLabel(self._t("uninstaller_leftovers_heading"))
             heading.setObjectName("cardHeading")
             cleanup_layout.addWidget(heading)
-            orphan_checkboxes: dict[uninstaller.InstalledProgram, QCheckBox] = {}
+            # InstalledProgram is a plain (unhashable) dataclass - using it as
+            # the key raised TypeError. Where the entry lives is its identity.
+            orphan_checkboxes: dict[tuple[int, str], QCheckBox] = {}
+            orphan_by_key: dict[tuple[int, str], uninstaller.InstalledProgram] = {}
             for orphan in orphans:
+                key = (orphan.registry_hive, orphan.registry_path)
                 cb = QCheckBox(orphan.name)
-                cb.setChecked(True)
-                orphan_checkboxes[orphan] = cb
+                # Unchecked: every deleted entry is the technician's explicit
+                # pick, not a default they would have to notice and untick.
+                cb.setToolTip(f"{orphan.install_location or ''}\n{uninstaller.registry_key_name(*key)}")
+                orphan_checkboxes[key] = cb
+                orphan_by_key[key] = orphan
                 cleanup_layout.addWidget(cb)
             clean_button = QPushButton(self._t("uninstaller_clean_leftovers_button"))
             clean_button.setObjectName("selectionBtn")
 
             def do_clean() -> None:
+                chosen = [orphan_by_key[key] for key, cb in orphan_checkboxes.items() if cb.isChecked()]
+                if not chosen:
+                    return
+                console.setVisible(True)
+                risk = RiskLevel.DESTRUCTIVE.value
+
+                def delete_command(orphan: uninstaller.InstalledProgram) -> str:
+                    key_name = uninstaller.registry_key_name(orphan.registry_hive, orphan.registry_path)
+                    return f'reg delete "{key_name}" /f'
+
+                if self.settings.dry_run:
+                    console.appendPlainText(self._t("dry_run_batch_note"))
+                    for orphan in chosen:
+                        command = delete_command(orphan)
+                        console.appendPlainText(f"[DRY-RUN] {command}")
+                        self._log_panel_action(
+                            "_uninstaller", f"orphan_cleanup:{orphan.name}", command, 0, f"[DRY-RUN] {command}",
+                            True, risk,
+                        )
+                    return
+                warning_text = self._t("uninstaller_orphan_confirm_text").format(
+                    count=len(chosen),
+                    entries=self._panel_confirm_list([
+                        f"{o.name} ({uninstaller.registry_key_name(o.registry_hive, o.registry_path)})" for o in chosen
+                    ]),
+                )
+                answer = QMessageBox.warning(
+                    self, self._t("uninstaller_leftovers_heading"), warning_text,
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    for orphan in chosen:
+                        self._log_system_event(
+                            "risk_declined", None, "Technician declined the leftover registry cleanup - entry not deleted.",
+                            risk=risk, warned=True, warning_text=warning_text,
+                            subject=f"_uninstaller/orphan_cleanup:{orphan.name}", decision="declined",
+                        )
+                    return
+                backup_dir = self.state_dir / "Backups" / self.run_id
                 removed = 0
-                for orphan, cb in orphan_checkboxes.items():
-                    if cb.isChecked() and uninstaller.remove_registry_key(orphan.registry_hive, orphan.registry_path):
+                for orphan in chosen:
+                    command = delete_command(orphan)
+                    action_id = f"orphan_cleanup:{orphan.name}"
+                    backup_path = uninstaller.orphan_backup_path(backup_dir, orphan.name)
+                    # No backup, no delete: a wrongly flagged entry (e.g. a
+                    # program on a drive that reappears later) must stay
+                    # recoverable with "reg import".
+                    if not uninstaller.backup_registry_key(orphan.registry_hive, orphan.registry_path, backup_path):
+                        console.appendPlainText(self._t("uninstaller_orphan_backup_failed").format(name=orphan.name))
+                        self._log_panel_action(
+                            "_uninstaller", action_id, command, 1,
+                            f"Registry backup to {backup_path} failed - entry not deleted.",
+                            False, risk, True, warning_text,
+                        )
+                        continue
+                    deleted = uninstaller.remove_registry_key(orphan.registry_hive, orphan.registry_path)
+                    output = f"Backup: {backup_path}"
+                    if deleted:
                         removed += 1
+                        # The .reg backup makes this reversible - undo.ps1
+                        # re-imports it (PowerShell single-quote escaping).
+                        quoted = str(backup_path).replace("'", "''")
+                        self._undo_steps.append(f"reg import '{quoted}'")
+                    else:
+                        output += "\nDeleting the registry entry failed."
+                        console.appendPlainText(f"[{self._t('status_failed')}] {orphan.name}")
+                    self._log_panel_action(
+                        "_uninstaller", action_id, command, 0 if deleted else 1, output,
+                        False, risk, True, warning_text,
+                    )
                 console.appendPlainText(self._t("uninstaller_leftovers_removed").format(count=removed))
-                cleanup_container.setVisible(False)
+                if removed:
+                    self._write_undo_script()
+                # Rescan: deleted entries drop off the list, anything that
+                # failed or was left unticked stays for another try.
+                show_orphan_cleanup()
 
             clean_button.clicked.connect(lambda _checked=False: do_clean())
             cleanup_layout.addWidget(clean_button)
@@ -2248,6 +2379,47 @@ class MainWindow(QMainWindow):
             selected = [program_by_name[name] for name, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected:
                 return
+            risk = RiskLevel.DESTRUCTIVE.value
+            if self.settings.dry_run:
+                # DRY-RUN never starts an uninstaller - it shows and logs the
+                # exact command each one would run, and the rows stay put.
+                console.setVisible(True)
+                console.appendPlainText(self._t("uninstaller_dry_run_notice"))
+                for program in selected:
+                    command = uninstaller.program_command(program) or ""
+                    console.appendPlainText(f"[DRY-RUN] {program.name}: {command or self._t('uninstaller_no_command')}")
+                    self._log_panel_action(
+                        "_uninstaller", program.name, command, 0,
+                        f"[DRY-RUN] {command}" if command else "[DRY-RUN] No uninstall command found for this program.",
+                        True, risk,
+                    )
+                # Same next step as a real run: the leftover scan only reads
+                # the registry, and cleaning honours DRY-RUN as well.
+                show_orphan_cleanup()
+                return
+            # A quiet uninstall string runs with no uninstaller window at
+            # all - the only chance to stop it is this dialog, so say so.
+            silent_marker = self._t("uninstaller_confirm_silent_marker")
+            warning_text = self._t("uninstaller_confirm_text").format(
+                count=len(selected),
+                programs=self._panel_confirm_list([
+                    f"{p.name}  [{silent_marker}]" if p.quiet_uninstall_string else p.name for p in selected
+                ]),
+            )
+            answer = QMessageBox.warning(
+                self, self._t("uninstaller_confirm_title"), warning_text,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                # Logged like a declined catalog action (_dispatch_action).
+                for program in selected:
+                    self._log_system_event(
+                        "risk_declined", None, "Technician declined the uninstall confirmation - program not uninstalled.",
+                        risk=risk, warned=True, warning_text=warning_text,
+                        subject=f"_uninstaller/{program.name}", decision="declined",
+                    )
+                return
+            selected_by_name = {program.name: program for program in selected}
             uninstall_button.setEnabled(False)
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
@@ -2257,6 +2429,21 @@ class MainWindow(QMainWindow):
             card._uninstall_runner = runner  # keep a reference alive
 
             def on_program_finished(name: str, ok: bool, output: str) -> None:
+                # Recorded before any widget is touched, so a console error
+                # can never leave a real uninstall out of the log.
+                program = selected_by_name.get(name)
+                command = (uninstaller.program_command(program) or "") if program is not None else ""
+                self._log_panel_action(
+                    "_uninstaller", name, command, 0 if ok else 1, output, False, risk, True, warning_text,
+                )
+                # An uninstall has no rollback - undo.ps1 lists it under
+                # "NOT reversible" (a failed one too: it may have removed
+                # part of the program before failing).
+                irreversible = f"[{risk}] {self._t('category_uninstaller')}: {name}"
+                if not ok:
+                    irreversible += " - exit 1"
+                self._irreversible_actions.append(irreversible)
+                self._write_undo_script()
                 status = self._t("status_ok") if ok else self._t("status_failed")
                 console.appendPlainText(f"[{status}] {name}")
                 if output:
@@ -2280,6 +2467,31 @@ class MainWindow(QMainWindow):
 
         uninstall_button.clicked.connect(lambda _checked=False: start_uninstall())
         return card
+
+    def _log_panel_action(
+        self, module_id: str, action_id: str, command: str, exit_code: int | None, output: str,
+        dry_run: bool, risk: str, warned: bool = False, warning_text: str = "",
+    ) -> None:
+        # The uninstaller and winget panels change the system outside the
+        # batch queue (_dispatch_action / _on_action_finished), so they write
+        # their own entries - same log, same fields, same report.
+        entry = make_entry(
+            module_id, action_id, command, exit_code, output, dry_run, self.run_id,
+            risk=risk, warned=warned, elevated=self.is_admin, warning_text=warning_text,
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+
+    def _panel_confirm_list(self, lines: list[str], limit: int = 20) -> str:
+        # Capped: a confirmation listing 150 programs grows taller than the
+        # screen and pushes its own Yes/No buttons out of reach.
+        shown = [f"• {line}" for line in lines[:limit]]
+        if len(lines) > limit:
+            shown.append(self._t("uninstaller_and_more").format(count=len(lines) - limit))
+        return "\n".join(shown)
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
