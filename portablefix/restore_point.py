@@ -13,8 +13,18 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-SYSTEM_RESTORE_KEY = r"HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore"
+try:
+    import winreg as _winreg
+except ImportError:  # not Windows (tests, linting) - see _read_throttle
+    _winreg = None
+
+
+SYSTEM_RESTORE_SUBKEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore"
+SYSTEM_RESTORE_KEY = "HKLM:\\" + SYSTEM_RESTORE_SUBKEY
 FREQUENCY_VALUE = "SystemRestorePointCreationFrequency"
+# Checkpoint-Computer waits for a VSS snapshot, which on a slow/fragmented
+# HDD can take minutes - 120s cut real, still-progressing checkpoints off.
+RESTORE_POINT_TIMEOUT_SEC = 300
 # Prefix of the one stdout line that carries the created point as JSON - a
 # marker, so stray output from any cmdlet can never be mistaken for it.
 RESULT_MARKER = "PORTABLEFIX_RESTORE_POINT="
@@ -28,6 +38,8 @@ def build_restore_point_command(description: str) -> str:
     # call (restoring the previous value afterwards) and turn any remaining
     # warning into a failure, so the user is asked whether to continue.
     # $env:SystemDrive rather than a hard-coded C:\ - Windows isn't always on C:.
+    # If powershell.exe is killed (timeout) the finally never runs -
+    # create_restore_point's _ensure_throttle_restored is the backstop.
     #
     # The trailing lookup is only reached on success (the catch exits 1): it
     # finds the point just made - the newest one carrying our description -
@@ -107,19 +119,79 @@ class RestorePointResult(tuple):
         return self.info.get("sequence_number")
 
 
+# --- throttle safety net ---
+#
+# The command's PowerShell `finally` puts SystemRestorePointCreationFrequency
+# back - but only if PowerShell gets to run it. On a timeout subprocess.run
+# kills powershell.exe (TerminateProcess), the finally never runs, and the
+# client PC is left with the 24h throttle disabled for good. So Python
+# snapshots the value before launching and, after the command ends however
+# it ends, puts it back if it differs. Read/written with winreg (no second
+# PowerShell start, and nothing to parse from a killed process's stdout).
+
+def _open_throttle_key(access: int):
+    # KEY_WOW64_64KEY: the real 64-bit HKLM\SOFTWARE that 64-bit PowerShell
+    # writes, even if this Python process is 32-bit.
+    return _winreg.OpenKey(
+        _winreg.HKEY_LOCAL_MACHINE, SYSTEM_RESTORE_SUBKEY, 0, access | _winreg.KEY_WOW64_64KEY,
+    )
+
+
+def _read_throttle():
+    """("absent",), ("value", data, reg_type), or None when it can't be read
+    (not Windows, access denied) - None disables the safety net."""
+    if _winreg is None:
+        return None
+    try:
+        with _open_throttle_key(_winreg.KEY_READ) as key:
+            data, reg_type = _winreg.QueryValueEx(key, FREQUENCY_VALUE)
+    except FileNotFoundError:
+        # Key or value missing - Windows then uses its 1440-minute default.
+        return ("absent",)
+    except OSError:
+        return None
+    return ("value", data, reg_type)
+
+
+def _ensure_throttle_restored(snapshot) -> None:
+    # Compare-then-repair: on the normal path the PowerShell finally already
+    # restored the value, the comparison matches and nothing is written.
+    if snapshot is None or _read_throttle() == snapshot:
+        return
+    try:
+        with _open_throttle_key(_winreg.KEY_SET_VALUE) as key:
+            if snapshot[0] == "absent":
+                try:
+                    _winreg.DeleteValue(key, FREQUENCY_VALUE)
+                except FileNotFoundError:
+                    pass
+            else:
+                _, data, reg_type = snapshot
+                _winreg.SetValueEx(key, FREQUENCY_VALUE, 0, reg_type, data)
+    except OSError:
+        # Best effort - never let the safety net itself crash the batch.
+        pass
+
+
 def create_restore_point(description: str) -> RestorePointResult:
     command = build_restore_point_command(description)
+    throttle_before = _read_throttle()
     try:
         result = subprocess.run(
-            POWERSHELL_PREFIX + [command], capture_output=True, timeout=120,
+            POWERSHELL_PREFIX + [command], capture_output=True, timeout=RESTORE_POINT_TIMEOUT_SEC,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if result.returncode == 0:
             stdout = (result.stdout or b"").decode("utf-8", errors="replace")
             return RestorePointResult(True, "", parse_restore_point_output(stdout))
         return RestorePointResult(False, result.stderr.decode("utf-8", errors="replace").strip())
+    except subprocess.TimeoutExpired:
+        # str(exc) would dump the whole command line into the audit log.
+        return RestorePointResult(False, f"Checkpoint-Computer timed out after {RESTORE_POINT_TIMEOUT_SEC}s.")
     except (subprocess.SubprocessError, OSError) as exc:
         return RestorePointResult(False, str(exc))
+    finally:
+        _ensure_throttle_restored(throttle_before)
 
 
 class RestorePointRunner(QThread):

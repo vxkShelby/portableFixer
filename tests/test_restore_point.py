@@ -228,6 +228,158 @@ def test_create_restore_point_failure_has_no_sequence(monkeypatch):
     assert result.sequence_number is None
 
 
+# --- throttle safety net when powershell.exe is killed (timeout) ---
+
+
+class _FakeWinreg:
+    """Just enough of winreg for the SystemRestore key: one value store."""
+
+    HKEY_LOCAL_MACHINE = "HKLM"
+    KEY_READ = 1
+    KEY_SET_VALUE = 2
+    KEY_WOW64_64KEY = 0x100
+    REG_DWORD = 4
+
+    def __init__(self, value=None):
+        # None = value absent; else (data, reg_type).
+        self.value = value
+        self.writes = []
+        self.opened = []
+
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def OpenKey(self, root, subkey, reserved, access):
+        self.opened.append((root, subkey, access))
+        return self._Key()
+
+    def QueryValueEx(self, key, name):
+        assert name == "SystemRestorePointCreationFrequency"
+        if self.value is None:
+            raise FileNotFoundError(name)
+        return self.value
+
+    def SetValueEx(self, key, name, reserved, reg_type, data):
+        self.writes.append(("set", name, data, reg_type))
+        self.value = (data, reg_type)
+
+    def DeleteValue(self, key, name):
+        self.writes.append(("delete", name))
+        if self.value is None:
+            raise FileNotFoundError(name)
+        self.value = None
+
+
+def _timeout_run_that_zeroes_throttle(reg):
+    # What a killed run leaves behind: the script already set the throttle
+    # to 0, then TerminateProcess stopped it before its finally.
+    def fake_run(argv, capture_output, timeout, creationflags):
+        reg.value = (0, reg.REG_DWORD)
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    return fake_run
+
+
+def test_timeout_restores_previous_throttle_value(monkeypatch):
+    reg = _FakeWinreg(value=(1440, _FakeWinreg.REG_DWORD))
+    monkeypatch.setattr(restore_point, "_winreg", reg)
+    monkeypatch.setattr(subprocess, "run", _timeout_run_that_zeroes_throttle(reg))
+
+    success, detail = create_restore_point("x")
+
+    assert success is False
+    assert "timed out" in detail and "Checkpoint-Computer -Description" not in detail
+    assert reg.writes == [("set", "SystemRestorePointCreationFrequency", 1440, reg.REG_DWORD)]
+    assert reg.value == (1440, reg.REG_DWORD)
+    # The 64-bit registry view that 64-bit PowerShell wrote to.
+    assert all(access & reg.KEY_WOW64_64KEY for _, _, access in reg.opened)
+    assert {subkey for _, subkey, _ in reg.opened} == {
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore"
+    }
+
+
+def test_timeout_removes_throttle_value_that_was_absent(monkeypatch):
+    reg = _FakeWinreg(value=None)
+    monkeypatch.setattr(restore_point, "_winreg", reg)
+    monkeypatch.setattr(subprocess, "run", _timeout_run_that_zeroes_throttle(reg))
+
+    create_restore_point("x")
+
+    assert reg.writes == [("delete", "SystemRestorePointCreationFrequency")]
+    assert reg.value is None
+
+
+def test_normal_end_does_not_rewrite_already_restored_throttle(monkeypatch):
+    # The PowerShell finally already put the value back - no second write.
+    reg = _FakeWinreg(value=(60, _FakeWinreg.REG_DWORD))
+    monkeypatch.setattr(restore_point, "_winreg", reg)
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, capture_output, timeout, creationflags: _FakeResult(0),
+    )
+    assert create_restore_point("x") == (True, "")
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"no"),
+    )
+    assert create_restore_point("x") == (False, "no")
+    assert reg.writes == []
+
+
+def test_any_abnormal_end_leaving_throttle_changed_is_repaired(monkeypatch):
+    # e.g. powershell.exe killed from outside: exit code 1, finally never ran.
+    reg = _FakeWinreg(value=(60, _FakeWinreg.REG_DWORD))
+    monkeypatch.setattr(restore_point, "_winreg", reg)
+
+    def killed_run(argv, capture_output, timeout, creationflags):
+        reg.value = (0, reg.REG_DWORD)
+        return _FakeResult(1)
+
+    monkeypatch.setattr(subprocess, "run", killed_run)
+    create_restore_point("x")
+    assert reg.value == (60, reg.REG_DWORD)
+
+
+def test_unreadable_throttle_disables_safety_net(monkeypatch):
+    # Can't know the original value -> never guess and overwrite it.
+    reg = _FakeWinreg(value=(1440, _FakeWinreg.REG_DWORD))
+
+    def denied(key, name):
+        raise PermissionError("access denied")
+
+    reg.QueryValueEx = denied
+    monkeypatch.setattr(restore_point, "_winreg", reg)
+    monkeypatch.setattr(subprocess, "run", _timeout_run_that_zeroes_throttle(reg))
+    create_restore_point("x")
+    assert reg.writes == []
+
+
+def test_throttle_safety_net_is_a_no_op_without_winreg(monkeypatch):
+    monkeypatch.setattr(restore_point, "_winreg", None)
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, capture_output, timeout, creationflags: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(argv, timeout)
+        ),
+    )
+    success, detail = create_restore_point("x")
+    assert success is False and "timed out" in detail
+
+
+def test_restore_point_timeout_allows_slow_vss(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, capture_output, timeout, creationflags):
+        captured["timeout"] = timeout
+        return _FakeResult(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    create_restore_point("x")
+    assert captured["timeout"] >= 300
+
+
 def test_runner_emits_info_and_tolerates_plain_tuple_stubs(monkeypatch):
     # run() is called directly (synchronously): only the emitted values matter.
     emitted = []
