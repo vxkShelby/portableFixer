@@ -339,6 +339,13 @@ QLabel#dashboardScoreValue {
     font-weight: 700;
     color: #39ff88;
 }
+QLabel#dashboardScoreValue[state="none"] {
+    font-size: 16pt;
+    color: #6b7686;
+}
+QLabel#dashboardScoreValue[state="good"] { color: #39ff88; }
+QLabel#dashboardScoreValue[state="warn"] { color: #ffb020; }
+QLabel#dashboardScoreValue[state="bad"] { color: #ff2d6f; }
 QLabel#summaryDryRunNote {
     font-family: 'Consolas', 'Cascadia Mono';
     color: #ffb020;
@@ -399,6 +406,28 @@ QLabel#countPill[state="ok"] {
 QLabel#countPill[state="warn"] {
     background-color: rgba(255, 176, 32, 30);
     color: #ffb020;
+}
+QLabel#countPill[state="idle"] {
+    background-color: rgba(255, 255, 255, 8);
+    color: #4b5568;
+}
+
+QPushButton#panelBtn {
+    background-color: #141a24;
+    border: 1px solid #232d3a;
+    border-radius: 10px;
+    padding: 7px 12px;
+    color: #c4d0de;
+    font-size: 9.5pt;
+}
+QPushButton#panelBtn:hover {
+    border-color: #2fe6ff;
+    color: #2fe6ff;
+    background-color: #182028;
+}
+QPushButton#panelBtn:disabled {
+    color: #4b5568;
+    border-color: #1a212d;
 }
 
 QLabel#wingetBanner {

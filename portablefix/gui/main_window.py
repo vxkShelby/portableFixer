@@ -63,6 +63,15 @@ PRESETS: dict[str, list[str]] = {
 }
 
 
+def _score_state(score: int) -> str:
+    """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
+    if score >= 80:
+        return "good"
+    if score >= 60:
+        return "warn"
+    return "bad"
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -1483,6 +1492,9 @@ class MainWindow(QMainWindow):
         score_box.setSpacing(0)
         score_value = QLabel(self._t("dashboard_no_run_yet"))
         score_value.setObjectName("dashboardScoreValue")
+        # "none" until the first analysis - a big green "not run yet" read
+        # like a healthy result before anything had been checked.
+        score_value.setProperty("state", "none")
         score_caption = QLabel(self._t("dashboard_score_label"))
         score_caption.setObjectName("selectionScope")
         score_box.addWidget(score_value)
@@ -1514,7 +1526,7 @@ class MainWindow(QMainWindow):
             tile_top.addWidget(name_label, 1)
             count_pill = QLabel("0")
             count_pill.setObjectName("countPill")
-            count_pill.setProperty("state", "ok")
+            count_pill.setProperty("state", "idle")
             tile_top.addWidget(count_pill)
             tile_layout.addLayout(tile_top)
             count = self._category_module_action_counts.get(category, 0)
@@ -1548,6 +1560,9 @@ class MainWindow(QMainWindow):
             unique_recommended = len(self._recommended_action_ids)
             score = max(40, 100 - unique_recommended * 10)
             self._dashboard_score_label.setText(str(score))
+            self._dashboard_score_label.setProperty("state", _score_state(score))
+            self._dashboard_score_label.style().unpolish(self._dashboard_score_label)
+            self._dashboard_score_label.style().polish(self._dashboard_score_label)
         counts: dict[ModuleCategory, int] = {}
         for action_id in self._recommended_action_ids:
             try:
@@ -2266,6 +2281,7 @@ class MainWindow(QMainWindow):
         self.speed_test_button = self._make_selection_button(
             self._t("sysinfo_speed_test_button"), self._on_speed_test_clicked
         )
+        self.speed_test_button.setObjectName("panelBtn")
         layout.addWidget(self.speed_test_button)
         self.speed_test_result_label = QLabel("")
         self.speed_test_result_label.setWordWrap(True)
@@ -2274,11 +2290,13 @@ class MainWindow(QMainWindow):
         export_diag_button = self._make_selection_button(
             self._t("export_diagnostics_button"), self._on_export_diagnostics_clicked
         )
+        export_diag_button.setObjectName("panelBtn")
         layout.addWidget(export_diag_button)
 
         report_bug_button = self._make_selection_button(
             self._t("report_bug_button"), self._on_report_bug_clicked
         )
+        report_bug_button.setObjectName("panelBtn")
         layout.addWidget(report_bug_button)
         layout.addStretch(1)
         return panel

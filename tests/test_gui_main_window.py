@@ -2449,3 +2449,29 @@ def test_focus_qss_rules_present_for_keyboard_accessibility():
     assert "QPushButton:focus" in style.STYLE
     assert "QListWidget#categoryList::item:focus" in style.STYLE
     assert "QCheckBox::indicator:focus" in style.STYLE
+
+
+def test_score_state_buckets():
+    from portablefix.gui.main_window import _score_state
+
+    assert _score_state(100) == "good"
+    assert _score_state(80) == "good"
+    assert _score_state(79) == "warn"
+    assert _score_state(60) == "warn"
+    assert _score_state(40) == "bad"
+
+
+def test_dashboard_score_is_neutral_until_analysis_then_colored(qtbot, tmp_path):
+    # A big green "not run yet" used to look like a healthy result before
+    # anything had been checked; count pills also showed a green "0".
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_score")
+    qtbot.addWidget(window)
+    assert window._dashboard_score_label.property("state") == "none"
+    assert all(p.property("state") == "idle" for p in window._dashboard_tile_count_labels.values())
+
+    window._recommended_action_ids = {"a", "b", "c"}
+    window._refresh_dashboard()
+    assert window._dashboard_score_label.text() == "70"
+    assert window._dashboard_score_label.property("state") == "warn"
+    assert all(p.property("state") in ("ok", "warn") for p in window._dashboard_tile_count_labels.values())
