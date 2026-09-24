@@ -3509,7 +3509,8 @@ def test_batch_summary_handoff_button_saves_client_package(qtbot, tmp_path, monk
     opened = []
     monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
     window._handoff_folder_button.click()
-    assert opened == [str(dest.parent)]
+    # QUrl.toLocalFile() uses forward slashes on Windows - compare as paths.
+    assert [Path(p) for p in opened] == [dest.parent]
     assert window._handoff_folder_button.isHidden()
 
 
