@@ -107,8 +107,27 @@ PowerShell.
 - **Risk levels:** every action is tagged SAFE / MODERATE / DESTRUCTIVE /
   REQUIRES_REBOOT. MODERATE and above need confirmation; DESTRUCTIVE
   gets an extra irreversibility warning.
+- **Review before running:** a real batch with a MODERATE or higher
+  action shows one screen instead of a question per action. It lists
+  every selected action with its risk tier and warning text, whether a
+  restore point will be created, what cannot be undone and what needs a
+  restart. Each DESTRUCTIVE action must be ticked separately ("I
+  understand this is irreversible"), otherwise it does not run. One
+  confirmation covers the batch, and the audit log records for every
+  action the exact text the technician confirmed (or declined).
+- **Pre-flight check:** before a real batch that changes the system, the
+  PC's state is checked. **Blockers:** another PortableFix job is
+  changing the system (winget, uninstall, an update), no admin rights
+  for system-changing actions, a pending Windows Update or component
+  servicing restart before repairs, less than 5 GB free on the system
+  drive, and a battery below 30% for long or restart-requiring actions.
+  **Warnings:** running on battery, less than 10 GB free, pending file
+  rename operations. A blocker (except another running job) can be
+  overridden deliberately with a tick; the override is written to the
+  audit log and the report.
 - **DRY-RUN:** on by default — actions only print (or run a read-only
-  preview), nothing changes.
+  preview), nothing changes. So a DRY-RUN asks for no confirmation and
+  makes no pre-flight check or restore point.
 - **Restore point:** before the first DESTRUCTIVE action, or any action
   from the Repair/Security category, a System Restore Point is created
   once per batch on the system drive (best-effort; on failure the app

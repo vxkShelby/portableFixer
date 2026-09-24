@@ -40,7 +40,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import diagnostics, elevation, handoff, history, i18n, paths, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
+from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
+from .. import diagnostics, elevation, handoff, history, i18n, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -199,6 +200,10 @@ class MainWindow(QMainWindow):
         # listed in undo.ps1 so it never implies everything was reversible.
         self._irreversible_actions: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
+        # action_id -> the warning text the technician accepted for it on
+        # the batch review screen (research G12); _dispatch_action asks
+        # nothing more for these and quotes the text in the audit entry.
+        self._reviewed_warnings: dict[str, str] = {}
         self._recommended_action_ids: set[str] = set()
         self._summary_dialog: QDialog | None = None
         self._closed = False
@@ -2941,13 +2946,7 @@ class MainWindow(QMainWindow):
 
     def _skip_high_risk_actions_in_queue(self) -> None:
         def _is_high_risk(action_id: str) -> bool:
-            module, action = self._find_action(action_id)
-            return action.risk == RiskLevel.DESTRUCTIVE or module.category in (
-                ModuleCategory.REPAIR,
-                ModuleCategory.SECURITY,
-                ModuleCategory.DRIVER_UPDATES,
-                ModuleCategory.WINGET,
-            )
+            return preflight.needs_restore_point(*self._find_action(action_id))
 
         self._queue = [aid for aid in self._queue if not _is_high_risk(aid)]
 
@@ -2995,7 +2994,15 @@ class MainWindow(QMainWindow):
         # a second ActionRunner alongside the running one.
         if self._batch_start_blocked():
             return
-        self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        self._reviewed_warnings = {}
+        if queue and not self.settings.dry_run:
+            # A DRY-RUN changes nothing, so it gets neither the pre-flight
+            # nor a confirmation - only a real batch is reviewed, once.
+            queue = self._review_batch(queue)
+            if queue is None:
+                return
+        self._queue = queue
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
@@ -3015,6 +3022,70 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
         self._run_next()
+
+    def _preflight_busy_tasks(self) -> list[str]:
+        # System-changing jobs of this window that would run side by side
+        # with the batch (two package/servicing operations at once fail in
+        # confusing ways), and an update replacing the install right now.
+        tasks = []
+        if _thread_running(self._winget_update_runner):
+            tasks.append(self._t("update_busy_winget_update"))
+        if _thread_running(self._uninstall_runner):
+            tasks.append(self._t("update_busy_uninstall"))
+        if update_swap.update_mutex_present():
+            tasks.append(self._t("preflight_busy_update"))
+        return tasks
+
+    def _preflight_probes(self) -> preflight.Probes:
+        return preflight.system_probes(is_admin=lambda: self.is_admin, busy_tasks=self._preflight_busy_tasks)
+
+    def _ask_batch_review(self, review: BatchReview) -> ReviewDecision:
+        # Its own method so a test can replace the whole screen; the dialog
+        # itself is driven through BatchReviewDialog.exec in the GUI tests.
+        return BatchReviewDialog(review, parent=self).ask()
+
+    def _review_batch(self, queue: list[str]) -> list[str] | None:
+        """Pre-flight + the one review screen (research G11/G12). Returns
+        the queue to run - without the declined actions - or None when the
+        technician cancelled the batch."""
+        items = [self._find_action(aid) for aid in queue]
+        result = preflight.run_preflight(preflight.profile_for(items), self._preflight_probes())
+        review = build_review(items, result, self.settings.language)
+        if not review.needs_confirmation:
+            return queue
+        decision = self._ask_batch_review(review)
+        if self._closed and decision.confirmed:
+            # The window went away behind the modal screen - a batch must
+            # never start now (it would run unlogged and outlive the app).
+            decision = ReviewDecision(confirmed=False, declined=[i for i in review.items if i.warning_text])
+        issues_text = "\n".join(issue.text(self.settings.language) for issue in result.issues)
+        if not decision.confirmed:
+            outcome, decision_value = "Technician cancelled the batch on the review screen.", "cancelled"
+        elif decision.overrode_blockers:
+            outcome, decision_value = "Technician confirmed the batch and overrode the pre-flight blockers.", "override"
+        else:
+            outcome, decision_value = "Technician confirmed the batch on the review screen.", "confirmed"
+        # The pre-flight result and the answer go on record either way - an
+        # override is exactly what a later dispute is about.
+        self._log_system_event(
+            "batch_review", 0 if decision.confirmed else None, f"{result.summary()} {outcome}",
+            warned=bool(result.issues), warning_text=issues_text, decision=decision_value,
+        )
+        for item in decision.declined:
+            # Same record as a "No" in the old per-action box (research-reporting.md F2).
+            self._log_system_event(
+                "risk_declined", None, "Technician declined the risk confirmation - action not run.",
+                risk=item.risk.value, warned=True, warning_text=item.warning_text,
+                subject=item.subject, decision="declined",
+            )
+        if not decision.confirmed:
+            return None
+        declined_ids = {item.action_id for item in decision.declined}
+        # SAFE actions were reviewed too (with no text to quote).
+        self._reviewed_warnings = {
+            item.action_id: item.warning_text for item in review.items if item.action_id not in declined_ids
+        }
+        return [aid for aid in queue if aid not in declined_ids]
 
     def _on_report_ready(self, html_path: Path | None, write_failed: bool) -> None:
         self._report_runner = None
@@ -3048,6 +3119,8 @@ class MainWindow(QMainWindow):
         if not self._queue:
             if self._batch_active:
                 self._batch_active = False
+                # A confirmation covers this batch only, never a later run.
+                self._reviewed_warnings = {}
                 if not self._closed:
                     # run/language stay disabled until the report is written
                     # (_on_report_ready): a second batch now would append to
@@ -3125,12 +3198,7 @@ class MainWindow(QMainWindow):
             _announce_to_screen_reader(self, running_text)
             self.progress_bar.setValue(position - 1)
 
-        needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
-            ModuleCategory.REPAIR,
-            ModuleCategory.SECURITY,
-            ModuleCategory.DRIVER_UPDATES,
-            ModuleCategory.WINGET,
-        )
+        needs_restore_point = preflight.needs_restore_point(module, action)
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
             self._write_undo_script()
@@ -3211,7 +3279,13 @@ class MainWindow(QMainWindow):
             return
         warning_text = ""
         confirmed = QMessageBox.Yes
-        if action.risk == RiskLevel.DESTRUCTIVE:
+        if action.id in self._reviewed_warnings:
+            # Confirmed on the batch review screen - quote what was shown there.
+            warning_text = self._reviewed_warnings[action.id]
+        elif self.settings.dry_run:
+            # A DRY-RUN previews and changes nothing - nothing to confirm.
+            pass
+        elif action.risk == RiskLevel.DESTRUCTIVE:
             warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_destructive_action')}"
             confirmed = QMessageBox.warning(
                 self,

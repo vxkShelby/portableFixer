@@ -738,6 +738,19 @@ def _render_event(event: dict, language: str) -> str:
         if event.get("warning_text"):
             quote = f'<div class="warn-text">&bdquo;{html.escape(event["warning_text"])}&ldquo;</div>'
         return f"<li>{when}{t('report_declined')}: <strong>{html.escape(label)}</strong>{risk}{quote}</li>"
+    if kind == "batch_review":
+        # The one review screen (G12): the answer, and the pre-flight
+        # findings it was given on, in the report's language - the codes in
+        # `output` are for the audit log.
+        key = {
+            "confirmed": "report_review_confirmed",
+            "override": "report_review_override",
+        }.get(event.get("decision"), "report_review_cancelled")
+        css = ' class="rp-fail"' if event.get("decision") == "override" else ""
+        quote = ""
+        if event.get("warning_text"):
+            quote = f'<div class="warn-text">&bdquo;{html.escape(event["warning_text"])}&ldquo;</div>'
+        return f"<li>{when}{t('report_review')}: <span{css}>{t(key)}</span>{quote}</li>"
     if kind == "integrity_guard":
         return f"<li>{when}<span class=\"rp-fail\">{t('report_integrity_guard')}</span></li>"
     # Unknown/future system event - still show it rather than drop evidence.

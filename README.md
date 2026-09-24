@@ -106,8 +106,27 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 - **Úrovne rizika:** každá akcia je označená SAFE / MODERATE /
   DESTRUCTIVE / REQUIRES_REBOOT. MODERATE a vyššie vyžadujú potvrdenie,
   DESTRUCTIVE má osobitné varovanie o nevratnosti.
+- **Kontrola pred spustením:** ostrá dávka s akciou MODERATE alebo vyššou
+  ukáže jednu obrazovku namiesto otázky pri každej akcii. Vidno na nej
+  všetky vybrané akcie s úrovňou rizika a textom varovania, či vznikne
+  bod obnovenia, čo sa nedá vrátiť a čo vyžaduje reštart. Každú
+  DESTRUCTIVE akciu treba osobitne odškrtnúť („Rozumiem, je to
+  nevratné“), inak sa nespustí. Jedno potvrdenie pokryje celú dávku a
+  audit log pri každej akcii zapíše presný text, ktorý technik potvrdil
+  (alebo odmietol).
+- **Pre-flight kontrola:** pred ostrou dávkou, ktorá mení systém, sa
+  overí stav PC. **Blokuje:** iná úloha PortableFix práve mení systém
+  (winget, odinštalovanie, aktualizácia), chýbajúce admin práva pre
+  akcie meniace systém, čakajúci reštart Windows Update alebo
+  servisovania súčastí pred opravami, menej ako 5 GB voľného miesta na
+  systémovom disku a batéria pod 30 % pri dlhých akciách alebo akciách
+  s reštartom. **Upozorní:** beh na batériu, menej ako 10 GB voľného
+  miesta, čakajúce premenovanie súborov. Blokovanie (okrem inej bežiacej
+  úlohy) sa dá vedome obísť zaškrtnutím, obídenie sa zapíše do audit
+  logu a reportu.
 - **DRY-RUN:** predvolene zapnutý — akcie sa len vypíšu (alebo spustia
-  read-only náhľad), nič sa nemení.
+  read-only náhľad), nič sa nemení. Preto sa v DRY-RUN nič nepotvrdzuje
+  a pre-flight kontrola ani bod obnovenia sa nerobia.
 - **Bod obnovenia:** pred prvou DESTRUCTIVE akciou alebo akoukoľvek
   akciou z kategórie Oprava/Zabezpečenie sa raz za dávku vytvorí System
   Restore Point na systémovom disku (best-effort; pri zlyhaní sa
