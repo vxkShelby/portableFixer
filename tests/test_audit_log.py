@@ -32,6 +32,26 @@ def test_make_entry_accepts_risk_warned_elevated():
     assert entry.elevated is True
 
 
+def test_make_entry_records_warning_text_subject_and_decision(tmp_path):
+    # research-reporting.md F2/F3: the log must prove what the technician
+    # was warned about and what they answered.
+    entry = make_entry(
+        "_system", "risk_declined", "", None, "declined", False, "run123",
+        risk="DESTRUCTIVE", warned=True, warning_text="WARNING: irreversible",
+        subject="m08_security/hard_reset", decision="declined",
+    )
+    append_entry(tmp_path, "run123", entry)
+    parsed = json.loads(audit_log_path(tmp_path, "run123").read_text(encoding="utf-8"))
+    assert parsed["warning_text"] == "WARNING: irreversible"
+    assert parsed["subject"] == "m08_security/hard_reset"
+    assert parsed["decision"] == "declined"
+
+
+def test_make_entry_new_fields_default_empty_for_backward_compat():
+    entry = make_entry("m01_diagnostics", "os_info", "cmd", 0, "output", False, "run123")
+    assert (entry.warning_text, entry.subject, entry.decision) == ("", "", "")
+
+
 def test_append_entry_writes_jsonl_line(tmp_path):
     entry = make_entry("m01_diagnostics", "os_info", "cmd", 0, "output", False, "run123")
     append_entry(tmp_path, "run123", entry)

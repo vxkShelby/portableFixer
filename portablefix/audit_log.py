@@ -19,6 +19,18 @@ class AuditEntry:
     risk: str = ""
     warned: bool = False
     elevated: bool = False
+    # Fields below were added after logs already existed in the field - they
+    # all have defaults so older entries (and readers of older logs) keep
+    # working; report.py treats a missing key as "not recorded".
+    # The exact confirmation text the technician was shown and answered -
+    # proof of *what* they were warned about, not just that a dialog fired.
+    warning_text: str = ""
+    # "module_id/action_id" a _system event is about (e.g. the action a
+    # declined confirmation or a restore point was guarding).
+    subject: str = ""
+    # Technician's answer to a safety prompt: "declined" (risk warning),
+    # "proceed" / "skip" (restore point failed - continue without one?).
+    decision: str = ""
 
 
 def make_entry(
@@ -32,6 +44,9 @@ def make_entry(
     risk: str = "",
     warned: bool = False,
     elevated: bool = False,
+    warning_text: str = "",
+    subject: str = "",
+    decision: str = "",
 ) -> AuditEntry:
     return AuditEntry(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -46,6 +61,9 @@ def make_entry(
         risk=risk,
         warned=warned,
         elevated=elevated,
+        warning_text=warning_text,
+        subject=subject,
+        decision=decision,
     )
 
 
