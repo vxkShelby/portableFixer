@@ -57,10 +57,19 @@ class BatchReview:
     items: tuple[ReviewItem, ...]
     preflight: preflight.PreflightResult
     language: str
+    # Size of the live SOFTWARE + SYSTEM hives (hive_backup.estimate_bytes),
+    # None when unknown - shown next to the hive backup offer.
+    hive_backup_bytes: int | None = None
 
     @property
     def restore_point_planned(self) -> bool:
         return any(item.restore_point for item in self.items)
+
+    @property
+    def offers_hive_backup(self) -> bool:
+        # Only a DESTRUCTIVE batch is worth ~200+ MB and a minute of
+        # `reg save` (research G24) - everything else has its restore point.
+        return any(item.risk == RiskLevel.DESTRUCTIVE for item in self.items)
 
     @property
     def needs_confirmation(self) -> bool:
@@ -79,6 +88,9 @@ class ReviewDecision:
     declined: list[ReviewItem] = field(default_factory=list)
     accepted: list[ReviewItem] = field(default_factory=list)
     overrode_blockers: bool = False
+    # The technician asked for the full registry hive backup before the
+    # first DESTRUCTIVE action (never on by default).
+    hive_backup: bool = False
 
 
 def warning_text_for(action: ActionDef, language: str) -> str:
@@ -99,7 +111,8 @@ def warning_text_for(action: ActionDef, language: str) -> str:
 
 
 def build_review(
-    items: list[tuple[ModuleDef, ActionDef]], result: preflight.PreflightResult, language: str
+    items: list[tuple[ModuleDef, ActionDef]], result: preflight.PreflightResult, language: str,
+    hive_backup_bytes: int | None = None,
 ) -> BatchReview:
     review_items = []
     for module, action in items:
@@ -115,7 +128,7 @@ def build_review(
         ))
     # Stable sort: within a tier the batch's own order is kept.
     review_items.sort(key=lambda item: _RISK_ORDER.get(item.risk, 9))
-    return BatchReview(tuple(review_items), result, language)
+    return BatchReview(tuple(review_items), result, language, hive_backup_bytes)
 
 
 class BatchReviewDialog(QDialog):
@@ -132,6 +145,7 @@ class BatchReviewDialog(QDialog):
         self.setMinimumWidth(560)
         self.destructive_checkboxes: dict[str, QCheckBox] = {}
         self.override_checkbox: QCheckBox | None = None
+        self.hive_backup_checkbox: QCheckBox | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 14)
@@ -183,6 +197,18 @@ class BatchReviewDialog(QDialog):
             label = QLabel(self._t("review_reboot_list").format(actions=", ".join(reboot)))
             label.setWordWrap(True)
             layout.addWidget(label)
+
+        if review.offers_hive_backup:
+            # Unticked by default: it costs disk space and time, and the
+            # restore point is the first safety net.
+            if review.hive_backup_bytes:
+                size_mb = max(1, round(review.hive_backup_bytes / 1024**2))
+                text = self._t("review_hive_backup_size").format(size=size_mb)
+            else:
+                text = self._t("review_hive_backup")
+            self.hive_backup_checkbox = QCheckBox(text)
+            self.hive_backup_checkbox.setToolTip(self._t("review_hive_backup_tooltip"))
+            layout.addWidget(self.hive_backup_checkbox)
 
         if result.blockers and not result.hard_blocked:
             # An override is possible (research G11) but never by default,
@@ -241,6 +267,11 @@ class BatchReviewDialog(QDialog):
 
     def _update_confirm_state(self, *_args) -> None:
         planned = any(item.restore_point and not self._unticked(item) for item in self.review.items)
+        if self.hive_backup_checkbox is not None:
+            # Offered while at least one DESTRUCTIVE action is still ticked.
+            self.hive_backup_checkbox.setEnabled(any(
+                item.risk == RiskLevel.DESTRUCTIVE and not self._unticked(item) for item in self.review.items
+            ))
         self.restore_point_label.setText(
             self._t("review_restore_point_yes" if planned else "review_restore_point_no")
         )
@@ -261,7 +292,11 @@ class BatchReviewDialog(QDialog):
         declined = [item for item in risky if self._unticked(item)]
         accepted = [item for item in risky if item not in declined]
         overrode = bool(self.review.preflight.blockers)
-        return ReviewDecision(confirmed=True, declined=declined, accepted=accepted, overrode_blockers=overrode)
+        hive = self.hive_backup_checkbox
+        return ReviewDecision(
+            confirmed=True, declined=declined, accepted=accepted, overrode_blockers=overrode,
+            hive_backup=hive is not None and hive.isEnabled() and hive.isChecked(),
+        )
 
     def ask(self) -> ReviewDecision:
         self.exec()

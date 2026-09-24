@@ -37,6 +37,11 @@ class ActionDef:
     problem_keywords: list[str] = field(default_factory=list)
     recommended_action_ids: list[str] = field(default_factory=list)
     exclude_from_select_all: bool = False
+    # Does the action change persistent system state (registry, services,
+    # drivers, installed software, system files)? Decides the restore point
+    # (preflight.changes_system): None = derived from the risk tier, so only
+    # an exception to "non-SAFE changes the system" needs the YAML field.
+    changes_system: bool | None = None
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

@@ -13,6 +13,7 @@ actions:
     label_sk: "Aktualizácia definícií Defenderu"
     label_en: "Update Defender signatures"
     risk: MODERATE
+    changes_system: false  # signatures - Defender keeps its own rollback (MpCmdRun -RemoveDefinitions)
     command: "Update-MpSignature"
     description_sk: "Stiahne najnovšie definície hrozieb pre Windows Defender. Vyžaduje internet."
     description_en: "Downloads the latest threat definitions for Windows Defender. Requires internet access."
@@ -21,6 +22,7 @@ actions:
     label_sk: "Rýchly sken Defenderom"
     label_en: "Defender quick scan"
     risk: MODERATE
+    changes_system: false  # a scan; anything it removes goes to Defender quarantine, restorable there
     command: "Start-MpScan -ScanType QuickScan"
     description_sk: "Spustí rýchly antivírusový sken. Môže trvať niekoľko minút; nájdené hrozby sa presunú do karantény."
     description_en: "Runs a quick antivirus scan. May take several minutes; detected threats are moved to quarantine."

@@ -154,10 +154,13 @@ def test_profile_for_classifies_the_batch():
     safe_diag = (_module(ModuleCategory.DIAGNOSTICS), _action(risk=RiskLevel.SAFE))
     assert profile_for([safe_diag]) == BatchProfile()
 
-    # A SAFE action in REPAIR is still guarded by a restore point - it
-    # changes the system, but needs neither admin nor servicing checks.
+    # G24: a read-only SAFE check in REPAIR no longer counts as a change...
     safe_repair = (_module(ModuleCategory.REPAIR), _action(risk=RiskLevel.SAFE))
-    assert profile_for([safe_repair]) == BatchProfile(changes_system=True)
+    assert profile_for([safe_repair]) == BatchProfile()
+    # ...but a SAFE action that declares changes_system is guarded by a
+    # restore point - it needs neither admin nor servicing checks.
+    safe_changing = (_module(ModuleCategory.REPAIR), _action(risk=RiskLevel.SAFE, changes_system=True))
+    assert profile_for([safe_changing]) == BatchProfile(changes_system=True)
 
     moderate_cleanup = (_module(ModuleCategory.CLEANUP), _action())
     assert profile_for([moderate_cleanup]) == BatchProfile(changes_system=True, needs_admin=True)
@@ -169,10 +172,21 @@ def test_profile_for_classifies_the_batch():
     assert profile_for([reboot]) == BatchProfile(True, True, True, True)
 
 
-def test_needs_restore_point_matches_the_batch_rule():
+def test_needs_restore_point_follows_the_actions_effect_not_its_category():
+    # G24: DESTRUCTIVE always; otherwise the explicit field; otherwise non-SAFE.
     assert preflight.needs_restore_point(_module(ModuleCategory.CLEANUP), _action(risk=RiskLevel.DESTRUCTIVE))
-    assert preflight.needs_restore_point(_module(ModuleCategory.WINGET), _action(risk=RiskLevel.SAFE))
-    assert not preflight.needs_restore_point(_module(ModuleCategory.CLEANUP), _action())
+    assert not preflight.needs_restore_point(_module(ModuleCategory.WINGET), _action(risk=RiskLevel.SAFE))
+    assert not preflight.needs_restore_point(_module(ModuleCategory.REPAIR), _action(risk=RiskLevel.SAFE))
+    assert preflight.needs_restore_point(_module(ModuleCategory.CLEANUP), _action())
+    assert preflight.needs_restore_point(_module(ModuleCategory.DIAGNOSTICS), _action(risk=RiskLevel.REQUIRES_REBOOT))
+    assert preflight.needs_restore_point(
+        _module(ModuleCategory.DIAGNOSTICS), _action(risk=RiskLevel.SAFE, changes_system=True)
+    )
+    assert not preflight.needs_restore_point(_module(ModuleCategory.CLEANUP), _action(changes_system=False))
+    # An explicit false can never switch a DESTRUCTIVE action's restore point off.
+    assert preflight.needs_restore_point(
+        _module(ModuleCategory.CLEANUP), _action(risk=RiskLevel.DESTRUCTIVE, changes_system=False)
+    )
 
 
 def test_is_long_action():

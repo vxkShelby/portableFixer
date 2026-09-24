@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 
 from . import style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import diagnostics, elevation, handoff, history, i18n, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
+from .. import diagnostics, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -191,6 +191,13 @@ class MainWindow(QMainWindow):
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
+        # Full registry hive backup (research G24): asked for on the review
+        # screen, made once per batch right before its first DESTRUCTIVE
+        # action; every folder made this session is named in undo.ps1.
+        self._hive_backup_requested = False
+        self._hive_backup_attempted = False
+        self._pending_hive_backup_runner: hive_backup.HiveBackupRunner | None = None
+        self._hive_backups: list[Path] = []
         self._report_runner: report.ReportRunner | None = None
         self._batch_active = False
         self._snapshot_before: dict = {}
@@ -251,9 +258,10 @@ class MainWindow(QMainWindow):
         self._ping_timer = None
         self._vpn_timer = None
         self._undo_script_path: Path | None = None
-        # (len(_undo_steps), len(_irreversible_actions)) last written to
-        # undo.ps1 - both lists only ever grow, so the lengths identify it.
-        self._undo_written_state: tuple[int, int] | None = None
+        # (len(_undo_steps), len(_irreversible_actions), len(_hive_backups))
+        # last written to undo.ps1 - the lists only ever grow, so the lengths
+        # identify it.
+        self._undo_written_state: tuple[int, int, int] | None = None
         self._build_ui()
         self._start_update_check()
         self._start_sysinfo_polling()
@@ -317,6 +325,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         rp_runner = self._pending_restore_point_runner
+        waiting_key = "closing_waiting_restore_point"
+        if not _thread_running(rp_runner) and _thread_running(self._pending_hive_backup_runner):
+            # `reg save` of two hives can't be interrupted either and can take
+            # minutes on a slow stick - same non-blocking close.
+            rp_runner = self._pending_hive_backup_runner
+            waiting_key = "closing_waiting_hive_backup"
         if rp_runner is not None and _thread_running(rp_runner):
             # Checkpoint-Computer can take minutes and can't be interrupted.
             # Blocking in closeEvent froze the window ("Not Responding" -
@@ -342,7 +356,7 @@ class MainWindow(QMainWindow):
                 self.cancel_button.setEnabled(False)
                 self.run_button.setEnabled(False)
                 rp_runner.finished.connect(self.close)
-                self.statusBar().showMessage(self._t("closing_waiting_restore_point"))
+                self.statusBar().showMessage(self._t(waiting_key))
             event.ignore()
             return
         if self._batch_active and not self._close_after_restore_point and not self._closing_for_update:
@@ -417,6 +431,7 @@ class MainWindow(QMainWindow):
             # QThread, aborting the process before create_restore_point could
             # put the 24h throttle registry value back.
             (self._pending_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
+            (self._pending_hive_backup_runner, hive_backup.HIVE_SAVE_TIMEOUT_SEC * len(hive_backup.HIVES) * 1000 + 5_000),
             # Can't be interrupted mid-write, and it re-reads the whole
             # session's audit log - allow for a slow USB stick.
             (self._report_runner, 30_000),
@@ -1847,9 +1862,10 @@ class MainWindow(QMainWindow):
             else:
                 auto_check_timer.stop()
 
-        # True while the update confirmation is open: its nested event loop
-        # still fires auto_check_timer, and a scan then would rebuild the rows
-        # under the pending answer.
+        # True while the update confirmation (or the running-programs prompt,
+        # or the restore point before the update) is pending: the nested event
+        # loops still fire auto_check_timer, and a scan then would rebuild the
+        # rows under the pending answer.
         confirm_state = {"open": False}
 
         def auto_check_tick() -> None:
@@ -1880,6 +1896,14 @@ class MainWindow(QMainWindow):
 
         refresh_ignored_panel()
 
+        def winget_upgrade_command(package_id: str) -> str:
+            # Same argv as winget_updates._run_winget_upgrade; its
+            # "--location" retry, when needed, shows up in the output.
+            return (
+                f"winget upgrade --id {package_id} --silent --include-unknown "
+                "--accept-package-agreements --accept-source-agreements --disable-interactivity"
+            )
+
         def start_update() -> None:
             selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected_packages:
@@ -1893,14 +1917,7 @@ class MainWindow(QMainWindow):
             # Installs a newer version with no way back - a MODERATE change
             # by the catalog's own yardstick, confirmed like one.
             risk = RiskLevel.MODERATE.value
-
-            def upgrade_command(package_id: str) -> str:
-                # Same argv as winget_updates._run_winget_upgrade; its
-                # "--location" retry, when needed, shows up in the output.
-                return (
-                    f"winget upgrade --id {package_id} --silent --include-unknown "
-                    "--accept-package-agreements --accept-source-agreements --disable-interactivity"
-                )
+            upgrade_command = winget_upgrade_command
 
             if self.settings.dry_run:
                 # Nothing is started: DRY-RUN must never install anything,
@@ -1935,6 +1952,50 @@ class MainWindow(QMainWindow):
                         subject=f"_winget/{package.id}", decision="declined",
                     )
                 return
+            # An installer replacing files of a running program fails, asks
+            # for a reboot or kills it with unsaved work (research G01).
+            confirm_state["open"] = True
+            try:
+                closed = self._confirm_programs_closed(
+                    self._t("category_winget"), self._winget_running_targets(selected_packages),
+                    [f"_winget/{p.id}" for p in selected_packages], risk,
+                    "Technician cancelled the winget update - the program was still running, package not updated.",
+                )
+            finally:
+                confirm_state["open"] = False
+            if not closed:
+                return
+
+            def set_controls_enabled(enabled: bool) -> None:
+                update_btn.setEnabled(enabled)
+                select_all_btn.setEnabled(enabled)
+                select_none_btn.setEnabled(enabled)
+                refresh_btn.setEnabled(enabled)
+
+            def after_restore_point(proceed: bool) -> None:
+                confirm_state["open"] = False
+                if proceed and (self._update_phase == "launch" or self._closing_for_update):
+                    # The app update's hand-off began while the restore point
+                    # ran - same refusal as a click at that moment.
+                    self.statusBar().showMessage(self._t("winget_update_blocked_by_app_update"))
+                    proceed = False
+                if not proceed:
+                    set_controls_enabled(True)
+                    console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
+                    return
+                run_update(selected_packages, warning_text)
+
+            # Same safety net as a batch (G01): winget has no way back to the
+            # previous version, a restore point does.
+            set_controls_enabled(False)
+            confirm_state["open"] = True
+            if not self._start_panel_restore_point(f"_winget/{selected_packages[0].id}", console, after_restore_point):
+                confirm_state["open"] = False
+                set_controls_enabled(True)
+
+        def run_update(selected_packages: list, warning_text: str) -> None:
+            risk = RiskLevel.MODERATE.value
+            upgrade_command = winget_upgrade_command
             update_btn.setEnabled(False)
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
@@ -2317,6 +2378,9 @@ class MainWindow(QMainWindow):
         card_layout.addWidget(list_status_label)
 
         programs = uninstaller.list_installed_programs()
+        app_dir = str(paths.get_base_dir())
+        # name -> PROTECTED_* code (research G01): shown, never uninstallable.
+        protected: dict[str, str] = {}
         row_checkboxes: dict[str, QCheckBox] = {}
         row_widgets: dict[str, QWidget] = {}
         program_by_name: dict[str, uninstaller.InstalledProgram] = {}
@@ -2335,6 +2399,13 @@ class MainWindow(QMainWindow):
             tooltip = program.install_location or ""
             if program.publisher:
                 tooltip = f"{program.publisher}\n{tooltip}" if tooltip else program.publisher
+            reason = panel_safety.protected_reason(program, app_dir)
+            if reason is not None:
+                protected[program.name] = reason
+                checkbox.setText(f"{checkbox.text()}  [{self._t('uninstaller_protected_marker')}]")
+                checkbox.setEnabled(False)
+                reason_text = self._t(f"uninstaller_protected_{reason}")
+                tooltip = f"{reason_text}\n{tooltip}" if tooltip else reason_text
             checkbox.setToolTip(tooltip)
             row.addWidget(checkbox, 1)
             row_checkboxes[program.name] = checkbox
@@ -2374,7 +2445,10 @@ class MainWindow(QMainWindow):
         select_row = QHBoxLayout()
         select_all_btn = self._make_selection_button(
             self._t("select_all"),
-            lambda: [cb.setChecked(True) for name, cb in row_checkboxes.items() if not row_widgets[name].isHidden()],
+            lambda: [
+                cb.setChecked(True) for name, cb in row_checkboxes.items()
+                if not row_widgets[name].isHidden() and name not in protected
+            ],
         )
         select_row.addWidget(select_all_btn)
         select_none_btn = self._make_selection_button(
@@ -2469,6 +2543,29 @@ class MainWindow(QMainWindow):
                             subject=f"_uninstaller/orphan_cleanup:{orphan.name}", decision="declined",
                         )
                     return
+
+                def after_restore_point(proceed: bool) -> None:
+                    clean_button.setEnabled(True)
+                    if not proceed:
+                        console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
+                        return
+                    delete_chosen(chosen, warning_text)
+
+                # The .reg export covers each key; the restore point (G01)
+                # covers what a wrongly flagged entry's program still needed.
+                clean_button.setEnabled(False)
+                if not self._start_panel_restore_point(
+                    f"_uninstaller/orphan_cleanup:{chosen[0].name}", console, after_restore_point,
+                ):
+                    clean_button.setEnabled(True)
+
+            def delete_chosen(chosen: list, warning_text: str) -> None:
+                risk = RiskLevel.DESTRUCTIVE.value
+
+                def delete_command(orphan: uninstaller.InstalledProgram) -> str:
+                    key_name = uninstaller.registry_key_name(orphan.registry_hive, orphan.registry_path)
+                    return f'reg delete "{key_name}" /f'
+
                 backup_dir = self.state_dir / "Backups" / self.run_id
                 removed = 0
                 for orphan in chosen:
@@ -2517,6 +2614,28 @@ class MainWindow(QMainWindow):
             if not selected:
                 return
             risk = RiskLevel.DESTRUCTIVE.value
+            # Protected rows can't be ticked, but a checkbox can still be set
+            # programmatically - refuse here too, and say so on record.
+            refused = [p for p in selected if p.name in protected]
+            if refused:
+                selected = [p for p in selected if p.name not in protected]
+                lines = [f"{p.name} - {self._t('uninstaller_protected_' + protected[p.name])}" for p in refused]
+                console.setVisible(True)
+                for line in lines:
+                    console.appendPlainText(f"[{self._t('uninstaller_protected_marker')}] {line}")
+                for program in refused:
+                    self._log_system_event(
+                        "protected_program", None,
+                        f"Uninstall refused - protected program ({protected[program.name]}).",
+                        risk=risk, subject=f"_uninstaller/{program.name}",
+                    )
+                if not self.settings.dry_run:
+                    QMessageBox.information(
+                        self, self._t("uninstaller_confirm_title"),
+                        self._t("uninstaller_protected_refused").format(programs=self._panel_confirm_list(lines)),
+                    )
+                if not selected:
+                    return
             if self.settings.dry_run:
                 # DRY-RUN never starts an uninstaller - it shows and logs the
                 # exact command each one would run, and the rows stay put.
@@ -2556,6 +2675,35 @@ class MainWindow(QMainWindow):
                         subject=f"_uninstaller/{program.name}", decision="declined",
                     )
                 return
+            # A running program's uninstaller fails half-way or leaves files
+            # it could not delete (research G01) - ask to close it first.
+            if not self._confirm_programs_closed(
+                self._t("uninstaller_confirm_title"),
+                [(p.name, p, f"_uninstaller/{p.name}") for p in selected],
+                [f"_uninstaller/{p.name}" for p in selected], risk,
+                "Technician cancelled the uninstall - the program was still running, not uninstalled.",
+            ):
+                return
+
+            def set_controls_enabled(enabled: bool) -> None:
+                uninstall_button.setEnabled(enabled)
+                select_all_btn.setEnabled(enabled)
+                select_none_btn.setEnabled(enabled)
+
+            def after_restore_point(proceed: bool) -> None:
+                if not proceed:
+                    set_controls_enabled(True)
+                    console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
+                    return
+                run_uninstall(selected, warning_text)
+
+            # An uninstall has no undo - the restore point is the way back.
+            set_controls_enabled(False)
+            if not self._start_panel_restore_point(f"_uninstaller/{selected[0].name}", console, after_restore_point):
+                set_controls_enabled(True)
+
+        def run_uninstall(selected: list, warning_text: str) -> None:
+            risk = RiskLevel.DESTRUCTIVE.value
             selected_by_name = {program.name: program for program in selected}
             uninstall_button.setEnabled(False)
             select_all_btn.setEnabled(False)
@@ -2627,6 +2775,119 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
 
+    def _start_panel_restore_point(self, subject: str, console: QPlainTextEdit, on_done) -> bool:
+        """The panels' real runs get the batch's safety net (research G01):
+        one restore point before the change, through the same runner, logged
+        the same way, with the same "continue without it?" question when it
+        fails. on_done(proceed) is called once it is settled - never after
+        the window started closing. False when it could not be started (a
+        restore point is already being made); the caller then does nothing."""
+        if self.settings.dry_run:
+            # Callers never get here in DRY-RUN; a DRY-RUN must never create
+            # a restore point even if one did.
+            return False
+        if _thread_running(self._pending_restore_point_runner) or _thread_running(self._pending_hive_backup_runner):
+            # Windows makes one checkpoint at a time - a second one started
+            # now would fail and look like "System Restore is broken".
+            self.statusBar().showMessage(self._t("panel_restore_point_busy"))
+            return False
+        console.setVisible(True)
+        console.appendPlainText(self._t("panel_restore_point_running"))
+        runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
+        runner.result_ready.connect(
+            lambda success, detail, info, s=subject, cb=on_done: self._on_panel_restore_point_checked(success, detail, info, s, cb)
+        )
+        self._pending_restore_point_runner = runner
+        runner.start()
+        return True
+
+    def _on_panel_restore_point_checked(self, success: bool, detail: str, info: dict | None, subject: str, on_done) -> None:
+        self._log_restore_point_result(success, detail, info, subject)
+        if self._closed or self._close_after_restore_point:
+            # The window is closing and only waited for this checkpoint -
+            # the uninstall/update it guarded must never start now.
+            return
+        proceed = True
+        if not success:
+            answer = QMessageBox.warning(
+                self, self._t("app_title"), self._t("restore_point_failed_confirm"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            proceed = answer == QMessageBox.Yes
+            # Same record as the batch's answer (research-reporting.md F3).
+            self._log_system_event(
+                "restore_point_decision", 0,
+                "Technician chose to continue without a restore point." if proceed
+                else "Technician declined to continue without a restore point - nothing was changed.",
+                warned=True, warning_text=self._t("restore_point_failed_confirm"),
+                subject=subject, decision="proceed" if proceed else "skip",
+            )
+        try:
+            on_done(proceed)
+        except RuntimeError:
+            # The panel's widgets were deleted meanwhile (C++ object gone) -
+            # nothing ran, and there is no panel left to show it in.
+            pass
+
+    def _winget_running_targets(self, packages: list) -> list[tuple[str, object, str]]:
+        # winget's package name is the program's Add/Remove Programs
+        # DisplayName, which is where the install folder/exe are recorded.
+        try:
+            by_name = {p.name.strip().lower(): p for p in uninstaller.list_installed_programs()}
+        except OSError:
+            return []
+        targets = []
+        for package in packages:
+            program = by_name.get(str(package.name).strip().lower())
+            if program is not None:
+                targets.append((package.name, program, f"_winget/{package.id}"))
+        return targets
+
+    def _confirm_programs_closed(
+        self, title: str, targets: list[tuple[str, object, str]], all_subjects: list[str], risk: str,
+        declined_output: str,
+    ) -> bool:
+        """Warn when a program about to be uninstalled/updated is running
+        (matched by process image path - research G01) and ask to close it
+        first. Retry checks again, Ignore continues (logged), Cancel stops
+        the whole run (every selected item logged as declined). True = go on."""
+        if not targets:
+            return True
+        while True:
+            processes = panel_safety.list_processes()
+            running: list[tuple[str, str, list]] = []
+            for label, program, subject in targets:
+                matches = panel_safety.running_matches(program, processes)
+                if matches:
+                    running.append((label, subject, matches))
+            if not running:
+                return True
+            lines = []
+            for label, _subject, matches in running:
+                names = sorted({f"{m.exe_name} (PID {m.pid})" for m in matches})
+                shown = ", ".join(names[:3]) + (" …" if len(names) > 3 else "")
+                lines.append(f"{label}: {shown}")
+            text = self._t("panel_running_programs_text").format(programs=self._panel_confirm_list(lines))
+            answer = QMessageBox.warning(
+                self, title, text, QMessageBox.Retry | QMessageBox.Ignore | QMessageBox.Cancel, QMessageBox.Cancel,
+            )
+            if answer == QMessageBox.Retry:
+                continue
+            if answer == QMessageBox.Ignore:
+                for _label, subject, _matches in running:
+                    self._log_system_event(
+                        "running_programs_decision", 0,
+                        "Technician chose to continue while the program was still running.",
+                        risk=risk, warned=True, warning_text=text, subject=subject, decision="proceed",
+                    )
+                return True
+            for subject in all_subjects:
+                self._log_system_event(
+                    "risk_declined", None, declined_output,
+                    risk=risk, warned=True, warning_text=text, subject=subject, decision="declined",
+                )
+            return False
+
     def _panel_confirm_list(self, lines: list[str], limit: int = 20) -> str:
         # Capped: a confirmation listing 150 programs grows taller than the
         # screen and pushes its own Yes/No buttons out of reach.
@@ -2639,6 +2900,11 @@ class MainWindow(QMainWindow):
         self.settings.dry_run = checked
 
     def _on_toggle_language(self) -> None:
+        if _thread_running(self._pending_restore_point_runner):
+            # A panel's restore point (G01) finishes into that panel's
+            # widgets - a rebuild now would delete them under it.
+            self.statusBar().showMessage(self._t("panel_restore_point_busy"))
+            return
         # ponytail: keyboard-only/screen-reader users lose their place if a
         # full UI rebuild silently resets category and focus - remember and
         # restore both so a language switch doesn't strand them at the top.
@@ -2996,6 +3262,9 @@ class MainWindow(QMainWindow):
             return
         queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._reviewed_warnings = {}
+        # Per batch, like the restore point: set only by this batch's review.
+        self._hive_backup_requested = False
+        self._hive_backup_attempted = False
         if queue and not self.settings.dry_run:
             # A DRY-RUN changes nothing, so it gets neither the pre-flight
             # nor a confirmation - only a real batch is reviewed, once.
@@ -3032,6 +3301,10 @@ class MainWindow(QMainWindow):
             tasks.append(self._t("update_busy_winget_update"))
         if _thread_running(self._uninstall_runner):
             tasks.append(self._t("update_busy_uninstall"))
+        if _thread_running(self._pending_restore_point_runner):
+            # A panel's restore point (G01): the batch's own would collide
+            # with it - Windows makes one checkpoint at a time.
+            tasks.append(self._t("update_busy_restore_point"))
         if update_swap.update_mutex_present():
             tasks.append(self._t("preflight_busy_update"))
         return tasks
@@ -3050,7 +3323,10 @@ class MainWindow(QMainWindow):
         technician cancelled the batch."""
         items = [self._find_action(aid) for aid in queue]
         result = preflight.run_preflight(preflight.profile_for(items), self._preflight_probes())
-        review = build_review(items, result, self.settings.language)
+        review = build_review(
+            items, result, self.settings.language,
+            hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,
+        )
         if not review.needs_confirmation:
             return queue
         decision = self._ask_batch_review(review)
@@ -3065,6 +3341,8 @@ class MainWindow(QMainWindow):
             outcome, decision_value = "Technician confirmed the batch and overrode the pre-flight blockers.", "override"
         else:
             outcome, decision_value = "Technician confirmed the batch on the review screen.", "confirmed"
+        if decision.confirmed and decision.hive_backup:
+            outcome += " Full registry hive backup requested before the first DESTRUCTIVE action."
         # The pre-flight result and the answer go on record either way - an
         # override is exactly what a later dispute is about.
         self._log_system_event(
@@ -3081,6 +3359,7 @@ class MainWindow(QMainWindow):
         if not decision.confirmed:
             return None
         declined_ids = {item.action_id for item in decision.declined}
+        self._hive_backup_requested = decision.hive_backup
         # SAFE actions were reviewed too (with no text to quote).
         self._reviewed_warnings = {
             item.action_id: item.warning_text for item in review.items if item.action_id not in declined_ids
@@ -3210,26 +3489,81 @@ class MainWindow(QMainWindow):
             rp_runner.start()
             return
 
+        self._proceed_to_action(module, action)
+
+    def _proceed_to_action(self, module: ModuleDef, action: ActionDef) -> None:
+        # After the restore point: the requested hive backup (G24) is written
+        # right before the batch's first DESTRUCTIVE action - not earlier, so
+        # it holds the state that action is about to change.
+        if (
+            action.risk == RiskLevel.DESTRUCTIVE
+            and self._hive_backup_requested
+            and not self._hive_backup_attempted
+            and not self.settings.dry_run
+            and not self._closed
+        ):
+            self._hive_backup_attempted = True
+            dest = hive_backup.backup_dir(self.state_dir, self.run_id)
+            self.console.appendPlainText(self._t("hive_backup_running").format(path=dest))
+            runner = hive_backup.HiveBackupRunner(dest, parent=self)
+            runner.result_ready.connect(
+                lambda success, detail, result, m=module, a=action: self._on_hive_backup_finished(success, detail, result, m, a)
+            )
+            self._pending_hive_backup_runner = runner
+            runner.start()
+            return
+        self._dispatch_action(module, action)
+
+    def _on_hive_backup_finished(self, success: bool, detail: str, result, module: ModuleDef, action: ActionDef) -> None:
+        dest = getattr(result, "dest_dir", None)
+        subject = f"{module.module_id}/{action.id}"
+        if success:
+            output = f"Registry hive backup saved: {dest} ({', '.join(h + hive_backup.HIVE_FILE_SUFFIX for h in hive_backup.HIVES)})."
+        else:
+            output = f"Registry hive backup failed: {detail}" if detail else "Registry hive backup failed."
+        self._log_system_event(
+            "hive_backup", 0 if success else 1, output,
+            command=hive_backup.command_text(dest) if dest is not None else "", subject=subject,
+        )
+        if success and dest is not None:
+            self._hive_backups.append(Path(dest))
+            self._write_undo_script()
+        if self._cancel_requested:
+            # Cancel (or a close) came while reg save ran - like the restore
+            # point, the action it was guarding must never run.
+            self._run_next()
+            return
+        if not self._closed:
+            self.console.appendPlainText(
+                self._t("hive_backup_done").format(path=dest) if success else self._t("hive_backup_failed_console")
+            )
+        if not success:
+            proceed = QMessageBox.warning(
+                self, self._t("app_title"), self._t("hive_backup_failed_confirm"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            self._log_system_event(
+                "hive_backup_decision", 0,
+                "Technician chose to continue without the registry hive backup." if proceed == QMessageBox.Yes
+                else "Technician declined to continue without the registry hive backup - DESTRUCTIVE actions skipped.",
+                warned=True, warning_text=self._t("hive_backup_failed_confirm"),
+                subject=subject, decision="proceed" if proceed == QMessageBox.Yes else "skip",
+            )
+            if proceed != QMessageBox.Yes:
+                # The backup guarded the DESTRUCTIVE actions only - the rest
+                # of the batch keeps its restore point and runs.
+                self._queue = [
+                    aid for aid in self._queue if self._find_action(aid)[1].risk != RiskLevel.DESTRUCTIVE
+                ]
+                self._run_next()
+                return
         self._dispatch_action(module, action)
 
     def _on_restore_point_checked(
         self, success: bool, detail: str, module: ModuleDef, action: ActionDef, info: dict | None = None,
     ) -> None:
-        # info: the created point's identity (restore_point.parse_restore_point_output),
-        # {} / None when it could not be looked up.
-        sequence = (info or {}).get("sequence_number") if success else None
-        output = "System Restore Point created." if success else (
-            f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
-        )
-        if sequence is not None:
-            output = f"System Restore Point created (#{sequence})."
         subject = f"{module.module_id}/{action.id}"
-        self._log_system_event(
-            "restore_point", 0 if success else 1, output,
-            command=f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
-            subject=subject, restore_point_sequence=sequence,
-            restore_point_created=(info or {}).get("creation_time", "") if success else "",
-        )
+        self._log_restore_point_result(success, detail, info, subject)
         if self._cancel_requested:
             # Cancel was clicked while the restore point was still being
             # created - the action it was guarding must never run, and
@@ -3256,7 +3590,24 @@ class MainWindow(QMainWindow):
                 self._skip_high_risk_actions_in_queue()
                 self._run_next()
                 return
-        self._dispatch_action(module, action)
+        self._proceed_to_action(module, action)
+
+    def _log_restore_point_result(self, success: bool, detail: str, info: dict | None, subject: str) -> None:
+        # One record for every restore point, the batch's and a panel's (G01).
+        # info: the created point's identity (restore_point.parse_restore_point_output),
+        # {} / None when it could not be looked up.
+        sequence = (info or {}).get("sequence_number") if success else None
+        output = "System Restore Point created." if success else (
+            f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
+        )
+        if sequence is not None:
+            output = f"System Restore Point created (#{sequence})."
+        self._log_system_event(
+            "restore_point", 0 if success else 1, output,
+            command=f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
+            subject=subject, restore_point_sequence=sequence,
+            restore_point_created=(info or {}).get("creation_time", "") if success else "",
+        )
 
     def _log_system_event(self, action_id: str, exit_code: int | None, output: str, **fields) -> None:
         # Safety facts about the run (restore point, the technician's answers
@@ -3408,7 +3759,7 @@ class MainWindow(QMainWindow):
         # rewrite - but only an actual change: every later batch's
         # pre-restore-point write used to rewrite an identical file. The
         # exists() check keeps a deleted Backups/ from staying missing.
-        state = (len(self._undo_steps), len(self._irreversible_actions))
+        state = (len(self._undo_steps), len(self._irreversible_actions), len(self._hive_backups))
         if (
             state == self._undo_written_state
             and self._undo_script_path is not None
@@ -3418,7 +3769,7 @@ class MainWindow(QMainWindow):
         try:
             self._undo_script_path = undo.create_undo_script(
                 self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)),
-                irreversible=self._irreversible_actions,
+                irreversible=self._irreversible_actions, hive_backups=self._hive_backups,
             )
             self._undo_written_state = state
         except OSError:

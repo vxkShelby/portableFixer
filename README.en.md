@@ -87,7 +87,20 @@ PowerShell.
 - **Program uninstaller and winget updates:** these panels respect DRY-RUN
   (they only print the commands), ask before changing anything, and every
   program, package and deleted leftover registry entry (backed up to
-  `Backups/<run-id>/*.reg` first) is written to the audit log.
+  `Backups/<run-id>/*.reg` first) is written to the audit log. A real
+  uninstall, update or leftover cleanup first creates a restore point
+  (just like a batch, including the question when it fails). When a
+  program to uninstall or update is running right now (matched by the
+  path of its executable), the panel names it and asks to close it:
+  Retry checks again, Ignore continues (logged), Cancel changes nothing.
+- **Protected programs:** the uninstaller refuses to remove graphics,
+  audio and chipset drivers (NVIDIA, AMD, Intel, Realtek), the WebView2
+  runtime, Windows components (Store, winget, Windows Security) and the
+  installed PortableFix itself. The row shows a "protected" marker with
+  the reason and cannot be ticked. The list is deliberately short:
+  antivirus, RMM agents or Visual C++ runtimes are routinely replaced by
+  technicians and are not protected. Matching uses the publisher, the
+  product name and the registry key, never translated text.
 - **The winget panel never fakes "all up to date":** when winget is
   missing or cannot start (no App Installer, not registered for this
   account, missing dependencies) the panel says so, with a hint on what
@@ -128,13 +141,31 @@ PowerShell.
 - **DRY-RUN:** on by default — actions only print (or run a read-only
   preview), nothing changes. So a DRY-RUN asks for no confirmation and
   makes no pre-flight check or restore point.
-- **Restore point:** before the first DESTRUCTIVE action, or any action
-  from the Repair/Security category, a System Restore Point is created
-  once per batch on the system drive (best-effort; on failure the app
-  asks whether to continue anyway). Windows' 24-hour restore point
-  throttle is lifted for that one checkpoint and the original setting
-  is put back right after - previously Windows silently skipped the
-  checkpoint and the batch ran without one.
+- **Restore point:** once per batch, before the first action that
+  **changes the system**, a System Restore Point is created on the
+  system drive (best-effort; on failure the app asks whether to continue
+  anyway). The action's effect decides, not its module's category:
+  DESTRUCTIVE always; otherwise the `changes_system: true/false` field in
+  `actions.yaml` when the action has one; otherwise MODERATE /
+  REQUIRES_REBOOT yes and SAFE no. Purely diagnostic checks therefore
+  never trigger one, and the M13 debloat (MODERATE registry changes,
+  OneDrive removal) now gets one. `changes_system: false` marks actions
+  whose effect a restore point cannot undo (Recycle Bin, browser and
+  font caches, crash dumps, free-space wipe, Defender update and scan);
+  a SAFE action that changes system state must declare
+  `changes_system: true` (a catalog test enforces it). Windows' 24-hour
+  restore point throttle is lifted for that one checkpoint and the
+  original setting is put back right after - previously Windows silently
+  skipped the checkpoint and the batch ran without one.
+- **Full registry backup (optional):** for a batch with a DESTRUCTIVE
+  action the review screen also offers (unticked) a `reg save` of
+  HKLM\SOFTWARE and HKLM\SYSTEM with an estimated size. It is written to
+  `Backups/<run-id>/hives-<time>/` right before the first DESTRUCTIVE
+  action, recorded in the audit log and report, and `undo.ps1` names the
+  folder with the manual offline (WinRE) restore steps. PortableFix never
+  restores it by itself - it would roll back every registry change since
+  the backup, not just its own. If the backup fails, the app asks whether
+  to run the DESTRUCTIVE actions without it.
 - **undo.ps1:** actions with a reversible effect (e.g. resetting the
   hosts file, stopping services, changing the power plan) append their
   undo command to `Backups/<run-id>/undo.ps1` as they run - in reverse
@@ -392,7 +423,5 @@ retry on failure, instead of the whole file at once.
   repairs are inherently irreversible (covered by the restore point instead).
 - Undo for combined actions (e.g. stopping 4 services at once) is only
   written on full success of the action.
-- A restore point is created even for purely diagnostic actions in the
-  Repair/Security categories (deliberate, conservative behavior).
 - `regsvr32`/`UsoClient` steps in M05 report success even on a silent
   failure (non-blocking processes).

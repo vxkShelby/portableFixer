@@ -10,9 +10,11 @@ def create_undo_script(
     run_id: str,
     steps: list[str] | None = None,
     irreversible: list[str] | None = None,
+    hive_backups: list[Path] | None = None,
 ) -> Path:
     steps = steps or []
     irreversible = irreversible or []
+    hive_backups = hive_backups or []
     hostname = socket.gethostname()
     # undo.ps1 is meant to be found and run on its own, possibly by a
     # different technician days later - point back to the full record of the
@@ -36,6 +38,23 @@ def create_undo_script(
         # rest of it into executable PowerShell - flatten to one line.
         lines.extend(f"#   - {' '.join(str(item).split())}" for item in irreversible)
         lines.append("")
+    for folder in hive_backups:
+        # A hint, never a step: swapping a hive back rolls back EVERY
+        # registry change since the backup (not just PortableFix's) and is
+        # only possible offline, so running this script must never do it.
+        # A line break in the path would end the comment and make the rest
+        # executable - replaced, but spaces (Program Files) are kept as-is.
+        where = str(folder).replace("\r", " ").replace("\n", " ")
+        lines.extend([
+            "# FULL REGISTRY HIVE BACKUP - manual restore only, never run by this script:",
+            f"#   {where}  (SOFTWARE.hiv, SYSTEM.hiv)",
+            "#   Last resort if Windows no longer starts and the restore point cannot help.",
+            "#   Offline only (WinRE > Troubleshoot > Command Prompt; drive letters may differ there):",
+            "#   rename <Windows>\\System32\\config\\SOFTWARE and SYSTEM (e.g. to *.old), copy SOFTWARE.hiv",
+            "#   and SYSTEM.hiv in their place without the .hiv extension, then restart.",
+            "#   This undoes every registry change made since the backup, not just PortableFix's.",
+            "",
+        ])
     if steps:
         lines.extend(steps)
     else:
