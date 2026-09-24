@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from portablefix.settings import Settings, load_settings, save_settings, settings_path
 
