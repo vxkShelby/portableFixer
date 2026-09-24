@@ -591,11 +591,26 @@ def test_swap_cleanup_never_follows_a_link_planted_in_the_old_app_folder(tmp_pat
         assert not os.path.lexists(install_dir / gone), gone
 
 
-def test_swap_cleanup_unlinks_stale_backups_that_are_links_or_hold_links(tmp_path):
+# A Test-Path that resolves links and so reports a dangling one as absent
+# (Directory.Exists follows the link; File.Exists does not on .NET off
+# Windows, hence the reparse-point check - only folder links are planted).
+# pwsh 7 does report it, so without this the dangling-link case below would
+# pass whatever the script used; with it, it proves the checks that decide
+# whether a stale backup is in the way never rely on Test-Path.
+LINK_BLIND_TEST_PATH = (
+    "function Test-Path { [CmdletBinding()] param([string]$LiteralPath, [string]$PathType) "
+    "$dir = [IO.Directory]::Exists($LiteralPath); "
+    "$file = [IO.File]::Exists($LiteralPath) -and -not ([IO.File]::GetAttributes($LiteralPath) -band [IO.FileAttributes]::ReparsePoint); "
+    "if ($PathType -eq 'Leaf') { return $file }; if ($PathType -eq 'Container') { return $dir }; $dir -or $file }\n"
+)
+
+
+@pytest.mark.parametrize("test_path", ["native", "link_blind"])
+def test_swap_cleanup_unlinks_stale_backups_that_are_links_or_hold_links(tmp_path, test_path):
     # Leftovers planted before the swap: an App.old holding a link to the
     # victim, a Modules.old that IS a link to it and a dangling Vendor.old
-    # link (Test-Path says it is not there; it must still go, or it would
-    # block the backup rename).
+    # link (Test-Path may say it is not there; it must still go, or it
+    # would block the backup rename).
     victim = _swap_victim(tmp_path)
     install_dir, _, job = _prepare(tmp_path)
     (install_dir / "App.old" / "deep" / "er").mkdir(parents=True)
@@ -604,7 +619,8 @@ def test_swap_cleanup_unlinks_stale_backups_that_are_links_or_hold_links(tmp_pat
     _symlink_or_skip(install_dir / "Modules.old", victim)
     os.symlink(tmp_path / "nothing_here", install_dir / "Vendor.old", target_is_directory=True)
 
-    result = _run(job, tmp_path, prepend=PS51_REMOVE_ITEM + "\n")
+    prepend = PS51_REMOVE_ITEM + "\n" + (LINK_BLIND_TEST_PATH if test_path == "link_blind" else "")
+    result = _run(job, tmp_path, prepend=prepend)
 
     assert result.returncode != STUB_GUARD_EXIT, result.stdout + result.stderr
     assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK

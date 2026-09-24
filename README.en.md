@@ -184,6 +184,15 @@ PowerShell.
   CVE-2026-55567 class). If the folder being cleaned is itself a link
   (e.g. a planted `C:\NVIDIA`), only the link is removed and
   `takeown`/`icacls` are not run on it.
+  Removing Windows.old and upgrade leftovers resets ownership and
+  permissions one folder at a time (never recursively through a link),
+  and only if the folder is owned by SYSTEM, TrustedInstaller or
+  Administrators. A folder owned by a standard user (who may have created
+  it with links inside) is refused: nothing is changed or deleted and the
+  action fails. Subfolders a user owns (e.g. an old profile) keep their
+  owner and permissions. On a large Windows.old this can take up to an
+  hour - the action prints its progress as it goes. The PortableFix
+  update removes old folder backups the same way, never through a link.
 
 ## When an update fails
 

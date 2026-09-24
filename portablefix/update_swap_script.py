@@ -138,7 +138,7 @@ Log 'the app exited, swapping'
 # Success means the source is gone AND the destination exists.
 function Move-WithRetry([string]$Source, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Source)) { Log ('move skipped, source missing: ' + $Source); return $false }
-    if (Test-Path -LiteralPath $Destination) { Log ('move refused, destination exists: ' + $Destination); return $false }
+    if (Test-Entry $Destination) { Log ('move refused, destination exists: ' + $Destination); return $false }
     $lastError = ''
     for ($i = 0; $i -lt [int]$Cfg.RenameTries; $i++) {
         try {
@@ -147,15 +147,18 @@ function Move-WithRetry([string]$Source, [string]$Destination) {
             $lastError = $_.Exception.Message
         }
         if ((-not (Test-Path -LiteralPath $Source)) -and (Test-Path -LiteralPath $Destination)) { return $true }
-        if (Test-Path -LiteralPath $Destination) { Log ('move left both ' + $Source + ' and ' + $Destination); return $false }
+        if (Test-Entry $Destination) { Log ('move left both ' + $Source + ' and ' + $Destination); return $false }
         Start-Sleep -Milliseconds ([int]$Cfg.RenameDelayMs)
     }
     Log ('move FAILED after ' + $Cfg.RenameTries + ' tries: ' + $Source + ' -> ' + $Destination + ': ' + $lastError)
     return $false
 }
 
-# True for anything at $Path, a dangling link included (Test-Path follows
-# the link and says no). GetAttributes reads the entry's own attributes.
+# True for anything at $Path, a dangling link included. Whether Test-Path
+# reports a dangling link differs between PowerShell versions and link
+# kinds (it resolves the path; pwsh 7 does report one), so every check
+# that decides whether a stale entry is in the way uses this instead:
+# GetAttributes reads the entry's own attributes.
 function Test-Entry([string]$Path) {
     try {
         $null = [System.IO.File]::GetAttributes($Path)
@@ -302,12 +305,12 @@ function Update-Sums {
 # drop stale backups whose live folder exists.
 Restore-Backups
 foreach ($f in $Folders) {
-    if ((Test-Path -LiteralPath $f.Backup) -and (Test-Path -LiteralPath $f.Live)) {
+    if ((Test-Entry $f.Backup) -and (Test-Path -LiteralPath $f.Live)) {
         $null = Remove-WithRetry $f.Backup
     }
     $null = Remove-WithRetry $f.Discard
 }
-$inTheWay = @($Folders | Where-Object { Test-Path -LiteralPath $_.Backup })
+$inTheWay = @($Folders | Where-Object { Test-Entry $_.Backup })
 # The app verified the stage before handing off; this only catches it having
 # vanished since (deleted by hand, stick swapped), before anything is moved.
 $stageMissing = @($Folders | Where-Object { -not (Test-Path -LiteralPath $_.Staged) })

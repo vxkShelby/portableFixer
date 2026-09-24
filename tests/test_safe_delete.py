@@ -34,13 +34,32 @@ by SYSTEM, TrustedInstaller or Administrators, read as a SID from Get-Acl
 (never the localized account name), and (2) walk the tree themselves like
 Remove-PfSafe and run the non-recursive `takeown /F <folder> /A` and
 `icacls <folder> /reset /L /C /Q` once per real folder, never on a link.
+Inside the tree a folder not owned by SYSTEM, TrustedInstaller or
+Administrators (an old profile, a folder a user made in ProgramData) - or
+whose owner cannot be read - is neither re-owned nor descended into: those
+are the folders a standard user controls and could swap for a junction.
+Administrators can normally delete them as they are; what they cannot is
+left and counted as skipped. A folder's attributes are read again after
+takeown/icacls and before its subfolders are listed, so one swapped in
+between is not walked. The walk prints a progress line every 1000 folders
+(or 10 s) and both actions declare long watchdog timeouts, so a real
+Windows.old with tens of thousands of folders is not killed as hung.
 Files keep their ACLs: owning and resetting the parent folder grants
-Administrators "delete child", which lets Remove-PfSafe delete them.
+Administrators "delete child", which lets Remove-PfSafe delete them (a
+read-only system file whose ACL denies Administrators write-attributes is
+left and counted as skipped).
 
-It is still path-based: an attacker who swaps an already-checked folder for
-a junction in the instant before a child is deleted could win a race.
-Closing that needs handle-relative deletes (P/Invoke), which a one-line
-catalog command cannot carry; the planted-link attack itself is closed.
+It is still path-based. The remaining race: a folder that is owned by a
+trusted account but whose ACL lets a standard user delete or rename it
+(e.g. a ProgramData app folder granting Users full control) can be swapped
+for a junction between the second attribute read and the listing of its
+subfolders; the walk would then reset ownership and ACLs of everything
+under the junction target, recursively (the link is a middle component, so
+icacls /L does not help). Remove-PfSafe has the same window between
+checking a folder and listing it, for every action that uses it. Closing
+that needs handle-relative operations (P/Invoke), which a one-line catalog
+command cannot carry; the planted-link attack itself (links left in place
+before the action runs) is closed.
 
 The static half of this file keeps new raw recursive deletes out of the
 catalog; the pwsh half runs the real catalog commands against a temp tree
@@ -666,21 +685,23 @@ ADMINISTRATORS_SID = "S-1-5-32-544"
 STANDARD_USER_SID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
 
 
-def _owner_stub(log: Path, owners: dict) -> str:
+def _owner_stub(log: Path, owners: dict, default: str | None = None) -> str:
     """Get-Acl stand-in (pwsh has none off Windows): the owner of a folder
-    is looked up by its last path segment in `owners` (None or missing =
-    Get-Acl fails, as on a folder the admin cannot read). Each call is
-    logged with the identity type asked for, so the tests see the owner is
+    is looked up by its last path segment in `owners` (None = Get-Acl
+    fails, as on a folder the admin cannot read); any folder not listed gets
+    `default` (None = unreadable too). Each call is logged with the identity type asked for, so the tests see the owner is
     read as a SID - a localized account name is never compared."""
-    table = "; ".join(f"{_ps_quote(k)} = {_ps_quote(v)}" for k, v in owners.items() if v)
+    table = "; ".join(f"{_ps_quote(k)} = {_ps_quote(v or '')}" for k, v in owners.items())
     lg = _ps_quote(str(log))
+    fallback = _ps_quote(default) if default else "$null"
     return (
-        f"$global:PfOwners = @{{ {table} }}; "
+        f"$global:PfOwners = @{{ {table} }}; $global:PfDefaultOwner = {fallback}; "
         "function Get-Acl { [CmdletBinding()] param([string]$LiteralPath) "
         f"Add-Content -LiteralPath {lg} -Value ('Get-Acl ' + $LiteralPath); "
         "$leaf = Split-Path -Leaf $LiteralPath; "
-        "if (-not $global:PfOwners.ContainsKey($leaf)) { throw 'access denied' }; "
-        "$o = New-Object psobject; $o | Add-Member -MemberType NoteProperty -Name PfSid -Value $global:PfOwners[$leaf]; "
+        "$sid = if ($global:PfOwners.ContainsKey($leaf)) { $global:PfOwners[$leaf] } else { $global:PfDefaultOwner }; "
+        "if (-not $sid) { throw 'access denied' }; "
+        "$o = New-Object psobject; $o | Add-Member -MemberType NoteProperty -Name PfSid -Value $sid; "
         "$o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value { param($t) "
         f"Add-Content -LiteralPath {lg} -Value ('GetOwner ' + $t.FullName); "
         "[pscustomobject]@{ Value = $this.PfSid } }; $o }; "
@@ -727,7 +748,7 @@ def test_windows_old_with_old_profile_links_inside_keeps_their_targets(tmp_path,
     log = tmp_path / "calls.log"
     result, calls = _run(
         tmp_path,
-        _owner_stub(log, {"Windows.old": owner}) + _command("m02_cleanup", "windows_old_removal"),
+        _owner_stub(log, {"Windows.old": owner}, default=owner) + _command("m02_cleanup", "windows_old_removal"),
         {},
         stubs=("takeown", "icacls"),
         c_drive=c_drive,
@@ -794,7 +815,7 @@ def test_windows_upgrade_leftovers_never_take_ownership_through_a_root_link(tmp_
     log = tmp_path / "calls.log"
     result, calls = _run(
         tmp_path,
-        _owner_stub(log, {"$WINDOWS.~WS": SYSTEM_SID, "$WINDOWS.~BT": SYSTEM_SID})
+        _owner_stub(log, {"$WINDOWS.~WS": SYSTEM_SID, "$WINDOWS.~BT": SYSTEM_SID}, default=SYSTEM_SID)
         + _command("m02_cleanup", "windows_upgrade_leftovers"),
         {"WINDIR": windir},
         stubs=("takeown", "icacls"),
@@ -814,7 +835,11 @@ def test_windows_upgrade_leftovers_never_take_ownership_through_a_root_link(tmp_
     assert len(owned) == 2 * 4, owned
     assert all("WINDOWS.~WS" in c for c in owned), owned
     assert all("victim" not in c and "top_link" not in c for c in owned), owned
-    assert [c for c in calls if c.startswith("Get-Acl")] == [f"Get-Acl {c_drive / '$WINDOWS.~WS'}"]
+    # The root link is never asked for its owner (Get-Acl would follow it);
+    # the real folder is, first, and then each real subfolder of it.
+    acl = [c for c in calls if c.startswith("Get-Acl")]
+    assert acl[0] == f"Get-Acl {c_drive / '$WINDOWS.~WS'}", acl
+    assert all("WINDOWS.~WS" in c for c in acl), acl
 
 
 @non_windows_only
@@ -834,7 +859,7 @@ def test_windows_upgrade_leftovers_refuse_a_planted_folder_and_still_clean_the_r
     log = tmp_path / "calls.log"
     result, calls = _run(
         tmp_path,
-        _owner_stub(log, {"$WINDOWS.~BT": STANDARD_USER_SID, "WinREAgent": TRUSTED_INSTALLER_SID})
+        _owner_stub(log, {"$WINDOWS.~BT": STANDARD_USER_SID, "WinREAgent": TRUSTED_INSTALLER_SID}, default=TRUSTED_INSTALLER_SID)
         + _command("m02_cleanup", "windows_upgrade_leftovers"),
         {"WINDIR": windir},
         stubs=("takeown", "icacls"),
@@ -870,6 +895,104 @@ def test_owner_check_really_calls_get_acl_by_sid_type(tmp_path, action_id):
     assert "Refused" in result.stdout, result.stdout
     assert calls == []
     assert (target / "sub").is_dir()
+
+
+@non_windows_only
+def test_windows_old_subfolders_a_user_owns_are_neither_reowned_nor_walked(tmp_path):
+    # Windows.old\Users\<name> (the old profile) and a folder a user made in
+    # ProgramData are owned by that user inside a SYSTEM/TrustedInstaller
+    # root: exactly the folders a user could swap for a junction mid-walk.
+    # They and everything under them keep ownership and ACLs; a folder whose
+    # owner cannot be read is treated the same. Administrators can delete
+    # them as they are, so the tree still goes.
+    c_drive = tmp_path / "C"
+    old = c_drive / "Windows.old"
+    (old / "Windows" / "System32").mkdir(parents=True)
+    (old / "Users" / "bob" / "AppData" / "Local").mkdir(parents=True)
+    (old / "Users" / "bob" / "AppData" / "Local" / "x.dat").write_text("x", encoding="utf-8")
+    (old / "ProgramData" / "hidden" / "deep").mkdir(parents=True)
+    log = tmp_path / "calls.log"
+    result, calls = _run(
+        tmp_path,
+        _owner_stub(log, {"bob": STANDARD_USER_SID, "hidden": None}, default=TRUSTED_INSTALLER_SID)
+        + _command("m02_cleanup", "windows_old_removal"),
+        {},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "5 folder(s) done, 2 folder(s) not owned by SYSTEM, TrustedInstaller or Administrators left unchanged" in result.stdout, result.stdout
+    assert "Skipped locked/in-use items: 0" in result.stdout, result.stdout + result.stderr
+    owned = _owner_calls(calls)
+    assert sorted(Path(c.split()[2]).name for c in owned if c.startswith("takeown")) == sorted(
+        ["Windows.old", "Windows", "System32", "Users", "ProgramData"]
+    ), owned
+    for c in owned:
+        assert "bob" not in c and "hidden" not in c, c
+    # Not even asked for the owner below a skipped folder: never listed.
+    assert not any("AppData" in c or "deep" in c for c in calls), calls
+    assert not os.path.lexists(old)
+
+
+@non_windows_only
+def test_windows_old_walk_prints_progress_so_the_watchdog_sees_it_alive(tmp_path):
+    # A real Windows.old has tens of thousands of folders, each costing a
+    # takeown + icacls launch; without output the 300 s inactivity watchdog
+    # would kill the action halfway through every time.
+    c_drive = tmp_path / "C"
+    old = c_drive / "Windows.old"
+    for n in range(1000):
+        (old / f"d{n:04}").mkdir(parents=True)
+    log = tmp_path / "calls.log"
+    result, calls = _run(
+        tmp_path,
+        _owner_stub(log, {}, default=SYSTEM_SID) + _command("m02_cleanup", "windows_old_removal"),
+        {},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "Ownership/permission reset: 1000 folder(s) so far..." in out, out
+    assert "Ownership/permission reset: 1001 folder(s) done, 0 folder(s) not owned" in out, out
+    assert out.index("so far...") < out.index("folder(s) done") < out.index("Skipped locked/in-use items: 0"), out
+    assert len(_owner_calls(calls)) == 2 * 1001
+    assert not os.path.lexists(old)
+
+
+@non_windows_only
+def test_windows_old_folder_swapped_for_a_link_during_takeown_is_not_walked(tmp_path):
+    # The race a user-writable folder allows: it is a real folder when
+    # checked, and a junction by the time its subfolders are listed. Listing
+    # it then would hand back the target's subfolders as <folder>\<sub>, each
+    # a real folder, and the walk would re-own the whole target subtree. The
+    # icacls stand-in performs the swap at the worst moment.
+    victim = _victim(tmp_path)
+    c_drive = tmp_path / "C"
+    old = c_drive / "Windows.old"
+    (old / "swapme").mkdir(parents=True)
+    log = tmp_path / "calls.log"
+    lg = _ps_quote(str(log))
+    swap = (
+        f"function icacls {{ Add-Content -LiteralPath {lg} -Value ('icacls ' + ($args -join ' ')); "
+        "$t = [string]$args[0]; if ((Split-Path -Leaf $t) -eq 'swapme') { [IO.Directory]::Delete($t); "
+        f"$null = New-Item -ItemType SymbolicLink -Path $t -Target {_ps_quote(str(victim))} }}; $global:LASTEXITCODE = 0 }}; "
+    )
+    result, calls = _run(
+        tmp_path,
+        _owner_stub(log, {}, default=SYSTEM_SID) + swap + _command("m02_cleanup", "windows_old_removal"),
+        {},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Skipped locked/in-use items: 0" in result.stdout, result.stdout + result.stderr
+    assert any(c.startswith("icacls ") and c.split()[1].endswith("swapme") for c in calls), calls
+    # Nothing under the link target ("sub" of the victim) was touched.
+    for c in calls:
+        assert not re.search(r"swapme[\\/]sub\b", c) and "victim" not in c, c
+    _assert_victim_intact(victim)
+    assert not os.path.lexists(old)
 
 
 @non_windows_only
