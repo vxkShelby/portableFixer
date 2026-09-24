@@ -15,7 +15,18 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 Copy-Item "$root\PortableFix.cmd" -Destination $stage
 Copy-Item "$root\App" -Destination "$stage\App" -Recurse
-Copy-Item "$root\Data" -Destination "$stage\Data" -Recurse
+# Data\ is copied by allowlist, never wholesale: on the build machine it also
+# holds that machine's runtime state (settings.json with the technician name
+# and custom presets, update_status.txt, ...), which would otherwise ship to
+# every user - and the updater copies the zip's Data\ over each install.
+New-Item -ItemType Directory -Force -Path "$stage\Data" | Out-Null
+foreach ($name in @("SHA256SUMS", "PortableFix-SelfSigned.cer", ".gitkeep")) {
+    $src = Join-Path "$root\Data" $name
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination "$stage\Data" }
+}
+if (-not (Test-Path -LiteralPath "$stage\Data\SHA256SUMS")) {
+    Write-Warning "Data\SHA256SUMS missing - run scripts\generate_sha256sums.py first, or the integrity check will flag every file."
+}
 Copy-Item "$root\Modules" -Destination "$stage\Modules" -Recurse
 Copy-Item "$root\Vendor" -Destination "$stage\Vendor" -Recurse
 
