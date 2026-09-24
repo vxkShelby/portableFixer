@@ -365,13 +365,22 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         # warning on every launch, so this copy is verified (and retried -
         # AV often holds a just-written file for a moment) rather than
         # trusted like the silent best-effort steps around it.
+        # Hashed with .NET directly rather than Get-FileHash: under Windows
+        # PowerShell 5.1 (where Get-FileHash is a script function, not the
+        # PS7 cmdlet) this check reported a mismatch in CI although the
+        # installed bytes were identical, so updates were flagged as having a
+        # stale manifest. .NET paths are literal, so brackets are safe, and a
+        # failed hash is now logged instead of silently swallowed.
+        "        function Get-Sha256([string]$p) { try { $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes((Convert-Path -LiteralPath $p -EA Stop)))) } finally { $sha.Dispose() } } catch { Log \"hash of $p failed: $($_.Exception.Message)\"; $null } }\n"
         "        $sumsOk = $true\n"
         "        $stagedSums = \"$stagedRoot\\Data\\SHA256SUMS\"\n"
         "        if (Test-Path -LiteralPath $stagedSums) {\n"
-        "            $wantSums = (Get-FileHash -LiteralPath $stagedSums -Algorithm SHA256).Hash\n"
+        "            $wantSums = Get-Sha256 $stagedSums\n"
         "            $sumsOk = $false\n"
         "            for ($i = 0; $i -lt 5; $i++) {\n"
-        f"                if ((Get-FileHash -LiteralPath {sums_path} -Algorithm SHA256).Hash -eq $wantSums) {{ $sumsOk = $true; break }}\n"
+        f"                $gotSums = Get-Sha256 {sums_path}\n"
+        "                if ($wantSums -and $gotSums -eq $wantSums) { $sumsOk = $true; break }\n"
+        "                Log \"SHA256SUMS check $i`: want=$wantSums got=$gotSums\"\n"
         "                Start-Sleep -Milliseconds 1000\n"
         f"                Copy-Item -LiteralPath $stagedSums -Destination {sums_path} -Force\n"
         "            }\n"

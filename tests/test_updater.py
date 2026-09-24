@@ -1007,7 +1007,15 @@ def _make_swap_install(install_dir: Path) -> None:
 
 
 def _status(install_dir: Path) -> str:
-    return (install_dir / "Data" / "update_status.txt").read_text(encoding="utf-8-sig").strip()
+    status = (install_dir / "Data" / "update_status.txt").read_text(encoding="utf-8-sig").strip()
+    if status != updater_module.UPDATE_STATUS_OK:
+        # Printed so a failing assert shows the swap script's own log in the
+        # captured output - the script swallows errors by design, so this log
+        # is the only evidence of *why* (e.g. on a CI runner's PowerShell 5.1).
+        for parent in install_dir.parents:
+            for log in sorted((parent / "PortableFixUpdate").glob("update_log_*.txt")):
+                print(f"--- {log}\n{log.read_text(encoding='utf-8', errors='replace')}")
+    return status
 
 
 @pytest.fixture
@@ -1117,14 +1125,14 @@ def test_swap_script_reports_stale_manifest_when_sums_copy_cannot_be_verified(_s
     install_dir = tmp_path / "install"
     _make_swap_install(install_dir)
     zip_path = _make_swap_zip(tmp_path)
+    # A directory where the manifest file should be can never be read back
+    # as the expected bytes - the same outcome as a copy that AV keeps
+    # locking, without stubbing the hash function the script defines itself.
     installed_sums = install_dir / "Data" / "SHA256SUMS"
-    stub = (
-        "function Get-FileHash { [CmdletBinding()] param($LiteralPath, $Algorithm) "
-        f"if ($LiteralPath -eq '{installed_sums}') {{ return [pscustomobject]@{{ Hash = 'LOCKED' }} }} "
-        "Microsoft.PowerShell.Utility\\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm }\n"
-    )
+    installed_sums.unlink()
+    installed_sums.mkdir()
 
-    _run_script(build_swap_script(current_pid=999_992, install_dir=install_dir, zip_path=zip_path), tmp_path, stubs=stub)
+    _run_script(build_swap_script(current_pid=999_992, install_dir=install_dir, zip_path=zip_path), tmp_path)
 
     assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"new-exe"
     assert _status(install_dir) == updater_module.UPDATE_STATUS_OK_SUMS_STALE
