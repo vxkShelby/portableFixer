@@ -14,7 +14,7 @@ actions:
     label_en: "Export installed software list (winget)"
     risk: SAFE
     command: "if (Get-Command winget -EA SilentlyContinue) { $me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\WingetExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $outFile = \"$dest\\winget-packages.json\"; $out = & winget export -o $outFile --accept-source-agreements 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0) { Write-Output ('Winget package list exported to: ' + $outFile) } else { Write-Output ('winget export failed: ' + (($out | Select-Object -Last 3) -join ' ')); exit 1 } } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).'; exit 1 }"
-    description_sk: "Zaexportuje JSON manifest všetkých nainštalovaných balíkov a ich verzií (winget export) do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom - neskôr použiteľný cez 'winget import' na obnovenie rovnakej sady na novom počítači. Nič nemení, len ukladá súbor."
+    description_sk: "Exportuje JSON manifest všetkých nainštalovaných balíkov a ich verzií (winget export) do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom - manifest sa dá neskôr použiť cez 'winget import' na obnovenie rovnakej sady na novom počítači. Nič nemení, len ukladá súbor."
     description_en: "Exports a JSON manifest of every installed package and its version (winget export) into a folder only the current user, SYSTEM, and administrators can read - usable later with 'winget import' to restore the same set on a fresh machine. Changes nothing, only saves a file."
 
   - id: winget_source_list
@@ -22,7 +22,7 @@ actions:
     label_en: "List package sources (winget)"
     risk: SAFE
     command: "if (Get-Command winget -EA SilentlyContinue) { winget source list } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).' }"
-    description_sk: "Vypíše nakonfigurované zdroje balíkov (msstore, winget komunitný repozitár a pod.). Nič nemení."
+    description_sk: "Vypíše nakonfigurované zdroje balíkov (msstore, komunitný repozitár winget a pod.). Nič nemení."
     description_en: "Lists configured package sources (msstore, the winget community repo, etc.). Changes nothing."
 
   - id: winget_source_reset
@@ -30,5 +30,5 @@ actions:
     label_en: "Reset package sources (winget)"
     risk: MODERATE
     command: "if (Get-Command winget -EA SilentlyContinue) { & winget source reset --force; if ($LASTEXITCODE -eq 0) { Write-Output 'winget source reset --force finished.' } else { Write-Output ('winget source reset failed with exit code ' + $LASTEXITCODE); exit 1 } } else { Write-Output 'winget not available on this machine (needs App Installer from Microsoft Store).'; exit 1 }"
-    description_sk: "Resetuje všetky zdroje balíkov späť na predvolené nastavenia Windows. Rieši poškodený/zle nastavený zoznam zdrojov. Bez univerzálneho undo (nie je generický spôsob obnoviť pôvodné vlastné zdroje, ak nejaké existovali)."
+    description_sk: "Resetuje všetky zdroje balíkov na predvolené nastavenia Windows. Rieši poškodený alebo nesprávne nastavený zoznam zdrojov. Bez univerzálneho undo (neexistuje všeobecný spôsob, ako obnoviť pôvodné vlastné zdroje, ak nejaké boli)."
     description_en: "Resets all package sources back to Windows' defaults. Fixes a corrupted/misconfigured source list. No generic undo (there's no universal way to restore whatever custom sources existed before)."
