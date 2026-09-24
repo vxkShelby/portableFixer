@@ -225,6 +225,17 @@ def test_real_windows_probes_return_well_formed_values():
     )
     free = preflight._windows_system_free_bytes()
     assert isinstance(free, int) and free > 0
+    # G13: elsewhere the disk probe only meets pscustomobject stubs; here
+    # the real 5.1 Get-PhysicalDisk, its enum values and the quoting of the
+    # long -Command line run. None (VM without storage cmdlets, timeout) is
+    # a legal "unknown"; anything else must be well-formed verdicts.
+    verdicts = disk_health.windows_probe()
+    assert verdicts is None or (
+        isinstance(verdicts, list) and verdicts
+        and all(isinstance(v, disk_health.DiskVerdict) for v in verdicts)
+        and all(v.status in (disk_health.OK, disk_health.WARNING, disk_health.FAILING, disk_health.UNKNOWN)
+                for v in verdicts)
+    )
 
 
 def test_healthy_probe_defaults_keep_the_host_state_out_of_tests():

@@ -141,18 +141,18 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   úlohy) sa dá vedome obísť zaškrtnutím, obídenie sa zapíše do audit
   logu a reportu.
 - **Najprv image - brána zdravia disku:** akcie, ktoré disk silno
-  zaťažia, majú v `actions.yaml` pole `stresses_disk: true` (M03:
-  plná kontrola `chkdsk /f /r` pri reštarte, optimalizácia
-  TRIM/defragmentácia, online oprava SpotFix). Keď je taká akcia v
-  ostrej dávke, pre-flight raz, pri otvorení kontrolnej obrazovky,
-  spustí rovnaký skript ako SAFE akcia **Zdravie diskov - verdikt**
-  (jedno spustenie PowerShellu s limitom 20 s). Ak systémový disk
-  hlási FAILING alebo WARNING, zobrazí sa blokovanie „najprv
-  zálohujte alebo vytvorte image disku“, ktoré sa dá obísť len
-  vedomým zaškrtnutím a obídenie sa zapíše do audit logu. Keď
-  systémový disk nevieme určiť, rozhoduje najhorší disk. UNKNOWN
-  (VM, USB adaptér, chýbajúce práva) ani zlyhanie sondy nikdy
-  neblokujú. SFC a DISM príznak nemajú: čítajú len súbory Windows
+  zaťažia, majú v `actions.yaml` pole `stresses_disk: true` (M03: plná
+  kontrola `chkdsk /f /r` pri reštarte, optimalizácia
+  TRIM/defragmentácia, online oprava SpotFix; M22: bezpečné prepísanie
+  voľného miesta `cipher /w`). Keď je taká akcia v ostrej dávke,
+  pre-flight raz, pri otvorení kontrolnej obrazovky, spustí rovnaký
+  skript ako SAFE akcia **Zdravie diskov - verdikt** (jedno spustenie
+  PowerShellu s limitom 20 s). Ak systémový disk hlási FAILING alebo
+  WARNING, zobrazí sa blokovanie „najprv zálohujte alebo vytvorte image
+  disku“, ktoré sa dá obísť len vedomým zaškrtnutím a obídenie sa zapíše
+  do audit logu. Keď systémový disk nevieme určiť, rozhoduje najhorší
+  disk. UNKNOWN (VM, USB adaptér, chýbajúce práva) ani zlyhanie sondy
+  nikdy neblokujú. SFC a DISM príznak nemajú: čítajú len súbory Windows
   (niekoľko GB, podobne ako bežná aktualizácia) a blokovanie by
   zastavilo väčšinu opráv aj na opotrebovanom, no funkčnom SSD.
 - **Zdravie diskov - verdikt (M03, SAFE):** pre každý fyzický disk

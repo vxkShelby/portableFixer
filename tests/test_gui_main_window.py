@@ -4814,12 +4814,12 @@ actions:
 """
 
 
-def _review_window(qtbot, tmp_path, monkeypatch, run_id, dry_run=False, is_admin=True, probes=None):
+def _review_window(qtbot, tmp_path, monkeypatch, run_id, dry_run=False, is_admin=True, probes=None, yaml=REVIEW_BATCH_YAML):
     from portablefix import preflight, restore_point
 
     module_dir = tmp_path / "Modules" / "m02_cleanup"
     module_dir.mkdir(parents=True)
-    (module_dir / "actions.yaml").write_text(REVIEW_BATCH_YAML, encoding="utf-8")
+    (module_dir / "actions.yaml").write_text(yaml, encoding="utf-8")
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     window = MainWindow(
         assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=dry_run),
@@ -5040,6 +5040,70 @@ def test_preflight_blocker_disables_confirm_until_overridden_and_logs_the_overri
     assert event["decision"] == "override" and event["warned"] is True
     assert "low_disk" in event["output"]
     assert event["warning_text"] == i18n.translate("preflight_low_disk", "en").format(free_gb="2.0", min_gb=5)
+
+
+def test_failing_disk_blocks_a_disk_stressing_batch_until_overridden_with_a_busy_cursor(qtbot, tmp_path, monkeypatch):
+    # G13 end to end: a stresses_disk action + a FAILING system disk puts
+    # the disk_failing blocker on the review screen, the override tick is
+    # the only way past it and the audit event says so. The probe runs
+    # under a busy cursor (it is a synchronous PowerShell launch).
+    from portablefix import disk_health, preflight
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    stressing_yaml = REVIEW_BATCH_YAML + """
+  - id: defrag_thing
+    label_sk: "Defrag vec"
+    label_en: "Defrag thing"
+    risk: MODERATE
+    command: "Write-Output 'defrag-ran'"
+    stresses_disk: true
+"""
+    cursors = []
+
+    def failing_disk():
+        cursors.append(QApplication.overrideCursor() is not None)
+        return [disk_health.DiskVerdict("0", disk_health.FAILING, ("predict_failure",), "WDC X", system=True)]
+
+    probes = preflight.Probes(is_admin=lambda: True, pending_reboot=lambda: [], disk_health=failing_disk)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_disk", probes=probes, yaml=stressing_yaml)
+    shown = []
+
+    def technician(self):
+        shown.append(([i.code for i in self.review.preflight.blockers], self.confirm_button.isEnabled()))
+        self.override_checkbox.setChecked(True)
+        self.confirm_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", technician)
+    _check(window, "defrag_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert shown == [(["disk_failing"], False)]
+    assert cursors == [True]
+    assert QApplication.overrideCursor() is None
+    log_path = audit_log_path(tmp_path, "run_review_disk")
+    assert _executed_action_ids(log_path) == ["defrag_thing"]
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "override"
+    assert "disk_failing" in event["output"] and "WDC X" in event["warning_text"]
+
+
+def test_batch_without_disk_stressing_action_never_asks_disk_health(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+
+    probes = preflight.Probes(is_admin=lambda: True, pending_reboot=lambda: [],
+                              disk_health=lambda: pytest.fail("disk probe for a non-stressing batch"))
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_nodisk", probes=probes)
+    _answer_review(monkeypatch)
+    _check(window, "tweak_one")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert QApplication.overrideCursor() is None
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_review_nodisk")) == ["tweak_one"]
 
 
 def test_preflight_blocker_without_override_cannot_start_the_batch(qtbot, tmp_path, monkeypatch):

@@ -3414,7 +3414,17 @@ class MainWindow(QMainWindow):
         the queue to run - without the declined actions - or None when the
         technician cancelled the batch."""
         items = [self._find_action(aid) for aid in queue]
-        result = preflight.run_preflight(preflight.profile_for(items), self._preflight_probes())
+        profile = preflight.profile_for(items)
+        # The G13 disk health probe launches PowerShell synchronously (up to
+        # disk_health.PROBE_TIMEOUT_SEC) - a busy cursor says the click was
+        # taken instead of leaving a frozen-looking window.
+        if profile.stresses_disk:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = preflight.run_preflight(profile, self._preflight_probes())
+        finally:
+            if profile.stresses_disk:
+                QApplication.restoreOverrideCursor()
         review = build_review(
             items, result, self.settings.language,
             hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,

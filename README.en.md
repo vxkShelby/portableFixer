@@ -145,17 +145,17 @@ PowerShell.
 - **Image first - disk health gate:** actions that put heavy load on the
   disk carry `stresses_disk: true` in `actions.yaml` (M03: the full
   `chkdsk /f /r` at restart, TRIM/defrag optimization, the online
-  SpotFix repair). When one is in a real batch, the pre-flight runs the
-  same script as the SAFE **Disk health - verdict** action once, when
-  the review screen opens (a single PowerShell launch with a 20 s
-  timeout). If the system disk reports FAILING or WARNING, a blocker
-  says "back up or image the disk first"; it can only be overridden with
-  a deliberate tick, and the override is written to the audit log. When
-  the system disk cannot be identified, the worst disk decides. UNKNOWN
-  (VM, USB adapter, missing rights) or a failed probe never blocks. SFC
-  and DISM are not flagged: they only read the Windows files (a few GB,
-  much like a regular update), and blocking them would stop most repairs
-  even on a worn but working SSD.
+  SpotFix repair; M22: the `cipher /w` free-space wipe). When one is in
+  a real batch, the pre-flight runs the same script as the SAFE **Disk
+  health - verdict** action once, when the review screen opens (a single
+  PowerShell launch with a 20 s timeout). If the system disk reports
+  FAILING or WARNING, a blocker says "back up or image the disk first";
+  it can only be overridden with a deliberate tick, and the override is
+  written to the audit log. When the system disk cannot be identified,
+  the worst disk decides. UNKNOWN (VM, USB adapter, missing rights) or a
+  failed probe never blocks. SFC and DISM are not flagged: they only
+  read the Windows files (a few GB, much like a regular update), and
+  blocking them would stop most repairs even on a worn but working SSD.
 - **Disk health - verdict (M03, SAFE):** for every physical disk it
   prints `Get-PhysicalDisk` (HealthStatus, OperationalStatus, MediaType,
   BusType), `Get-StorageReliabilityCounter` (wear, temperature,
