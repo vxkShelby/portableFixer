@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
+        self._report_runner: report.ReportRunner | None = None
         self._batch_active = False
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
@@ -212,6 +213,9 @@ class MainWindow(QMainWindow):
         self._ping_timer = None
         self._vpn_timer = None
         self._undo_script_path: Path | None = None
+        # (len(_undo_steps), len(_irreversible_actions)) last written to
+        # undo.ps1 - both lists only ever grow, so the lengths identify it.
+        self._undo_written_state: tuple[int, int] | None = None
         self._build_ui()
         self._start_update_check()
         self._start_sysinfo_polling()
@@ -326,6 +330,9 @@ class MainWindow(QMainWindow):
         slow_runners = (
             (self._speed_test_runner, 25_000),
             (self._update_download_runner, updater.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000),
+            # Can't be interrupted mid-write, and it re-reads the whole
+            # session's audit log - allow for a slow USB stick.
+            (self._report_runner, 30_000),
             # These two were previously stored on the winget panel QWidget,
             # not self - closeEvent had no way to know about them, so a scan
             # or update still in flight left this process alive indefinitely.
@@ -2334,7 +2341,8 @@ class MainWindow(QMainWindow):
             checkbox.setAccessibleName(self._action_accessible_name(action, text))
 
     def run_selected_actions(self) -> None:
-        if self._update_in_progress:
+        # The previous batch's report is still being written - see _run_next.
+        if self._update_in_progress or self._report_runner is not None:
             return
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._queue_total = len(self._queue)
@@ -2356,6 +2364,25 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(True)
         self._run_next()
 
+    def _on_report_ready(self, html_path: Path | None, write_failed: bool) -> None:
+        self._report_runner = None
+        if not self._closed:
+            self.run_button.setEnabled(True)
+            self.language_button.setEnabled(True)
+            if write_failed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+        self._refresh_dashboard()
+        if not self._closed:
+            self._notify_batch_finished()
+        if html_path is not None and not self._closed:
+            # batch_done_message says "the report is ready" - only
+            # true on this branch.
+            ok_count = sum(1 for _, code in self._batch_results if code == 0)
+            _announce_to_screen_reader(self, self._t("batch_done_message").format(
+                ok=ok_count, failed=len(self._batch_results) - ok_count,
+            ))
+            self._show_batch_summary(html_path)
+
     def _app_dir_intact(self) -> bool:
         # Cheap existence check, not a deep scan - Modules/ is the canary
         # because it's the one directory every action's own catalog lives
@@ -2369,41 +2396,42 @@ class MainWindow(QMainWindow):
             if self._batch_active:
                 self._batch_active = False
                 if not self._closed:
-                    self.run_button.setEnabled(True)
+                    # run/language stay disabled until the report is written
+                    # (_on_report_ready): a second batch now would append to
+                    # the audit log the report thread is reading and race it
+                    # for the same report files.
                     self.cancel_button.setEnabled(False)
-                    self.language_button.setEnabled(True)
                     self.progress_bar.setValue(self._queue_total)
                     self.progress_bar.setVisible(False)
                     self._apply_selection(list(self._action_checkboxes), "none")
                     self._update_status_bar()
                 snapshot_after = self._take_snapshot()
                 self._snapshot_after = snapshot_after
-                try:
-                    html_path, _ = report.generate_report(
-                        self.state_dir,
-                        self.run_id,
-                        self.modules,
-                        self.settings.language,
-                        self._snapshot_before,
-                        snapshot_after,
-                        job=self._job_info(),
-                        storage_fallback=self._storage_fallback,
-                    )
-                except OSError:
-                    html_path = None
-                    if not self._closed:
-                        self.console.appendPlainText(self._t("disk_write_failed"))
-                self._refresh_dashboard()
-                if not self._closed:
-                    self._notify_batch_finished()
-                if html_path is not None and not self._closed:
-                    # batch_done_message says "the report is ready" - only
-                    # true on this branch.
-                    ok_count = sum(1 for _, code in self._batch_results if code == 0)
-                    _announce_to_screen_reader(self, self._t("batch_done_message").format(
-                        ok=ok_count, failed=len(self._batch_results) - ok_count,
-                    ))
-                    self._show_batch_summary(html_path)
+                report_args = (
+                    self.state_dir,
+                    self.run_id,
+                    self.modules,
+                    self.settings.language,
+                    self._snapshot_before,
+                    snapshot_after,
+                )
+                report_kwargs = {"job": self._job_info(), "storage_fallback": self._storage_fallback}
+                if self._closed:
+                    # closeEvent has already waited on every runner, so a
+                    # thread started now could outlive the window (Qt aborts
+                    # on a destroyed running QThread) - with no UI left to
+                    # stall, just write the report here.
+                    try:
+                        html_path, _ = report.generate_report(*report_args, **report_kwargs)
+                    except OSError:
+                        self._on_report_ready(None, True)
+                    else:
+                        self._on_report_ready(html_path, False)
+                    return
+                runner = report.ReportRunner(*report_args, **report_kwargs, parent=self)
+                runner.result_ready.connect(self._on_report_ready)
+                self._report_runner = runner
+                runner.start()
             return
         if not self._app_dir_intact():
             # The app's own install folder (or its Modules/ subfolder) has
@@ -2637,11 +2665,23 @@ class MainWindow(QMainWindow):
         self._run_next()
 
     def _write_undo_script(self) -> None:
+        # LIFO order puts the newest step at the top, so each change is a
+        # rewrite - but only an actual change: every later batch's
+        # pre-restore-point write used to rewrite an identical file. The
+        # exists() check keeps a deleted Backups/ from staying missing.
+        state = (len(self._undo_steps), len(self._irreversible_actions))
+        if (
+            state == self._undo_written_state
+            and self._undo_script_path is not None
+            and self._undo_script_path.exists()
+        ):
+            return
         try:
             self._undo_script_path = undo.create_undo_script(
                 self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)),
                 irreversible=self._irreversible_actions,
             )
+            self._undo_written_state = state
         except OSError:
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))

@@ -609,3 +609,50 @@ def test_second_batch_of_a_session_does_not_compare_the_run_with_itself(tmp_path
     data = build_report_data(tmp_path, "20260924T000000-now", _fixture_modules(), "en", {}, {"free_gb": 9.0})
     assert data["previous_comparison"]["previous_run_id"] == "20260901T000000-old"
     assert data["previous_comparison"]["free_gb_delta"] == 4.0
+
+
+def test_report_runner_emits_the_html_path_from_its_thread(qtbot, tmp_path):
+    # research-app-performance.md 4.3: batch-end report runs off the GUI thread.
+    from portablefix.report import ReportRunner
+
+    runner = ReportRunner(tmp_path, "run_thread", [], "en", {}, {}, job={"technician": "T"})
+    with qtbot.waitSignal(runner.result_ready, timeout=10000) as blocker:
+        runner.start()
+    html_path, write_failed = blocker.args
+    assert write_failed is False
+    assert html_path.exists() and html_path.name.endswith("_run_thread.html")
+    runner.wait(5000)
+
+
+def test_report_runner_reports_an_oserror_as_write_failed(qtbot, tmp_path, monkeypatch):
+    from portablefix import report
+
+    def failing(*args, **kwargs):
+        raise OSError("USB unplugged")
+
+    monkeypatch.setattr(report, "generate_report", failing)
+    runner = report.ReportRunner(tmp_path, "run_fail", [], "en", {}, {})
+    with qtbot.waitSignal(runner.result_ready, timeout=10000) as blocker:
+        runner.start()
+    assert blocker.args == [None, True]
+    runner.wait(5000)
+
+
+def test_report_runner_still_answers_when_generation_hits_a_bug(qtbot, tmp_path, monkeypatch):
+    # Without an answer the GUI would keep Run disabled forever.
+    import sys
+
+    from portablefix import report
+
+    def buggy(*args, **kwargs):
+        raise KeyError("bug")
+
+    surfaced = []
+    monkeypatch.setattr(report, "generate_report", buggy)
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: surfaced.append(exc[0]))
+    runner = report.ReportRunner(tmp_path, "run_bug", [], "en", {}, {})
+    with qtbot.waitSignal(runner.result_ready, timeout=10000) as blocker:
+        runner.start()
+    assert blocker.args == [None, False]
+    assert surfaced == [KeyError]
+    runner.wait(5000)

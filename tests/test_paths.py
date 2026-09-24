@@ -310,3 +310,19 @@ def test_resolve_writable_base_dir_moves_on_when_temp_fallback_is_unusable(monke
 
     assert used_fallback is True
     assert result == tmp_path / "local" / "PortableFix"
+
+
+def test_onefile_build_does_not_bundle_modules_or_data():
+    # research-app-performance.md 2.1: Modules/ and Data/ are read from the
+    # drive next to App/ (get_base_dir), never from the onefile bundle, so
+    # embedding them only cost an extraction to %TEMP% on every launch.
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    build_script = (root / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    bundled = re.findall(r'--add-data\s+"[^";]*;([^"]*)"', build_script)
+    assert bundled  # the pattern still matches the script's syntax
+    assert "Modules" not in bundled and "Data" not in bundled
+    # If anything ever starts reading from the bundle, this must change too.
+    sources = list((root / "portablefix").rglob("*.py")) + [root / "main.py"]
+    assert [p for p in sources if "_MEIPASS" in p.read_text(encoding="utf-8")] == []

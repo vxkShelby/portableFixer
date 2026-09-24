@@ -45,7 +45,20 @@ def test_undo_script_lists_irreversible_actions_as_comments(tmp_path):
 def test_undo_script_irreversible_label_cannot_inject_code(tmp_path):
     content = create_undo_script(
         tmp_path, "run6", irreversible=["evil\nRemove-Item C:\\ -Recurse"],
-    ).read_text(encoding="utf-8")
+    ).read_text(encoding="utf-8-sig")
     # Every non-empty line must still be a comment - no executable line
     # smuggled in through a label containing a line break.
     assert all(line.startswith("#") for line in content.splitlines() if line.strip())
+
+
+def test_undo_script_has_exactly_one_utf8_bom_even_after_rewrites(tmp_path):
+    # Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI - the Slovak
+    # labels in the NOT-reversible comments came out garbled.
+    label = "[DESTRUCTIVE] Vyčistenie súčastí (x)"
+    create_undo_script(tmp_path, "run7", irreversible=[label])
+    path = create_undo_script(tmp_path, "run7", steps=["Write-Output 'ľšč'"], irreversible=[label])
+    raw = path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf# PortableFix undo script")
+    assert raw.count(b"\xef\xbb\xbf") == 1
+    content = raw.decode("utf-8-sig")
+    assert label in content and "Write-Output 'ľšč'" in content

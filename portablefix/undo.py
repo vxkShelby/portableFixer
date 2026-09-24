@@ -43,5 +43,9 @@ def create_undo_script(
 
     path = base_dir / "Backups" / run_id / "undo.ps1"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # utf-8-sig (BOM): Windows PowerShell 5.1 reads a BOM-less .ps1 in the
+    # ANSI codepage, garbling the Slovak labels above and any non-ASCII in an
+    # undo command. The file is always rewritten whole (LIFO puts the newest
+    # step on top), so the BOM appears exactly once, at the start.
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     return path
