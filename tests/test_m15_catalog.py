@@ -143,8 +143,14 @@ def _run_ps(stubs: list, stubbed_names: list, command: str, extra_env=None):
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
-    script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + "; ".join(stubs + [guard]) + "; " + command
-    env = dict(os.environ, **(extra_env or {}))
+    # The redirected variables are set inside the script, not in the child's
+    # environment: Windows PowerShell cannot even start ("Loading managed
+    # Windows PowerShell failed with error 8009001d") with a fake SystemRoot.
+    env_lines = [f"$env:{name} = {_ps_quote(value)}" for name, value in (extra_env or {}).items()]
+    script = "; ".join(
+        ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + env_lines + stubs + [guard, command]
+    )
+    env = dict(os.environ)
     result = subprocess.run(
         [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
