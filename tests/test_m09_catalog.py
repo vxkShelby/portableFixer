@@ -142,3 +142,26 @@ def test_m09_catalog_path_sanity_report_is_read_only():
     assert "2047" in command
     assert "MISSING: " in command and "DUPLICATE: " in command
     assert "SetEnvironmentVariable" not in command
+
+
+def test_m09_catalog_ultimate_plan_is_found_by_saved_guid_not_localized_name():
+    # powercfg prints plan names in the Windows display language, so matching
+    # 'Ultimate Performance' in "powercfg /list" never matched on e.g. Slovak
+    # Windows and every run duplicated the plan again. The GUID of the plan
+    # this action creates is remembered instead and reused while
+    # "powercfg /query <guid>" still finds it.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "tune_ultimate_performance_power_plan")
+    command = action.command
+    assert "ultimate_plan_guid.txt" in command
+    assert "Select-String 'Ultimate Performance'" not in command
+    assert "powercfg /list" not in command
+    assert "powercfg /query $saved" in command
+    assert "-duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61" in command
+    # The template GUID itself must never be taken for the new plan's GUID.
+    assert "Where-Object { $_ -ne 'e9a42b02-d5df-448d-aa00-03f14749eb61' }" in command
+    assert "New-Item -ItemType Directory -Force -Path (Split-Path $gf)" in command
+    assert command.index("powercfg /query") < command.index("-duplicatescheme") < command.index("powercfg /setactive")
+    # Undo still just returns to Balanced; it leaves the saved plan in place
+    # so a later run reuses it instead of creating yet another copy.
+    assert action.undo_command == "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
