@@ -6,16 +6,16 @@ actions:
     label_en: "Operating system information"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; $os | Select-Object Caption,Version,BuildNumber,InstallDate,LastBootUpTime | Format-List; Write-Output ('Uptime: ' + ((Get-Date) - $os.LastBootUpTime))"
-    description_sk: "Verzia, build, čas inštalácie, posledný štart a doba behu."
+    description_sk: "Verzia, build, dátum inštalácie, posledný štart a doba behu."
     description_en: "Version, build, install date, last boot, and uptime."
 
   - id: full_system_snapshot_report
-    label_sk: "Kompletný snímok systému (jeden report)"
+    label_sk: "Kompletná snímka systému (jeden report)"
     label_en: "Full system snapshot (one report)"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; Write-Output '=== OS ==='; Write-Output ($os.Caption + ' ' + $os.Version + ' (build ' + $os.BuildNumber + '), uptime ' + ((Get-Date) - $os.LastBootUpTime)); Write-Output ''; Write-Output '=== Top 10 processes by CPU ==='; Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name,Id,CPU,@{N='WorkingSetMB';E={[math]::Round($_.WS/1MB,1)}} | Format-Table -AutoSize; Write-Output '=== Active network connections ==='; Get-NetTCPConnection -State Established,Listen -EA SilentlyContinue | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,@{N='Process';E={(Get-Process -Id $_.OwningProcess -EA SilentlyContinue).Name}} | Sort-Object State | Format-Table -AutoSize; Write-Output '=== Registry autostart (Run/RunOnce) ==='; foreach ($path in 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run') { Get-ItemProperty -Path $path -EA SilentlyContinue | Select-Object * -ExcludeProperty PS* | Format-List }; Write-Output '=== Startup folder items ==='; Get-ChildItem \"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\",\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\" -EA SilentlyContinue | Select-Object FullName | Format-Table -AutoSize; Write-Output '=== Non-Microsoft scheduled tasks (enabled) ==='; Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' -and $_.TaskPath -notlike '\\Microsoft\\*' } | Select-Object TaskName,TaskPath,State | Format-Table -AutoSize; Write-Output '=== Auto-start services ==='; Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' } | Select-Object Name,State,StartName | Format-Table -AutoSize"
     inactivity_timeout_sec: 60
-    description_sk: "Jeden konsolidovaný report na spoločné odoslanie/uloženie (v štýle SysInspector nástroja): stručné OS info, 10 najvyťaženejších procesov, aktívne sieťové spojenia s vlastniacim procesom, registrový autostart (Run/RunOnce), Startup priečinok, naplánované úlohy mimo Microsoft a automaticky spúšťané služby. Každá sekcia už existuje ako samostatná akcia inde v appke - tento report ich len spája do jedného výstupu na rýchly prehľad. Nič nemení."
+    description_sk: "Jeden konsolidovaný report určený na uloženie/odoslanie ako celok (v štýle nástroja SysInspector): stručný prehľad OS, 10 procesov s najvyšším CPU časom, aktívne sieťové spojenia s procesom, ktorému patria, autostart z registra (Run/RunOnce), priečinok Startup, naplánované úlohy mimo Microsoftu a automaticky spúšťané služby. Všetky sekcie už existujú ako samostatné akcie inde v aplikácii - tento report ich len spája do jedného výstupu pre rýchly prehľad. Nič nemení."
     description_en: "One consolidated report meant to be saved/shared as a whole (in the style of ESET SysInspector): a brief OS summary, top 10 processes by CPU, active network connections with their owning process, registry autostart (Run/RunOnce), the Startup folder, non-Microsoft scheduled tasks, and auto-start services. Every section already exists as its own separate action elsewhere in the app - this report just combines them into one output for a quick overview. Changes nothing."
 
   - id: computer_info
@@ -23,15 +23,15 @@ actions:
     label_en: "Computer information"
     risk: SAFE
     command: "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,@{N='TotalPhysicalMemoryGB';E={[math]::Round($_.TotalPhysicalMemory/1GB,2)}},Domain | Format-List; Get-CimInstance Win32_Battery -EA SilentlyContinue | Select-Object Name,BatteryStatus,EstimatedChargeRemaining | Format-List"
-    description_sk: "Výrobca, model, celková RAM (GB), doména a stav batérie (ak je notebook)."
+    description_sk: "Výrobca, model, celková RAM (GB), doména a stav batérie (ak ide o notebook)."
     description_en: "Manufacturer, model, total RAM (GB), domain, and battery status (if a laptop)."
 
   - id: bios_info
-    label_sk: "Informácie o BIOSe"
+    label_sk: "Informácie o BIOS-e"
     label_en: "BIOS information"
     risk: SAFE
     command: "Get-CimInstance Win32_BIOS | Select-Object Manufacturer,Name,SMBIOSBIOSVersion,ReleaseDate,SerialNumber | Format-List"
-    description_sk: "Výrobca, verzia, dátum vydania a sériové číslo BIOSu."
+    description_sk: "Výrobca, verzia, dátum vydania a sériové číslo BIOS-u."
     description_en: "BIOS manufacturer, version, release date, and serial number."
 
   - id: cpu_info
@@ -47,11 +47,11 @@ actions:
     label_en: "Memory modules"
     risk: SAFE
     command: "Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel,DeviceLocator,@{N='CapacityGB';E={[math]::Round($_.Capacity/1GB,2)}},Speed,ConfiguredClockSpeed,Manufacturer | Format-Table -AutoSize"
-    description_sk: "Kapacita (GB) a rýchlosť RAM modulov."
+    description_sk: "Kapacita (GB) a rýchlosť nainštalovaných modulov RAM."
     description_en: "Capacity (GB) and speed of installed RAM modules."
 
   - id: volumes
-    label_sk: "Diskové oddiely"
+    label_sk: "Diskové zväzky"
     label_en: "Volumes"
     risk: SAFE
     command: "Get-Volume | Select-Object DriveLetter,FileSystem,HealthStatus,@{N='SizeRemainingGB';E={[math]::Round($_.SizeRemaining/1GB,2)}},@{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | Format-Table -AutoSize"
@@ -71,7 +71,7 @@ actions:
     label_en: "Recent updates"
     risk: SAFE
     command: "$session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $count = $searcher.GetTotalHistoryCount(); $searcher.QueryHistory(0, [Math]::Min($count, 100)) | Where-Object { $_.Title -and $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 20 Date,Title | Format-Table -AutoSize -Wrap"
-    description_sk: "Posledných 20 úspešne nainštalovaných aktualizácií (vrátane kumulatívnych, nielen legacy hotfixov)."
+    description_sk: "Posledných 20 úspešne nainštalovaných aktualizácií (vrátane kumulatívnych, nielen starších hotfixov)."
     description_en: "Last 20 successfully installed updates (including cumulative updates, not just legacy hotfixes)."
 
   - id: defender_status
@@ -79,11 +79,11 @@ actions:
     label_en: "Windows Defender status"
     risk: SAFE
     command: "try { Get-MpComputerStatus -EA Stop | Format-List } catch { Write-Output ('Windows Defender status unavailable: ' + $_.Exception.Message) }; Get-CimInstance -Namespace root\\SecurityCenter2 -ClassName AntiVirusProduct -EA SilentlyContinue | Select-Object displayName,productState | Format-Table -AutoSize"
-    description_sk: "Realtime ochrana, tamper protection, signatúry Defenderu a zoznam registrovaných antivírusov (aj tretích strán)."
+    description_sk: "Ochrana v reálnom čase, tamper protection, signatúry Defenderu a zoznam registrovaných antivírusov (aj od tretích strán)."
     description_en: "Real-time protection, tamper protection, Defender signatures, and registered antivirus products (including third-party)."
 
   - id: top_cpu_processes
-    label_sk: "Najvyťaženejšie procesy (CPU čas)"
+    label_sk: "Procesy s najvyšším CPU časom (kumulatívne)"
     label_en: "Top CPU-consuming processes (cumulative CPU time)"
     risk: SAFE
     command: "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,Id,CPU,@{N='WorkingSetMB';E={[math]::Round($_.WS/1MB,1)}},Path | Format-Table -AutoSize -Wrap"
@@ -99,11 +99,11 @@ actions:
     description_en: "Checks whether the system is waiting on a restart (Windows Update, CBS, pending file rename), changes nothing."
 
   - id: eventlog_critical_7d
-    label_sk: "Kritické chyby za posledných 7 dní"
+    label_sk: "Kritické a chybové udalosti (posledných 7 dní)"
     label_en: "Critical/error events (last 7 days)"
     risk: SAFE
     command: "$events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-7)} -MaxEvents 50 -EA SilentlyContinue; if ($events) { $events | Select-Object TimeCreated,LogName,ProviderName,Id,LevelDisplayName,Message | Format-Table -AutoSize -Wrap } else { Write-Output 'No critical/error events in the last 7 days.' }"
-    description_sk: "Vypíše kritické a chybové udalosti zo System a Application logov za posledných 7 dní, nič nemení."
+    description_sk: "Vypíše kritické a chybové udalosti z logov System a Application za posledných 7 dní, nič nemení."
     description_en: "Lists critical and error events from the System and Application logs over the last 7 days, changes nothing."
 
   - id: bsod_summary
@@ -115,7 +115,7 @@ actions:
     description_en: "Shows saved minidump files and recent BugCheck events, changes nothing."
 
   - id: disk_reliability_counters
-    label_sk: "Spoľahlivosť diskov (SMART počítadlá)"
+    label_sk: "Spoľahlivosť diskov (počítadlá SMART)"
     label_en: "Disk reliability counters (SMART)"
     risk: SAFE
     command: "try { $counters = Get-PhysicalDisk | Get-StorageReliabilityCounter -EA Stop | Select-Object DeviceId,Temperature,Wear,ReadErrorsTotal,ReadErrorsUncorrected,WriteErrorsTotal,WriteErrorsUncorrected,PowerOnHours; if ($counters) { $counters | Format-Table -AutoSize } else { Write-Output 'No reliability counters available for the physical disks on this system.' } } catch { Write-Output 'Storage reliability counters not supported on this system.' }"
@@ -123,27 +123,27 @@ actions:
     description_en: "Shows temperature, wear, and error counters for physical disks, if supported. Changes nothing."
 
   - id: boot_time_breakdown
-    label_sk: "Rozklad času spúšťania (posledné štarty)"
+    label_sk: "Rozpis času spúšťania (posledné štarty)"
     label_en: "Startup time breakdown (recent boots)"
     risk: SAFE
     command: "$events = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100} -MaxEvents 5 -EA SilentlyContinue; if ($events) { foreach ($e in $events) { $xml = [xml]$e.ToXml(); $bootMs = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'BootTime' }).'#text'; Write-Output ($e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + ' - total boot time: ' + [math]::Round([double]$bootMs/1000,1) + 's') } } else { Write-Output 'No boot performance events found (log empty, disabled, or needs administrator to read).' }"
-    description_sk: "Zobrazí celkový čas spúšťania z posledných 5 štartov (Windows už túto udalosť sám zaznamenáva, ID 100 v logu Diagnostics-Performance). Nič nemení."
+    description_sk: "Zobrazí celkový čas spúšťania pri posledných 5 štartoch (Windows ho sám zaznamenáva ako udalosť ID 100 v logu Diagnostics-Performance). Nič nemení."
     description_en: "Shows total boot duration from the last 5 startups (Windows already records this itself, event ID 100 in the Diagnostics-Performance log). Changes nothing."
 
   - id: battery_health_report
-    label_sk: "Zdravie batérie (design vs. reálna kapacita)"
+    label_sk: "Zdravie batérie (menovitá vs. skutočná kapacita)"
     label_en: "Battery health report (design vs. actual capacity)"
     risk: SAFE
     command: "$me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\BatteryReport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $reportPath = \"$dest\\BatteryReport.html\"; $out = & powercfg /batteryreport /output $reportPath /duration 14 2>&1; if (Test-Path $reportPath) { Write-Output ('Battery health report saved to: ' + $reportPath); Write-Output 'Open it in a browser to see design capacity vs full charge capacity and drain history.' } else { Write-Output ('Could not generate battery report: ' + ($out -join ' ')); exit 1 }"
-    description_sk: "Vygeneruje Windows report o zdraví batérie (powercfg /batteryreport) - design kapacita vs. reálna plná kapacita a história vybíjania za 14 dní - do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom. Na počítačoch bez batérie hlási prázdny report. Nič nemení, len uloží HTML súbor."
+    description_sk: "Vygeneruje vstavaný Windows report o zdraví batérie (powercfg /batteryreport) - menovitá vs. skutočná plná kapacita a história vybíjania za 14 dní - do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom. Na počítačoch bez batérie bude report prázdny. Nič nemení, len uloží HTML súbor."
     description_en: "Generates the built-in Windows battery health report (powercfg /batteryreport) - design capacity vs. actual full charge capacity and 14-day drain history - into a folder only the current user, SYSTEM, and administrators can read. On desktops without a battery the report comes back empty. Changes nothing, only saves an HTML file."
 
   - id: eventlog_full_export
-    label_sk: "Plný export event logov (.evtx)"
+    label_sk: "Úplný export logov udalostí (.evtx)"
     label_en: "Full event log export (.evtx)"
     risk: SAFE
     command: "$me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\EventLogExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $logs = 'System','Application','Security'; $exported = 0; foreach ($log in $logs) { & wevtutil epl $log \"$dest\\$log.evtx\" 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { $exported++ } }; Write-Output (\"Exported $exported/$($logs.Count) event log(s) to: $dest (Security needs administrator)\"); if ($exported -eq 0) { exit 1 } else { exit 0 }"
-    description_sk: "Exportuje celé System/Application/Security logy do .evtx súborov (do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom) na neskoršiu analýzu v Event Vieweri inde (nie len posledných 50 udalostí ako iné akcie). Security log vyžaduje administrátora. Nič nemení, len ukladá súbory."
+    description_sk: "Exportuje celé logy System/Application/Security do súborov .evtx (do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom) na neskoršiu analýzu v Event Vieweri aj na inom počítači (nie iba posledných 50 udalostí ako iné akcie). Log Security vyžaduje administrátora. Nič nemení, len ukladá súbory."
     description_en: "Exports the full System/Application/Security logs to .evtx files (into a folder only the current user, SYSTEM, and administrators can read) for later analysis in Event Viewer elsewhere (not just the last 50 events like other actions). The Security log needs administrator. Changes nothing, only saves files."
 
   - id: installed_software
@@ -163,15 +163,15 @@ actions:
     description_en: "Shows the Windows activation status and partial product key, changes nothing."
 
   - id: restore_points
-    label_sk: "Zoznam obnovovacích bodov"
+    label_sk: "Zoznam bodov obnovenia systému"
     label_en: "System Restore point list"
     risk: SAFE
     command: "$rp = Get-ComputerRestorePoint -EA SilentlyContinue; if ($rp) { $rp | Select-Object SequenceNumber,CreationTime,Description,RestorePointType | Format-Table -AutoSize } else { Write-Output 'No system restore points found (System Protection may be disabled).' }"
-    description_sk: "Vypíše dostupné obnovovacie body systému, nič nemení."
+    description_sk: "Vypíše dostupné body obnovenia systému, nič nemení."
     description_en: "Lists available System Restore points, changes nothing."
 
   - id: uptime_faststartup
-    label_sk: "Doba behu a rýchle spustenie"
+    label_sk: "Doba behu a stav rýchleho spustenia"
     label_en: "Uptime and Fast Startup status"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; $uptime = (Get-Date) - $os.LastBootUpTime; Write-Output ('Last boot: ' + $os.LastBootUpTime); Write-Output ('Uptime: {0}d {1}h {2}m' -f $uptime.Days,$uptime.Hours,$uptime.Minutes); $fs = Get-ItemPropertyValue -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -EA SilentlyContinue; if ($null -eq $fs) { Write-Output 'Fast Startup: not configured on this system.' } else { Write-Output ('Fast Startup enabled: ' + [bool]$fs) }"
@@ -195,15 +195,15 @@ actions:
     description_en: "Shows BitLocker encryption status per volume, changes nothing."
 
   - id: tpm_status
-    label_sk: "Stav TPM čipu"
+    label_sk: "Stav čipu TPM"
     label_en: "TPM status"
     risk: SAFE
     command: "try { Get-Tpm -EA Stop | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated,ManufacturerVersion | Format-List } catch { Write-Output 'TPM status unavailable on this system.' }"
-    description_sk: "Zobrazí prítomnosť a stav TPM čipu, nič nemení."
+    description_sk: "Zobrazí prítomnosť a stav čipu TPM, nič nemení."
     description_en: "Shows the presence and status of the TPM chip, changes nothing."
 
   - id: pagefile_info
-    label_sk: "Konfigurácia odkladacieho súboru"
+    label_sk: "Konfigurácia a využitie odkladacieho súboru"
     label_en: "Page file configuration and usage"
     risk: SAFE
     command: "$pf = Get-CimInstance Win32_PageFileUsage -EA SilentlyContinue; if ($pf) { $pf | Select-Object Name,AllocatedBaseSize,CurrentUsage,PeakUsage | Format-Table -AutoSize } else { Write-Output 'No page file currently configured.' }; Get-CimInstance Win32_ComputerSystem | Select-Object AutomaticManagedPagefile | Format-List"
