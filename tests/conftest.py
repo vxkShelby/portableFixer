@@ -1,9 +1,14 @@
 import pytest
 
 try:
+    from PySide6.QtCore import QThread
     from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 except ImportError:  # pragma: no cover - non-GUI environments
-    QMessageBox = QInputDialog = QFileDialog = None
+    QThread = QMessageBox = QInputDialog = QFileDialog = None
+
+# Threads that outlived even the teardown wait: kept referenced for the rest
+# of the session, because dropping them would abort the whole process.
+_LEAKED_THREADS = []
 
 
 class UnexpectedDialogError(AssertionError):
@@ -37,3 +42,44 @@ def _no_blocking_modal_dialogs(monkeypatch):
         monkeypatch.setattr(QInputDialog, name, _refuse(f"QInputDialog.{name}"))
     for name in ("getSaveFileName", "getOpenFileName", "getExistingDirectory"):
         monkeypatch.setattr(QFileDialog, name, _refuse(f"QFileDialog.{name}"))
+
+
+@pytest.fixture(autouse=True)
+def _join_parentless_threads(monkeypatch):
+    """Let every parentless QThread a test started finish before it is freed.
+
+    A test that waits for a runner's signal returns while run() is still
+    unwinding. If the test held the only reference, the last one left is
+    run()'s own `self`, so the QThread got destroyed on its own still-running
+    thread - Qt's qFatal "QThread: Destroyed while thread is still running"
+    killed the whole pytest process mid-suite with no summary (seen on CI,
+    reproduced ~3 in 90 local runs). Runners created with a parent (as the
+    app does) are owned by it, not by Python, so only parentless ones are
+    tracked.
+    """
+    if QThread is None:
+        yield
+        return
+    started = []
+    original_start = QThread.start
+
+    def start(self, *args, **kwargs):
+        if self.parent() is None:
+            started.append(self)
+        return original_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(QThread, "start", start)
+    yield
+    hung = []
+    for thread in started:
+        try:
+            if not thread.wait(10_000):
+                hung.append(thread)
+        except RuntimeError:
+            # Already deleted by its finished->deleteLater, which Qt only
+            # completes once the thread is done.
+            pass
+    started.clear()
+    if hung:
+        _LEAKED_THREADS.extend(hung)
+        pytest.fail(f"{len(hung)} QThread(s) still running 10s after the test ended")
