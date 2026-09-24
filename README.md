@@ -231,6 +231,15 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   a nechať ho vymazať zvýšeným čistením (trieda chyby CVE-2026-55567).
   Ak je odkazom samotný čistený priečinok (napr. podstrčený `C:\NVIDIA`),
   zmaže sa len odkaz a `takeown`/`icacls` sa nad ním nespustia.
+  Odstránenie Windows.old a zvyškov po upgrade mení vlastníka a práva
+  po jednom priečinku (nikdy rekurzívne cez odkaz) a len ak priečinok
+  vlastní SYSTEM, TrustedInstaller alebo Administrators. Priečinok, ktorý
+  vlastní bežný používateľ (mohol ho vytvoriť aj s odkazmi vnútri), akcia
+  odmietne: nič nezmení ani nezmaže a skončí chybou. Podpriečinky
+  používateľa (napr. starý profil) nechá s pôvodným vlastníkom a právami.
+  Na veľkom Windows.old to môže trvať aj hodinu - akcia priebežne vypisuje
+  postup. Aktualizácia PortableFix maže staré zálohy priečinkov tým istým
+  spôsobom, bez prechodu cez odkaz.
 
 ## Keď aktualizácia zlyhá
 
