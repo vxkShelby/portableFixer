@@ -14,6 +14,7 @@ stub, so a test run never reads the host's event log, WMI or registry.
 SystemRoot is redirected with $env: inside the script, never in the child
 environment - Windows PowerShell cannot start without the real one.
 """
+import datetime
 import json
 import os
 import re
@@ -89,15 +90,25 @@ function Get-WinEvent {
   $out | Sort-Object TimeCreated -Descending | Select-Object -First $MaxEvents
 }
 function Get-CimInstance {
-  [CmdletBinding()] param([Parameter(Position = 0)] [string] $ClassName, [string] $Filter, [string] $Namespace)
+  [CmdletBinding()] param([Parameter(Position = 0)] [string] $ClassName, [string] $Filter, [string[]] $Property, [string] $Namespace)
   Add-Content -LiteralPath $env:PF_CALLS -Value ('Get-CimInstance ' + $ClassName)
+  if ($Filter) { Add-Content -LiteralPath $env:PF_CALLS -Value ('  Filter ' + $Filter) }
+  if ($Property) { Add-Content -LiteralPath $env:PF_CALLS -Value ('  Property ' + ($Property -join ',')) }
   $cfg = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PF_CIM | ConvertFrom-Json
   if (@($cfg.fail) -contains $ClassName) { throw 'Neplatná trieda' }
+  # Like WMI: a WQL date filter drops older instances, and -Property leaves
+  # every other property empty.
+  $after = $null
+  if ($Filter) {
+    if ($Filter -notmatch "^TimeGenerated >= '(\d{14}\.\d{6})\+000'$") { throw 'Neplatný dotaz' }
+    $after = [datetime]::ParseExact($Matches[1], 'yyyyMMddHHmmss.ffffff', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AssumeUniversal,AdjustToUniversal')
+  }
   foreach ($r in @($cfg.$ClassName)) {
     if ($null -eq $r) { continue }
     $o = [ordered]@{}
-    foreach ($p in $r.PSObject.Properties) { if ($p.Name -ne 'HoursAgo') { $o[$p.Name] = $p.Value } }
+    foreach ($p in $r.PSObject.Properties) { if ($p.Name -ne 'HoursAgo') { $o[$p.Name] = $(if (-not $Property -or $Property -contains $p.Name) { $p.Value }) } }
     $o['TimeGenerated'] = (Get-Date).AddHours(-[double]$r.HoursAgo)
+    if ($after -and $o['TimeGenerated'].ToUniversalTime() -lt $after) { continue }
     [pscustomobject]$o
   }
 }
@@ -276,8 +287,30 @@ def test_triage_lists_newest_first_and_summarizes_per_code(tmp_path):
     times = [re.search(r"Time\s*:\s*(\S+ \S+)", b).group(1) for b in blocks]
     assert times == sorted(times, reverse=True)
     summary = result.stdout.split("=== Summary by stop code ===", 1)[1]
-    assert re.search(r"^\s*3\s+0x00000116\s+VIDEO_TDR_FAILURE", summary, re.M), summary
+    # Two 0x116 crashes: the Kernel-Power 41 logged with the second one is
+    # the same crash and is not counted again.
+    assert re.search(r"^\s*2\s+0x00000116\s+VIDEO_TDR_FAILURE", summary, re.M), summary
     assert re.search(r"^\s*1\s+0x0000001A\s+MEMORY_MANAGEMENT", summary, re.M), summary
+
+
+def test_triage_summary_folds_only_a_kernel_power_41_next_to_a_matching_bugcheck(tmp_path):
+    events = [
+        _bugcheck(5, "0x00000116 (0x1, 0x2, 0x3, 0x4)"),
+        _kp41(5, 278, params=("0x1", "0x2", "0x3", "0x4")),  # same crash as the 1001 above
+        _kp41(40, 278, params=("0x1", "0x2", "0x3", "0x4")),  # its 1001 was not logged - still a crash
+        _kp41(6, 0),  # power loss - never folded
+        _kp41(5, 0),
+        _bugcheck(20, "0x00000133 (0x1, 0x2, 0x3, 0x4)"),
+        _kp41(20, 278, params=("0x1", "0x2", "0x3", "0x4")),  # different code - not the same crash
+    ]
+    result, _ = _run(tmp_path, "crash_bugcheck_triage", events=events)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(_blocks(result.stdout)) == 7  # the per-event list keeps every event
+    summary = result.stdout.split("=== Summary by stop code ===", 1)[1]
+    assert re.search(r"^\s*3\s+0x00000116\s+VIDEO_TDR_FAILURE", summary, re.M), summary
+    assert re.search(r"^\s*2\s+0x00000000\s+NO_BUGCHECK", summary, re.M), summary
+    assert re.search(r"^\s*1\s+0x00000133\s+DPC_WATCHDOG_VIOLATION", summary, re.M), summary
+    assert "counts such a pair (logged within 10 minutes) once" in result.stdout
 
 
 def test_triage_without_events_reports_clean_and_exits_zero(tmp_path):
@@ -420,7 +453,20 @@ def test_reliability_reports_index_trend_and_top_failing_sources(tmp_path):
     assert re.search(r"^\s*1\s+Unexpected shutdown\s+Windows", top, re.M), top
     assert "Adobe Reader" not in top and "old.exe" not in top
     assert "word.exe" not in out
-    assert calls == ["Get-CimInstance Win32_ReliabilityStabilityMetrics", "Get-CimInstance Win32_ReliabilityRecords"]
+    # The 30-day window is pushed into WQL and only the used properties are
+    # fetched, so a year of records with their full Message never crosses over.
+    assert [c for c in calls if c.startswith("Get-CimInstance")] == [
+        "Get-CimInstance Win32_ReliabilityStabilityMetrics", "Get-CimInstance Win32_ReliabilityRecords"]
+    filters = [c for c in calls if c.startswith("  Filter ")]
+    assert len(filters) == 2 and filters[0] == filters[1]
+    stamp = re.fullmatch(r"  Filter TimeGenerated >= '(\d{14})\.\d{6}\+000'", filters[0]).group(1)
+    since = datetime.datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc)
+    age = datetime.datetime.now(datetime.timezone.utc) - since
+    assert abs(age - datetime.timedelta(days=30)) < datetime.timedelta(minutes=5), age
+    assert [c for c in calls if c.startswith("  Property ")] == [
+        "  Property SystemStabilityIndex,TimeGenerated",
+        "  Property SourceName,EventIdentifier,ProductName,TimeGenerated",
+    ]
 
 
 def test_reliability_without_data_says_so_and_exits_zero(tmp_path):
@@ -460,6 +506,7 @@ def test_dump_evidence_lists_dumps_read_only(tmp_path):
     assert "notes.txt" not in out
     assert "Total: 3 file(s)" in out
     assert "crash_dumps" in out
+    assert "custom location" not in out
     assert _tree(win) == before
     assert calls == ["Get-ItemProperty HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl"]
 
@@ -481,6 +528,19 @@ def test_dump_evidence_follows_a_custom_minidump_folder(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Dump setting: automatic memory dump" in result.stdout
     assert "mini.dmp" in result.stdout
+    # crash_dumps deletes only the fixed %SystemRoot% paths - say so.
+    assert f"Note: dumps are configured in a custom location ({custom});" in result.stdout
+    assert "MEMORY.DMP);" not in result.stdout
+
+
+def test_dump_evidence_treats_the_expanded_default_paths_as_default(tmp_path):
+    # Get-ItemProperty expands the REG_EXPAND_SZ "%SystemRoot%\\Minidump" default.
+    win = tmp_path / "Windows"
+    cim = {"CrashControl": {"CrashDumpEnabled": 7, "MinidumpDir": str(win / "Minidump") + "\\",
+                            "DumpFile": str(win / "MEMORY.DMP")}}
+    result, _ = _run(tmp_path, "crash_dump_evidence", cim=cim)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "custom location" not in result.stdout
 
 
 # --- static checks ------------------------------------------------------------

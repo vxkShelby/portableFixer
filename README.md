@@ -128,7 +128,8 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   čistenie „Výpisy pádov systému“ ich maže, preto si ich najprv
   skopírujte. Údaje sa čítajú z event ID, názvov providerov, XML udalostí
   a tried CIM, nikdy z preloženého textu správ, takže fungujú v každom
-  jazyku Windows.
+  jazyku Windows. Triáž pádov a hardvérové chyby WHEA sú aj v predvoľbe
+  Plná diagnostika.
 
 ## Bezpečnostné mechanizmy
 

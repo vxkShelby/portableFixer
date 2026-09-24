@@ -130,7 +130,8 @@ PowerShell.
   with size and date - the "System crash dumps" cleanup deletes them, so
   copy them off first. Everything is read from event IDs, provider
   names, event XML and CIM classes, never from translated message text,
-  so it works in any Windows display language.
+  so it works in any Windows display language. Crash triage and WHEA
+  hardware errors are also part of the Full diagnostic preset.
 
 ## Safety mechanisms
 
