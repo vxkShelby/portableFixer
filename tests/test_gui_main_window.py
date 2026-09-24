@@ -3317,3 +3317,119 @@ def test_close_event_waits_long_enough_for_a_running_restore_point(qtbot, tmp_pa
     window._pending_restore_point_runner = _FakeRunner()
     window.close()
     assert waits == [restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000]
+
+
+def _handoff_buttons(container):
+    from PySide6.QtWidgets import QPushButton
+
+    return [b for b in container.findChildren(QPushButton) if b.text() == "Save client package"]
+
+
+def test_batch_summary_handoff_button_saves_client_package(qtbot, tmp_path, monkeypatch):
+    import socket
+    import zipfile
+
+    from PySide6.QtWidgets import QFileDialog
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_handoff")
+    qtbot.addWidget(window)
+    window._action_checkboxes["hello"].setChecked(True)
+    window.run_selected_actions()
+    qtbot.waitUntil(lambda: window._summary_dialog is not None, timeout=15000)
+    _wait_batch_idle(qtbot, window)
+
+    buttons = _handoff_buttons(window._summary_dialog)
+    assert len(buttons) == 1
+    offered = []
+    dest = tmp_path / "out" / "package.zip"
+
+    def _fake_save(parent, title, default, filters):
+        offered.append(default)
+        return str(dest), filters
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", _fake_save)
+    buttons[0].click()
+
+    expected_name = f"PortableFix_{socket.gethostname()}_run_handoff.zip"
+    assert offered == [str(base_dir / "Reports" / expected_name)]
+    with zipfile.ZipFile(dest) as zf:
+        names = set(zf.namelist())
+    assert {"README.txt", "report.html", "report.json", "audit_log.jsonl"} <= names
+    # isHidden, not isVisible - the main window itself is never shown here.
+    assert not window._handoff_folder_button.isHidden()
+    assert window._handoff_folder_button.property("folder") == str(dest.parent)
+    assert "package.zip" in window.statusBar().currentMessage()
+
+    from PySide6.QtGui import QDesktopServices
+
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    window._handoff_folder_button.click()
+    assert opened == [str(dest.parent)]
+    assert window._handoff_folder_button.isHidden()
+
+
+def test_dashboard_history_row_has_handoff_button(qtbot, tmp_path, monkeypatch):
+    import socket
+    import zipfile
+
+    from PySide6.QtWidgets import QFileDialog
+
+    base_dir = _two_action_base_dir(tmp_path)
+    run_id = "20260924T100000-abcd"
+    host = socket.gethostname()
+    reports = base_dir / "Reports"
+    reports.mkdir()
+    data = {"run_id": run_id, "generated_at": "2026-09-24T10:00:00+00:00", "actions": [{"exit_code": 0, "dry_run": False}]}
+    (reports / f"{host}_{run_id}.json").write_text(json.dumps(data), encoding="utf-8")
+    (reports / f"{host}_{run_id}.html").write_text("<html></html>", encoding="utf-8")
+    (base_dir / "Logs").mkdir(exist_ok=True)
+    (base_dir / "Logs" / f"{run_id}.jsonl").write_text("{}\n", encoding="utf-8")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_hist_handoff")
+    qtbot.addWidget(window)
+    rows = [window._history_layout.itemAt(i).widget() for i in range(window._history_layout.count())]
+    assert len(rows) == 1
+    buttons = _handoff_buttons(rows[0])
+    assert len(buttons) == 1 and buttons[0].property("handoffRunId") == run_id
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda parent, title, default, filters: (default, filters))
+    buttons[0].click()
+
+    package = reports / f"PortableFix_{host}_{run_id}.zip"
+    with zipfile.ZipFile(package) as zf:
+        assert sorted(zf.namelist()) == ["README.txt", "audit_log.jsonl", "report.html", "report.json"]
+
+
+def test_handoff_cancelled_save_dialog_writes_nothing(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_handoff_cancel")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: ("", ""))
+    assert window._save_handoff_package("run_handoff_cancel") is None
+    assert not list(base_dir.rglob("*.zip"))
+
+
+def test_handoff_write_failure_shows_disk_write_message(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from portablefix import handoff
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_handoff_fail")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "x.zip"), ""))
+
+    def _boom(*args, **kwargs):
+        raise OSError("USB gone")
+
+    monkeypatch.setattr(handoff, "build_handoff_zip", _boom)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: warnings.append(text))
+
+    assert window._save_handoff_package("run_handoff_fail") is None
+    assert len(warnings) == 1 and window._t("handoff_failed") in warnings[0] and "USB gone" in warnings[0]
+    assert window._t("handoff_failed") in window.console.toPlainText()
+    assert not (tmp_path / "x.zip").exists()

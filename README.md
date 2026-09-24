@@ -70,6 +70,12 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   (všetky / len zlyhané / len zmeny) a vyhľadávaním. Tlačidlo **Tlačiť /
   uložiť ako PDF** dá čistý biely výtlačok pre klienta. Report je jeden
   samostatný súbor bez internetu.
+- **Balík pre klienta:** tlačidlo **Uložiť balík pre klienta** (v súhrne
+  dávky aj pri každom behu v histórii) uloží jeden ZIP
+  `PortableFix_<PC>_<run-id>.zip` s HTML/JSON reportom, audit logom,
+  `undo.ps1` (ak existuje) a krátkym README (SK+EN) o tom, ako undo
+  bezpečne použiť - pripravené na e-mail alebo archív. Obsahuje len súbory
+  toho jedného behu (nikdy `Data/settings.json` ani iné behy).
 - **Zákazka** (tlačidlo v hornej lište, Ctrl+J): meno technika (zapamätá
   sa), klient / číslo zákazky a poznámka - zobrazia sa v hlavičke reportu.
 - **Upozornenie na koniec dávky:** ak je okno v pozadí (napr. počas

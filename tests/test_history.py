@@ -1,6 +1,6 @@
 import json
 
-from portablefix.history import recent_runs
+from portablefix.history import recent_runs, run_report_paths
 
 
 def _write_report(reports_dir, hostname, run_id, actions, generated_at="2026-09-24T10:00:00+00:00", html=True):
@@ -65,3 +65,18 @@ def test_display_date_survives_out_of_range_dates(tmp_path):
     reports = tmp_path / "Reports"
     _write_report(reports, "PC1", "r", [], generated_at="0001-01-01T00:00:00+00:00")
     assert recent_runs(reports, "PC1")[0].display_date()  # no exception
+
+
+def test_run_report_paths_match_report_naming(tmp_path):
+    reports = tmp_path / "Reports"
+    html, json_path = run_report_paths(reports, "PC1", "20260924T100000-bbbb")
+    assert html == reports / "PC1_20260924T100000-bbbb.html"
+    assert json_path == reports / "PC1_20260924T100000-bbbb.json"
+
+
+def test_run_report_paths_agree_with_recent_runs(tmp_path):
+    reports = tmp_path / "Reports"
+    _write_report(reports, "PC1", "20260924T100000-bbbb", [{"exit_code": 0}])
+    (run,) = recent_runs(reports, "PC1")
+    html, json_path = run_report_paths(reports, "PC1", run.run_id)
+    assert run.html_path == html and json_path.exists()
