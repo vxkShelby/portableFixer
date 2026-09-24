@@ -695,7 +695,7 @@ def _render_html(data: dict) -> str:
         comparison_section = (
             f"<section><h2>{t('report_since_last_visit')}</h2>"
             f"<div class=\"meta\">{t('report_previous_run')} {html.escape(str(comparison['previous_run_id']))} "
-            f"({html.escape(str(comparison['previous_generated_at']))})<br>"
+            f"({html.escape(_format_timestamp(comparison['previous_generated_at']))})<br>"
             f"{t('report_free_space_change')}: {delta_txt}<br>"
             f"{t('report_actions_then_now')}: {comparison['previous_action_count']} &rarr; {comparison['action_count']}</div></section>"
         )
