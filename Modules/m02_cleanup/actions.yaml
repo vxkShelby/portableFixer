@@ -7,7 +7,7 @@ actions:
     risk: SAFE
     command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$|^claude$|^copilot-cli$|^codex(-cli)?$|^context-mode-guidance-s-'; $cutoff = (Get-Date).AddDays(-3); $runningNames = @(Get-Process -EA SilentlyContinue | ForEach-Object { try { $_.Path } catch { $null } } | Where-Object { $_ -and $_.StartsWith($env:TEMP, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Substring($env:TEMP.Length).TrimStart('\\').Split('\\')[0] } | Select-Object -Unique); Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $_.Name -notmatch $excludePattern -and $runningNames -notcontains $_.Name -and $_.LastWriteTime -lt $cutoff -and -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$excludePattern = '^_MEI|^PortableFix$|^PortableFixUpdate_|^portablefix_update_.*\\.ps1$|^claude$|^copilot-cli$|^codex(-cli)?$|^context-mode-guidance-s-'; $cutoff = (Get-Date).AddDays(-3); $runningNames = @(Get-Process -EA SilentlyContinue | ForEach-Object { try { $_.Path } catch { $null } } | Where-Object { $_ -and $_.StartsWith($env:TEMP, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Substring($env:TEMP.Length).TrimStart('\\').Split('\\')[0] } | Select-Object -Unique); $f = Get-ChildItem \"$env:TEMP\" -Force -EA SilentlyContinue | Where-Object { $_.Name -notmatch $excludePattern -and $runningNames -notcontains $_.Name -and $_.LastWriteTime -lt $cutoff -and -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Get-ChildItem -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:TEMP (items modified in the last 3 days, or belonging to a currently running program, are skipped)\""
-    description_sk: "Vyčistí položky v $env:TEMP nezmenené aspoň 3 dni (novo nainštalované/rozbalené portable appky často žijú priamo v TEMP a pri okamžitom vyčistení by prišli o dáta). Vyníma aj samotnú bežiacu appku, priečinky práve bežiacich programov, PortableFix fallback dáta, prebiehajúci update a scratch dáta AI coding agentov (Claude Code, Copilot CLI, Codex CLI, context-mode)."
+    description_sk: "Vyčistí položky v $env:TEMP, ktoré sa nezmenili aspoň 3 dni (čerstvo nainštalované/rozbalené portable aplikácie sa často nachádzajú priamo v TEMP a okamžité vyčistenie by ich pripravilo o dáta). Vynecháva aj samotnú bežiacu aplikáciu, priečinky práve bežiacich programov, záložné dáta PortableFix, prebiehajúcu aktualizáciu a pracovné dáta AI agentov na programovanie (Claude Code, Copilot CLI, Codex CLI, context-mode)."
     description_en: "Clears items in $env:TEMP untouched for at least 3 days (freshly installed/extracted portable apps often live directly in TEMP and would be wiped out by an immediate cleanup). Also excludes the running app itself, folders belonging to currently running programs, PortableFix fallback data, an in-progress update, and scratch data used by AI coding agents (Claude Code, Copilot CLI, Codex CLI, context-mode)."
 
   - id: system_temp
@@ -16,7 +16,7 @@ actions:
     risk: SAFE
     command: "$cutoff = (Get-Date).AddDays(-3); $runningNames = @(Get-Process -EA SilentlyContinue | ForEach-Object { try { $_.Path } catch { $null } } | Where-Object { $_ -and $_.StartsWith(\"$env:WINDIR\\Temp\", [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Substring(\"$env:WINDIR\\Temp\".Length).TrimStart('\\').Split('\\')[0] } | Select-Object -Unique); Get-ChildItem \"$env:WINDIR\\Temp\" -Force -EA SilentlyContinue | Where-Object { $runningNames -notcontains $_.Name -and $_.LastWriteTime -lt $cutoff -and -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$cutoff = (Get-Date).AddDays(-3); $runningNames = @(Get-Process -EA SilentlyContinue | ForEach-Object { try { $_.Path } catch { $null } } | Where-Object { $_ -and $_.StartsWith(\"$env:WINDIR\\Temp\", [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Substring(\"$env:WINDIR\\Temp\".Length).TrimStart('\\').Split('\\')[0] } | Select-Object -Unique); $f = Get-ChildItem \"$env:WINDIR\\Temp\" -Force -EA SilentlyContinue | Where-Object { $runningNames -notcontains $_.Name -and $_.LastWriteTime -lt $cutoff -and -not (($__pfProtect) -and $_.FullName.Equals($__pfProtect, [StringComparison]::OrdinalIgnoreCase)) } | Get-ChildItem -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from $env:WINDIR\\Temp (items modified in the last 3 days, or belonging to a currently running program, are skipped)\""
-    description_sk: "Vyčistí položky v $env:WINDIR\\Temp nezmenené aspoň 3 dni. Vyníma priečinky práve bežiacich programov a priečinok, v ktorom appka práve beží, ak by tam náhodou bola."
+    description_sk: "Vyčistí položky v $env:WINDIR\\Temp, ktoré sa nezmenili aspoň 3 dni. Vynecháva priečinky práve bežiacich programov a priečinok, z ktorého práve beží táto aplikácia, ak by sa tam náhodou nachádzal."
     description_en: "Clears items in $env:WINDIR\\Temp untouched for at least 3 days. Excludes folders belonging to currently running programs and the folder the app is currently running from, on the rare chance it's there."
 
   - id: recycle_bin
@@ -29,12 +29,12 @@ actions:
     description_en: "Empties the Recycle Bin."
 
   - id: prefetch
-    label_sk: "Prefetch cache"
+    label_sk: "Cache Prefetch"
     label_en: "Prefetch cache"
     risk: SAFE
     command: "Remove-Item \"$env:WINDIR\\Prefetch\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Prefetch\" -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Prefetch\""
-    description_sk: "Vymaže súbory Prefetch (dočasne spomalí ďalší štart)."
+    description_sk: "Vymaže súbory Prefetch (dočasne spomalí nasledujúci štart systému)."
     description_en: "Removes Prefetch files (temporarily slows next boot)."
 
   - id: wer_reports
@@ -43,7 +43,7 @@ actions:
     risk: SAFE
     command: "Remove-Item \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem \"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\",\"C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\",\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from WER report queues\""
-    description_sk: "Vymaže frontu a archív hlásení o chybách (systémové aj používateľské)."
+    description_sk: "Vymaže frontu a archív hlásení o chybách (pre celý systém aj pre jednotlivých používateľov)."
     description_en: "Clears the WER report queue and archive (both machine-wide and per-user)."
 
   - id: cbs_logs
@@ -61,7 +61,7 @@ actions:
     risk: SAFE
     command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (-not (Get-Process -Name explorer -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe; for ($i = 0; $i -lt 20; $i++) { if (Get-Process -Name explorer -EA SilentlyContinue) { break }; Start-Sleep -Milliseconds 200 } }; $restarted = [bool](Get-Process -Name explorer -EA SilentlyContinue); Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; Explorer restart: \" + $(if ($restarted) { \"OK\" } else { \"FAILED\" }))"
     preview_command: "$f = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c thumbnail cache file(s), $mb MB, and restart Explorer\""
-    description_sk: "Vymaže cache náhľadov a reštartuje Explorer (počká, kým starý proces naozaj skončí, aby reštart nespadol)."
+    description_sk: "Vymaže cache náhľadov a reštartuje Explorer (najprv počká, kým sa pôvodný proces úplne ukončí, aby reštart nezlyhal)."
     description_en: "Clears the thumbnail cache and restarts Explorer (waits for the old process to fully exit first, so the restart doesn't crash)."
 
   - id: font_cache
@@ -74,7 +74,7 @@ actions:
     description_en: "Restarts the FontCache service and clears its cache."
 
   - id: delivery_optimization
-    label_sk: "Delivery Optimization cache"
+    label_sk: "Cache Delivery Optimization"
     label_en: "Delivery Optimization cache"
     risk: SAFE
     command: "try { Delete-DeliveryOptimizationCache -Force -EA Stop; Write-Output 'Delivery Optimization cache cleared.' } catch { Write-Output ('Delivery Optimization cache clear skipped: ' + $_.Exception.Message) }"
@@ -88,7 +88,7 @@ actions:
     risk: MODERATE
     command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service wuauserv,bits -EA SilentlyContinue -ErrorVariable startErrs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; service restart: \" + $(if ($startErrs.Count -eq 0) { \"OK\" } else { \"FAILED\" }))"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\SoftwareDistribution\\Download\" -Recurse -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Windows Update cache\""
-    description_sk: "Zastaví služby, vymaže stiahnuté aktualizácie, spustí služby späť."
+    description_sk: "Zastaví služby, vymaže stiahnuté aktualizácie a služby znova spustí."
     description_en: "Stops services, clears downloaded updates, restarts services."
 
   - id: component_store_cleanup
@@ -133,7 +133,7 @@ actions:
     risk: MODERATE
     command: "powercfg /h off"
     preview_command: "if (Test-Path \"$env:SystemDrive\\hiberfil.sys\") { $mb = [math]::Round((Get-Item \"$env:SystemDrive\\hiberfil.sys\" -Force).Length/1MB,2); Write-Output \"Would free approximately $mb MB by disabling hibernation\" } else { Write-Output \"Hibernation already disabled\" }"
-    description_sk: "Vypne hibernáciu a uvoľní miesto zabrané hiberfil.sys. Tiež vypne rýchle spustenie (Fast Startup), keďže na hibernácii závisí."
+    description_sk: "Vypne hibernáciu a uvoľní miesto, ktoré zaberá hiberfil.sys. Vypne aj rýchle spustenie (Fast Startup), keďže od hibernácie závisí."
     description_en: "Disables hibernation and frees the space used by hiberfil.sys. Also disables Fast Startup, since it depends on hibernation."
 
   - id: stale_user_profiles
@@ -142,7 +142,7 @@ actions:
     risk: DESTRUCTIVE
     command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + $stale.Count + \", errors: \" + $errs.Count)"
     preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
-    description_sk: "Odstráni neaktívne používateľské profily staršie ako 180 dní. Nevratné. Poznámka: pri roamingových profiloch/fast user switching nemusí byť LastUseTime vždy presný."
+    description_sk: "Odstráni neaktívne používateľské profily staršie ako 180 dní. Nevratné. Poznámka: pri roamingových profiloch alebo rýchlom prepínaní používateľov nemusí byť hodnota LastUseTime vždy presná."
     description_en: "Removes inactive user profiles older than 180 days. Irreversible. Note: LastUseTime may not always be accurate for roaming profiles/fast user switching."
 
   - id: browser_cache_sweep
@@ -151,16 +151,16 @@ actions:
     risk: MODERATE
     command: "$paths = @(\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\GPUCache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\GPUCache\"); $fx = Get-ChildItem \"$env:LOCALAPPDATA\\Mozilla\\Firefox\\Profiles\\*\\cache2\" -Directory -EA SilentlyContinue; $targets = @($paths | Where-Object { Test-Path $_ }) + @($fx.FullName); $swept = 0; foreach ($t in $targets) { Get-ChildItem $t -Force -EA SilentlyContinue | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable +errs; $swept++ }; Write-Output (\"Swept \" + $swept + \" cache folder(s), skipped/locked: \" + $errs.Count)"
     preview_command: "$paths = @(\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\GPUCache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Code Cache\",\"$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\GPUCache\"); $fx = Get-ChildItem \"$env:LOCALAPPDATA\\Mozilla\\Firefox\\Profiles\\*\\cache2\" -Directory -EA SilentlyContinue; $targets = @($paths | Where-Object { Test-Path $_ }) + @($fx.FullName); $f = $targets | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from browser caches (Chrome/Edge/Firefox)\""
-    description_sk: "Vyčistí cache priečinky Chrome, Edge a Firefox (nie cookies ani históriu) pre aktuálneho používateľa."
+    description_sk: "Vyčistí priečinky cache prehliadačov Chrome, Edge a Firefox pre aktuálneho používateľa (cookies ani históriu nemaže)."
     description_en: "Clears Chrome, Edge and Firefox cache folders (not cookies or history) for the current user."
 
   - id: windows_upgrade_leftovers
-    label_sk: "Pozostatky aktualizácie Windows"
+    label_sk: "Pozostatky inovácie Windows"
     label_en: "Windows upgrade leftovers"
     risk: DESTRUCTIVE
     command: "$paths = @('C:\\$WINDOWS.~BT','C:\\$WINDOWS.~WS',\"$env:WINDIR\\WinREAgent\"); $processed = 0; $errs = @(); foreach ($p in $paths) { if (Test-Path $p) { takeown /F $p /R /A /D Y | Out-Null; icacls $p /reset /T /C | Out-Null; Remove-Item $p -Recurse -Force -EA SilentlyContinue -ErrorVariable +itemErrs; $errs += $itemErrs; $processed++ } }; Write-Output (\"Processed \" + $processed + \" leftover folder(s), skipped/locked: \" + $errs.Count)"
     preview_command: "$paths = @('C:\\$WINDOWS.~BT','C:\\$WINDOWS.~WS',\"$env:WINDIR\\WinREAgent\"); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $gb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1GB,2); Write-Output \"Would delete $c files, $gb GB from Windows upgrade leftovers\" } else { Write-Output \"No Windows upgrade leftovers found\" }"
-    description_sk: "Odstráni pozostatky po nadstavbe Windows ($WINDOWS.~BT, $WINDOWS.~WS, WinREAgent). Nevratné - znemožní návrat na predošlú verziu."
+    description_sk: "Odstráni pozostatky po inovácii Windows ($WINDOWS.~BT, $WINDOWS.~WS, WinREAgent). Nevratné - znemožní návrat na predošlú verziu."
     description_en: "Removes Windows upgrade leftovers ($WINDOWS.~BT, $WINDOWS.~WS, WinREAgent). Irreversible - prevents rolling back to the previous version."
 
   - id: gpu_driver_install_leftovers
@@ -169,7 +169,7 @@ actions:
     risk: MODERATE
     command: "$paths = @('C:\\NVIDIA','C:\\AMD'); $removed = 0; foreach ($p in $paths) { if (Test-Path $p) { Remove-Item $p -Recurse -Force -EA SilentlyContinue -ErrorVariable +errs; $removed++ } }; Write-Output (\"Removed \" + $removed + \" GPU driver install folder(s), skipped/locked: \" + $errs.Count)"
     preview_command: "$paths = @('C:\\NVIDIA','C:\\AMD'); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from GPU driver install leftovers (C:\\NVIDIA, C:\\AMD)\" } else { Write-Output \"No GPU driver install leftovers found\" }"
-    description_sk: "Odstráni dočasné priečinky NVIDIA/AMD inštalátorov ovládačov (C:\\NVIDIA, C:\\AMD). Nedotýka sa aktívneho ovládača."
+    description_sk: "Odstráni dočasné priečinky inštalátorov ovládačov NVIDIA/AMD (C:\\NVIDIA, C:\\AMD). Nedotýka sa aktívneho ovládača."
     description_en: "Removes temporary NVIDIA/AMD driver installer staging folders (C:\\NVIDIA, C:\\AMD). Does not touch the active driver."
 
   - id: directx_shader_cache
@@ -178,25 +178,25 @@ actions:
     risk: SAFE
     command: "$paths = @(\"$env:LOCALAPPDATA\\D3DSCache\",\"$env:LOCALAPPDATA\\NVIDIA\\DXCache\",\"$env:LOCALAPPDATA\\NVIDIA\\GLCache\",\"$env:LOCALAPPDATA\\AMD\\DxCache\"); $cleared = 0; foreach ($p in $paths) { if (Test-Path $p) { Get-ChildItem $p -Force -EA SilentlyContinue | Remove-Item -Recurse -Force -EA SilentlyContinue -ErrorVariable +errs; $cleared++ } }; Write-Output (\"Cleared \" + $cleared + \" shader cache folder(s), skipped/locked: \" + $errs.Count)"
     preview_command: "$paths = @(\"$env:LOCALAPPDATA\\D3DSCache\",\"$env:LOCALAPPDATA\\NVIDIA\\DXCache\",\"$env:LOCALAPPDATA\\NVIDIA\\GLCache\",\"$env:LOCALAPPDATA\\AMD\\DxCache\"); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from DirectX/GPU shader caches\" } else { Write-Output \"No shader cache folders found\" }"
-    description_sk: "Vymaže cache prekompilovaných shaderov (DirectX, NVIDIA, AMD). Bezpečné, znovu sa vytvorí pri ďalšom použití."
+    description_sk: "Vymaže cache prekompilovaných shaderov (DirectX, NVIDIA, AMD). Bezpečné - pri ďalšom použití sa cache automaticky vytvorí znova."
     description_en: "Clears compiled shader caches (DirectX, NVIDIA, AMD). Safe, regenerates automatically on next use."
 
   - id: largest_files_report
-    label_sk: "Najväčšie súbory (Desktop/Dokumenty/Stiahnuté...)"
+    label_sk: "Najväčšie súbory (Plocha/Dokumenty/Stiahnuté...)"
     label_en: "Largest files (Desktop/Documents/Downloads...)"
     risk: SAFE
     command: "$folders = @('Desktop','Documents','Downloads','Pictures','Videos','Music') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }; $files = Get-ChildItem $folders -Recurse -File -Force -EA SilentlyContinue; if ($files) { $files | Sort-Object Length -Descending | Select-Object -First 25 FullName,@{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize } else { Write-Output 'No files found.' }"
     preview_command: "$folders = @('Desktop','Documents','Downloads','Pictures','Videos','Music') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }; $files = Get-ChildItem $folders -Recurse -File -Force -EA SilentlyContinue; if ($files) { $files | Sort-Object Length -Descending | Select-Object -First 25 FullName,@{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize } else { Write-Output 'No files found.' }"
-    description_sk: "Vypíše 25 najväčších súborov v priečinkoch Desktop/Dokumenty/Stiahnuté/Obrázky/Videá/Hudba. Nič nemaže, len report."
+    description_sk: "Vypíše 25 najväčších súborov v priečinkoch Plocha/Dokumenty/Stiahnuté/Obrázky/Videá/Hudba. Nič nemaže, slúži len na prehľad."
     description_en: "Lists the 25 largest files in Desktop/Documents/Downloads/Pictures/Videos/Music. Deletes nothing, report only."
 
   - id: largest_folders_report
-    label_sk: "Najväčšie priečinky (Desktop/Dokumenty/Stiahnuté...)"
+    label_sk: "Najväčšie priečinky (Plocha/Dokumenty/Stiahnuté...)"
     label_en: "Largest folders (Desktop/Documents/Downloads...)"
     risk: SAFE
     command: "$folders = @('Desktop','Documents','Downloads','Pictures','Videos','Music') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }; $result = foreach ($base in $folders) { Get-ChildItem $base -Directory -Force -EA SilentlyContinue | ForEach-Object { $size = (Get-ChildItem $_.FullName -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum).Sum; [PSCustomObject]@{ FullName = $_.FullName; SizeMB = [math]::Round(($size / 1MB), 2) } } }; if ($result) { $result | Sort-Object SizeMB -Descending | Select-Object -First 25 | Format-Table -AutoSize } else { Write-Output 'No subfolders found.' }"
     preview_command: "$folders = @('Desktop','Documents','Downloads','Pictures','Videos','Music') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }; $result = foreach ($base in $folders) { Get-ChildItem $base -Directory -Force -EA SilentlyContinue | ForEach-Object { $size = (Get-ChildItem $_.FullName -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum).Sum; [PSCustomObject]@{ FullName = $_.FullName; SizeMB = [math]::Round(($size / 1MB), 2) } } }; if ($result) { $result | Sort-Object SizeMB -Descending | Select-Object -First 25 | Format-Table -AutoSize } else { Write-Output 'No subfolders found.' }"
-    description_sk: "Vypíše 25 najväčších podpriečinkov (podľa celkového obsahu) v Desktop/Dokumenty/Stiahnuté/Obrázky/Videá/Hudba - doplnok k zoznamu najväčších súborov, keď miesto zaberá veľa malých súborov v jednom priečinku. Nič nemaže, len report."
+    description_sk: "Vypíše 25 najväčších podpriečinkov (podľa celkovej veľkosti obsahu) v priečinkoch Plocha/Dokumenty/Stiahnuté/Obrázky/Videá/Hudba - doplnok k zoznamu najväčších súborov pre prípady, keď miesto zaberá veľa malých súborov v jednom priečinku. Nič nemaže, slúži len na prehľad."
     description_en: "Lists the 25 largest subfolders (by total contents) in Desktop/Documents/Downloads/Pictures/Videos/Music - complements the largest-files list for cases where space is eaten by many small files in one folder. Deletes nothing, report only."
 
   - id: crash_dumps
@@ -205,7 +205,7 @@ actions:
     risk: MODERATE
     command: "$targets = @(\"$env:SystemRoot\\Minidump\\*.dmp\",\"$env:SystemRoot\\MEMORY.DMP\",\"$env:SystemRoot\\LiveKernelReports\\*\") | Where-Object { Test-Path -Path $_ }; if ($targets) { Remove-Item -Path $targets -Recurse -Force -EA SilentlyContinue -ErrorVariable errs }; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
     preview_command: "$f = Get-ChildItem -Path \"$env:SystemRoot\\Minidump\\*.dmp\",\"$env:SystemRoot\\MEMORY.DMP\",\"$env:SystemRoot\\LiveKernelReports\" -Recurse -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c crash dump file(s), $mb MB (Minidump / MEMORY.DMP / LiveKernelReports)\""
-    description_sk: "Vymaže výpisy pamäte po pádoch systému (BSOD) a hlásenia LiveKernelReports - od desiatok MB až po niekoľko GB. Zničí tým podklady pre analýzu pádov, preto najprv spustite 'Prehľad pádov systému (BSOD)'; akcia nie je súčasťou 'Vybrať všetko'. Vyžaduje administrátora. Bez undo."
+    description_sk: "Vymaže výpisy pamäte po pádoch systému (BSOD) a hlásenia LiveKernelReports - od desiatok MB až po niekoľko GB. Zničí tým podklady na analýzu pádov, preto najprv spustite 'Prehľad pádov systému (BSOD)'; akcia nie je súčasťou 'Vybrať všetko'. Vyžaduje administrátora. Bez undo."
     description_en: "Deletes memory dumps left by system crashes (BSOD) and LiveKernelReports - from tens of MB up to several GB. This destroys the evidence needed for crash analysis, so run 'System crash (BSOD) summary' first; the action is not included in 'Select all'. Needs administrator. No undo."
     exclude_from_select_all: true
 
@@ -215,6 +215,6 @@ actions:
     risk: SAFE
     command: "Write-Output '--- iPhone/iPad backups (iTunes / Apple Devices) ---'; $ios = @(\"$env:APPDATA\\Apple Computer\\MobileSync\\Backup\",\"$env:USERPROFILE\\Apple\\MobileSync\\Backup\") | Where-Object { Test-Path -LiteralPath $_ }; $rows = @(foreach ($p in $ios) { Get-ChildItem -LiteralPath $p -Directory -Force -EA SilentlyContinue | ForEach-Object { [PSCustomObject]@{ Backup = $_.Name; GB = [math]::Round(((Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum).Sum)/1GB,2); LastWrite = $_.LastWriteTime.ToString('yyyy-MM-dd'); Folder = $p } } }); if ($rows) { $rows | Format-Table -AutoSize | Out-String -Width 250; Write-Output ('Total: ' + [math]::Round((($rows | Measure-Object GB -Sum).Sum),2) + ' GB. Delete old backups only from iTunes / Apple Devices (Manage Backups) - a backup may be the only copy of a phone.') } else { Write-Output 'None found.' }; Write-Output '--- WSL / Docker virtual disks (.vhdx) ---'; $vhdx = @(Get-ChildItem -Path \"$env:LOCALAPPDATA\\Packages\\*\\LocalState\\*.vhdx\" -File -Force -EA SilentlyContinue) + @(Get-ChildItem -Path \"$env:LOCALAPPDATA\\Docker\\wsl\",\"$env:LOCALAPPDATA\\wsl\" -Recurse -Filter *.vhdx -File -Force -EA SilentlyContinue); if ($vhdx) { $vhdx | Select-Object FullName,@{N='GB';E={[math]::Round($_.Length/1GB,2)}},LastWriteTime | Format-Table -AutoSize | Out-String -Width 250; Write-Output ('Total: ' + [math]::Round((($vhdx | Measure-Object Length -Sum).Sum)/1GB,2) + ' GB. These disks grow but never shrink on their own: run wsl --shutdown, then compact them with Optimize-VHD (Hyper-V tools) or Docker Desktop > Troubleshoot > Clean / Purge data.') } else { Write-Output 'None found.' }"
     preview_command: "Write-Output '--- iPhone/iPad backups (iTunes / Apple Devices) ---'; $ios = @(\"$env:APPDATA\\Apple Computer\\MobileSync\\Backup\",\"$env:USERPROFILE\\Apple\\MobileSync\\Backup\") | Where-Object { Test-Path -LiteralPath $_ }; $rows = @(foreach ($p in $ios) { Get-ChildItem -LiteralPath $p -Directory -Force -EA SilentlyContinue | ForEach-Object { [PSCustomObject]@{ Backup = $_.Name; GB = [math]::Round(((Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum).Sum)/1GB,2); LastWrite = $_.LastWriteTime.ToString('yyyy-MM-dd'); Folder = $p } } }); if ($rows) { $rows | Format-Table -AutoSize | Out-String -Width 250; Write-Output ('Total: ' + [math]::Round((($rows | Measure-Object GB -Sum).Sum),2) + ' GB. Delete old backups only from iTunes / Apple Devices (Manage Backups) - a backup may be the only copy of a phone.') } else { Write-Output 'None found.' }; Write-Output '--- WSL / Docker virtual disks (.vhdx) ---'; $vhdx = @(Get-ChildItem -Path \"$env:LOCALAPPDATA\\Packages\\*\\LocalState\\*.vhdx\" -File -Force -EA SilentlyContinue) + @(Get-ChildItem -Path \"$env:LOCALAPPDATA\\Docker\\wsl\",\"$env:LOCALAPPDATA\\wsl\" -Recurse -Filter *.vhdx -File -Force -EA SilentlyContinue); if ($vhdx) { $vhdx | Select-Object FullName,@{N='GB';E={[math]::Round($_.Length/1GB,2)}},LastWriteTime | Format-Table -AutoSize | Out-String -Width 250; Write-Output ('Total: ' + [math]::Round((($vhdx | Measure-Object Length -Sum).Sum)/1GB,2) + ' GB. These disks grow but never shrink on their own: run wsl --shutdown, then compact them with Optimize-VHD (Hyper-V tools) or Docker Desktop > Troubleshoot > Clean / Purge data.') } else { Write-Output 'None found.' }"
-    description_sk: "Nájde a zmeria zálohy iPhone/iPad z iTunes/Apple Devices a virtuálne disky WSL/Docker (.vhdx), ktoré často zaberajú desiatky GB mimo bežne kontrolovaných priečinkov. Len report, nič nemaže - záloha môže byť jedinou kópiou telefónu; disky WSL zmenšíte cez wsl --shutdown a Optimize-VHD alebo v Docker Desktop."
+    description_sk: "Nájde a zmeria zálohy iPhone/iPad z iTunes/Apple Devices a virtuálne disky WSL/Docker (.vhdx), ktoré často zaberajú desiatky GB mimo bežne kontrolovaných priečinkov. Len prehľad, nič nemaže - záloha môže byť jedinou kópiou dát z telefónu; disky WSL zmenšíte príkazmi wsl --shutdown a Optimize-VHD alebo v Docker Desktop."
     description_en: "Finds and sizes iPhone/iPad backups from iTunes/Apple Devices and WSL/Docker virtual disks (.vhdx), which often take tens of GB outside the usually checked folders. Report only, deletes nothing - a backup may be the phone's only copy; shrink WSL disks via wsl --shutdown plus Optimize-VHD, or in Docker Desktop."
     inactivity_timeout_sec: 600
