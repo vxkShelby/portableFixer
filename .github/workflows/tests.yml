@@ -30,12 +30,14 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run non-GUI test suite
-        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py --deselect tests/test_update_spawn_windows.py -q --timeout=300
+        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py --deselect tests/test_update_spawn_windows.py --deselect tests/test_frozen_update_e2e.py -q --timeout=300
 
       # Runs the real powershell.exe under the updater's old and new spawn
       # flags; -s prints each launch's exit code, output size and timing, the
-      # evidence behind the auto-update root cause (DETACHED_PROCESS).
-      - name: Characterize PowerShell spawn flags
+      # evidence behind the auto-update root cause (DETACHED_PROCESS). Then
+      # the real hand-off end to end: hostile paths, an app started in App\,
+      # and a kill-on-close Job Object.
+      - name: Real PowerShell spawn and update hand-off
         run: python -m pytest tests/test_update_spawn_windows.py -s -q --timeout=180
 
       # test_gui_main_window.py and test_executor.py spawn real powershell.exe
@@ -83,3 +85,45 @@ jobs:
             exit 1
           }
           Write-Host "All $($ids.Count) GUI/executor tests passed."
+
+  # A PyInstaller-built probe (tests/frozen/probe_app.py) updates itself from
+  # v1 to v2 and v2 relaunches - the one test that covers the frozen app's
+  # side of the update: the onefile bootloader parent, the inherited _PYI_*
+  # environment and the working directory. A separate job, so its two
+  # PyInstaller builds run next to the unit tests instead of after them.
+  frozen-update-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-build.txt -r requirements-dev.txt
+
+      - name: Build probe v1 and v2
+        shell: pwsh
+        run: |
+          foreach ($v in 1, 2) {
+            Set-Content -LiteralPath probe_version.txt -Value $v -NoNewline -Encoding ascii
+            # Absolute paths: with --specpath, PyInstaller resolves relative
+            # --add-data sources against the spec folder.
+            python -m PyInstaller --onefile --noconsole --noconfirm --name PortableFix `
+              --paths "$PWD" --add-data "$PWD\probe_version.txt;." `
+              --distpath "$PWD\dist$v" --workpath "$PWD\build\probe$v" --specpath "$PWD\build\probe$v" `
+              "$PWD\tests\frozen\probe_app.py"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      # The installs go to runner.temp (the work drive, D: on GitHub's
+      # Windows images) while TEMP, where the updater's script and logs
+      # live, stays on the system drive.
+      - name: Frozen self-update end to end
+        env:
+          PF_E2E_V1: ${{ github.workspace }}\dist1\PortableFix.exe
+          PF_E2E_V2: ${{ github.workspace }}\dist2\PortableFix.exe
+          PF_E2E_WORKDIR: ${{ runner.temp }}\frozen-e2e
+        run: python -m pytest tests/test_frozen_update_e2e.py -m frozen_e2e -s -q --timeout=300

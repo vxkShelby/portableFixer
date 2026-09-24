@@ -116,8 +116,22 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   novšia verzia, zobrazí dismissovateľný banner s ponukou stiahnuť a
   aplikovať. Sťahovanie beží na pozadí a nahradí celý balík (`App/`,
   `Modules/`, `Vendor/`, `PortableFix.cmd`) - `Data/settings.json`
-  (jazyk, dry-run) sa zachová. Pri zlyhaní (offline, timeout) je ticho
-  — nič nevypíše.
+  (jazyk, dry-run) sa zachová. Pri zlyhaní kontroly aktualizácií
+  (offline, timeout) je ticho — nič nevypíše. Stiahnutý balík sa ešte
+  pred zatvorením appky rozbalí vedľa inštalácie (`_update_stage`) a
+  overí (štruktúra, voľné miesto, `Data/SHA256SUMS`); appka sa zavrie až
+  vtedy, keď aktualizačný skript potvrdí, že naozaj beží. Ak sa to
+  nepodarí, appka zostane otvorená a ukáže dôvod (napr. kód ukončenia
+  PowerShellu a koniec jeho výstupu), priečinok s logmi a odkaz na ručné
+  stiahnutie; pripravená aktualizácia zostane, takže ďalší pokus už nič
+  nesťahuje. Kým beží dávka, zápis reportu, test rýchlosti, winget,
+  odinštalovanie programov alebo vytváranie bodu obnovenia, appka
+  odovzdanie aktualizácie odmietne a povie prečo. Zatvorenie appky počas sťahovania ho čisto preruší. Po
+  aktualizácii sa appka spustí sama; kým aktualizácia beží, ručne
+  spustená appka iba oznámi, že sa práve aktualizuje. Záznamy
+  o aktualizácii sú v `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`,
+  `launch_<pid>.txt`) - čistenie temp súborov (`user_temp`) ich
+  nemaže; staršie ako 14 dní appka pri štarte odstráni.
 - **Ochrana pred zmazaním vlastných súborov:** akcie čistiace `%TEMP%`
   a `%WINDIR%\Temp` (`user_temp`, `system_temp`) rozpoznajú, ak appka
   beží zvnútra tohto priečinka, a jej priečinok vynechajú - ak sa to
@@ -126,6 +140,38 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   Appka pri štarte tiež zaloguje vlastné cesty, a počas behu dávky
   kontroluje, či jej priečinok medzičasom nezmizol - ak áno, dávku
   okamžite zastaví namiesto tichého pokračovania.
+
+## Keď aktualizácia zlyhá
+
+Každý pokus o aktualizáciu zanechá záznamy v `%TEMP%\PortableFixUpdate`
+(Win+R → `%TEMP%\PortableFixUpdate`); `<pid>` je číslo procesu appky,
+ktorá aktualizáciu spustila:
+
+- `launch_<pid>.txt` - ako appka spustila aktualizátor: na ktoré procesy
+  čaká, použitý spôsob spustenia, údaje o Job Objecte, výsledok a kód
+  ukončenia PowerShellu;
+- `popen_launch_<pid>.log` - čo PowerShell vypísal pred spustením
+  aktualizačného skriptu alebo namiesto neho (blokovanie politikou, chyba);
+- `update_log_<pid>.txt` - kroky samotného aktualizátora: čakanie na
+  zatvorenie appky, každý presun priečinka, výsledok a opätovné spustenie;
+- `swap_<pid>_*.ps1` a `.json` - skript a úloha, ktorú vykonal.
+
+Výsledok poslednej aktualizácie je aj v `Data\update_status.txt` vedľa
+appky, kým ho neprečíta ďalšie spustenie. Pri hlásení problému zbaľ celý
+priečinok `%TEMP%\PortableFixUpdate` (a `Data\update_status.txt`, ak tam
+ešte je) do ZIP a prilož ho k
+[issue na GitHube](https://github.com/vxkShelby/portableFixer/issues/new).
+Appka reštartovaná ako administrátor pod iným účtom zapisuje do `%TEMP%`
+toho účtu.
+
+Verzie 1.11.4 a staršie sa samé aktualizovať nevedia (appka sa zavrie a
+nič sa nenainštaluje); tie treba raz aktualizovať ručne: zavri appku a
+rozbaľ obsah priečinka `PortableFix` z `PortableFix-Portable.zip` do
+priečinka appky (súbory nahraď - zip neobsahuje `Data\settings.json`,
+takže nastavenia zostanú), alebo spusti `PortableFix-Setup.exe` do toho
+istého priečinka. Rovnako postupuj, ak appka po štarte oznámi, že sa
+pôvodnú verziu nepodarilo úplne vrátiť (inštalácia potom môže obsahovať
+zmes starých a nových súborov).
 
 ## Štruktúra priečinkov
 
@@ -149,65 +195,88 @@ Ak USB nie je zapisovateľné, runtime priečinky sa presunú do
 ## Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+pip install -r requirements-build.txt
+.\scripts\build.ps1                  # vývojový build
+.\scripts\build.ps1 -Tag v1.12.0     # build releasu
 ```
 
-Výstup: `App/PortableFix.exe` (PyInstaller onefile, jeden spustiteľný
-súbor, žiadny `_internal` podpriečinok). Skript automaticky aj
-vygeneruje kontrolné súčty, zbalí portable ZIP a skompiluje inštalátor
-(ak je nájdený `ISCC.exe`) - žiadny manuálny krok navyše netreba.
+(Z PowerShellu v koreni repozitára; ak sú skripty blokované, najprv
+`Set-ExecutionPolicy -Scope Process Bypass`.) `scripts/build.ps1` je jedna
+pevne zoradená postupnosť krokov, ktorá sa zastaví pri prvom zlyhanom:
+
+1. `portablefix/version.py`, `installer/PortableFix.iss` a `-Tag` musia
+   uvádzať tú istú verziu a použitý PyInstaller musí byť ten, ktorý je
+   zafixovaný v `requirements-build.txt`;
+2. `App/PortableFix.exe` (PyInstaller onefile, jeden spustiteľný súbor,
+   žiadny `_internal` podpriečinok), voliteľne podpísaný (`-SignCommand`);
+3. `Data/SHA256SUMS`, potom `scripts/verify_release.py --tree` (manifest
+   presne zodpovedá `App/` a `Modules/`);
+4. `Output/PortableFix-Portable.zip` (+ `.sha256`), potom
+   `verify_release.py --zip`, ktorý zip rozbalí tým istým kódom, aký
+   používa aktualizátor u klientov, a skontroluje, že `Data/` obsahuje len
+   povolené súbory;
+5. `Output/PortableFix-Setup.exe` cez Inno Setup (`ISCC.exe`, s `-Tag`
+   povinný; vývojový build bez neho inštalátor preskočí), voliteľne
+   podpísaný.
+
+`-Python` určí interpreter, ak `python` nie je ten, v ktorom je
+nainštalovaný `requirements-build.txt`.
 
 ## Manuálne kroky pred distribúciou
 
 Tieto kroky vyžadujú zdroje mimo repozitára a robia sa ručne:
 
-1. **Podpísanie kódu** — `App\PortableFix.exe` je podpísaný self-signed
-   certifikátom (`CN=PortableFix Self-Signed`, verejná časť v
-   `Data\PortableFix-SelfSigned.cer`). Dôveryhodnosť certifikátu je
-   **presne ten istý krok, ktorý sa zneužíva pri phishingu** - importuj
-   ho len ak `Data\PortableFix-SelfSigned.cer` pochádza z balíka stiahnutého
-   z [oficiálnych GitHub Releases](https://github.com/vxkShelby/portableFixer/releases)
-   tohto repa (skontroluj `Data/SHA256SUMS` oproti stiahnutému balíku),
-   nikdy z e-mailu/odkazu od niekoho iného. Na cieľovom počítači sa dá
-   podpis zdôveryhodniť importom (admin PowerShell):
+1. **Podpísanie kódu** — `App\PortableFix.exe` ani `PortableFix-Setup.exe`
+   **nie sú podpísané** (nebola podpísaná ani vydaná verzia 1.11.4), takže
+   SmartScreen a Smart App Control môžu pri prvom spustení varovať.
+   `Data\PortableFix-SelfSigned.cer` nie je podpisom ničoho, čo sa
+   distribuuje - neimportuj ho do žiadneho úložiska certifikátov. Na
+   distribúciu bez varovaní treba komerčný certifikát na podpisovanie kódu
+   (OV/EV); `build.ps1` potom podpíše oba súbory na správnom mieste
+   postupnosti - exe ešte pred vygenerovaním `Data/SHA256SUMS`, pretože exe
+   podpísané dodatočne už nesedí so svojím manifestom a každá kópia ho
+   hlási ako zmenený:
    ```powershell
-   Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\Root
-   Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
+   .\scripts\build.ps1 -Tag v1.12.0 -SignCommand { param($File) signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 $File }
    ```
-   Pre distribúciu bez varovaní na cudzích počítačoch je potrebný
-   komerčný certifikát (OV/EV); potom prepodpíš:
-   ```powershell
-   signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 App\PortableFix.exe
-   ```
-   Po každom podpísaní znovu vygeneruj SHA256SUMS
-   (`python scripts/generate_sha256sums.py .`).
 2. **VM test** — otestuj na čistej inštalácii Windows 10 aj 11
    (bez admin práv aj s nimi): štart aplikácie, DRY-RUN dávka,
    ostrá SAFE dávka, kontrola vygenerovaného reportu a undo.ps1.
 
 ## Release proces (nová verzia s auto-update)
 
-Ručný postup, nič z toho nie je automatizované:
+V tomto poradí - každý krok predpokladá, že predchádzajúci prešiel:
 
 1. Zvýš `APP_VERSION` v `portablefix/version.py` **a** `MyAppVersion`
-   v `installer/PortableFix.iss` (musia sedieť).
-2. `powershell -ExecutionPolicy Bypass -File scripts\build.ps1` →
-   `App/PortableFix.exe` (onefile), `Output/PortableFix-Portable.zip`
-   (+ `.sha256`), a ak máš nainštalovaný Inno Setup (ISCC.exe,
-   [jrsoftware.org](https://jrsoftware.org/isinfo.php)) aj
-   `Output/PortableFix-Setup.exe`.
-3. Podpíš `App/PortableFix.exe` (`signtool sign ...`, viď vyššie) **pred**
-   krokom 2 alebo re-spusti `scripts\build_release_zip.ps1` po podpise,
-   nech je podpísaný exe aj v zipe.
-4. `python scripts/generate_sha256sums.py .` — aktualizuje
-   `Data/SHA256SUMS` (obsah zipu musí mať aktuálne SHA256SUMS, spusti pred
-   krokom 2/3 podľa poradia vyššie).
+   v `installer/PortableFix.iss` - kým sa líšia, `build.ps1` odmietne
+   build spustiť.
+2. `.\scripts\build.ps1 -Tag v<verzia>` (s `-SignCommand`, ak máš
+   certifikát; nikdy nepodpisuj dodatočne - kontrolné súčty a zip by už
+   nesedeli s exe). Ak ktorýkoľvek krok zlyhá, nič nezverejňuj. Musí byť
+   nainštalovaný Inno Setup ([jrsoftware.org](https://jrsoftware.org/isinfo.php)).
+3. Vyskúšaj skutočnú aktualizáciu na novom zipe vývojárskym prepínačom
+   (nižšie), spustenú z kópie **predchádzajúcej** verzie - u používateľov
+   súbory vymieňa práve jej kód (pri 1.12.0, ktorej predchodcovia sa sami
+   aktualizovať nevedia, z kópie nového buildu): Windows 10 aj 11,
+   USB kľúč spustený cez `PortableFix.cmd`, inštalácia pre jedného
+   používateľa, inštalácia do Program Files cez „Reštartovať ako
+   administrátor“, cesta s `’` a `[ ]` a raz počas bežiacej winget
+   aktualizácie (appka musí odovzdanie odmietnuť).
+4. CI musí byť pre commit releasu zelené: job `test` (vrátane testov so
+   skutočným spustením PowerShellu a odovzdaním aktualizácie) aj
+   `frozen-update-e2e` (appka zbalená PyInstallerom sa sama aktualizuje a
+   znova spustí). Bez oboch nikdy netvrď, že je aktualizácia opravená.
 5. Vytvor GitHub Release s tagom `v<verzia>` (napr. `v1.1.0`), nahraj
    **tri** súbory ako assety, presne s týmito menami (auto-update aj
    inštalátor ich vyhľadávajú podľa fixného mena, nie podľa verzie):
    - `PortableFix-Portable.zip` — toto sťahuje aj auto-update mechanizmus
    - `PortableFix-Portable.zip.sha256`
    - `PortableFix-Setup.exe` — inštalátor pre bežných používateľov
+6. Po zverejnení aktualizuj jednu skutočnú inštaláciu predchádzajúcej
+   verzie priamo z appky a odlož si jej záznamy z
+   `%TEMP%\PortableFixUpdate` (pozri „Keď aktualizácia zlyhá“). 1.12.0 sa
+   musí nainštalovať ručne; prvá skutočná samoaktualizácia je z 1.12.0 na
+   nasledujúci release.
 
 **Dôležité:** ak sa release vytvorí bez `.sha256` assetu, auto-update
 sťahovanie odmietne (fail-closed, banner "Stiahnutie zlyhalo") namiesto
@@ -216,9 +285,29 @@ nedostane k používateľom, takže krok 5 nikdy nevynechaj.
 
 Auto-update od tejto verzie sťahuje **celý balík** (exe + Data + Modules),
 nie len samotné `.exe` — takto sa k už nainštalovaným kópiám dostanú aj
-nové/zmenené moduly, nielen zmeny v Python kóde. `Data/settings.json`
-(jazyk, dry-run) sa pri update zachová, všetko ostatné v `App/`, `Modules/`
-a `PortableFix.cmd` sa nahradí.
+nové/zmenené moduly, nielen zmeny v Python kóde. `App/`, `Modules/`,
+`Vendor/` a `PortableFix.cmd` sa nahradia; z `Data/` sa inštalujú len
+`SHA256SUMS`, `PortableFix-SelfSigned.cer` a `.gitkeep`, takže
+`Data/settings.json` (jazyk, dry-run) a ostatné súbory používateľa zostanú
+nedotknuté. Verzie 1.11.4 a staršie sa samé aktualizovať nevedia (chyba pri
+spúšťaní aktualizačného skriptu) — z nich treba raz aktualizovať ručne
+(pozri „Keď aktualizácia zlyhá“).
+
+Pred zverejnením releasu sa dá skutočná aktualizácia vyskúšať na
+lokálnom zipe - rovnakým postupom (overenie, rozbalenie, otázka na
+reštart, odovzdanie aktualizátoru), aký appka použije pre stiahnutý balík:
+
+```powershell
+Expand-Archive Output\PortableFix-Portable.zip C:\PFTest   # alebo starší release
+$env:PORTABLEFIX_DEV_UPDATE = "1"
+C:\PFTest\PortableFix\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
+```
+
+Vždy na kópii, nikdy nie priamo z repozitára: aktualizácia nahradí `App`,
+`Modules` a `Vendor` v priečinku, z ktorého exe beží, a staré priečinky
+natrvalo zmaže - v repozitári by prišli aj o neuložené úpravy. Spustenie
+z priečinka s `.git` appka odmietne. Bez `PORTABLEFIX_DEV_UPDATE=1` appka
+tieto parametre ignoruje.
 
 ## Vývoj
 
@@ -227,8 +316,22 @@ pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py
 python -m pytest tests/test_gui_main_window.py
 python -m pytest tests/test_executor.py
-python -m pytest tests/test_updater.py
+python -m pytest tests/test_updater.py tests/test_update_swap.py tests/test_update_swap_script.py
 ```
+
+`tests/test_update_spawn_windows.py` (len na Windows) spúšťa skutočný
+`powershell.exe` a prejde celé odovzdanie aktualizácie - rozbalenie,
+potvrdenie spustenia, výmenu a opätovné spustenie - aj z problematických
+ciest a vnútri Job Objectu, ktorý pri zatvorení zabíja svoje procesy.
+`tests/test_frozen_update_e2e.py` beží len v CI jobe `frozen-update-e2e`,
+ktorý `tests/frozen/probe_app.py` dvakrát zbalí PyInstallerom.
+`tests/test_verify_release.py` testuje `scripts/verify_release.py`.
+
+`tests/test_update_swap_script.py` spúšťa statický aktualizačný skript
+naozaj - na Windows cez PowerShell 5.1, inde cez `pwsh` (cestu k nemu
+možno zadať v `PORTABLEFIX_TEST_PWSH`); bez PowerShellu sa tieto testy
+preskočia. `PORTABLEFIX_TEST_RELEASE_ZIP=<cesta k PortableFix-Portable.zip>`
+overí skutočný release zip rovnakými pravidlami, aké používa appka.
 
 `tests/test_gui_main_window.py`, `tests/test_executor.py` a
 `tests/test_updater.py` (jeho `UpdateCheckRunner`/`UpdateDownloadRunner`

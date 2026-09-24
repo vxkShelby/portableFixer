@@ -164,3 +164,17 @@ def resolve_writable_base_dir(base_dir: Path) -> tuple[Path, bool]:
         f"Neither {base_dir} nor any fallback folder ({tried}) is writable. "
         "Check the TEMP environment variable."
     )
+
+
+def powershell_executable() -> str:
+    """Windows PowerShell 5.1 by absolute path when it's where Windows always
+    puts it, bare "powershell" (PATH lookup) otherwise. A broken/overwritten
+    PATH is exactly the kind of machine this tool gets pointed at, and with
+    a bare name every action - and the updater - failed with "not found"
+    while powershell.exe sat in its usual place the whole time."""
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if system_root:
+        candidate = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return "powershell"

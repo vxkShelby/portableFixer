@@ -1,3 +1,4 @@
+import os
 import shutil
 import socket
 import sys
@@ -39,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import diagnostics, elevation, handoff, history, i18n, paths, report, restore_point, snapshot, sysinfo, undo, uninstaller, updater, winget_updates
+from .. import diagnostics, elevation, handoff, history, i18n, paths, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -120,6 +121,14 @@ class _DashboardTile(QFrame):
             self.activated.emit()
             return
         super().keyPressEvent(event)
+
+
+# Banner text for each step of an in-app update (see _begin_update_step).
+_UPDATE_PHASE_KEYS = {
+    "download": "update_downloading",
+    "stage": "update_preparing",
+    "launch": "update_starting",
+}
 
 
 def _thread_running(runner) -> bool:
@@ -204,7 +213,21 @@ class MainWindow(QMainWindow):
         self._pending_update_info = None
         self._update_check_runner = None
         self._update_download_runner = None
+        self._update_download_dir: Path | None = None
+        self._update_stage_runner = None
+        self._update_launch_runner = None
+        # True from the download until the updater's handshake has ended;
+        # _update_phase says which step runs (the banner text after a
+        # language toggle) and _update_progress what the bar last showed.
         self._update_in_progress = False
+        self._update_phase: str | None = None
+        self._update_progress = (0, 0)
+        # Verified and still on disk - a retry after a refusal or a failed
+        # hand-off installs it without downloading again.
+        self._staged_update = None
+        # The updater has proven it is running and is waiting for this
+        # process to exit: the close must neither ask nor linger.
+        self._closing_for_update = False
         self._cpu_load_sampler = sysinfo.CpuLoadSampler()
         self._static_info_runner = None
         self._ping_runner = None
@@ -213,6 +236,7 @@ class MainWindow(QMainWindow):
         self._hw_sensor_runner = None
         self._winget_scan_runner = None
         self._winget_update_runner = None
+        self._uninstall_runner = None
         self._ping_busy = False
         self._vpn_busy = False
         self._speed_test_busy = False
@@ -297,7 +321,7 @@ class MainWindow(QMainWindow):
             # left. Instead: cancel the batch, show why we're still here,
             # and close for real once the restore point has finished.
             if not self._close_after_restore_point:
-                if self._batch_active:
+                if self._batch_active and not self._closing_for_update:
                     proceed = QMessageBox.question(
                         self,
                         self._t("app_title"),
@@ -316,7 +340,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(self._t("closing_waiting_restore_point"))
             event.ignore()
             return
-        if self._batch_active and not self._close_after_restore_point:
+        if self._batch_active and not self._close_after_restore_point and not self._closing_for_update:
             proceed = QMessageBox.question(
                 self,
                 self._t("app_title"),
@@ -350,15 +374,29 @@ class MainWindow(QMainWindow):
             self._runner.cancel()
         if self._winget_update_runner is not None:
             self._winget_update_runner.request_stop()
+        if self._uninstall_runner is not None:
+            try:
+                self._uninstall_runner.requestInterruption()
+            except RuntimeError:
+                pass
+        update_runners = [
+            runner for runner in (self._update_download_runner, self._update_stage_runner, self._update_launch_runner)
+            if runner is not None
+        ]
+        for runner in update_runners:
+            try:
+                runner.requestInterruption()
+            except RuntimeError:
+                pass
         # Destroying self while a runner's native thread is still mid-flight
         # is a use-after-free risk - wait for each to actually finish first.
         # A one-shot runner may already be auto-deleted by Qt once its thread
         # ended; that RuntimeError just means there's nothing left to wait for.
-        # Neither the speed test nor the update download can be cancelled
-        # mid-flight (both make one blocking, uninterruptible network call),
-        # so their wait must cover their real worst-case duration - a short
-        # timeout here would let closeEvent proceed while that QThread is
-        # still alive, which is the exact crash this loop exists to prevent.
+        # The speed test can't be cancelled mid-flight (one blocking,
+        # uninterruptible network call), so its wait must cover its real
+        # worst-case duration - a short timeout here would let closeEvent
+        # proceed while that QThread is still alive, which is the exact crash
+        # this loop exists to prevent.
         quick_runners = (
             self._static_info_runner,
             self._hw_sensor_runner,
@@ -374,7 +412,6 @@ class MainWindow(QMainWindow):
             # QThread, aborting the process before create_restore_point could
             # put the 24h throttle registry value back.
             (self._pending_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
-            (self._update_download_runner, updater.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000),
             # Can't be interrupted mid-write, and it re-reads the whole
             # session's audit log - allow for a slow USB stick.
             (self._report_runner, 30_000),
@@ -386,6 +423,9 @@ class MainWindow(QMainWindow):
             # exit, gives up, and relaunches the still-old exe.
             (self._winget_scan_runner, 65_000),
             (self._winget_update_runner, winget_updates._UPDATE_TIMEOUT_SEC * 1000 + 10_000),
+            # Stops between programs once interrupted, but the uninstaller
+            # already running cannot be cut short.
+            (self._uninstall_runner, uninstaller.UNINSTALL_TIMEOUT_SEC * 1000 + 10_000),
         )
         for runner in quick_runners:
             if runner is None:
@@ -401,6 +441,15 @@ class MainWindow(QMainWindow):
                 runner.wait(timeout_ms)
             except RuntimeError:
                 pass
+        # No cap: all three stop within a chunk or a poll once interrupted,
+        # and a capped wait that ran out would destroy a live QThread (the
+        # per-read socket timeout alone can exceed any sensible cap).
+        for runner in update_runners:
+            try:
+                runner.wait()
+            except RuntimeError:
+                pass
+        self._discard_update_download()
         super().closeEvent(event)
 
     def _t(self, key: str) -> str:
@@ -868,9 +917,15 @@ class MainWindow(QMainWindow):
                 self._runner.output_line.connect(self.console.appendPlainText)
         if self._pending_update_info is not None:
             if self._update_in_progress:
-                self.update_banner_label.setText(self._t("update_downloading"))
+                self.update_banner_label.setText(self._t(_UPDATE_PHASE_KEYS.get(self._update_phase, "update_downloading")))
                 self.update_button.setEnabled(False)
                 self.update_dismiss_button.setEnabled(False)
+                # The rebuilt bar starts hidden - the download/stage/launch
+                # still running would otherwise look finished.
+                done, total = self._update_progress
+                self.progress_bar.setMaximum(total)
+                self.progress_bar.setValue(done)
+                self.progress_bar.setVisible(True)
             else:
                 self.update_banner_label.setText(
                     self._t("update_available_banner").format(version=self._pending_update_info.version)
@@ -1759,6 +1814,10 @@ class MainWindow(QMainWindow):
             # rebuilds them from scratch), visibly resetting the panel.
             if confirm_state["open"]:
                 return
+            # A scan started now would be a long task the update hand-off
+            # has to refuse, or one the closing app has to wait for.
+            if self._update_in_progress or self._closing_for_update:
+                return
             runner = self._winget_update_runner
             if runner is None or not runner.isRunning():
                 start_scan()
@@ -1780,6 +1839,12 @@ class MainWindow(QMainWindow):
         def start_update() -> None:
             selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected_packages:
+                return
+            # The app update's hand-off checked for long tasks right before
+            # its handshake; one begun during it would hold up the exit the
+            # updater is waiting for.
+            if self._update_phase == "launch" or self._closing_for_update:
+                self.statusBar().showMessage(self._t("winget_update_blocked_by_app_update"))
                 return
             # Installs a newer version with no way back - a MODERATE change
             # by the catalog's own yardstick, confirmed like one.
@@ -2453,8 +2518,10 @@ class MainWindow(QMainWindow):
             select_none_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("uninstaller_running"))
+            # On self, not the card: closeEvent and the app update's hand-off
+            # guard must both know an uninstall is still running.
             runner = uninstaller.UninstallRunner(selected, parent=card)
-            card._uninstall_runner = runner  # keep a reference alive
+            self._uninstall_runner = runner
 
             def on_program_finished(name: str, ok: bool, output: str) -> None:
                 # Recorded before any widget is touched, so a console error
@@ -2556,7 +2623,9 @@ class MainWindow(QMainWindow):
         self._update_check_runner.start()
 
     def _on_update_check_finished(self, info) -> None:
-        if info is None:
+        # A local update started with the developer switch may already be
+        # running when the release check comes back.
+        if info is None or self._update_in_progress:
             return
         self._pending_update_info = info
         self.update_banner_label.setText(self._t("update_available_banner").format(version=info.version))
@@ -2573,30 +2642,100 @@ class MainWindow(QMainWindow):
         self.close()
 
     def _on_update_button_clicked(self) -> None:
-        if self._batch_active:
+        if self._batch_active or self._update_in_progress:
             return
-        if self._pending_update_info is None:
+        info = self._pending_update_info
+        if info is None:
+            return
+        if self._reusable_stage() is not None:
+            # Downloaded and verified already (the last hand-off failed or
+            # was refused) - straight to the restart question.
+            self._confirm_and_launch_update()
             return
         confirmed = QMessageBox.question(
             self, self._t("app_title"),
-            self._t("update_confirm_download").format(version=self._pending_update_info.version),
+            self._t("update_confirm_download").format(version=info.version),
         )
         if confirmed != QMessageBox.Yes:
             return
-        dest_dir = Path(tempfile.mkdtemp(prefix="PortableFixUpdate_"))
-        self.update_banner_label.setText(self._t("update_downloading"))
+        self._start_update_download(info)
+
+    def start_local_update(self, zip_path: Path, sha256: str) -> None:
+        """Developer switch (--update-from-zip with PORTABLEFIX_DEV_UPDATE=1,
+        see main.py): feeds a local release zip through the same verify,
+        stage, confirm, hand-off and close steps as a downloaded one, so the
+        real updater can be tested before a release is published."""
+        if self._batch_active or self._update_in_progress:
+            return
+        zip_path = Path(zip_path)
+        info = updater.UpdateInfo(version=f"{zip_path.name} (dev)", package_url=str(zip_path), sha256_url=None, notes="")
+        self._pending_update_info = info
+        self._staged_update = None
+        self.update_banner.setVisible(True)
+        self._start_update_download(info, local_zip=zip_path, local_sha256=sha256)
+
+    def _begin_update_step(self, phase: str) -> None:
+        self._update_in_progress = True
+        self._update_phase = phase
+        self._update_progress = (0, 0)
+        self.update_banner_label.setText(self._t(_UPDATE_PHASE_KEYS[phase]))
+        self.update_banner_label.setToolTip("")
         self.update_button.setEnabled(False)
         self.update_dismiss_button.setEnabled(False)
-        self._update_in_progress = True
         self.progress_bar.setMaximum(0)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
-        self._update_download_runner = updater.UpdateDownloadRunner(self._pending_update_info, dest_dir, parent=self)
-        self._update_download_runner.download_finished.connect(self._on_update_download_finished)
-        self._update_download_runner.progress.connect(self._on_update_download_progress)
-        self._update_download_runner.start()
+
+    def _end_update_step(self) -> None:
+        self._update_in_progress = False
+        self._update_phase = None
+        self.progress_bar.setVisible(False)
+        self.update_button.setEnabled(True)
+        self.update_dismiss_button.setEnabled(True)
+        # A language toggle mid-update rebuilt the dashboard with Analyze
+        # locked (_build_dashboard_card) - nothing else would unlock it.
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
+
+    def _discard_update_download(self) -> None:
+        # The zip is gone once staged; the folder (or a zip that failed to
+        # download, verify or stage) would otherwise pile up in %TEMP%.
+        if self._update_download_dir is not None:
+            shutil.rmtree(self._update_download_dir, ignore_errors=True)
+            self._update_download_dir = None
+
+    def _reusable_stage(self):
+        staged = self._staged_update
+        info = self._pending_update_info
+        if staged is None or info is None or staged.version != info.version:
+            return None
+        if not (staged.stage_root / "App" / "PortableFix.exe").is_file():
+            # Removed meanwhile (by the updater, or by hand) - stage again.
+            self._staged_update = None
+            return None
+        return staged
+
+    def _start_update_download(self, info, local_zip: Path | None = None, local_sha256: str = "") -> None:
+        try:
+            dest_dir = Path(tempfile.mkdtemp(prefix="PortableFixUpdate_"))
+        except OSError as exc:
+            self.update_banner_label.setText(self._t("update_download_failed"))
+            self.update_banner_label.setToolTip(str(exc))
+            return
+        self._discard_update_download()
+        self._update_download_dir = dest_dir
+        self._begin_update_step("download")
+        runner = updater.UpdateDownloadRunner(info, dest_dir, parent=self, local_zip=local_zip, local_sha256=local_sha256)
+        self._update_download_runner = runner
+        runner.download_finished.connect(self._on_update_download_finished)
+        runner.progress.connect(self._on_update_download_progress)
+        runner.start()
 
     def _on_update_download_progress(self, downloaded: int, total: int) -> None:
+        # Staging reports through here too. A late signal from a step that
+        # already ended must not bring the hidden bar back.
+        if not self._update_in_progress:
+            return
+        self._update_progress = (downloaded, total) if total > 0 else (0, 0)
         if total > 0:
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(downloaded)
@@ -2606,42 +2745,144 @@ class MainWindow(QMainWindow):
             self.progress_bar.setMaximum(0)
 
     def _on_update_download_finished(self, zip_path, error: str) -> None:
+        if self._closed:
+            return
         info = self._pending_update_info
-        self._update_in_progress = False
-        self.progress_bar.setVisible(False)
-        self.update_button.setEnabled(True)
-        self.update_dismiss_button.setEnabled(True)
-        # A language toggle mid-download rebuilt the dashboard with Analyze
-        # locked (_build_dashboard_card) - nothing else would unlock it.
-        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
-        if not zip_path:
+        if not zip_path or info is None:
+            self._end_update_step()
+            self._discard_update_download()
             self.update_banner_label.setText(self._t("update_download_failed"))
+            # The technician's "why" (HTTP error, hash mismatch) without
+            # pushing a raw exception text into the banner itself.
+            self.update_banner_label.setToolTip(error)
             return
         install_dir = paths.get_base_dir()
         if not updater.is_writable(install_dir):
+            self._end_update_step()
+            self._discard_update_download()
             key = "update_needs_admin" if updater.needs_elevation_for_update(install_dir) else "update_not_writable"
             self.update_banner_label.setText(self._t(key))
+            return
+        self._staged_update = None
+        self._begin_update_step("stage")
+        runner = updater.UpdateStageRunner(Path(zip_path), install_dir, info.version, parent=self)
+        self._update_stage_runner = runner
+        runner.stage_finished.connect(self._on_update_stage_finished)
+        runner.progress.connect(self._on_update_download_progress)
+        runner.start()
+
+    def _on_update_stage_finished(self, staged, error: str) -> None:
+        if self._closed:
+            return
+        self._discard_update_download()
+        if staged is None:
+            self._end_update_step()
+            self.update_banner_label.setText(self._t("update_stage_failed"))
+            self.update_banner_label.setToolTip(error)
+            QMessageBox.warning(
+                self, self._t("app_title"),
+                self._t("update_stage_failed_detail").format(detail=error, url=updater.RELEASES_PAGE_URL),
+            )
+            return
+        self._staged_update = staged
+        self._confirm_and_launch_update()
+
+    def _long_running_tasks(self) -> list[str]:
+        """What would keep this process alive long after close() - the
+        updater waits for it to exit, and a close that takes minutes (winget
+        alone allows 5) would outlast that wait. Named for the refusal."""
+        tasks = []
+        if self._batch_active:
+            tasks.append(self._t("update_busy_batch"))
+        if self._report_runner is not None:
+            tasks.append(self._t("update_busy_report"))
+        if self._speed_test_busy or _thread_running(self._speed_test_runner):
+            tasks.append(self._t("update_busy_speed_test"))
+        if _thread_running(self._winget_scan_runner):
+            tasks.append(self._t("update_busy_winget_scan"))
+        if _thread_running(self._winget_update_runner):
+            tasks.append(self._t("update_busy_winget_update"))
+        if _thread_running(self._pending_restore_point_runner):
+            tasks.append(self._t("update_busy_restore_point"))
+        if _thread_running(self._uninstall_runner):
+            tasks.append(self._t("update_busy_uninstall"))
+        return tasks
+
+    def _show_update_available(self) -> None:
+        info = self._pending_update_info
+        if info is not None:
+            self.update_banner_label.setText(self._t("update_available_banner").format(version=info.version))
+
+    def _confirm_and_launch_update(self) -> None:
+        self._end_update_step()
+        info = self._pending_update_info
+        staged = self._staged_update
+        if info is None or staged is None:
             return
         confirmed = QMessageBox.question(
             self, self._t("app_title"),
             self._t("update_confirm_restart").format(version=info.version),
         )
-        if confirmed != QMessageBox.Yes:
-            self.update_banner_label.setText(
-                self._t("update_available_banner").format(version=info.version)
+        if confirmed != QMessageBox.Yes or self._closed:
+            self._show_update_available()
+            return
+        # Checked after the question: its nested event loop keeps timers
+        # (the winget auto-check) running.
+        busy = self._long_running_tasks()
+        if busy:
+            self._show_update_available()
+            QMessageBox.warning(
+                self, self._t("app_title"),
+                self._t("update_busy_tasks").format(tasks="\n".join(f"• {task}" for task in busy)),
             )
             return
-        if not updater.apply_update(zip_path, install_dir):
-            self.update_banner_label.setText(self._t("update_apply_failed"))
+        self._begin_update_step("launch")
+        runner = updater.UpdateLaunchRunner(staged, paths.get_base_dir(), parent=self)
+        self._update_launch_runner = runner
+        runner.launch_finished.connect(self._on_update_launch_finished)
+        runner.start()
+
+    def _on_update_launch_finished(self, result) -> None:
+        if self._closed:
             return
-        self._quit_app()
+        if result.ok:
+            # The updater holds this process's handle and starts replacing
+            # App\ the moment it exits - no questions, no lingering.
+            self._closing_for_update = True
+            self._quit_app()
+            return
+        self._end_update_step()
+        self.update_banner_label.setText(self._t("update_apply_failed"))
+        if result.reason == updater.REASON_CANCELLED:
+            return
+        detail = (result.detail or "").strip()
+        if len(detail) > 800:
+            # The full launch-log tail is in the diagnostics file.
+            detail = "..." + detail[-800:]
+        log_dir = result.log_dir or updater.update_log_dir() or "%TEMP%\\PortableFixUpdate"
+        QMessageBox.warning(
+            self, self._t("app_title"),
+            self._t("update_launch_failed_detail").format(
+                reason=self._t(f"update_reason_{result.reason}"),
+                detail=detail,
+                log_dir=log_dir,
+                url=updater.RELEASES_PAGE_URL,
+            ),
+        )
 
     def _on_restart_as_admin(self) -> None:
         # In a frozen build sys.executable IS the app - no args needed. In
         # dev mode it's python.exe, which needs the script path re-passed or
         # elevating just opens a bare interpreter instead of restarting the app.
-        args = None if getattr(sys, "frozen", False) else sys.argv
-        result = elevation.relaunch_as_admin(sys.executable, args)
+        args = [] if getattr(sys, "frozen", False) else list(sys.argv)
+        # The elevated copy waits for this process (and the onefile
+        # bootloader, which still maps the exe) to exit before it takes the
+        # single-instance mutex - otherwise it lost that race and quit.
+        wait_pids = [os.getpid()]
+        parent_pid = update_swap.onefile_parent_pid()
+        if parent_pid:
+            wait_pids.append(parent_pid)
+        result = elevation.relaunch_as_admin(sys.executable, args, wait_pids=wait_pids)
         if result <= 32:
             QMessageBox.warning(
                 self,

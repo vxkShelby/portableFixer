@@ -1,0 +1,5 @@
+-r requirements.txt
+# Pinned: the release exe and the frozen update test (tests.yml,
+# frozen-update-e2e) must come from the same bootloader. scripts/build.ps1
+# refuses to build with any other version.
+pyinstaller==6.22.3

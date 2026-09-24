@@ -22,6 +22,8 @@ _HIVE_REG_NAMES = {
     winreg.HKEY_CURRENT_USER: "HKCU",
 }
 _REG_EXPORT_TIMEOUT_SEC = 30
+# Per program; some uninstallers show their own UI and wait for the user.
+UNINSTALL_TIMEOUT_SEC = 300
 
 
 @dataclass
@@ -144,7 +146,7 @@ def program_command(program: InstalledProgram) -> str | None:
     return program.quiet_uninstall_string or program.uninstall_string or None
 
 
-def uninstall_program(program: InstalledProgram, timeout_sec: int = 300) -> tuple[bool, str]:
+def uninstall_program(program: InstalledProgram, timeout_sec: int = UNINSTALL_TIMEOUT_SEC) -> tuple[bool, str]:
     command = program_command(program)
     if not command:
         return False, "No uninstall command found for this program."
@@ -231,6 +233,10 @@ class UninstallRunner(QThread):
 
     def run(self) -> None:
         for program in self._programs:
+            # Closing the window asks to stop: it then waits for the one
+            # uninstaller already running, not for the whole list.
+            if self.isInterruptionRequested():
+                break
             ok, output = uninstall_program(program)
             self.program_finished.emit(program.name, ok, output)
         self.all_finished.emit()

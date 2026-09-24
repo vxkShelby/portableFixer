@@ -324,5 +324,8 @@ def test_onefile_build_does_not_bundle_modules_or_data():
     assert bundled  # the pattern still matches the script's syntax
     assert "Modules" not in bundled and "Data" not in bundled
     # If anything ever starts reading from the bundle, this must change too.
+    # The updater only scrubs the bundle's traces out of the environment it
+    # hands to the swap and the relaunched exe - it never reads from it.
     sources = list((root / "portablefix").rglob("*.py")) + [root / "main.py"]
-    assert [p for p in sources if "_MEIPASS" in p.read_text(encoding="utf-8")] == []
+    scrubbers = {"update_swap.py", "update_swap_script.py"}
+    assert [p for p in sources if p.name not in scrubbers and "_MEIPASS" in p.read_text(encoding="utf-8")] == []

@@ -1,30 +1,12 @@
-import hashlib
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+# Re-exported: callers and tests have always imported these from here.
+from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums  # noqa: F401
+
 TARGET_DIRS = ("App", "Modules")
-
-
-def compute_sha256(path: Path) -> str:
-    digest = _sha256_unless_stopped(path, None)
-    assert digest is not None  # only a should_stop callback can cut it short
-    return digest
-
-
-def parse_sha256sums(sums_path: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for line in sums_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            continue
-        digest, rel_path = parts
-        result[rel_path.strip()] = digest.strip().lower()
-    return result
 
 
 def _iter_real_files(root: Path):
@@ -56,19 +38,6 @@ def _iter_real_files(root: Path):
                 stack.append(entry)
             elif is_file:
                 yield entry
-
-
-def _sha256_unless_stopped(path: Path, should_stop: Callable[[], bool] | None) -> str | None:
-    """compute_sha256, but gives up (returning None) between chunks once
-    should_stop() is true - a single large file on slow USB media takes
-    seconds, far too long to make an app that is closing wait for it."""
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            if should_stop is not None and should_stop():
-                return None
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def check_integrity(base_dir: Path, should_stop: Callable[[], bool] | None = None) -> list[str]:
