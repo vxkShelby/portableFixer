@@ -6,49 +6,49 @@ actions:
     label_en: "Disk health status (SMART)"
     risk: SAFE
     command: "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,OperationalStatus | Format-Table -AutoSize"
-    description_sk: "Zobrazi stav a typ fyzickych diskov, nic nemeni."
+    description_sk: "Zobrazí stav a typ fyzických diskov, nič nemení."
     description_en: "Shows physical disk health and type, changes nothing."
   - id: disk_volume_report
-    label_sk: "Prehlad diskovych oddielov"
+    label_sk: "Prehľad diskových oddielov"
     label_en: "Volume report"
     risk: SAFE
     command: "Get-Volume | Select-Object DriveLetter,FileSystemLabel,FileSystem,HealthStatus,SizeRemaining,Size | Format-Table -AutoSize"
-    description_sk: "Zobrazi volne miesto a stav vsetkych diskovych oddielov, nic nemeni."
+    description_sk: "Zobrazí voľné miesto a stav všetkých diskových oddielov, nič nemení."
     description_en: "Shows free space and health of all volumes, changes nothing."
   - id: disk_scan_readonly
-    label_sk: "Kontrola systemoveho disku (len citanie)"
+    label_sk: "Kontrola systémového disku (len čítanie)"
     label_en: "Scan system drive (read-only)"
     risk: SAFE
     command: "Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Scan"
-    description_sk: "Skontroluje NTFS chyby na systemovom disku bez zamykania disku, nic neopravuje."
+    description_sk: "Skontroluje NTFS chyby na systémovom disku bez zamykania disku, nič neopravuje."
     description_en: "Checks the system drive for NTFS errors without locking the volume; fixes nothing."
   - id: disk_spotfix
-    label_sk: "Rychla oprava disku (SpotFix)"
+    label_sk: "Rýchla oprava disku (SpotFix)"
     label_en: "Quick disk repair (SpotFix)"
     risk: MODERATE
     command: "$r = Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -SpotFix -EA SilentlyContinue; $status = if ($r) { $r.HealthStatus } else { 'Unknown' }; Write-Output ('HealthStatus after SpotFix: ' + $status); if ($status -ne 'Healthy') { Write-Output 'Some errors could not be fixed online - run \"Full disk check at restart\" for a complete repair.' }"
-    description_sk: "Opravi zname NTFS chyby online, bez restartu. Ak nieco nedokaze opravit online, odporuci plnu kontrolu pri restarte."
+    description_sk: "Opraví známe NTFS chyby online, bez reštartu. Ak niečo nedokáže opraviť online, odporučí plnú kontrolu pri reštarte."
     description_en: "Repairs known NTFS errors online, without a restart. Points to the full restart-time scan if it can't fix everything online."
   - id: disk_optimize_volume
-    label_sk: "Optimalizacia disku (TRIM/defragmentacia)"
+    label_sk: "Optimalizácia disku (TRIM/defragmentácia)"
     label_en: "Optimize volume (TRIM/defrag)"
     risk: MODERATE
     command: "Optimize-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Verbose 4>&1"
-    description_sk: "Automaticky zvoli TRIM pre SSD alebo defragmentaciu pre HDD."
+    description_sk: "Automaticky zvolí TRIM pre SSD alebo defragmentáciu pre HDD."
     description_en: "Automatically applies TRIM for SSDs or defragmentation for HDDs."
   - id: disk_full_scan_reboot
-    label_sk: "Plna kontrola disku pri restarte"
+    label_sk: "Plná kontrola disku pri reštarte"
     label_en: "Full disk check at restart"
     risk: REQUIRES_REBOOT
     command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r; $dirty = fsutil dirty query $env:SystemDrive; Write-Output $dirty"
-    description_sk: "Naplanuje plnu kontrolu a opravu systemoveho disku pri dalsom restarte. Moze trvat dlho. Vystup potvrdi, ci sa naplanovanie podarilo (dirty bit)."
+    description_sk: "Naplánuje plnú kontrolu a opravu systémového disku pri ďalšom reštarte. Môže trvať dlho. Výstup potvrdí, či sa naplánovanie podarilo (dirty bit)."
     description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time. Output confirms whether scheduling succeeded (dirty bit)."
   - id: disk_check_scheduled
-    label_sk: "Overenie naplanovanej kontroly"
+    label_sk: "Overenie naplánovanej kontroly"
     label_en: "Verify scheduled check"
     risk: SAFE
     command: "fsutil dirty query $env:SystemDrive"
-    description_sk: "Overi, ci je systemovy disk oznaceny ako 'dirty' (naplanovana kontrola pri restarte)."
+    description_sk: "Overí, či je systémový disk označený ako 'dirty' (naplánovaná kontrola pri reštarte)."
     description_en: "Checks whether the system drive is marked 'dirty' (a check is scheduled at restart)."
 
   - id: disk_vss_writers_report
@@ -56,5 +56,5 @@ actions:
     label_en: "VSS writers status"
     risk: SAFE
     command: "vssadmin list writers"
-    description_sk: "Zobrazi stav VSS writerov (dolezite pre zalohovanie a shadow copies). Zlyhany writer casto blokuje zalohy. Nic nemeni."
+    description_sk: "Zobrazí stav VSS writerov (dôležité pre zálohovanie a shadow copies). Zlyhaný writer často blokuje zálohy. Nič nemení."
     description_en: "Shows VSS writer status (relevant for backups and shadow copies). A failed writer often blocks backups. Changes nothing."

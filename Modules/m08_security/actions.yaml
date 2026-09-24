@@ -6,10 +6,10 @@ actions:
     label_en: "Windows Firewall status"
     risk: SAFE
     command: "Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction | Format-Table -AutoSize"
-    description_sk: "Zobrazi stav vsetkych firewall profilov (Domain/Private/Public), nic nemeni."
+    description_sk: "Zobrazí stav všetkých firewall profilov (Domain/Private/Public), nič nemení."
     description_en: "Shows the status of all firewall profiles (Domain/Private/Public), changes nothing."
   - id: sec_uac_status
-    label_sk: "Stav kontroly pouzivatelskych uctov (UAC)"
+    label_sk: "Stav kontroly používateľských účtov (UAC)"
     label_en: "User Account Control (UAC) status"
     risk: SAFE
     command: "$p = Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -EA SilentlyContinue; $enableLua = if ($null -ne $p.EnableLUA) { $p.EnableLUA } else { 1 }; $behaviorAdmin = if ($null -ne $p.ConsentPromptBehaviorAdmin) { $p.ConsentPromptBehaviorAdmin } else { 5 }; $behaviorUser = if ($null -ne $p.ConsentPromptBehaviorUser) { $p.ConsentPromptBehaviorUser } else { 3 }; $secureDesktop = if ($null -ne $p.PromptOnSecureDesktop) { $p.PromptOnSecureDesktop } else { 1 }; $filterAdminToken = if ($null -ne $p.FilterAdministratorToken) { $p.FilterAdministratorToken } else { 0 }; Write-Output \"EnableLUA: $enableLua (1=UAC on [default], 0=UAC off)\"; Write-Output \"ConsentPromptBehaviorAdmin: $behaviorAdmin (0=no prompt,1=prompt for creds on secure desktop,2=prompt for consent,5=prompt for consent for non-Windows binaries [default])\"; Write-Output \"ConsentPromptBehaviorUser: $behaviorUser (0=auto deny,1=prompt for creds on secure desktop,3=prompt for creds [default])\"; Write-Output \"PromptOnSecureDesktop: $secureDesktop (1=secure desktop on [default], 0=off)\"; Write-Output \"FilterAdministratorToken: $filterAdminToken (1=Admin Approval Mode applies to built-in Administrator too, 0=exempt [default])\""
@@ -18,7 +18,7 @@ actions:
       - "PromptOnSecureDesktop: 0"
     recommended_action_ids:
       - hard_uac_restore_default
-    description_sk: "Zobrazi, ci je UAC zapnute a ako sa spravaju vyzvy na povolenie (aj neuvedene hodnoty ako predvolene Windows), nic nemeni."
+    description_sk: "Zobrazí, či je UAC zapnuté a ako sa správajú výzvy na povolenie (aj neuvedené hodnoty ako predvolené Windows), nič nemení."
     description_en: "Shows whether UAC is enabled and how elevation prompts behave (unset values shown as Windows defaults), changes nothing."
 
   - id: sec_rdp_status
@@ -26,40 +26,40 @@ actions:
     label_en: "Remote Desktop (RDP) status"
     risk: SAFE
     command: "$v = (Get-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -EA SilentlyContinue).fDenyTSConnections; $state = if ($null -eq $v) { 'unknown (default: RDP off)' } elseif ($v -eq 0) { 'ENABLED' } else { 'disabled' }; Write-Output ('RDP (Remote Desktop): ' + $state); $rules = Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -EA SilentlyContinue; if ($rules) { $rules | Select-Object DisplayName,Enabled,Direction,Action | Format-Table -AutoSize } else { Write-Output 'No Remote Desktop firewall rules found.' }"
-    description_sk: "Zobrazi, ci je povolena vzdialena plocha a stav jej firewall pravidiel, nic nemeni."
+    description_sk: "Zobrazí, či je povolená vzdialená plocha a stav jej firewall pravidiel, nič nemení."
     description_en: "Shows whether Remote Desktop is enabled and its firewall rule status, changes nothing."
 
   - id: sec_autologon_check
-    label_sk: "Kontrola automatickeho prihlasenia"
+    label_sk: "Kontrola automatického prihlásenia"
     label_en: "Autologon check"
     risk: SAFE
     command: "$w = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'; $p = Get-ItemProperty -Path $w -EA SilentlyContinue; $autoLogon = if ($p.AutoAdminLogon -eq '1') { 'ENABLED' } else { 'disabled' }; Write-Output ('AutoAdminLogon: ' + $autoLogon); Write-Output ('DefaultUserName: ' + $p.DefaultUserName); Write-Output ('Plaintext password stored in registry: ' + [bool]$p.DefaultPassword)"
-    description_sk: "Zisti, ci je zapnute automaticke prihlasenie a ci registry obsahuje ulozene heslo v ciston texte (heslo samotne nevypisuje). Nic nemeni."
+    description_sk: "Zistí, či je zapnuté automatické prihlásenie a či registry obsahuje uložené heslo v čistom texte (heslo samotné nevypisuje). Nič nemení."
     description_en: "Checks whether autologon is enabled and whether the registry stores a plaintext password (does not print the password itself). Changes nothing."
 
   - id: sec_listening_ports_audit
-    label_sk: "Audit naslchajucich portov a procesov"
+    label_sk: "Audit načúvajúcich portov a procesov"
     label_en: "Listening ports and process audit"
     risk: SAFE
     command: "Get-NetTCPConnection -State Listen -EA SilentlyContinue | ForEach-Object { $proc = Get-Process -Id $_.OwningProcess -EA SilentlyContinue; [PSCustomObject]@{ LocalPort = $_.LocalPort; LocalAddress = $_.LocalAddress; PID = $_.OwningProcess; Process = $proc.ProcessName; Path = $proc.Path } } | Sort-Object LocalPort -Unique | Format-Table -AutoSize -Wrap"
-    description_sk: "Spari kazdy naslchajuci TCP port s procesom, ktory ho drzi (meno + cesta k binarke) - standardny 'co komunikuje von' kontrolny bod. Nic nemeni."
+    description_sk: "Spáruje každý načúvajúci TCP port s procesom, ktorý ho drží (meno + cesta k binárke) - štandardný 'čo komunikuje von' kontrolný bod. Nič nemení."
     description_en: "Correlates every listening TCP port with the process holding it (name + binary path) - a standard 'what's phoning home' check. Changes nothing."
 
   - id: sec_root_cert_audit
-    label_sk: "Audit dovernych root certifikatov"
+    label_sk: "Audit dôverných root certifikátov"
     label_en: "Trusted root certificate audit"
     risk: SAFE
     command: "$roots = Get-ChildItem Cert:\\LocalMachine\\Root; Write-Output ('Total root CAs: ' + $roots.Count); $suspicious = $roots | Where-Object { $_.Subject -ne $_.Issuer }; if ($suspicious) { Write-Output '--- Subject != Issuer (unusual for a real root CA - can be legitimate anti-cheat/DRM software, but worth reviewing) ---'; $suspicious | Select-Object Subject,Issuer,Thumbprint | Format-List } else { Write-Output 'No structurally unusual root certs found.' }; $expired = $roots | Where-Object { $_.NotAfter -lt (Get-Date) }; if ($expired) { Write-Output ('--- Expired root certs still present (' + $expired.Count + ') ---'); $expired | Select-Object Subject,NotAfter,Thumbprint | Format-Table -AutoSize -Wrap }"
-    description_sk: "Vypise pocet dovernych root CA certifikatov a oznaci tie, kde Subject != Issuer (nezvycajne pre skutocnu root CA - znamy vektor MITM/malware, ale caste aj u legitimneho anti-cheat/DRM softveru) a expirovane certifikaty stale v store. Nic nemeni."
+    description_sk: "Vypíše počet dôverných root CA certifikátov a označí tie, kde Subject != Issuer (nezvyčajné pre skutočnú root CA - známy vektor MITM/malware, ale časté aj u legitímneho anti-cheat/DRM softvéru) a expirované certifikáty stále v store. Nič nemení."
     description_en: "Lists the count of trusted root CA certificates and flags any where Subject != Issuer (unusual for a real root CA - a known MITM/malware vector, but also common with legitimate anti-cheat/DRM software) plus expired certs still sitting in the store. Changes nothing."
 
   - id: hard_uac_restore_default
-    label_sk: "Obnovenie UAC na predvolene"
+    label_sk: "Obnovenie UAC na predvolené"
     label_en: "Restore UAC to default"
     risk: MODERATE
     command: "$k = 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'; $bk = \"$env:ProgramData\\PortableFix\\uac_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; Get-ItemProperty -Path $k -EA SilentlyContinue | Select-Object EnableLUA,ConsentPromptBehaviorAdmin,PromptOnSecureDesktop | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; try { Set-ItemProperty -Path $k -Name EnableLUA -Value 1 -Type DWord -EA Stop; Set-ItemProperty -Path $k -Name ConsentPromptBehaviorAdmin -Value 5 -Type DWord -EA Stop; Set-ItemProperty -Path $k -Name PromptOnSecureDesktop -Value 1 -Type DWord -EA Stop; Write-Output 'UAC restored to Windows default (takes full effect after sign-out/restart).' } catch { Write-Output ('Failed to restore UAC (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$k = 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'; $bk = \"$env:ProgramData\\PortableFix\\uac_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; try { if ($null -ne $b.EnableLUA) { Set-ItemProperty -Path $k -Name EnableLUA -Value $b.EnableLUA -Type DWord -EA Stop }; if ($null -ne $b.ConsentPromptBehaviorAdmin) { Set-ItemProperty -Path $k -Name ConsentPromptBehaviorAdmin -Value $b.ConsentPromptBehaviorAdmin -Type DWord -EA Stop }; if ($null -ne $b.PromptOnSecureDesktop) { Set-ItemProperty -Path $k -Name PromptOnSecureDesktop -Value $b.PromptOnSecureDesktop -Type DWord -EA Stop }; Write-Output 'UAC settings restored from backup.' } catch { Write-Output ('Failed to restore UAC settings (needs administrator): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Nastavi UAC na standardne hodnoty Windows (zapnute, predvolene spravanie vyziev) po zalohe aktualneho stavu do PortableFix\\uac_backup.json - zaloha sa prepisuje pri kazdom behu, takze vzdy odraza stav tesne pred poslednou zmenou a undo obnovi presne ten. Vyzaduje administratora."
+    description_sk: "Nastaví UAC na štandardné hodnoty Windows (zapnuté, predvolené správanie výziev) po zálohe aktuálneho stavu do PortableFix\\uac_backup.json - záloha sa prepisuje pri každom behu, takže vždy odráža stav tesne pred poslednou zmenou a undo obnoví presne ten. Vyžaduje administrátora."
     description_en: "Sets UAC to standard Windows defaults (enabled, default prompt behavior) after backing up the current state to PortableFix\\uac_backup.json - the backup is overwritten on every run, so it always reflects the state right before the most recent change, and undo restores exactly that. Needs administrator."
 
   - id: sec_bootsector_check
@@ -68,33 +68,33 @@ actions:
     risk: SAFE
     command: "$drives = Get-CimInstance Win32_DiskDrive -EA SilentlyContinue; $results = @(); foreach ($d in $drives) { $path = $d.DeviceID; try { $fs = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read); $buf = New-Object byte[] 512; $fs.Read($buf, 0, 512) | Out-Null; $fs.Close(); $sigOk = ($buf[510] -eq 0x55 -and $buf[511] -eq 0xAA); $hash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($buf)).Replace('-',''); $results += [PSCustomObject]@{ Drive = $path; Model = $d.Model; BootSignatureValid = $sigOk; SHA256 = $hash } } catch { $results += [PSCustomObject]@{ Drive = $path; Model = $d.Model; BootSignatureValid = ('N/A: ' + $_.Exception.Message); SHA256 = 'N/A' } } }; $results | Format-Table -AutoSize -Wrap; Write-Output 'This reads the first 512-byte sector of each physical drive and checks the standard 0x55AA boot signature plus its SHA256 hash - it does NOT compare against a database of known-clean or known-infected boot sectors (PortableFix has none). Record the hash now; if you suspect a bootkit later, re-run this and compare against this baseline, or an unexpectedly missing/invalid boot signature is itself worth investigating.'"
     inactivity_timeout_sec: 30
-    description_sk: "Precita prvy 512-bajtovy sektor kazdeho fyzickeho disku, overi standardny boot signature (0x55AA na konci sektora) a vypocita jeho SHA256 hash. Nejde o skutocnu detekciu bootkitu - to by vyzadovalo databazu znamych cistych/infikovanych sektorov, ktoru appka nema. Sluzi ako zaznam pre neskorsie porovnanie (napr. po podozreni na infekciu) a na odhalenie chybajuceho/neplatneho boot signature. Vyzaduje administratora (priamy pristup k fyzickemu disku). Nic nemeni."
+    description_sk: "Prečíta prvý 512-bajtový sektor každého fyzického disku, overí štandardný boot signature (0x55AA na konci sektora) a vypočíta jeho SHA256 hash. Nejde o skutočnú detekciu bootkitu - to by vyžadovalo databázu známych čistých/infikovaných sektorov, ktorú appka nemá. Slúži ako záznam pre neskoršie porovnanie (napr. po podozrení na infekciu) a na odhalenie chýbajúceho/neplatného boot signature. Vyžaduje administrátora (priamy prístup k fyzickému disku). Nič nemení."
     description_en: "Reads the first 512-byte sector of each physical drive, checks the standard boot signature (0x55AA at the end of the sector), and computes its SHA256 hash. This is not real bootkit detection - that would require a database of known-clean/known-infected sectors, which this app does not have. It serves as a baseline to compare against later (e.g. after a suspected infection) and can catch a missing/invalid boot signature. Needs administrator (direct physical drive access). Changes nothing."
 
   - id: sec_hidden_process_heuristic
-    label_sk: "Heuristika skrytych procesov (Win32 API vs WMI)"
+    label_sk: "Heuristika skrytých procesov (Win32 API vs WMI)"
     label_en: "Hidden process heuristic (Win32 API vs WMI)"
     risk: SAFE
     command: "$winApi = @(Get-Process -EA SilentlyContinue | Select-Object -ExpandProperty Id); $wmi = @(Get-CimInstance Win32_Process -EA SilentlyContinue | Select-Object -ExpandProperty ProcessId); $onlyWinApi = @($winApi | Where-Object { $wmi -notcontains $_ }); $onlyWmi = @($wmi | Where-Object { $winApi -notcontains $_ }); if ($onlyWinApi -or $onlyWmi) { if ($onlyWinApi) { Write-Output ('Visible via Win32 API but not WMI: ' + ($onlyWinApi -join ', ')) }; if ($onlyWmi) { Write-Output ('Visible via WMI but not Win32 API: ' + ($onlyWmi -join ', ')) }; Write-Output 'A mismatch is usually just a process that started or exited in the moment between the two checks - only a mismatch that repeats across several separate runs is worth investigating further. This does NOT detect real kernel-level rootkit hiding (SSDT/EPROCESS list manipulation defeats both APIs equally and needs a kernel driver to catch, which this app does not have).' } else { Write-Output ('No discrepancy - ' + $winApi.Count + ' processes visible identically via both Win32 API and WMI.') }"
-    description_sk: "Porovna zoznam procesov ziskany cez Win32 API (Get-Process) s WMI (Win32_Process) - proces pritomny len v jednom zozname je slaba indicia, nie dokaz. Nezachyti skutocny kernel-level rootkit (ten oklame oba API rovnako, na to treba kernel driver, ktory appka nema). Casty falosny poplach je proces, ktory medzitym skoncil/nastartoval. Nic nemeni."
+    description_sk: "Porovná zoznam procesov získaný cez Win32 API (Get-Process) s WMI (Win32_Process) - proces prítomný len v jednom zozname je slabá indícia, nie dôkaz. Nezachytí skutočný kernel-level rootkit (ten oklame oba API rovnako, na to treba kernel driver, ktorý appka nemá). Častý falošný poplach je proces, ktorý medzitým skončil/naštartoval. Nič nemení."
     description_en: "Compares the process list from the Win32 API (Get-Process) against WMI (Win32_Process) - a process present in only one list is a weak signal, not proof. Does not catch a real kernel-level rootkit (that fools both APIs equally; catching it needs a kernel driver, which this app does not have). A common false alarm is simply a process that started or exited between the two checks. Changes nothing."
 
   - id: sec_process_signature_audit
-    label_sk: "Audit digitalnych podpisov bezicich procesov"
+    label_sk: "Audit digitálnych podpisov bežiacich procesov"
     label_en: "Running process signature audit"
     risk: SAFE
     command: "$flagged = @(); $checked = 0; foreach ($p in (Get-Process -EA SilentlyContinue)) { $path = $null; try { $path = $p.Path } catch {}; if (-not $path) { continue }; $checked++; try { $sig = Get-AuthenticodeSignature -FilePath $path -EA Stop; if ($sig.Status -ne 'Valid') { $flagged += [PSCustomObject]@{ PID = $p.Id; Name = $p.ProcessName; Status = $sig.Status; Path = $path } } } catch {} }; if ($flagged) { Write-Output ('Processes with a non-Valid Authenticode signature (' + $flagged.Count + ' of ' + $checked + ' checked):'); $flagged | Format-Table -AutoSize -Wrap } else { Write-Output ('All ' + $checked + ' checked running processes have a Valid Authenticode signature.') }; Write-Output 'NotSigned is common and often harmless (many legitimate dev tools and scripts are unsigned) - this is a lead to investigate, not proof of anything malicious.'"
     inactivity_timeout_sec: 90
-    description_sk: "Skontroluje Authenticode podpis binarky za kazdym bezicim procesom a vypise tie, ktore nemaju platny podpis (nepodpisane, neplatny, alebo zmeneny po podpisani). Nepodpisany proces je bezny aj u legitimneho softveru (interne nastroje, skripty) - toto je vodidlo na dalsie preverenie, nie odsudok. Nic nemeni."
+    description_sk: "Skontroluje Authenticode podpis binárky za každým bežiacim procesom a vypíše tie, ktoré nemajú platný podpis (nepodpísané, neplatný, alebo zmenený po podpísaní). Nepodpísaný proces je bežný aj u legitímneho softvéru (interné nástroje, skripty) - toto je vodidlo na ďalšie preverenie, nie odsudok. Nič nemení."
     description_en: "Checks the Authenticode signature of the binary behind every running process and lists those without a valid signature (unsigned, invalid, or tampered with after signing). An unsigned process is also common for legitimate software (internal tools, scripts) - this is a lead for further review, not a verdict. Changes nothing."
 
   - id: sec_restore_taskmgr_regedit
-    label_sk: "Obnovenie zakazaneho Task Manageru a Editora registra"
+    label_sk: "Obnovenie zakázaného Task Manageru a Editora registra"
     label_en: "Restore disabled Task Manager and Registry Editor"
     risk: MODERATE
     command: "$paths = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'; $bk = \"$env:ProgramData\\PortableFix\\taskmgr_regedit_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $backup = @(foreach ($p in $paths) { [PSCustomObject]@{ Path = $p; DisableTaskMgr = (Get-ItemProperty -Path $p -Name DisableTaskMgr -EA SilentlyContinue).DisableTaskMgr; DisableRegistryTools = (Get-ItemProperty -Path $p -Name DisableRegistryTools -EA SilentlyContinue).DisableRegistryTools } }); $backup | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; $cleared = @(); foreach ($p in $paths) { if (Test-Path $p) { Remove-ItemProperty -Path $p -Name DisableTaskMgr -EA SilentlyContinue; Remove-ItemProperty -Path $p -Name DisableRegistryTools -EA SilentlyContinue; $cleared += $p } }; Write-Output ('Task Manager and Registry Editor re-enabled (cleared DisableTaskMgr/DisableRegistryTools in: ' + ($cleared -join ', ') + ').')"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\taskmgr_regedit_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; foreach ($i in $b) { if (-not (Test-Path $i.Path)) { continue }; if ($null -ne $i.DisableTaskMgr) { Set-ItemProperty -Path $i.Path -Name DisableTaskMgr -Value $i.DisableTaskMgr -Type DWord -EA SilentlyContinue }; if ($null -ne $i.DisableRegistryTools) { Set-ItemProperty -Path $i.Path -Name DisableRegistryTools -Value $i.DisableRegistryTools -Type DWord -EA SilentlyContinue } }; Write-Output 'Task Manager/Registry Editor policy values restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Odstrani DisableTaskMgr a DisableRegistryTools policy hodnoty z HKCU aj HKLM (Policies\\System) - klasicky sposob, akym malware zablokuje Task Manager a Editor registra, aby sa tazsie odstranovalo. Zaloha sa prepisuje pri kazdom behu, undo obnovi predoslu hodnotu (vratane pripadu, ked bola zablokovana zamerne cez firemnu politiku)."
+    description_sk: "Odstráni DisableTaskMgr a DisableRegistryTools policy hodnoty z HKCU aj HKLM (Policies\\System) - klasický spôsob, akým malware zablokuje Task Manager a Editor registra, aby sa ťažšie odstraňovalo. Záloha sa prepisuje pri každom behu, undo obnoví predošlú hodnotu (vrátane prípadu, keď bola zablokovaná zámerne cez firemnú politiku)."
     description_en: "Removes the DisableTaskMgr and DisableRegistryTools policy values from both HKCU and HKLM (Policies\\System) - the classic way malware locks out Task Manager and Registry Editor to make itself harder to remove. Backup is refreshed on every run; undo restores the previous value (including the case where it was disabled deliberately via corporate policy)."
 
   - id: sec_wpbt_disable
@@ -103,55 +103,55 @@ actions:
     risk: MODERATE
     command: "try { Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name DisableWpbtExecution -Value 1 -Type DWord -EA Stop; Write-Output 'WPBT execution disabled.' } catch { Write-Output ('Could not disable WPBT: ' + $_.Exception.Message + ' (needs administrator).'); exit 1 }"
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name DisableWpbtExecution -EA SilentlyContinue; Write-Output 'WPBT setting removed (back to Windows default).'"
-    description_sk: "Vypne WPBT (Windows Platform Binary Table) - mechanizmus, cez ktory vyrobca notebooku/PC moze spustit program hned pri starte Windows (napr. anti-theft softver), niekedy aj bez suhlasu pouzivatela. Znama cesta zneuzitia predinstalovanym OEM softverom. Undo nastavenie odstrani."
+    description_sk: "Vypne WPBT (Windows Platform Binary Table) - mechanizmus, cez ktorý výrobca notebooku/PC môže spustiť program hneď pri štarte Windows (napr. anti-theft softvér), niekedy aj bez súhlasu používateľa. Známa cesta zneužitia predinštalovaným OEM softvérom. Undo nastavenie odstráni."
     description_en: "Disables WPBT (Windows Platform Binary Table) - the mechanism that lets a PC/laptop vendor auto-run a program at Windows boot (e.g. anti-theft software), sometimes without user consent. A known abuse vector for preinstalled OEM software. Undo removes the setting."
 
   - id: sec_local_admins
-    label_sk: "Zoznam clenov skupiny Administrators"
+    label_sk: "Zoznam členov skupiny Administrators"
     label_en: "Local administrators group members"
     risk: SAFE
     command: "Get-LocalGroupMember -Group 'Administrators' -EA SilentlyContinue | Select-Object Name,PrincipalSource,ObjectClass | Format-Table -AutoSize"
-    description_sk: "Vypise clenov lokalnej skupiny Administrators (meno, zdroj, typ objektu) - klasicka kontrola 'preco ma toto konto admin prava'. Na domenovom pocitaci moze zoznam obsahovat aj skupiny AD (napr. Domain Admins), co je ocakavane. Nic nemeni."
+    description_sk: "Vypíše členov lokálnej skupiny Administrators (meno, zdroj, typ objektu) - klasická kontrola 'prečo má toto konto admin práva'. Na doménovom počítači môže zoznam obsahovať aj skupiny AD (napr. Domain Admins), čo je očakávané. Nič nemení."
     description_en: "Lists members of the local Administrators group (name, source, object type) - the classic 'why does this account have admin rights' check. On a domain-joined machine the list can also include AD groups (e.g. Domain Admins), which is expected. Changes nothing."
 
   - id: sec_recent_local_accounts
-    label_sk: "Nedavno vytvorene lokalne ucty"
+    label_sk: "Nedávno vytvorené lokálne účty"
     label_en: "Recently created local accounts"
     risk: SAFE
     command: "$u = Get-LocalUser -EA SilentlyContinue | Select-Object Name,Enabled,PasswordLastSet | Sort-Object PasswordLastSet -Descending; Write-Output '--- Local user accounts (by PasswordLastSet, newest first) ---'; $u | Format-Table -AutoSize; Write-Output '--- Profile folder creation time (heuristic proxy for account age, not authoritative) ---'; Get-ChildItem \"$env:SystemDrive\\Users\" -Directory -EA SilentlyContinue | Where-Object { $_.Name -notin @('Public','Default','Default User','All Users','defaultuser0') } | Select-Object Name,CreationTime | Sort-Object CreationTime -Descending | Format-Table -AutoSize"
-    description_sk: "Vypise lokalne ucty podla PasswordLastSet a datum vytvorenia priecinka profilu ako priblizny odhad veku uctu - Windows nikde priamo neuklada skutocny datum vytvorenia lokalneho uctu. Novy neocakavany ucet/admin je bezna technika perzistencie malware. Nic nemeni."
+    description_sk: "Vypíše lokálne účty podľa PasswordLastSet a dátum vytvorenia priečinka profilu ako približný odhad veku účtu - Windows nikde priamo neukladá skutočný dátum vytvorenia lokálneho účtu. Nový neočakávaný účet/admin je bežná technika perzistencie malware. Nič nemení."
     description_en: "Lists local accounts by PasswordLastSet plus each profile folder's creation time as an approximate account-age proxy - Windows does not store a real local-account creation date anywhere. A surprise new account/admin is a classic malware persistence technique. Changes nothing."
 
   - id: sec_password_never_expires
-    label_sk: "Ucty s neexpirujucim heslom"
+    label_sk: "Účty s neexpirujúcim heslom"
     label_en: "Accounts with non-expiring passwords"
     risk: SAFE
     command: "Get-LocalUser -EA SilentlyContinue | Where-Object { $_.Enabled -eq $true -and $_.PasswordExpires -eq $null } | Select-Object Name,Enabled,PasswordLastSet | Format-Table -AutoSize"
-    description_sk: "Vypise povolene lokalne ucty, ktorych heslo nikdy neexpiruje. Na domacom PC s jednym pouzivatelom je to bezne a ocakavane - toto je informacia na preverenie, nie problem sam o sebe. Nic nemeni."
+    description_sk: "Vypíše povolené lokálne účty, ktorých heslo nikdy neexpiruje. Na domácom PC s jedným používateľom je to bežné a očakávané - toto je informácia na preverenie, nie problém sám o sebe. Nič nemení."
     description_en: "Lists enabled local accounts whose password never expires. On a single-user home PC this is normal and expected - this is information to review, not a problem by itself. Changes nothing."
 
   - id: sec_windows_update_last
-    label_sk: "Datum poslednej aktualizacie Windows"
+    label_sk: "Dátum poslednej aktualizácie Windows"
     label_en: "Last Windows Update install date"
     risk: SAFE
     command: "try { $r = (New-Object -ComObject Microsoft.Update.AutoUpdate).Results; Write-Output ('Last successful search: ' + $r.LastSearchSuccessDate); Write-Output ('Last successful install: ' + $r.LastInstallationSuccessDate) } catch { Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 5 HotFixID,Description,InstalledOn | Format-Table -AutoSize }"
-    description_sk: "Zobrazi datum posledneho uspesneho vyhladania a instalacie aktualizacii cez Windows Update (fallback na Get-HotFix, ak COM objekt nie je dostupny). Davno neaktualizovany pocitac je zranitelny bez ohladu na ine kontroly. Nic nemeni."
+    description_sk: "Zobrazí dátum posledného úspešného vyhľadania a inštalácie aktualizácií cez Windows Update (fallback na Get-HotFix, ak COM objekt nie je dostupný). Dávno neaktualizovaný počítač je zraniteľný bez ohľadu na iné kontroly. Nič nemení."
     description_en: "Shows the date of the last successful Windows Update search and install (falls back to Get-HotFix if the COM object is unavailable). A machine that hasn't updated in a long time is exploitable regardless of every other control. Changes nothing."
 
   - id: sec_hosts_anomaly
-    label_sk: "Anomalie v subore hosts"
+    label_sk: "Anomálie v súbore hosts"
     label_en: "Hosts file anomaly summary"
     risk: SAFE
     command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; $lines = Get-Content $hostsPath -EA SilentlyContinue | Where-Object { $_ -match '\\S' -and $_ -notmatch '^\\s*#' -and $_ -notmatch '127\\.0\\.0\\.1\\s+localhost' -and $_ -notmatch '::1\\s+localhost' }; Write-Output ('Non-default active hosts entries: ' + $lines.Count); if ($lines) { $lines }"
-    description_sk: "Spocita a vypise riadky v hosts subore mimo standardnych localhost zaznamov. Doplnok k net_hosts_reset (M06), ktory subor rovno prepise - toto ukaze, o co vlastne ide, pred pripadnym resetom. Domacnost s vlastnym ad-block hosts suborom bude mat vysoke, ale nezavadne cislo. Nic nemeni."
+    description_sk: "Spočíta a vypíše riadky v hosts súbore mimo štandardných localhost záznamov. Doplnok k net_hosts_reset (M06), ktorý súbor rovno prepíše - toto ukáže, o čo vlastne ide, pred prípadným resetom. Domácnosť s vlastným ad-block hosts súborom bude mať vysoké, ale nezávadné číslo. Nič nemení."
     description_en: "Counts and lists hosts file entries beyond the standard localhost lines. Complements net_hosts_reset (M06), which overwrites the file outright - this shows what's actually there before a potential reset. A household running its own ad-block hosts file will show a high but benign count. Changes nothing."
 
   - id: sec_suspicious_scheduled_tasks
-    label_sk: "Podozrive naplanovane ulohy (Temp/AppData)"
+    label_sk: "Podozrivé naplánované úlohy (Temp/AppData)"
     label_en: "Suspicious scheduled tasks (Temp/AppData)"
     risk: SAFE
     command: "Get-ScheduledTask -EA SilentlyContinue | Where-Object { $_.State -ne 'Disabled' } | ForEach-Object { $t = $_; $t.Actions | Where-Object { $_.Execute -match 'Temp\\\\|AppData\\\\|Users\\\\Public\\\\' } | Select-Object @{n='Task';e={$t.TaskName}},@{n='Path';e={$t.TaskPath}},@{n='Execute';e={$_.Execute}},@{n='Arguments';e={$_.Arguments}} } | Format-Table -AutoSize -Wrap"
-    description_sk: "Vypise aktivne naplanovane ulohy, ktore spustaju program z Temp/AppData/Public - bezny perzistencny vzor malware. Vela legitimnych auto-updaterov (Chrome, Discord, OneDrive a pod.) sa spusta z rovnakych priecinkov, takze toto je zoznam na rucne preverenie mien uloh, nie automaticky verdikt. Nic nemeni."
+    description_sk: "Vypíše aktívne naplánované úlohy, ktoré spúšťajú program z Temp/AppData/Public - bežný perzistenčný vzor malware. Veľa legitímnych auto-updaterov (Chrome, Discord, OneDrive a pod.) sa spúšťa z rovnakých priečinkov, takže toto je zoznam na ručné preverenie mien úloh, nie automatický verdikt. Nič nemení."
     description_en: "Lists active scheduled tasks that execute a program from Temp/AppData/Public - a common malware persistence pattern. Many legitimate auto-updaters (Chrome, Discord, OneDrive, etc) also run from those same folders, so this is a list for a human to eyeball task names against, not an automatic verdict. Changes nothing."
 
   - id: hard_disable_smb1
@@ -160,7 +160,7 @@ actions:
     risk: MODERATE
     command: "try { Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -EA Stop; Write-Output 'SMB1 server component disabled (takes effect immediately for new connections; does not remove the SMB1 client, only inbound file sharing).' } catch { Write-Output ('Could not disable SMB1 (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "try { Set-SmbServerConfiguration -EnableSMB1Protocol $true -Force -EA Stop; Write-Output 'SMB1 server component re-enabled.' } catch { Write-Output ('Could not re-enable SMB1: ' + $_.Exception.Message); exit 1 }"
-    description_sk: "Vypne serverovu (zdielaciu) cast protokolu SMBv1 - zatvara vektor utoku WannaCry/EternalBlue. Klientsku cast SMBv1 (pripajanie sa von na cudzie stare zdielania) nemeni. Kompatibilita: velmi stare NAS/tlaciarne/konzoly, ktore vediat komunikovat len cez SMBv1 ako server, prestanu byt dostupne z tohto PC. Vyzaduje administratora."
+    description_sk: "Vypne serverovú (zdieľaciu) časť protokolu SMBv1 - zatvára vektor útoku WannaCry/EternalBlue. Klientsku časť SMBv1 (pripájanie sa von na cudzie staré zdieľania) nemení. Kompatibilita: veľmi staré NAS/tlačiarne/konzoly, ktoré vedia komunikovať len cez SMBv1 ako server, prestanú byť dostupné z tohto PC. Vyžaduje administrátora."
     description_en: "Disables the server (sharing) half of the SMBv1 protocol - closes the WannaCry/EternalBlue attack vector. Does not touch the SMB1 client half (connecting out to someone else's old share). Compatibility: very old NAS boxes/printers/consoles that only speak SMB1 as a server will stop being reachable from this PC. Needs administrator."
 
   - id: hard_disable_rdp
@@ -170,25 +170,25 @@ actions:
     exclude_from_select_all: true
     command: "try { Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 1 -Type DWord -EA Stop; Disable-NetFirewallRule -DisplayGroup 'Remote Desktop' -EA SilentlyContinue; Write-Output 'Remote Desktop disabled (registry + firewall rule group). WARNING: if you are connected to this PC over RDP right now, this drops your session immediately.' } catch { Write-Output ('Could not disable Remote Desktop (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "try { Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 0 -Type DWord -EA Stop; Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -EA SilentlyContinue; Write-Output 'Remote Desktop re-enabled.' } catch { Write-Output ('Could not re-enable Remote Desktop: ' + $_.Exception.Message); exit 1 }"
-    description_sk: "Vypne vzdialenu plochu (registry fDenyTSConnections + firewall pravidla) - exponovane RDP je jeden z najcastejsich vstupnych vektorov ransomvéru. POZOR: ak ste prave pripojeny cez RDP na tento pocitac, spustenie tejto akcie vas okamzite odpoji. Zamerne vylucene z hromadneho 'vybrat vsetko' vyberu - musi sa zaskrtnut samostatne. Vyzaduje administratora."
+    description_sk: "Vypne vzdialenú plochu (registry fDenyTSConnections + firewall pravidlá) - exponované RDP je jeden z najčastejších vstupných vektorov ransomvéru. POZOR: ak ste práve pripojený cez RDP na tento počítač, spustenie tejto akcie vás okamžite odpojí. Zámerne vylúčené z hromadného 'vybrať všetko' výberu - musí sa zaškrtnúť samostatne. Vyžaduje administrátora."
     description_en: "Disables Remote Desktop (fDenyTSConnections registry value + firewall rule group) - exposed RDP is one of the most common ransomware entry vectors. WARNING: if you are currently connected to this PC over RDP, running this drops your session immediately. Deliberately excluded from bulk 'select all' - must be checked individually. Needs administrator."
 
   - id: hard_firewall_enable_all
-    label_sk: "Zapnutie firewallu na vsetkych profiloch"
+    label_sk: "Zapnutie firewallu na všetkých profiloch"
     label_en: "Enable firewall on all profiles"
     risk: MODERATE
     command: "$bk = \"$env:ProgramData\\PortableFix\\fw_profile_backup.csv\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; if (-not (Test-Path $bk)) { Get-NetFirewallProfile | Select-Object Name,Enabled | Export-Csv -Path $bk -NoTypeInformation }; try { Set-NetFirewallProfile -All -Enabled True -EA Stop; Write-Output 'Firewall enabled on all profiles (Domain/Private/Public).' } catch { Write-Output ('Could not enable firewall profiles (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\fw_profile_backup.csv\"; if (Test-Path $bk) { try { Import-Csv $bk | ForEach-Object { Set-NetFirewallProfile -Name $_.Name -Enabled ([System.Convert]::ToBoolean($_.Enabled)) -EA Stop }; Write-Output 'Firewall profile enabled-state restored from backup.' } catch { Write-Output ('Could not restore firewall profile state: ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - firewall left enabled.' }"
-    description_sk: "Zalohuje aktualny stav Enabled/Disabled kazdeho firewall profilu (len pri prvom behu) a zapne firewall na vsetkych troch (Domain/Private/Public). Meni iba Enabled, nie DefaultInboundAction/DefaultOutboundAction, aby nezrusilo vlastne pravidla ineho softveru. Priamo opravuje zistenie z sec_firewall_status. Vyzaduje administratora."
+    description_sk: "Zálohuje aktuálny stav Enabled/Disabled každého firewall profilu (len pri prvom behu) a zapne firewall na všetkých troch (Domain/Private/Public). Mení iba Enabled, nie DefaultInboundAction/DefaultOutboundAction, aby nezrušilo vlastné pravidlá iného softvéru. Priamo opravuje zistenie z sec_firewall_status. Vyžaduje administrátora."
     description_en: "Backs up the current Enabled/Disabled state of every firewall profile (only on first run) and enables the firewall on all three (Domain/Private/Public). Only touches Enabled, not DefaultInboundAction/DefaultOutboundAction, so it doesn't clobber another product's custom rules. Directly remediates the sec_firewall_status finding. Needs administrator."
 
   - id: hard_disable_autologon
-    label_sk: "Vypnutie automatickeho prihlasenia"
+    label_sk: "Vypnutie automatického prihlásenia"
     label_en: "Disable autologon"
     risk: MODERATE
     command: "$w = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'; try { Set-ItemProperty -Path $w -Name AutoAdminLogon -Value '0' -Type String -EA Stop; Remove-ItemProperty -Path $w -Name DefaultPassword -EA SilentlyContinue; Write-Output 'Autologon disabled; stored plaintext password removed from the registry.' } catch { Write-Output ('Could not disable autologon (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "try { Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value '1' -Type String -EA Stop; Write-Output 'Autologon re-enabled. The password was NOT restored (by design) - set it again via netplwiz if truly needed.' } catch { Write-Output ('Could not re-enable autologon: ' + $_.Exception.Message); exit 1 }"
-    description_sk: "Vypne automaticke prihlasenie a odstrani ulozene heslo v ciston texte z registra - priamo opravuje zistenie sec_autologon_check. Undo zamerne neobnovi heslo (aby sa nepremiestnilo na ine miesto v rovnako neistej forme) - ak je autologon naozaj potrebny, treba ho znova nastavit cez netplwiz. Vyzaduje administratora."
+    description_sk: "Vypne automatické prihlásenie a odstráni uložené heslo v čistom texte z registra - priamo opravuje zistenie sec_autologon_check. Undo zámerne neobnoví heslo (aby sa nepremiestnilo na iné miesto v rovnako neistej forme) - ak je autologon naozaj potrebný, treba ho znova nastaviť cez netplwiz. Vyžaduje administrátora."
     description_en: "Disables autologon and removes the plaintext-stored password from the registry - directly remediates the sec_autologon_check finding. Undo deliberately does not restore the password (so it isn't just relocated to another spot in the same insecure form) - if autologon is genuinely wanted, set it again via netplwiz. Needs administrator."
 
   - id: hard_lsa_protection_enable
@@ -198,14 +198,14 @@ actions:
     exclude_from_select_all: true
     command: "try { Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -Value 1 -Type DWord -EA Stop; Write-Output 'LSA protection (RunAsPPL) enabled. Requires a restart to take effect. WARNING: older AV/backup/VPN drivers that inject into LSASS can fail to load or crash at the next boot - do not run unattended on an unknown software stack.' } catch { Write-Output ('Could not enable LSA protection (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -EA SilentlyContinue; Write-Output 'LSA protection setting removed (requires a restart to take effect).'"
-    description_sk: "Zapne ochranu LSASS (RunAsPPL=1, nie UEFI-locked hodnota 2, aby undo ostal skutocne funkcny) - vyrazne stazuje nastroje typu Mimikatz na kradnutie credentialov z pamate. Riziko: starsie AV/zalohovacie/VPN ovladace, ktore sa injektuju do LSASS, mozu pri najblizsom starte zlyhat alebo sposobit BSOD - zamerne vylucene z hromadneho 'vybrat vsetko' vyberu. Vyzaduje administratora a restart."
+    description_sk: "Zapne ochranu LSASS (RunAsPPL=1, nie UEFI-locked hodnota 2, aby undo ostal skutočne funkčný) - výrazne sťažuje nástroje typu Mimikatz na kradnutie credentialov z pamäte. Riziko: staršie AV/zálohovacie/VPN ovládače, ktoré sa injektujú do LSASS, môžu pri najbližšom štarte zlyhať alebo spôsobiť BSOD - zámerne vylúčené z hromadného 'vybrať všetko' výberu. Vyžaduje administrátora a reštart."
     description_en: "Enables LSASS protection (RunAsPPL=1, not the UEFI-locked value 2, so the undo stays genuinely honest) - significantly raises the bar against Mimikatz-style credential-dumping tools. Risk: older AV/backup/VPN drivers that inject into LSASS can fail to load or blue-screen at the next boot - deliberately excluded from bulk 'select all'. Needs administrator and a restart."
 
   - id: hard_smartscreen_default
-    label_sk: "Obnovenie SmartScreen na predvolene nastavenie"
+    label_sk: "Obnovenie SmartScreen na predvolené nastavenie"
     label_en: "Restore SmartScreen to default"
     risk: MODERATE
     command: "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer'; $bk = \"$env:ProgramData\\PortableFix\\smartscreen_backup.txt\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; if (-not (Test-Path $bk)) { $cur = (Get-ItemProperty -Path $k -Name SmartScreenEnabled -EA SilentlyContinue).SmartScreenEnabled; if ($cur) { Set-Content -Path $bk -Value $cur -Encoding UTF8 } }; try { Set-ItemProperty -Path $k -Name SmartScreenEnabled -Value 'RequireAdmin' -Type String -EA Stop; Write-Output 'SmartScreen restored to the Windows default (RequireAdmin).' } catch { Write-Output ('Could not restore SmartScreen setting (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer'; $bk = \"$env:ProgramData\\PortableFix\\smartscreen_backup.txt\"; if (Test-Path $bk) { $v = (Get-Content $bk -Raw).Trim(); try { Set-ItemProperty -Path $k -Name SmartScreenEnabled -Value $v -Type String -EA Stop; Write-Output 'SmartScreen setting restored from backup.' } catch { Write-Output ('Could not restore SmartScreen setting: ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found.' }"
-    description_sk: "Nastavi SmartScreen na predvoleny rezim Windows (RequireAdmin) po zalohe aktualnej hodnoty (len pri prvom behu) - uzatvara trik niektorych bundleware instalatorov, ktore SmartScreen ticho vypnu, aby dalsie instalacie neboli oznacene. Vyzaduje administratora."
+    description_sk: "Nastaví SmartScreen na predvolený režim Windows (RequireAdmin) po zálohe aktuálnej hodnoty (len pri prvom behu) - uzatvára trik niektorých bundleware inštalátorov, ktoré SmartScreen ticho vypnú, aby ďalšie inštalácie neboli označené. Vyžaduje administrátora."
     description_en: "Sets SmartScreen to the Windows default mode (RequireAdmin) after backing up the current value (only on first run) - closes a common bundleware-installer trick that silently flips SmartScreen off so subsequent junk installs don't get flagged. Needs administrator."

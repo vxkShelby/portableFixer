@@ -2,61 +2,61 @@ module_id: m09_tuning
 category: REPAIR
 actions:
   - id: tune_power_plan_report
-    label_sk: "Prehlad planov napajania"
+    label_sk: "Prehľad plánov napájania"
     label_en: "Power plan report"
     risk: SAFE
     command: "powercfg /list"
-    description_sk: "Vypise dostupne plany napajania a oznaci aktivny, nic nemeni."
+    description_sk: "Vypíše dostupné plány napájania a označí aktívny, nič nemení."
     description_en: "Lists available power plans and marks the active one, changes nothing."
   - id: tune_power_high_performance
-    label_sk: "Prepnutie na vysoky vykon"
+    label_sk: "Prepnutie na vysoký výkon"
     label_en: "Switch to High Performance"
     risk: MODERATE
     command: "$target = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'; $exists = (powercfg /list) -match $target; if ($exists) { powercfg /setactive $target; Write-Output 'Switched to High Performance.' } else { Write-Output 'High Performance plan not available on this device (common on Modern Standby laptops) - no changes made.' }"
     undo_command: "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
-    description_sk: "Aktivuje plan napajania Vysoky vykon (ak je dostupny - na niektorych laptopoch s Modern Standby skryty/chybajuci). Undo vrati vyvazeny (Balanced) plan, nie povodny — ak si pouzival vlastny plan, prepni si ho rucne."
+    description_sk: "Aktivuje plán napájania Vysoký výkon (ak je dostupný - na niektorých laptopoch s Modern Standby skrytý/chýbajúci). Undo vráti vyvážený (Balanced) plán, nie pôvodný — ak si používal vlastný plán, prepni si ho ručne."
     description_en: "Activates the High Performance power plan (if available - hidden/missing on some Modern Standby laptops). Undo restores the Balanced plan, not the previous one — if you used a custom plan, switch back manually."
   - id: tune_startup_apps_report
-    label_sk: "Prehlad startovacich aplikacii"
+    label_sk: "Prehľad štartovacích aplikácií"
     label_en: "Startup applications report"
     risk: SAFE
     command: "Get-CimInstance Win32_StartupCommand | Select-Object Name,Command,Location,User | Format-List"
-    description_sk: "Vypise aplikacie spustane pri starte systemu, nic nemeni."
+    description_sk: "Vypíše aplikácie spúšťané pri štarte systému, nič nemení."
     description_en: "Lists applications launched at system startup, changes nothing."
   - id: tune_visual_effects_performance
-    label_sk: "Vizualne efekty na vykon"
+    label_sk: "Vizuálne efekty na výkon"
     label_en: "Visual effects for performance"
     risk: MODERATE
     command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 2 -Type DWord; Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop\\WindowMetrics' -Name MinAnimate -Value '0' -Type String -EA SilentlyContinue; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarAnimations -Value 0 -Type DWord -EA SilentlyContinue; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewAlphaSelect -Value 0 -Type DWord -EA SilentlyContinue; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewShadow -Value 0 -Type DWord -EA SilentlyContinue; if (-not (Test-Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM')) { New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Force | Out-Null }; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Name EnableTransparency -Value 0 -Type DWord; Write-Output 'Visual effects set to best performance (animations, transparency, list-view effects disabled).'"
     undo_command: "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value 0 -Type DWord; Remove-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop\\WindowMetrics' -Name MinAnimate -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarAnimations -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewAlphaSelect -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name ListviewShadow -EA SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM' -Name EnableTransparency -EA SilentlyContinue"
-    description_sk: "Nastavi vizualne efekty na najlepsi vykon (vypne animacie, priehladnost okien, tiene v zoznamoch). Undo vrati automaticky rezim (Windows rozhodne). Prejavi sa po odhlaseni/prihlaseni."
+    description_sk: "Nastaví vizuálne efekty na najlepší výkon (vypne animácie, priehľadnosť okien, tiene v zoznamoch). Undo vráti automatický režim (Windows rozhodne). Prejaví sa po odhlásení/prihlásení."
     description_en: "Sets visual effects to best performance (disables animations, window transparency, list-view shadows). Undo restores the automatic mode (let Windows decide). Takes effect after sign-out/sign-in."
 
   - id: tune_end_task_taskbar
-    label_sk: "Ukoncenie procesu pravym klikom na taskbare"
+    label_sk: "Ukončenie procesu pravým klikom na taskbare"
     label_en: "End Task with taskbar right-click"
     risk: MODERATE
     command: "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings' -Force -EA SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings' -Name TaskbarEndTask -Value 1 -Type DWord; Write-Output 'End Task added to taskbar right-click menu (takes effect after Explorer restart/sign-in).'"
     undo_command: "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings' -Name TaskbarEndTask -EA SilentlyContinue; Write-Output 'End Task removed from taskbar right-click menu.'"
-    description_sk: "Prida polozku 'Ukoncit ulohu' do kontextoveho menu po pravom kliku na aplikaciu na taskbare - rychly sposob zabit zamrznutu appku bez Task Manageru. Prejavi sa po restarte Prieskumnika/odhlaseni. Undo nastavenie odstrani."
+    description_sk: "Pridá položku 'Ukončiť úlohu' do kontextového menu po pravom kliku na aplikáciu na taskbare - rýchly spôsob zabiť zamrznutú appku bez Task Manageru. Prejaví sa po reštarte Prieskumníka/odhlásení. Undo nastavenie odstráni."
     description_en: "Adds an 'End Task' item to the taskbar's right-click menu - a quick way to kill a frozen app without opening Task Manager. Takes effect after an Explorer restart/sign-in. Undo removes the setting."
 
   - id: tune_sticky_keys_disable
-    label_sk: "Vypnutie vyzvy Sticky Keys (5x Shift)"
+    label_sk: "Vypnutie výzvy Sticky Keys (5x Shift)"
     label_en: "Disable Sticky Keys prompt (5x Shift)"
     risk: MODERATE
     command: "$k = 'HKCU:\\Control Panel\\Accessibility\\StickyKeys'; $bk = \"$env:ProgramData\\PortableFix\\sticky_keys_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; if (-not (Test-Path $bk)) { [PSCustomObject]@{ Flags = (Get-ItemProperty -Path $k -Name Flags -EA SilentlyContinue).Flags } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8 }; Set-ItemProperty -Path $k -Name Flags -Value '506' -Type String; Write-Output 'Sticky Keys 5x-Shift prompt disabled.'"
     undo_command: "$k = 'HKCU:\\Control Panel\\Accessibility\\StickyKeys'; $bk = \"$env:ProgramData\\PortableFix\\sticky_keys_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; $val = if ($null -eq $b.Flags) { '58' } else { $b.Flags }; Set-ItemProperty -Path $k -Name Flags -Value $val -Type String -EA SilentlyContinue; Write-Output 'Sticky Keys setting restored from backup.' } else { Write-Output 'No backup found - restoring Windows default (58).'; Set-ItemProperty -Path $k -Name Flags -Value '58' -Type String -EA SilentlyContinue }"
-    description_sk: "Vypne otravne vyskakovacie okno Sticky Keys, ktore sa spusti pri rychlom 5x stlaceni Shift (caste pri hrani hier), po zalohe povodnej hodnoty (len pri prvom behu). Nemeni fyzicku funkciu Sticky Keys, len vypnute automaticke ponuknutie. Undo funguje spolahlivo len ak sa medzitym nespustila tato akcia druhy krat (zaloha je len jedna, z prveho behu) - inak vrati Windows predvolenu hodnotu (58)."
+    description_sk: "Vypne otravné vyskakovacie okno Sticky Keys, ktoré sa spustí pri rýchlom 5x stlačení Shift (časté pri hraní hier), po zálohe pôvodnej hodnoty (len pri prvom behu). Nemení fyzickú funkciu Sticky Keys, len vypnuté automatické ponuknutie. Undo funguje spoľahlivo len ak sa medzitým nespustila táto akcia druhý krát (záloha je len jedna, z prvého behu) - inak vráti Windows predvolenú hodnotu (58)."
     description_en: "Disables the annoying Sticky Keys popup triggered by pressing Shift 5 times quickly (common during gaming), after backing up the original value (only on first run). Does not change Sticky Keys functionality itself, only the auto-prompt. Undo only works reliably if this action hasn't run a second time since (there's only one backup, from the first run) - otherwise it falls back to the Windows default (58)."
 
   - id: tune_classic_context_menu
-    label_sk: "Obnovenie klasickeho kontextoveho menu (Windows 10 styl)"
+    label_sk: "Obnovenie klasického kontextového menu (Windows 10 štýl)"
     label_en: "Restore classic context menu (Windows 10 style)"
     risk: MODERATE
     command: "New-Item -Path 'HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32' -Name '(default)' -Value '' -Type String; Write-Output 'Classic full context menu restored (takes effect after Explorer restart/sign-in).'"
     undo_command: "Remove-Item -Path 'HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}' -Recurse -Force -EA SilentlyContinue; Write-Output 'Windows 11 compact context menu restored.'"
-    description_sk: "Vrati plne (Windows 10-style) kontextove menu po pravom kliku namiesto skrateneho Windows 11 menu s 'Zobrazit dalsie moznosti'. Prejavi sa po restarte Prieskumnika/odhlaseni. Undo kluc odstrani a vrati Windows 11 spravanie."
+    description_sk: "Vráti plné (Windows 10-style) kontextové menu po pravom kliku namiesto skráteného Windows 11 menu s 'Zobraziť ďalšie možnosti'. Prejaví sa po reštarte Prieskumníka/odhlásení. Undo kľúč odstráni a vráti Windows 11 správanie."
     description_en: "Restores the full (Windows 10-style) right-click context menu instead of Windows 11's shortened menu with 'Show more options'. Takes effect after an Explorer restart/sign-in. Undo removes the key, restoring Windows 11 behavior."
 
   - id: tune_ultimate_performance_power_plan
@@ -65,81 +65,81 @@ actions:
     risk: MODERATE
     command: "$match = (powercfg /list) | Select-String 'Ultimate Performance'; if ($match) { $guid = ($match.Line -split '\\s+')[3] } else { $dup = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61; $found = $dup | Select-String -Pattern '([0-9a-fA-F]{8}-[0-9a-fA-F-]{27})'; $guid = if ($found) { $found.Matches[0].Value } else { $null } }; if ($guid) { powercfg /setactive $guid; Write-Output ('Switched to Ultimate Performance plan (' + $guid + ').') } else { Write-Output 'Could not create/activate the Ultimate Performance plan - it may not be supported on this device.'; exit 1 }"
     undo_command: "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
-    description_sk: "Vytvori (ak este neexistuje) a aktivuje skryty plan napajania Ultimate Performance - agresivnejsi ako Vysoky vykon, vypina drobne mikro-uspory energie kvoli konzistentnejsiemu vykonu. Hlavny prinos je na desktopoch; na notebookoch zvysi spotrebu/teplotu bez merateľneho zisku vo vacsine hier. Undo vrati vyvazeny (Balanced) plan, nie povodny."
+    description_sk: "Vytvorí (ak ešte neexistuje) a aktivuje skrytý plán napájania Ultimate Performance - agresívnejší ako Vysoký výkon, vypína drobné mikro-úspory energie kvôli konzistentnejšiemu výkonu. Hlavný prínos je na desktopoch; na notebookoch zvýši spotrebu/teplotu bez merateľného zisku vo väčšine hier. Undo vráti vyvážený (Balanced) plán, nie pôvodný."
     description_en: "Creates (if it doesn't already exist) and activates the hidden Ultimate Performance power plan - more aggressive than High Performance, disabling small power-saving micro-optimizations for more consistent performance. Mainly beneficial on desktops; on laptops it raises power draw/heat with no measurable gain in most games. Undo restores the Balanced plan, not the previous one."
 
   - id: tune_gpu_hardware_scheduling
-    label_sk: "Hardverovo akcelerovane planovanie GPU (HAGS)"
+    label_sk: "Hardvérovo akcelerované plánovanie GPU (HAGS)"
     label_en: "Hardware-accelerated GPU scheduling (HAGS)"
     risk: REQUIRES_REBOOT
     command: "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers'; $bk = \"$env:ProgramData\\PortableFix\\hags_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; [PSCustomObject]@{ HwSchMode = (Get-ItemProperty -Path $k -Name HwSchMode -EA SilentlyContinue).HwSchMode } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; try { Set-ItemProperty -Path $k -Name HwSchMode -Value 2 -Type DWord -EA Stop; Write-Output 'Hardware-accelerated GPU scheduling enabled - requires a reboot to take effect.' } catch { Write-Output ('Failed to enable HAGS (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers'; $bk = \"$env:ProgramData\\PortableFix\\hags_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; try { if ($null -eq $b.HwSchMode) { Remove-ItemProperty -Path $k -Name HwSchMode -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name HwSchMode -Value $b.HwSchMode -Type DWord -EA Stop }; Write-Output 'GPU scheduling setting restored from backup - requires a reboot to take effect.' } catch { Write-Output ('Failed to restore (needs administrator): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Zapne hardverovo akcelerovane planovanie GPU (HwSchMode=2) - presunie spravu GPU fronty z ovladaca na samotnu GPU, na podporovanom hardveri (novsie GPU + ovladace) moze znizit latenciu vstupu. Na nepodporovanom/starsom hardveri nema efekt alebo ho Windows ticho ignoruje. Vyzaduje restart, aby sa prejavilo. Undo obnovi zalohovanu hodnotu (alebo kluc odstrani, ak predtym neexistoval)."
+    description_sk: "Zapne hardvérovo akcelerované plánovanie GPU (HwSchMode=2) - presunie správu GPU fronty z ovládača na samotnú GPU, na podporovanom hardvéri (novšie GPU + ovládače) môže znížiť latenciu vstupu. Na nepodporovanom/staršom hardvéri nemá efekt alebo ho Windows ticho ignoruje. Vyžaduje reštart, aby sa prejavilo. Undo obnoví zálohovanú hodnotu (alebo kľúč odstráni, ak predtým neexistoval)."
     description_en: "Enables hardware-accelerated GPU scheduling (HwSchMode=2) - moves GPU queue management from the driver to the GPU itself; on supported hardware (newer GPU + drivers) this can reduce input latency. On unsupported/older hardware it has no effect or Windows silently ignores it. Requires a reboot to take effect. Undo restores the backed-up value (or removes the key if it didn't exist before)."
 
   - id: tune_foreground_priority
-    label_sk: "Zvyhodnenie aktivneho okna (Win32PrioritySeparation)"
+    label_sk: "Zvýhodnenie aktívneho okna (Win32PrioritySeparation)"
     label_en: "Foreground app priority boost (Win32PrioritySeparation)"
     risk: MODERATE
     command: "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl'; $bk = \"$env:ProgramData\\PortableFix\\foreground_priority_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; [PSCustomObject]@{ Win32PrioritySeparation = (Get-ItemProperty -Path $k -Name Win32PrioritySeparation -EA SilentlyContinue).Win32PrioritySeparation } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; try { Set-ItemProperty -Path $k -Name Win32PrioritySeparation -Value 38 -Type DWord -EA Stop; Write-Output 'Foreground app priority boost applied (short, fixed quantum favoring the active window) - takes effect for newly-started processes, sign-out/sign-in for full effect.' } catch { Write-Output ('Failed to apply (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl'; $bk = \"$env:ProgramData\\PortableFix\\foreground_priority_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; try { if ($null -eq $b.Win32PrioritySeparation) { Remove-ItemProperty -Path $k -Name Win32PrioritySeparation -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name Win32PrioritySeparation -Value $b.Win32PrioritySeparation -Type DWord -EA Stop }; Write-Output 'Foreground priority setting restored from backup.' } catch { Write-Output ('Failed to restore (needs administrator): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Nastavi Win32PrioritySeparation na 38 (0x26) - klasicky 'gaming' registry tweak, ktory da aktivnemu (popredia) oknu kratsi a pevny casovy kvant CPU namiesto premennneho, cim ho zvyhodni oproti procesom na pozadi. Efekt je jemny a diskutovany, nie zazracne zrychlenie. Undo obnovi zalohovanu hodnotu."
+    description_sk: "Nastaví Win32PrioritySeparation na 38 (0x26) - klasický 'gaming' registry tweak, ktorý dá aktívnemu (popredia) oknu kratší a pevný časový kvant CPU namiesto premenlivého, čím ho zvýhodní oproti procesom na pozadí. Efekt je jemný a diskutovaný, nie zázračné zrýchlenie. Undo obnoví zálohovanú hodnotu."
     description_en: "Sets Win32PrioritySeparation to 38 (0x26) - a classic 'gaming' registry tweak that gives the foreground (active) window a short, fixed CPU time quantum instead of a variable one, favoring it over background processes. The effect is subtle and debated, not a dramatic speedup. Undo restores the backed-up value."
 
   - id: tune_disable_game_dvr
-    label_sk: "Vypnutie Xbox Game Bar nahravania na pozadi (Game DVR)"
+    label_sk: "Vypnutie Xbox Game Bar nahrávania na pozadí (Game DVR)"
     label_en: "Disable Xbox Game Bar background recording (Game DVR)"
     risk: MODERATE
     command: "$bk = \"$env:ProgramData\\PortableFix\\game_dvr_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $gameConfigKey = 'HKCU:\\System\\GameConfigStore'; $gameDvrKey = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR'; [PSCustomObject]@{ GameDVR_Enabled = (Get-ItemProperty -Path $gameConfigKey -Name GameDVR_Enabled -EA SilentlyContinue).GameDVR_Enabled; AppCaptureEnabled = (Get-ItemProperty -Path $gameDvrKey -Name AppCaptureEnabled -EA SilentlyContinue).AppCaptureEnabled } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; if (-not (Test-Path $gameConfigKey)) { New-Item -Path $gameConfigKey -Force | Out-Null }; Set-ItemProperty -Path $gameConfigKey -Name GameDVR_Enabled -Value 0 -Type DWord; if (-not (Test-Path $gameDvrKey)) { New-Item -Path $gameDvrKey -Force | Out-Null }; Set-ItemProperty -Path $gameDvrKey -Name AppCaptureEnabled -Value 0 -Type DWord; Write-Output 'Xbox Game Bar background capture (Game DVR) disabled - removes its recording overhead during games. Windows Game Mode itself is left on (it is generally beneficial, unlike background capture).'"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\game_dvr_backup.json\"; $gameConfigKey = 'HKCU:\\System\\GameConfigStore'; $gameDvrKey = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR'; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; if ($null -eq $b.GameDVR_Enabled) { Remove-ItemProperty -Path $gameConfigKey -Name GameDVR_Enabled -EA SilentlyContinue } else { Set-ItemProperty -Path $gameConfigKey -Name GameDVR_Enabled -Value $b.GameDVR_Enabled -Type DWord -EA SilentlyContinue }; if ($null -eq $b.AppCaptureEnabled) { Remove-ItemProperty -Path $gameDvrKey -Name AppCaptureEnabled -EA SilentlyContinue } else { Set-ItemProperty -Path $gameDvrKey -Name AppCaptureEnabled -Value $b.AppCaptureEnabled -Type DWord -EA SilentlyContinue }; Write-Output 'Game DVR settings restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Vypne nahravanie na pozadi cez Xbox Game Bar (Game DVR/AppCapture) - znizuje spotrebu CPU/GPU a diskovy zapis pocas hrania, na rozdiel od samotneho Game Mode (ktory ostava zapnuty, je vseobecne prospesny). Zaloha sa prepisuje pri kazdom behu. Undo obnovi zalohovane hodnoty."
+    description_sk: "Vypne nahrávanie na pozadí cez Xbox Game Bar (Game DVR/AppCapture) - znižuje spotrebu CPU/GPU a diskový zápis počas hrania, na rozdiel od samotného Game Mode (ktorý ostáva zapnutý, je všeobecne prospešný). Záloha sa prepisuje pri každom behu. Undo obnoví zálohované hodnoty."
     description_en: "Disables background recording via Xbox Game Bar (Game DVR/AppCapture) - reduces CPU/GPU usage and disk writes while gaming, unlike Game Mode itself (left on, since it's generally beneficial). Backup is refreshed on every run. Undo restores the backed-up values."
 
   - id: tune_pause_background_services
-    label_sk: "Docasne pozastavenie sluzieb na pozadi (Search, SysMain)"
+    label_sk: "Dočasné pozastavenie služieb na pozadí (Search, SysMain)"
     label_en: "Temporarily pause background services (Search, SysMain)"
     risk: MODERATE
     command: "$svcs = 'WSearch','SysMain'; $stopped = @(); $failed = @(); foreach ($s in $svcs) { $svc = Get-Service -Name $s -EA SilentlyContinue; if ($svc -and $svc.Status -eq 'Running') { Stop-Service -Name $s -Force -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Stopped') { $stopped += $s } else { $failed += $s } } }; if ($stopped) { Write-Output ('Paused: ' + ($stopped -join ', ') + ' (temporary - restarts automatically on next boot since startup type is unchanged).') }; if ($failed) { Write-Output ('Could not pause (needs administrator): ' + ($failed -join ', ')) }; if (-not $stopped -and -not $failed) { Write-Output 'Nothing to pause (already stopped or not present).' }; if ($failed -and -not $stopped) { exit 1 }"
     undo_command: "$restored = @(); $failed = @(); foreach ($s in 'WSearch','SysMain') { $svc = Get-Service -Name $s -EA SilentlyContinue; if ($svc -and $svc.Status -ne 'Running') { Start-Service -Name $s -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Running') { $restored += $s } else { $failed += $s } } }; if ($restored) { Write-Output ('Restarted: ' + ($restored -join ', ')) }; if ($failed) { Write-Output ('Could not restart (needs administrator): ' + ($failed -join ', ')); exit 1 }; if (-not $restored -and -not $failed) { Write-Output 'Services already running.' }"
-    description_sk: "Zastavi bezice sluzby Windows Search (WSearch) a Superfetch/prefetch (SysMain), ak prave bezia - napr. na uvolnenie CPU/disku pocas narocnej ulohy. Vyzaduje administratora. Menia sa iba bezice sluzby, nie ich typ spustenia, preto sa automaticky znovu spustia pri najblizsom restarte aj bez pustenia undo. Undo ich spusti hned."
+    description_sk: "Zastaví bežiace služby Windows Search (WSearch) a Superfetch/prefetch (SysMain), ak práve bežia - napr. na uvoľnenie CPU/disku počas náročnej úlohy. Vyžaduje administrátora. Menia sa iba bežiace služby, nie ich typ spustenia, preto sa automaticky znovu spustia pri najbližšom reštarte aj bez pustenia undo. Undo ich spustí hneď."
     description_en: "Stops the Windows Search indexer (WSearch) and Superfetch/memory prefetch (SysMain) services if they are currently running - e.g. to free up CPU/disk during a demanding task. Needs administrator. Only running services are touched, not their startup type, so Windows restarts them automatically on the next boot even without running undo. Undo starts them right away."
 
   - id: tune_bluetooth_service_restart
-    label_sk: "Restart sluzby Bluetooth"
+    label_sk: "Reštart služby Bluetooth"
     label_en: "Restart Bluetooth service"
     risk: MODERATE
     command: "$svc = Get-Service -Name bthserv -EA SilentlyContinue; if (-not $svc) { Write-Output 'Bluetooth Support Service (bthserv) not found - no Bluetooth radio on this device.'; exit 1 }; Stop-Service -Name bthserv -Force -EA SilentlyContinue; $svc.Refresh(); Start-Service -Name bthserv -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Running') { Write-Output 'Bluetooth Support Service restarted.' } else { Write-Output 'Could not restart Bluetooth Support Service (needs administrator).'; exit 1 }"
-    description_sk: "Zastavi a znovu spusti sluzbu Bluetooth Support Service (bthserv) - bezny fix, ked sa zariadenia nedaju sparovat/pripojit. Vyzaduje administratora. Bez undo."
+    description_sk: "Zastaví a znovu spustí službu Bluetooth Support Service (bthserv) - bežný fix, keď sa zariadenia nedajú spárovať/pripojiť. Vyžaduje administrátora. Bez undo."
     description_en: "Stops and restarts the Bluetooth Support Service (bthserv) - a common fix when Bluetooth devices won't pair/connect. Needs administrator. No undo."
 
   - id: tune_audio_service_restart
-    label_sk: "Restart zvukovej sluzby"
+    label_sk: "Reštart zvukovej služby"
     label_en: "Restart audio service"
     risk: MODERATE
     command: "$names = 'AudioEndpointBuilder','Audiosrv'; Stop-Service -Name $names -Force -EA SilentlyContinue; Start-Service -Name $names -EA SilentlyContinue; $ok = @(); $failed = @(); foreach ($n in $names) { $s = Get-Service -Name $n -EA SilentlyContinue; if ($s -and $s.Status -eq 'Running') { $ok += $n } else { $failed += $n } }; if ($failed) { Write-Output ('Could not restart: ' + ($failed -join ', ') + ' (needs administrator).'); exit 1 } else { Write-Output ('Audio services restarted: ' + ($ok -join ', ')) }"
-    description_sk: "Zastavi a znovu spusti sluzby Windows Audio Endpoint Builder a Windows Audio (Audiosrv) - bezny fix pre 'ziadny zvuk' alebo chyby zvukoveho zariadenia. Vyzaduje administratora. Bez undo."
+    description_sk: "Zastaví a znovu spustí služby Windows Audio Endpoint Builder a Windows Audio (Audiosrv) - bežný fix pre 'žiadny zvuk' alebo chyby zvukového zariadenia. Vyžaduje administrátora. Bez undo."
     description_en: "Stops and restarts the Windows Audio Endpoint Builder and Windows Audio (Audiosrv) services - a common fix for 'no sound' or audio device errors. Needs administrator. No undo."
 
   - id: tune_camera_service_restart
-    label_sk: "Restart sluzby kamery (Frame Server)"
+    label_sk: "Reštart služby kamery (Frame Server)"
     label_en: "Restart camera service (Frame Server)"
     risk: MODERATE
     command: "$names = 'FrameServer','FrameServerMonitor'; $present = @($names | Where-Object { Get-Service -Name $_ -EA SilentlyContinue }); if (-not $present) { Write-Output 'Camera Frame Server services not found on this system.'; exit 1 }; Stop-Service -Name $present -Force -EA SilentlyContinue; Start-Service -Name $present -EA SilentlyContinue; $ok = @(); $failed = @(); foreach ($n in $present) { $s = Get-Service -Name $n -EA SilentlyContinue; if ($s -and $s.Status -eq 'Running') { $ok += $n } else { $failed += $n } }; if ($failed) { Write-Output ('Could not restart: ' + ($failed -join ', ') + ' (needs administrator).'); exit 1 } else { Write-Output ('Camera services restarted: ' + ($ok -join ', ')) }"
-    description_sk: "Zastavi a znovu spusti sluzby Frame Server / Frame Server Monitor - opravuje situaciu, ked aplikacia nevie ziskat obraz z kamery aj ked su povolenia v Nastaveniach v poriadku. Vyzaduje administratora. Bez undo."
+    description_sk: "Zastaví a znovu spustí služby Frame Server / Frame Server Monitor - opravuje situáciu, keď aplikácia nevie získať obraz z kamery aj keď sú povolenia v Nastaveniach v poriadku. Vyžaduje administrátora. Bez undo."
     description_en: "Stops and restarts the Frame Server / Frame Server Monitor services - fixes apps unable to get camera frames even when Settings privacy permissions look correct. Needs administrator. No undo."
 
   - id: tune_memory_usage_report
-    label_sk: "Prehlad vyuzitia pamate RAM"
+    label_sk: "Prehľad využitia pamäte RAM"
     label_en: "Memory (RAM) usage report"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; $totalMB = [math]::Round($os.TotalVisibleMemorySize/1024); $freeMB = [math]::Round($os.FreePhysicalMemory/1024); $usedMB = $totalMB - $freeMB; $pct = [math]::Round(($usedMB/$totalMB)*100,1); Write-Output ('Total: ' + $totalMB + ' MB | Used: ' + $usedMB + ' MB (' + $pct + '%) | Free: ' + $freeMB + ' MB')"
-    description_sk: "Vypise celkovu, pouzitu a volnu fyzicku pamat (RAM) v MB, nic nemeni."
+    description_sk: "Vypíše celkovú, použitú a voľnú fyzickú pamäť (RAM) v MB, nič nemení."
     description_en: "Lists total, used, and free physical memory (RAM) in MB, changes nothing."
 
   - id: tune_clear_working_sets
-    label_sk: "Uvolnenie nevyuzitej pamate procesov (working set)"
+    label_sk: "Uvoľnenie nevyužitej pamäte procesov (working set)"
     label_en: "Trim unused process memory (working set)"
     risk: SAFE
     command: "$procs = Get-Process -EA SilentlyContinue; $before = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024); $trimmed = 0; $skipped = 0; foreach ($p in $procs) { try { $p.MinWorkingSet = $p.MinWorkingSet; $trimmed++ } catch { $skipped++ } }; Start-Sleep -Milliseconds 300; $after = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024); $freed = $after - $before; Write-Output ('Trimmed working set on ' + $trimmed + ' processes (' + $skipped + ' skipped - other users/system, needs administrator for those). Free memory: ' + $before + ' MB -> ' + $after + ' MB (' + $freed + ' MB change).')"
-    description_sk: "Prinuti kazdy dostupny proces vratit nevyuzitu fyzicku pamat operacnemu systemu (working set trim cez .NET Process triedu - rovnaky princip ako 'Empty working set' v nastrojoch tretich stran). Bez administratorskych prav sa tyka len vlastnych procesov pouzivatela, cudzie/systemove sa preskocia. Docasny efekt - procesy si pamat postupne zoberu spat podla potreby, nic sa netrvalo nemeni. Bez undo (netreba)."
+    description_sk: "Prinúti každý dostupný proces vrátiť nevyužitú fyzickú pamäť operačnému systému (working set trim cez .NET Process triedu - rovnaký princíp ako 'Empty working set' v nástrojoch tretích strán). Bez administrátorských práv sa týka len vlastných procesov používateľa, cudzie/systémové sa preskočia. Dočasný efekt - procesy si pamäť postupne zoberú späť podľa potreby, nič sa netrvalo nemení. Bez undo (netreba)."
     description_en: "Forces every accessible process to return unused physical memory to the OS (working-set trim via the .NET Process class - same principle as the 'Empty working set' trick in third-party tools). Without administrator rights this only affects the current user's own processes; other users'/system processes are skipped. The effect is temporary - processes reclaim memory as needed, nothing is permanently changed. No undo (not needed)."

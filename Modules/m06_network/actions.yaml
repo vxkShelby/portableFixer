@@ -2,67 +2,67 @@ module_id: m06_network
 category: REPAIR
 actions:
   - id: net_adapter_status
-    label_sk: "Stav sietovych adapterov"
+    label_sk: "Stav sieťových adaptérov"
     label_en: "Network adapter status"
     risk: SAFE
     command: "Get-NetAdapter | Select-Object Name,Status,LinkSpeed,MacAddress | Format-Table -AutoSize"
-    description_sk: "Zobrazi stav a rychlost sietovych adapterov, nic nemeni."
+    description_sk: "Zobrazí stav a rýchlosť sieťových adaptérov, nič nemení."
     description_en: "Shows network adapter status and speed, changes nothing."
   - id: net_ip_config_report
-    label_sk: "Prehlad IP konfiguracie"
+    label_sk: "Prehľad IP konfigurácie"
     label_en: "IP configuration report"
     risk: SAFE
     command: "Get-NetIPConfiguration | Format-List"
-    description_sk: "Zobrazi aktualnu IP konfiguraciu vsetkych rozhrani, nic nemeni."
+    description_sk: "Zobrazí aktuálnu IP konfiguráciu všetkých rozhraní, nič nemení."
     description_en: "Shows the current IP configuration of all interfaces, changes nothing."
   - id: net_wifi_diagnostics
-    label_sk: "Diagnostika Wi-Fi (signal, kanal, pripojenie)"
+    label_sk: "Diagnostika Wi-Fi (signál, kanál, pripojenie)"
     label_en: "Wi-Fi diagnostics (signal, channel, connection)"
     risk: SAFE
     command: "netsh wlan show interfaces"
-    description_sk: "Zobrazi stav Wi-Fi rozhrania - SSID, signal, kanal, pasmo, rychlost pripojenia. Na pocitaci bez Wi-Fi adaptera hlasi, ze ziadne rozhranie neexistuje. Nic nemeni."
+    description_sk: "Zobrazí stav Wi-Fi rozhrania - SSID, signál, kanál, pásmo, rýchlosť pripojenia. Na počítači bez Wi-Fi adaptéra hlási, že žiadne rozhranie neexistuje. Nič nemení."
     description_en: "Shows Wi-Fi interface status - SSID, signal strength, channel, band, connection speed. On a machine without a Wi-Fi adapter, it reports that no interface exists. Changes nothing."
 
   - id: net_flush_dns
-    label_sk: "Vycistenie DNS cache"
+    label_sk: "Vyčistenie DNS cache"
     label_en: "Flush DNS cache"
     risk: SAFE
     command: "ipconfig /flushdns"
-    description_sk: "Vymaze lokalnu DNS cache, vynuti nove vyhladavanie nazvov."
+    description_sk: "Vymaže lokálnu DNS cache, vynúti nové vyhľadávanie názvov."
     description_en: "Clears the local DNS resolver cache, forcing fresh name lookups."
   - id: net_hosts_reset
-    label_sk: "Reset hosts suboru"
+    label_sk: "Reset hosts súboru"
     label_en: "Reset hosts file"
     risk: MODERATE
     command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (-not (Test-Path \"$hostsPath.bak\")) { Copy-Item -Path $hostsPath -Destination \"$hostsPath.bak\" -Force }; Set-Content -Path $hostsPath -Value \"# Copyright (c) 1993-2009 Microsoft Corp.`r`n#`r`n127.0.0.1 localhost`r`n::1 localhost`r`n\" -Encoding ASCII"
     undo_command: "$hostsPath = \"$env:WINDIR\\System32\\drivers\\etc\\hosts\"; if (Test-Path \"$hostsPath.bak\") { Copy-Item -Path \"$hostsPath.bak\" -Destination $hostsPath -Force }"
-    description_sk: "Zalohuje aktualny hosts subor (len pri prvom behu) a nahradi ho predvolenym obsahom bez ceph presmerovani. Caste malware presmerovava domeny cez tento subor. Undo funguje spolahlivo len ak sa medzitym nespustila tato akcia druhy krat (zaloha je len jedna, z prveho behu)."
+    description_sk: "Zálohuje aktuálny hosts súbor (len pri prvom behu) a nahradí ho predvoleným obsahom bez cudzích presmerovaní. Malware často presmerováva domény cez tento súbor. Undo funguje spoľahlivo len ak sa medzitým nespustila táto akcia druhý krát (záloha je len jedna, z prvého behu)."
     description_en: "Backs up the current hosts file (only on first run) and replaces it with default content with no redirects. Malware commonly hijacks domains via this file. Undo only works reliably if this action hasn't run a second time since (there's only one backup, from the first run)."
   - id: net_lan_inspector
-    label_sk: "Kontrola LAN zariadeni a routra"
+    label_sk: "Kontrola LAN zariadení a routra"
     label_en: "LAN device and router inspector"
     risk: SAFE
     command: "$gw = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4DefaultGateway.NextHop; $neighbors = Get-NetNeighbor -AddressFamily IPv4 -EA SilentlyContinue | Where-Object { $_.State -in 'Reachable','Stale','Permanent' -and $_.IPAddress -notmatch '^(0\\.|169\\.254\\.|224\\.|255\\.)' } | Sort-Object IPAddress -Unique; Write-Output ('LAN devices seen via ARP: ' + $neighbors.Count); foreach ($n in $neighbors) { $name = try { ([System.Net.Dns]::GetHostEntry($n.IPAddress)).HostName } catch { '' }; Write-Output ('  ' + $n.IPAddress + '  ' + $n.LinkLayerAddress + '  ' + $name) }; if ($gw) { Write-Output ('Checking common management ports on gateway ' + $gw + ' (300ms timeout each)...'); $openPorts = @(); foreach ($p in 21,23,80,443,7547,8080) { $client = New-Object System.Net.Sockets.TcpClient; try { $iar = $client.BeginConnect($gw, $p, $null, $null); $ok = $iar.AsyncWaitHandle.WaitOne(300); if ($ok -and $client.Connected) { $openPorts += $p } } catch {} finally { $client.Close() } }; if ($openPorts) { Write-Output ('  Open: ' + ($openPorts -join ', ') + ' - if you did not expect remote/web management on your router, check its admin settings.') } else { Write-Output '  None of the checked ports responded.' } } else { Write-Output 'No default gateway found.' }"
     inactivity_timeout_sec: 60
-    description_sk: "Vypise zariadenia viditelne na lokalnej sieti cez ARP tabulku (IP, MAC, hostname ak sa da zistit) a skontroluje ci router odpovieda na zopar bezne zneuzivanych management portov (21 FTP, 23 Telnet, 80/443 web admin, 7547 TR-069, 8080). Iba diagnostika bez zmien - ARP tabulka moze obsahovat aj davno neaktivne zariadenia."
+    description_sk: "Vypíše zariadenia viditeľné na lokálnej sieti cez ARP tabuľku (IP, MAC, hostname ak sa dá zistiť) a skontroluje či router odpovedá na zopár bežne zneužívaných management portov (21 FTP, 23 Telnet, 80/443 web admin, 7547 TR-069, 8080). Iba diagnostika bez zmien - ARP tabuľka môže obsahovať aj dávno neaktívne zariadenia."
     description_en: "Lists devices visible on the local network via the ARP table (IP, MAC, hostname if resolvable) and checks whether the router responds on a handful of commonly-abused management ports (21 FTP, 23 Telnet, 80/443 web admin, 7547 TR-069, 8080). Diagnostics only, changes nothing - the ARP table can include devices that haven't been active in a while."
 
   - id: net_disable_multimedia_throttling
-    label_sk: "Vypnutie multimedialneho pribrzdenia siete (latencia)"
+    label_sk: "Vypnutie multimediálneho pribrzdenia siete (latencia)"
     label_en: "Disable multimedia network throttling (latency)"
     risk: MODERATE
     command: "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile'; $bk = \"$env:ProgramData\\PortableFix\\network_throttle_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; [PSCustomObject]@{ NetworkThrottlingIndex = (Get-ItemProperty -Path $k -Name NetworkThrottlingIndex -EA SilentlyContinue).NetworkThrottlingIndex; SystemResponsiveness = (Get-ItemProperty -Path $k -Name SystemResponsiveness -EA SilentlyContinue).SystemResponsiveness } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; try { Set-ItemProperty -Path $k -Name NetworkThrottlingIndex -Value 0xffffffff -Type DWord -EA Stop; Set-ItemProperty -Path $k -Name SystemResponsiveness -Value 0 -Type DWord -EA Stop; Write-Output 'Multimedia network throttling disabled and CPU responsiveness reserved for foreground apps/games instead of background multimedia tasks.' } catch { Write-Output ('Failed to apply (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile'; $bk = \"$env:ProgramData\\PortableFix\\network_throttle_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; try { if ($null -eq $b.NetworkThrottlingIndex) { Remove-ItemProperty -Path $k -Name NetworkThrottlingIndex -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name NetworkThrottlingIndex -Value $b.NetworkThrottlingIndex -Type DWord -EA Stop }; if ($null -eq $b.SystemResponsiveness) { Remove-ItemProperty -Path $k -Name SystemResponsiveness -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name SystemResponsiveness -Value $b.SystemResponsiveness -Type DWord -EA Stop }; Write-Output 'Multimedia throttling settings restored from backup.' } catch { Write-Output ('Failed to restore (needs administrator): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Windows normalne pribrzdi sietovu prevadzku a rezervuje CPU cas pre procesy na pozadi pocas prehravania multimedii (NetworkThrottlingIndex, SystemResponsiveness) - toto ich vypne/nastavi na 0, cim da viac prostriedkov hram/popredovym aplikaciam. Popularny 'gaming' tweak s malym ale realnym efektom na latenciu. Undo obnovi zalohovane hodnoty (alebo Windows predvolene, ak kluc predtym neexistoval)."
+    description_sk: "Windows normálne pribrzdí sieťovú prevádzku a rezervuje CPU čas pre procesy na pozadí počas prehrávania multimédií (NetworkThrottlingIndex, SystemResponsiveness) - toto ich vypne/nastaví na 0, čím dá viac prostriedkov hrám/popredovým aplikáciám. Populárny 'gaming' tweak s malým ale reálnym efektom na latenciu. Undo obnoví zálohované hodnoty (alebo Windows predvolené, ak kľúč predtým neexistoval)."
     description_en: "Windows normally throttles network traffic and reserves CPU time for background processes during multimedia playback (NetworkThrottlingIndex, SystemResponsiveness) - this disables/zeroes them, giving more resources to games/foreground apps. A popular 'gaming' tweak with a small but real latency effect. Undo restores the backed-up values (or Windows defaults if the key didn't exist before)."
 
   - id: net_tcp_latency_tuning
-    label_sk: "Ladenie TCP na nizsiu latenciu (MaxUserPort, ACK)"
+    label_sk: "Ladenie TCP na nižšiu latenciu (MaxUserPort, ACK)"
     label_en: "TCP latency tuning (MaxUserPort, ACK delay)"
     risk: REQUIRES_REBOOT
     command: "$paramsKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'; $bk = \"$env:ProgramData\\PortableFix\\tcp_latency_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $adapters = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Status -eq 'Up' }; $ifacePaths = @($adapters | ForEach-Object { \"$paramsKey\\Interfaces\\{$($_.InterfaceGuid.Trim('{}'))}\" } | Where-Object { Test-Path $_ }); $backup = [PSCustomObject]@{ MaxUserPort = (Get-ItemProperty -Path $paramsKey -Name MaxUserPort -EA SilentlyContinue).MaxUserPort; Interfaces = @($ifacePaths | ForEach-Object { [PSCustomObject]@{ Path = $_; TcpAckFrequency = (Get-ItemProperty -Path $_ -Name TcpAckFrequency -EA SilentlyContinue).TcpAckFrequency; TcpNoDelay = (Get-ItemProperty -Path $_ -Name TcpNoDelay -EA SilentlyContinue).TcpNoDelay } }) }; $backup | ConvertTo-Json -Depth 4 | Set-Content -Path $bk -Encoding UTF8; try { Set-ItemProperty -Path $paramsKey -Name MaxUserPort -Value 65534 -Type DWord -EA Stop; foreach ($p in $ifacePaths) { Set-ItemProperty -Path $p -Name TcpAckFrequency -Value 1 -Type DWord -EA SilentlyContinue; Set-ItemProperty -Path $p -Name TcpNoDelay -Value 1 -Type DWord -EA SilentlyContinue }; Write-Output ('Latency-oriented TCP tuning applied to ' + $ifacePaths.Count + ' active adapter(s) - MaxUserPort raised to 65534, ACK delay reduced (Nagle-adjacent tweak). Requires a reboot to fully apply.') } catch { Write-Output ('Failed to apply (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\tcp_latency_backup.json\"; $paramsKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; try { if ($null -eq $b.MaxUserPort) { Remove-ItemProperty -Path $paramsKey -Name MaxUserPort -EA SilentlyContinue } else { Set-ItemProperty -Path $paramsKey -Name MaxUserPort -Value $b.MaxUserPort -Type DWord -EA Stop }; foreach ($i in $b.Interfaces) { if (-not (Test-Path $i.Path)) { continue }; if ($null -eq $i.TcpAckFrequency) { Remove-ItemProperty -Path $i.Path -Name TcpAckFrequency -EA SilentlyContinue } else { Set-ItemProperty -Path $i.Path -Name TcpAckFrequency -Value $i.TcpAckFrequency -Type DWord -EA SilentlyContinue }; if ($null -eq $i.TcpNoDelay) { Remove-ItemProperty -Path $i.Path -Name TcpNoDelay -EA SilentlyContinue } else { Set-ItemProperty -Path $i.Path -Name TcpNoDelay -Value $i.TcpNoDelay -Type DWord -EA SilentlyContinue } }; Write-Output 'TCP latency tuning restored from backup - requires a reboot to fully apply.' } catch { Write-Output ('Failed to restore (needs administrator): ' + $_.Exception.Message); exit 1 } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Zvysi MaxUserPort (rozsah dynamickych portov, pomoze pri mnohych sucasnych spojeniach) a na aktivnych sietovych adapteroch nastavi TcpAckFrequency/TcpNoDelay na potlacenie oneskoreneho ACK (Nagle-adjacent tweak) - moze mierne znizit sietovu latenciu v hrach. Vyzaduje restart. Zaloha sa prepisuje pri kazdom behu, undo obnovi povodne hodnoty na kazdom aktivnom adapteri z behu zalohovania."
+    description_sk: "Zvýši MaxUserPort (rozsah dynamických portov, pomôže pri mnohých súčasných spojeniach) a na aktívnych sieťových adaptéroch nastaví TcpAckFrequency/TcpNoDelay na potlačenie oneskoreného ACK (Nagle-adjacent tweak) - môže mierne znížiť sieťovú latenciu v hrách. Vyžaduje reštart. Záloha sa prepisuje pri každom behu, undo obnoví pôvodné hodnoty na každom aktívnom adaptéri z behu zálohovania."
     description_en: "Raises MaxUserPort (the dynamic port range, helps with many concurrent connections) and sets TcpAckFrequency/TcpNoDelay on active network adapters to suppress delayed ACKs (a Nagle-adjacent tweak) - can modestly reduce network latency in games. Requires a reboot. Backup is refreshed on every run; undo restores the original values on each adapter active at backup time."
 
   - id: net_dhcp_renew
@@ -70,73 +70,73 @@ actions:
     label_en: "Renew DHCP address"
     risk: MODERATE
     command: "ipconfig /release; ipconfig /renew"
-    description_sk: "Uvolni a znovu ziska IP adresu cez DHCP. Kratko prerusi sietove spojenie."
+    description_sk: "Uvoľní a znovu získa IP adresu cez DHCP. Krátko preruší sieťové spojenie."
     description_en: "Releases and re-acquires the IP address via DHCP. Briefly interrupts network connectivity."
   - id: net_winsock_reset
-    label_sk: "Reset Winsock katalogu"
+    label_sk: "Reset Winsock katalógu"
     label_en: "Reset Winsock catalog"
     risk: REQUIRES_REBOOT
     command: "netsh winsock reset"
-    description_sk: "Resetuje Winsock katalog na predvolene nastavenia. Vyzaduje restart pre plne uplatnenie."
+    description_sk: "Resetuje Winsock katalóg na predvolené nastavenia. Vyžaduje reštart pre plné uplatnenie."
     description_en: "Resets the Winsock catalog to default settings. Requires a restart to fully apply."
   - id: net_tcpip_reset
-    label_sk: "Reset TCP/IP zasobnika"
+    label_sk: "Reset TCP/IP zásobníka"
     label_en: "Reset TCP/IP stack"
     risk: REQUIRES_REBOOT
     command: "netsh int ip reset"
-    description_sk: "Resetuje TCP/IP zasobnik na predvolene nastavenia. Vyzaduje restart pre plne uplatnenie."
+    description_sk: "Resetuje TCP/IP zásobník na predvolené nastavenia. Vyžaduje reštart pre plné uplatnenie."
     description_en: "Resets the TCP/IP stack to default settings. Requires a restart to fully apply."
   - id: net_dns_reset_automatic
-    label_sk: "Reset DNS na automaticky (DHCP)"
+    label_sk: "Reset DNS na automatický (DHCP)"
     label_en: "Reset DNS to automatic (DHCP)"
     risk: MODERATE
     command: "$adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }; if (-not $adapters) { Write-Output 'No active network adapters found.'; exit 1 }; $bk = \"$env:ProgramData\\PortableFix\\dns_reset_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $backup = @($adapters | ForEach-Object { [PSCustomObject]@{ IfIndex = $_.ifIndex; Servers = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses) } }); $backup | ConvertTo-Json -Depth 4 | Set-Content -Path $bk -Encoding UTF8; $ok = @(); $failed = @(); foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -EA Stop; $ok += $a.Name } catch { $failed += $a.Name } }; if ($ok) { Write-Output ('DNS reset to automatic (DHCP) on: ' + ($ok -join ', ') + ' - any hijacked static DNS server is now cleared.') }; if ($failed) { Write-Output ('Could not reset DNS (needs administrator): ' + ($failed -join ', ')) }; if ($failed -and -not $ok) { exit 1 }"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\dns_reset_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; $ok = @(); $failed = @(); foreach ($i in $b) { try { if ($i.Servers -and $i.Servers.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $i.IfIndex -ServerAddresses $i.Servers -EA Stop } else { Set-DnsClientServerAddress -InterfaceIndex $i.IfIndex -ResetServerAddresses -EA Stop }; $ok += $i.IfIndex } catch { $failed += $i.IfIndex } }; if ($ok) { Write-Output ('DNS restored from backup on interface(s): ' + ($ok -join ', ')) }; if ($failed) { Write-Output ('Could not restore DNS (needs administrator) on interface(s): ' + ($failed -join ', ')); exit 1 } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Vymaze rucne/staticke DNS nastavenia na vsetkych aktivnych adapteroch a vrati automaticke priradenie cez DHCP - riesenie pre DNS hijack (napr. presmerovanie na malicious DNS server). Na rozdiel od 'Prepnutie DNS na verejny' tu nejde o zmenu na konkretneho poskytovatela, len o navrat k tomu, co posiela router/ISP. Vyzaduje administratora. Zaloha sa prepisuje pri kazdom behu, undo obnovi predoslu hodnotu."
+    description_sk: "Vymaže ručné/statické DNS nastavenia na všetkých aktívnych adaptéroch a vráti automatické priradenie cez DHCP - riešenie pre DNS hijack (napr. presmerovanie na malicious DNS server). Na rozdiel od 'Prepnutie DNS na verejný' tu nejde o zmenu na konkrétneho poskytovateľa, len o návrat k tomu, čo posiela router/ISP. Vyžaduje administrátora. Záloha sa prepisuje pri každom behu, undo obnoví predošlú hodnotu."
     description_en: "Clears manual/static DNS settings on all active adapters and restores automatic DHCP assignment - a fix for DNS hijacking (e.g. redirection to a malicious DNS server). Unlike 'Switch DNS to public,' this does not pick a specific provider, it just returns to whatever the router/ISP hands out. Needs administrator. Backup is refreshed on every run; undo restores the previous value."
 
   - id: net_firewall_reset
-    label_sk: "Reset Windows Firewall na predvolene"
+    label_sk: "Reset Windows Firewall na predvolené"
     label_en: "Reset Windows Firewall to defaults"
     risk: MODERATE
     command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; netsh advfirewall export $bk | Out-Null; $exportOk = $LASTEXITCODE -eq 0; netsh advfirewall reset | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Firewall reset to defaults (backup exported: ' + $exportOk + ').') } else { Write-Output 'Firewall reset failed (requires administrator privileges).'; exit 1 }"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; if (Test-Path $bk) { netsh advfirewall import $bk | Out-Null; Write-Output 'Firewall settings restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Zalohuje aktualne pravidla firewallu a resetuje ho na predvolene nastavenia Windows. Undo obnovi zo zalohy."
+    description_sk: "Zálohuje aktuálne pravidlá firewallu a resetuje ho na predvolené nastavenia Windows. Undo obnoví zo zálohy."
     description_en: "Backs up current firewall rules and resets it to Windows defaults. Undo restores from the backup."
   - id: net_print_spooler_reset
-    label_sk: "Reset tlacoveho spooleru"
+    label_sk: "Reset tlačového spooleru"
     label_en: "Reset print spooler"
     risk: MODERATE
     command: "Stop-Service -Name Spooler -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\System32\\spool\\PRINTERS\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service -Name Spooler -EA SilentlyContinue -ErrorVariable startErrs; Write-Output ('Skipped locked/in-use items: ' + $errs.Count + '; Spooler service restart: ' + $(if ($startErrs.Count -eq 0) { 'OK' } else { 'FAILED' }))"
-    description_sk: "Zastavi sluzbu tlacoveho spooleru, vycisti zaseknutu frontu tlace a spusti sluzbu spat."
+    description_sk: "Zastaví službu tlačového spooleru, vyčistí zaseknutú frontu tlače a spustí službu späť."
     description_en: "Stops the print spooler service, clears a stuck print queue, and restarts the service."
   - id: net_adapter_power_disable
-    label_sk: "Vypnutie uspornej spravy sietovych adapterov"
+    label_sk: "Vypnutie úspornej správy sieťových adaptérov"
     label_en: "Disable network adapter power management"
     risk: MODERATE
     command: "$adapters = Get-NetAdapter -EA SilentlyContinue; $ok = 0; $failed = 0; foreach ($a in $adapters) { try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Disabled -EA Stop; $ok++ } catch { $failed++ } }; Write-Output ('Disabled power management on ' + $ok + ' adapter(s), unsupported/failed: ' + $failed)"
     undo_command: "$adapters = Get-NetAdapter -EA SilentlyContinue; $ok = 0; $failed = 0; foreach ($a in $adapters) { try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Enabled -EA Stop; $ok++ } catch { $failed++ } }; Write-Output ('Re-enabled power management on ' + $ok + ' adapter(s), unsupported/failed: ' + $failed)"
-    description_sk: "Zabrani Windows vypinat sietove adaptery kvoli uspore energie - caste riesenie nahodnych vypadkov Wi-Fi/LAN po uspani."
+    description_sk: "Zabráni Windows vypínať sieťové adaptéry kvôli úspore energie - časté riešenie náhodných výpadkov Wi-Fi/LAN po uspaní."
     description_en: "Prevents Windows from powering off network adapters to save energy - a common fix for random Wi-Fi/LAN drops after sleep."
   - id: net_set_public_dns
-    label_sk: "Prepnutie DNS na verejny (Cloudflare)"
+    label_sk: "Prepnutie DNS na verejný (Cloudflare)"
     label_en: "Switch DNS to public (Cloudflare)"
     risk: MODERATE
     command: "$adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }; if (-not $adapters) { Write-Output 'No active network adapters found.'; exit 1 }; $ok = @(); $failed = @(); foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses ('1.1.1.1','1.0.0.1') -EA Stop; $ok += $a.Name } catch { $failed += $a.Name } }; if ($ok) { Write-Output ('Set DNS to 1.1.1.1 / 1.0.0.1 on: ' + ($ok -join ', ')) }; if ($failed) { Write-Output ('Could not set DNS (needs administrator): ' + ($failed -join ', ')) }; if ($failed -and -not $ok) { exit 1 }"
     undo_command: "$adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }; if (-not $adapters) { Write-Output 'No active network adapters found.'; exit 1 }; $ok = @(); $failed = @(); foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -EA Stop; $ok += $a.Name } catch { $failed += $a.Name } }; if ($ok) { Write-Output ('DNS reset to automatic (DHCP) on: ' + ($ok -join ', ')) }; if ($failed) { Write-Output ('Could not reset DNS (needs administrator): ' + ($failed -join ', ')) }; if ($failed -and -not $ok) { exit 1 }"
-    description_sk: "Nastavi DNS na verejny Cloudflare resolver (1.1.1.1 / 1.0.0.1) na vsetkych aktivnych adapteroch - vhodne, ak DNS poskytovatela pripojenia/routera je pomaly alebo nefunguje spravne. Vyzaduje administratora. Undo vrati automaticke DNS pridelovane cez DHCP."
+    description_sk: "Nastaví DNS na verejný Cloudflare resolver (1.1.1.1 / 1.0.0.1) na všetkých aktívnych adaptéroch - vhodné, ak DNS poskytovateľa pripojenia/routera je pomalý alebo nefunguje správne. Vyžaduje administrátora. Undo vráti automatické DNS prideľované cez DHCP."
     description_en: "Sets DNS to Cloudflare's public resolver (1.1.1.1 / 1.0.0.1) on all active adapters - useful when the ISP's/router's own DNS is slow or broken. Needs administrator. Undo restores automatic (DHCP-assigned) DNS."
   - id: net_time_sync_repair
-    label_sk: "Oprava synchronizacie casu"
+    label_sk: "Oprava synchronizácie času"
     label_en: "Repair time synchronization"
     risk: MODERATE
     command: "Set-Service -Name W32Time -StartupType Automatic -EA SilentlyContinue; Start-Service -Name W32Time -EA SilentlyContinue; $svc = Get-Service -Name W32Time -EA SilentlyContinue; if (-not $svc -or $svc.Status -ne 'Running') { Write-Output 'Could not start Windows Time service (needs administrator).'; exit 1 }; w32tm /resync /force | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Time service started and clock resynchronized.' } else { Write-Output 'Time service running but resync failed (no time server reachable, or needs administrator).'; exit 1 }"
-    description_sk: "Zapne a spusti sluzbu Windows Time (W32Time) a vynuti okamzitu synchronizaciu hodin (w32tm /resync /force). Posun hodin ticho lamie Kerberos/TLS overovanie a prihlasovanie - neocakavany, ale caste zdroj problemov. Vyzaduje administratora. Bez undo (opraveny cas nie je co vracat spat)."
+    description_sk: "Zapne a spustí službu Windows Time (W32Time) a vynúti okamžitú synchronizáciu hodín (w32tm /resync /force). Posun hodín ticho láme Kerberos/TLS overovanie a prihlasovanie - neočakávaný, ale časté zdroj problémov. Vyžaduje administrátora. Bez undo (opravený čas nie je čo vracať späť)."
     description_en: "Enables and starts the Windows Time service (W32Time) and forces an immediate clock resync (w32tm /resync /force). Clock drift silently breaks Kerberos/TLS validation and sign-in - a non-obvious but common root cause. Needs administrator. No undo (a corrected clock isn't something to roll back)."
   - id: net_dns_client_restart
-    label_sk: "Restart sluzby DNS Client"
+    label_sk: "Reštart služby DNS Client"
     label_en: "Restart DNS Client service"
     risk: MODERATE
     command: "$svc = Get-Service -Name Dnscache -EA SilentlyContinue; if (-not $svc) { Write-Output 'DNS Client service (Dnscache) not found.'; exit 1 }; Stop-Service -Name Dnscache -Force -EA SilentlyContinue; $svc.Refresh(); Start-Service -Name Dnscache -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Running') { Write-Output 'DNS Client service restarted.' } else { Write-Output 'Could not restart DNS Client service (needs administrator).'; exit 1 }"
-    description_sk: "Zastavi a znovu spusti sluzbu DNS Client (Dnscache) - na rozdiel od net_flush_dns (ktory len vycisti cache) toto pomoze, ak je zaseknuta samotna sluzba. Vyzaduje administratora. Bez undo."
+    description_sk: "Zastaví a znovu spustí službu DNS Client (Dnscache) - na rozdiel od net_flush_dns (ktorý len vyčistí cache) toto pomôže, ak je zaseknutá samotná služba. Vyžaduje administrátora. Bez undo."
     description_en: "Stops and restarts the DNS Client service (Dnscache) - unlike net_flush_dns (which only clears the cache), this helps when the service itself is wedged, not just the cache. Needs administrator. No undo."

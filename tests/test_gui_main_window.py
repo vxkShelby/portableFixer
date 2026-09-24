@@ -479,7 +479,7 @@ def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     assert window.settings.language == "sk"
-    assert window.run_button.text() == "Spustit vybrane"
+    assert window.run_button.text() == "Spustiť vybrané"
 
     window.language_button.click()
 
