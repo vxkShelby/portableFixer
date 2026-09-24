@@ -184,3 +184,18 @@ def test_hidden_large_data_report_never_deletes_anything():
     assert ".vhdx" in action.command
     for verb in ("Remove-Item", "Optimize-VHD -", "wsl --unregister"):
         assert verb not in action.command, verb
+
+
+def test_service_and_explorer_restart_failures_exit_non_zero():
+    # "FAILED" in the output alone still exited 0, so the report/history said
+    # success while the service - or, for thumbnail_cache, the whole desktop
+    # shell - stayed down. The FAILED branch must exit 1; the OK path still
+    # ends on the trailing Write-Output checked by the skipped-items test.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("thumbnail_cache", "font_cache", "windows_update_cache"):
+        command = by_id[action_id].command
+        failed = command.index('"FAILED"')
+        condition = command[command.rindex("if (", 0, failed):failed]
+        assert "$restarted" in condition or "$startErrs" in condition, action_id
+        assert "exit 1" in command[failed:command.index("}", failed)], action_id

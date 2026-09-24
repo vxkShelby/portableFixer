@@ -59,7 +59,7 @@ actions:
     label_sk: "Cache náhľadov"
     label_en: "Thumbnail cache"
     risk: SAFE
-    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (-not (Get-Process -Name explorer -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe; for ($i = 0; $i -lt 20; $i++) { if (Get-Process -Name explorer -EA SilentlyContinue) { break }; Start-Sleep -Milliseconds 200 } }; $restarted = [bool](Get-Process -Name explorer -EA SilentlyContinue); Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; Explorer restart: \" + $(if ($restarted) { \"OK\" } else { \"FAILED\" }))"
+    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (-not (Get-Process -Name explorer -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe; for ($i = 0; $i -lt 20; $i++) { if (Get-Process -Name explorer -EA SilentlyContinue) { break }; Start-Sleep -Milliseconds 200 } }; $restarted = [bool](Get-Process -Name explorer -EA SilentlyContinue); $msg = \"Skipped locked/in-use items: \" + $errs.Count + \"; Explorer restart: \"; if (-not $restarted) { Write-Output ($msg + \"FAILED\"); exit 1 }; Write-Output ($msg + \"OK\")"
     preview_command: "$f = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c thumbnail cache file(s), $mb MB, and restart Explorer\""
     description_sk: "Vymaže cache náhľadov a reštartuje Explorer (najprv počká, kým sa pôvodný proces úplne ukončí, aby reštart nezlyhal)."
     description_en: "Clears the thumbnail cache and restarts Explorer (waits for the old process to fully exit first, so the restart doesn't crash)."
@@ -68,7 +68,7 @@ actions:
     label_sk: "Cache písiem"
     label_en: "Font cache"
     risk: MODERATE
-    command: "Stop-Service FontCache -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service FontCache -EA SilentlyContinue -ErrorVariable startErrs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; FontCache service restart: \" + $(if ($startErrs.Count -eq 0) { \"OK\" } else { \"FAILED\" }))"
+    command: "Stop-Service FontCache -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service FontCache -EA SilentlyContinue -ErrorVariable startErrs; $msg = \"Skipped locked/in-use items: \" + $errs.Count + \"; FontCache service restart: \"; if ($startErrs.Count -gt 0) { Write-Output ($msg + \"FAILED\"); exit 1 }; Write-Output ($msg + \"OK\")"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\" -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would clear $c font cache file(s), $mb MB, restarting FontCache service\""
     description_sk: "Reštartuje službu FontCache a vymaže jej cache."
     description_en: "Restarts the FontCache service and clears its cache."
@@ -86,7 +86,7 @@ actions:
     label_sk: "Cache Windows Update"
     label_en: "Windows Update cache"
     risk: MODERATE
-    command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service wuauserv,bits -EA SilentlyContinue -ErrorVariable startErrs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count + \"; service restart: \" + $(if ($startErrs.Count -eq 0) { \"OK\" } else { \"FAILED\" }))"
+    command: "Stop-Service wuauserv,bits -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\SoftwareDistribution\\Download\\*\" -Recurse -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service wuauserv,bits -EA SilentlyContinue -ErrorVariable startErrs; $msg = \"Skipped locked/in-use items: \" + $errs.Count + \"; service restart: \"; if ($startErrs.Count -gt 0) { Write-Output ($msg + \"FAILED\"); exit 1 }; Write-Output ($msg + \"OK\")"
     preview_command: "$f = Get-ChildItem \"$env:WINDIR\\SoftwareDistribution\\Download\" -Recurse -File -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Windows Update cache\""
     description_sk: "Zastaví služby, vymaže stiahnuté aktualizácie a služby znova spustí."
     description_en: "Stops services, clears downloaded updates, restarts services."
