@@ -258,3 +258,26 @@ def test_action_runner_honors_an_explicit_hard_cap_override(qtbot):
         runner.start()
         qtbot.waitUntil(lambda: len(results) == 1, timeout=10000)
     assert results[0] == ActionRunner.TIMEOUT_EXIT_CODE
+
+
+def test_powershell_executable_prefers_the_absolute_system_path(tmp_path, monkeypatch):
+    # A corrupted PATH on a broken machine made every action (and the
+    # updater) report "PowerShell not found" while powershell.exe sat in
+    # its standard location the whole time.
+    from portablefix.executor import powershell_executable
+
+    exe = tmp_path / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+
+    assert powershell_executable() == str(exe)
+
+
+def test_powershell_executable_falls_back_to_path_lookup(tmp_path, monkeypatch):
+    from portablefix.executor import powershell_executable
+
+    monkeypatch.setenv("SystemRoot", str(tmp_path))  # no powershell.exe under it
+    monkeypatch.delenv("WINDIR", raising=False)
+
+    assert powershell_executable() == "powershell"

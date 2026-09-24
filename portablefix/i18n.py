@@ -211,6 +211,11 @@ _STRINGS = {
         "a11y_risk": "riziko",
         "a11y_dashboard_tile_findings": "{count} odporúčaných opráv",
         "a11y_dashboard_tile_hint": "Enter alebo medzerník otvorí túto kategóriu.",
+        "fallback_banner_path": "USB nedostupný na zápis – logy a reporty sa ukladajú sem:\n{path}",
+        "integrity_more": "… (ďalšie súbory: {count})",
+        "update_status_interrupted": "Posledná aktualizácia bola prerušená (napr. odpojené USB alebo výpadok napájania). Pôvodné priečinky boli obnovené, kde to bolo možné – ak niečo chýba, spusti aktualizáciu znova.",
+        "update_status_failed": "Posledná aktualizácia sa nepodarila, zostala pôvodná verzia. Podrobnosti v logu: {log_dir}",
+        "update_status_sums_stale": "Aktualizácia prebehla, ale zoznam kontrolných súčtov (Data\\SHA256SUMS) sa nepodarilo obnoviť – varovanie o integrite pre nové súbory je preto očakávané, nejde o zásah zvonku.",
     },
     "en": {
         "app_title": "PortableFix",
@@ -424,6 +429,11 @@ _STRINGS = {
         "a11y_risk": "risk",
         "a11y_dashboard_tile_findings": "{count} recommended fixes",
         "a11y_dashboard_tile_hint": "Press Enter or Space to open this category.",
+        "fallback_banner_path": "USB not writable - logs and reports are saved here instead:\n{path}",
+        "integrity_more": "… and {count} more files",
+        "update_status_interrupted": "The last update was interrupted (e.g. USB unplugged or power lost). The previous folders were restored where possible - if anything is missing, run the update again.",
+        "update_status_failed": "The last update did not succeed; the previous version was kept. Details in the log: {log_dir}",
+        "update_status_sums_stale": "The update was installed, but the checksum list (Data\\SHA256SUMS) could not be refreshed - an integrity warning about the new files is therefore expected and does not mean tampering.",
     },
 }
 

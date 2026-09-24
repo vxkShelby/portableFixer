@@ -57,3 +57,18 @@ def test_install_excepthook_writes_crash_log_and_calls_previous_hook(tmp_path, m
     assert calls, "previous excepthook was not called"
     log_text = crash_log_path(tmp_path).read_text(encoding="utf-8")
     assert "ValueError: boom" in log_text
+
+
+def test_write_crash_log_records_a_caught_exception(tmp_path):
+    # main() catches startup exceptions itself (they never reach
+    # sys.excepthook) - this is what keeps a trace of them on disk.
+    from portablefix.diagnostics import write_crash_log
+
+    try:
+        raise RuntimeError("startup exploded")
+    except RuntimeError as exc:
+        write_crash_log(tmp_path, exc)
+
+    log_text = crash_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "RuntimeError: startup exploded" in log_text
+    assert "Traceback" in log_text

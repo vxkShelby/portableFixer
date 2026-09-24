@@ -19,19 +19,26 @@ def install_excepthook(base_dir: Path) -> None:
     previous_hook = sys.excepthook
 
     def _hook(exc_type, exc_value, exc_tb) -> None:
-        try:
-            path = crash_log_path(base_dir)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(f"--- {datetime.now(timezone.utc).isoformat()} ---\n")
-                f.write(f"{platform.platform()}\n")
-                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
-                f.write("\n")
-        except OSError:
-            pass
+        write_crash_log(base_dir, exc_value, exc_tb)
         previous_hook(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _hook
+
+
+def write_crash_log(base_dir: Path, exc: BaseException, tb=None) -> None:
+    """Also used for exceptions main() catches itself: those end in a
+    "Startup failed" dialog and never reach sys.excepthook, so without this
+    the only trace of why the app wouldn't start was that dialog's text."""
+    try:
+        path = crash_log_path(base_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"--- {datetime.now(timezone.utc).isoformat()} ---\n")
+            f.write(f"{platform.platform()}\n")
+            traceback.print_exception(type(exc), exc, tb or exc.__traceback__, file=f)
+            f.write("\n")
+    except OSError:
+        pass
 
 
 def build_bug_report_url(version: str) -> str:
