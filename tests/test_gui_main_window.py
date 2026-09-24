@@ -3317,3 +3317,80 @@ def test_close_event_waits_long_enough_for_a_running_restore_point(qtbot, tmp_pa
     window._pending_restore_point_runner = _FakeRunner()
     window.close()
     assert waits == [restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000]
+
+
+def _fake_running_rp_runner():
+    from PySide6.QtCore import QObject, Signal
+
+    class _Runner(QObject):
+        finished = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self.running = True
+            self.waits = []
+
+        def isRunning(self):
+            return self.running
+
+        def wait(self, timeout_ms):
+            self.waits.append(timeout_ms)
+            return True
+
+    return _Runner()
+
+
+def test_close_while_restore_point_runs_waits_without_blocking_then_closes(qtbot, tmp_path):
+    # Blocking closeEvent for up to ~5 min froze the window; instead the
+    # close is deferred, the batch cancelled, and the window closes itself
+    # once the restore point has finished.
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_rp_defer")
+    qtbot.addWidget(window)
+    window.show()
+    runner = _fake_running_rp_runner()
+    window._pending_restore_point_runner = runner
+    window._queue = ["one", "two"]
+
+    window.close()
+
+    assert window.isVisible()
+    assert window._cancel_requested is True
+    assert window._queue == []
+    assert "restore point" in window.statusBar().currentMessage()
+
+    runner.running = False
+    runner.finished.emit()
+
+    assert not window.isVisible()
+    assert window._closed is True
+
+
+def test_restore_point_result_after_close_never_dispatches_the_guarded_action(qtbot, tmp_path, monkeypatch):
+    # Regression: closing during Checkpoint-Computer used to let the
+    # restore point's result dispatch the guarded repair action with no
+    # window left - unlogged, outliving the app.
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_rp_after_close")
+    qtbot.addWidget(window)
+    window.show()
+    monkeypatch.setattr(window, "_dispatch_action", lambda *a, **k: pytest.fail("dispatched after close"))
+    questions = []
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: questions.append(a) or QMessageBox.StandardButton.Yes)
+    )
+    runner = _fake_running_rp_runner()
+    window._pending_restore_point_runner = runner
+    window._batch_active = True
+    window._queue = ["two"]
+    module, action = window._find_action("one")
+
+    window.close()  # deferred: batch cancelled
+    window._on_restore_point_checked(True, "", module, action)
+    runner.running = False
+    runner.finished.emit()
+
+    _wait_batch_idle(qtbot, window)
+    assert not window.isVisible()
+    # Asked once ("batch running, close anyway?"), not again on the real close.
+    assert len(questions) == 1

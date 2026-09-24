@@ -123,6 +123,15 @@ class _DashboardTile(QFrame):
         super().keyPressEvent(event)
 
 
+def _thread_running(runner) -> bool:
+    # A finished QThread may already be deleteLater'd - its wrapper then
+    # raises RuntimeError, which just means "not running".
+    try:
+        return bool(runner.isRunning())
+    except (RuntimeError, AttributeError):
+        return False
+
+
 def _score_state(score: int) -> str:
     """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
     if score >= 80:
@@ -192,6 +201,7 @@ class MainWindow(QMainWindow):
         self._job_note = ""
         self._tray_icon: QSystemTrayIcon | None = None
         self._cancel_requested = False
+        self._close_after_restore_point = False
         self._pending_update_info = None
         self._update_check_runner = None
         self._update_download_runner = None
@@ -278,7 +288,36 @@ class MainWindow(QMainWindow):
         self.run_selected_actions()
 
     def closeEvent(self, event) -> None:
-        if self._batch_active:
+        rp_runner = self._pending_restore_point_runner
+        if rp_runner is not None and _thread_running(rp_runner):
+            # Checkpoint-Computer can take minutes and can't be interrupted.
+            # Blocking in closeEvent froze the window ("Not Responding" -
+            # an invitation to kill it from Task Manager before the throttle
+            # registry value is restored), and the restore point's result
+            # then dispatched the action it was guarding with no window
+            # left. Instead: cancel the batch, show why we're still here,
+            # and close for real once the restore point has finished.
+            if not self._close_after_restore_point:
+                if self._batch_active:
+                    proceed = QMessageBox.question(
+                        self,
+                        self._t("app_title"),
+                        self._t("confirm_close_during_batch"),
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if proceed != QMessageBox.Yes:
+                        event.ignore()
+                        return
+                self._close_after_restore_point = True
+                self._cancel_requested = True
+                self._queue = []
+                self.cancel_button.setEnabled(False)
+                self.run_button.setEnabled(False)
+                rp_runner.finished.connect(self.close)
+                self.statusBar().showMessage(self._t("closing_waiting_restore_point"))
+            event.ignore()
+            return
+        if self._batch_active and not self._close_after_restore_point:
             proceed = QMessageBox.question(
                 self,
                 self._t("app_title"),
@@ -292,6 +331,9 @@ class MainWindow(QMainWindow):
         # callback fires after the C++ widgets are gone) so async batch-completion
         # handlers know not to touch self.run_button once the window is closing.
         self._closed = True
+        # Anything still finishing asynchronously (a restore point result, a
+        # runner's final signal) must not start new work once we're closing.
+        self._cancel_requested = True
         if self._console_window is not None:
             self._console_window.close()
         if self._sysinfo_timer is not None:
@@ -2556,6 +2598,10 @@ class MainWindow(QMainWindow):
                 self.console.appendPlainText(self._t("disk_write_failed"))
 
     def _dispatch_action(self, module: ModuleDef, action: ActionDef) -> None:
+        if self._closed:
+            # Never start an action (or pop its confirmation) after the
+            # window is gone - it would run unlogged and outlive the app.
+            return
         warning_text = ""
         confirmed = QMessageBox.Yes
         if action.risk == RiskLevel.DESTRUCTIVE:
