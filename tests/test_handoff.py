@@ -204,3 +204,345 @@ def test_unicode_hostname_is_stored_with_utf8_names(tmp_path):
     with zipfile.ZipFile(dest) as zf:
         assert "report.html" in zf.namelist()
         assert host in zf.read("README.txt").decode("utf-8-sig")
+
+
+# --- Windows diagnostics (G19) ---------------------------------------------
+
+import subprocess  # noqa: E402
+
+REPORT_NAMES = [spec.arcname for spec in handoff.DIAGNOSTIC_REPORTS]
+
+
+class _FakePopen:
+    """Stands in for subprocess.Popen: `behaviour` maps the command name to
+    (exit code, bytes written, mode) with mode "ok", "hang" or "oserror"."""
+
+    calls: list = []
+    procs: list = []
+    behaviour: dict = {}
+
+    def __init__(self, argv, stdin=None, stdout=None, stderr=None, creationflags=0):
+        name = os.path.basename(argv[0]).lower().removesuffix(".exe")
+        code, payload, mode = self.behaviour.get(name, (0, b"data-" + name.encode(), "ok"))
+        type(self).calls.append(list(argv))
+        if mode == "oserror":
+            raise FileNotFoundError(argv[0])
+        type(self).procs.append(self)
+        self.killed = False
+        self._mode = mode
+        self._code = code
+        if payload:
+            if hasattr(stdout, "write"):
+                stdout.write(payload)
+            else:
+                # A report that writes its own file: the only argument with
+                # a directory in it (not a "/t"-style switch, which looks
+                # absolute on POSIX).
+                out_path = next(a for a in argv[1:] if a.count(os.sep) > 1)
+                with open(out_path, "wb") as fh:
+                    fh.write(payload)
+
+    def wait(self, timeout=None):
+        if self._mode == "hang" and not self.killed:
+            raise subprocess.TimeoutExpired("fake", timeout)
+        return self._code
+
+    def kill(self):
+        self.killed = True
+
+
+@pytest.fixture
+def fake_reports(monkeypatch):
+    _FakePopen.calls = []
+    _FakePopen.procs = []
+    _FakePopen.behaviour = {}
+    monkeypatch.setattr(handoff.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handoff, "_has_battery", lambda: True)
+    monkeypatch.setattr(handoff, "_find_winget", lambda: os.path.abspath("WindowsApps/winget.exe"))
+    return _FakePopen
+
+
+def _fast_clock(monkeypatch):
+    # Every clock read jumps a minute, so a hung report runs out of its
+    # (minutes long) timeout at once.
+    clock = iter(range(0, 10**7, 60))
+    monkeypatch.setattr(handoff.time, "monotonic", lambda: next(clock))
+
+
+def _zip_texts(zip_path):
+    with zipfile.ZipFile(zip_path) as zf:
+        return {name: zf.read(name) for name in zf.namelist()}
+
+
+def test_diagnostics_off_runs_nothing(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    _write_run(state)
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("no report may run when diagnostics are off")
+
+    monkeypatch.setattr(handoff.subprocess, "Popen", _forbidden)
+    monkeypatch.setattr(handoff, "_has_battery", _forbidden)
+    monkeypatch.setattr(handoff, "_find_winget", _forbidden)
+    monkeypatch.setattr(handoff.tempfile, "mkdtemp", _forbidden)
+    dest = handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip")
+    assert not any(n.startswith("diagnostics/") for n in _names(dest))
+
+
+def test_diagnostics_all_reports_in_zip(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state)
+    progress = []
+
+    dest = handoff.build_handoff_zip(
+        state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True,
+        progress=lambda i, total, name: progress.append((i, total, name)),
+    )
+
+    files = _zip_texts(dest)
+    expected = {f"diagnostics/{n}" for n in REPORT_NAMES} | {"diagnostics/README.txt"}
+    assert expected <= set(files)
+    # The run's own files are still there.
+    assert {"README.txt", "report.html", "audit_log.jsonl", "undo.ps1"} <= set(files)
+    assert files["diagnostics/systeminfo.csv"] == b"data-systeminfo"
+    assert files["diagnostics/msinfo32.nfo"] == b"data-msinfo32"
+    assert progress == [(i, len(REPORT_NAMES), n) for i, n in enumerate(REPORT_NAMES, start=1)]
+    # msinfo32 last (slowest); powercfg /energy never (too slow).
+    assert fake_reports.calls[-1][:2] == ["msinfo32", "/nfo"]
+    assert not any("/energy" in call for call in fake_reports.calls)
+
+
+def test_diagnostics_commands_are_locale_free(tmp_path, fake_reports):
+    handoff.collect_diagnostics(tmp_path / "work")
+    by_name = {os.path.basename(c[0]).lower(): c for c in fake_reports.calls}
+    assert by_name["systeminfo"] == ["systeminfo", "/fo", "csv"]
+    assert by_name["driverquery"] == ["driverquery", "/v", "/fo", "csv"]
+    assert by_name["ipconfig"] == ["ipconfig", "/all"]
+    assert by_name["powercfg"][:3] == ["powercfg", "/batteryreport", "/output"]
+    assert by_name["dxdiag"][:2] == ["dxdiag", "/t"]
+    assert by_name["winget.exe"][1] == "export"
+    events = [c for c in fake_reports.calls if c[0] == "wevtutil"]
+    assert [c[2] for c in events] == ["System", "Application"]
+    for call in events:
+        assert call[1] == "epl"
+        query = next(a for a in call if a.startswith("/q:"))
+        # Numeric levels and a 7-day timediff, no localized level names.
+        assert "Level=1" in query and "Level=2" in query and "604800000" in query
+        assert "Error" not in query and "Chyba" not in query
+
+
+def test_one_failed_and_one_timed_out_report_do_not_fail_handoff(tmp_path, fake_reports, monkeypatch):
+    state = tmp_path / "state"
+    _write_run(state)
+    fake_reports.behaviour = {
+        "msinfo32": (0, b"partial", "hang"),
+        "dxdiag": (0, b"", "oserror"),
+        "driverquery": (1, b"error text", "ok"),
+    }
+    _fast_clock(monkeypatch)
+
+    dest = handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True)
+
+    names = set(_names(dest))
+    assert "diagnostics/msinfo32.nfo" not in names  # killed - the partial file is dropped
+    assert "diagnostics/dxdiag.txt" not in names
+    assert "diagnostics/driverquery.csv" not in names  # non-zero exit
+    assert {"diagnostics/systeminfo.csv", "diagnostics/ipconfig.txt", "diagnostics/README.txt"} <= names
+    readme = _zip_texts(dest)["diagnostics/README.txt"].decode("utf-8-sig")
+    assert "[vypršal čas (300 s)]" in readme and "[timed out (300 s)]" in readme
+    assert "[zlyhalo (FileNotFoundError)]" in readme and "[failed (exit 1)]" in readme
+    assert "[included]" in readme and "[zahrnuté]" in readme
+
+
+def test_timeout_kills_the_process(tmp_path, fake_reports, monkeypatch):
+    fake_reports.behaviour = {"systeminfo": (0, b"x", "hang")}
+    _fast_clock(monkeypatch)
+    results = handoff.collect_diagnostics(tmp_path / "work")
+    assert results[0].arcname == "systeminfo.csv"
+    assert results[0].status == handoff.STATUS_TIMEOUT
+    assert fake_reports.procs[0].killed
+    assert not (tmp_path / "work" / "systeminfo.csv").exists()
+    # The next report still ran.
+    assert results[1].status == handoff.STATUS_OK
+
+
+def test_desktop_without_battery_and_missing_winget_are_skipped(tmp_path, fake_reports, monkeypatch):
+    monkeypatch.setattr(handoff, "_has_battery", lambda: False)
+    monkeypatch.setattr(handoff, "_find_winget", lambda: None)
+    results = {r.arcname: r for r in handoff.collect_diagnostics(tmp_path / "work")}
+    assert results["battery-report.html"].status == handoff.STATUS_SKIPPED
+    assert results["battery-report.html"].detail == "no battery"
+    assert results["winget-export.json"].status == handoff.STATUS_SKIPPED
+    assert not any(c[0] == "powercfg" or "winget" in c[0] for c in fake_reports.calls)
+
+
+def test_unknown_battery_state_still_tries_the_report(tmp_path, fake_reports, monkeypatch):
+    monkeypatch.setattr(handoff, "_has_battery", lambda: None)
+    results = {r.arcname: r for r in handoff.collect_diagnostics(tmp_path / "work")}
+    assert results["battery-report.html"].status == handoff.STATUS_OK
+
+
+def test_self_written_report_with_nonzero_exit_is_kept_and_noted(tmp_path, fake_reports):
+    # winget export exits non-zero when a package has no source, but the
+    # list it wrote is still useful.
+    fake_reports.behaviour = {"winget": (-1978335216, b"{}", "ok")}
+    results = {r.arcname: r for r in handoff.collect_diagnostics(tmp_path / "work")}
+    assert results["winget-export.json"].status == handoff.STATUS_OK
+    assert results["winget-export.json"].detail == "exit -1978335216"
+
+
+def test_empty_output_counts_as_failure(tmp_path, fake_reports):
+    fake_reports.behaviour = {"dxdiag": (0, b"", "ok")}
+    results = {r.arcname: r for r in handoff.collect_diagnostics(tmp_path / "work")}
+    assert results["dxdiag.txt"].status == handoff.STATUS_FAILED
+
+
+def test_oversized_report_is_left_out(tmp_path, fake_reports, monkeypatch):
+    monkeypatch.setattr(handoff, "MAX_DIAG_FILE_BYTES", 3)
+    fake_reports.behaviour = {"ipconfig": (0, b"0123456789", "ok")}
+    results = {r.arcname: r for r in handoff.collect_diagnostics(tmp_path / "work")}
+    assert results["ipconfig.txt"].status == handoff.STATUS_SKIPPED
+    assert not (tmp_path / "work" / "ipconfig.txt").exists()
+
+
+def test_diagnostics_readme_explains_files_and_personal_data(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state)
+    dest = handoff.build_handoff_zip(
+        state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True, dry_run=True
+    )
+    raw = _zip_texts(dest)["diagnostics/README.txt"]
+    assert raw.startswith(b"\xef\xbb\xbf") and b"\r\n" in raw
+    readme = raw.decode("utf-8-sig")
+    assert HOST in readme and RUN in readme
+    assert "SLOVENSKY" in readme and "ENGLISH" in readme
+    assert "osobné" in readme and "anonymizované" in readme
+    assert "personal" in readme and "user names" in readme and "network configuration" in readme
+    # Every report is described in both languages.
+    for spec in handoff.DIAGNOSTIC_REPORTS:
+        assert spec.arcname in readme and spec.sk in readme and spec.en in readme
+    # DRY-RUN is said, not hidden.
+    assert "DRY-RUN" in readme and "iba čítajú" in readme and "only read" in readme
+    # The client-facing README points at the folder.
+    assert "diagnostics/" in _zip_texts(dest)["README.txt"].decode("utf-8-sig")
+
+
+def test_readme_without_dry_run_has_no_dry_run_note():
+    text = handoff.diagnostics_readme(
+        [handoff.DiagnosticResult("ipconfig.txt", handoff.STATUS_OK)], HOST, RUN, dry_run=False
+    )
+    assert "DRY-RUN" not in text
+
+
+def test_temp_folder_is_removed_after_zipping(tmp_path, fake_reports, monkeypatch):
+    state = tmp_path / "state"
+    _write_run(state)
+    made = []
+    real_mkdtemp = handoff.tempfile.mkdtemp
+
+    def _spy(*a, **k):
+        path = real_mkdtemp(*a, **k)
+        made.append(path)
+        return path
+
+    monkeypatch.setattr(handoff.tempfile, "mkdtemp", _spy)
+    handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True)
+    assert len(made) == 1 and not os.path.exists(made[0])
+
+
+def test_stop_request_cancels_without_writing_zip(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state)
+
+    with pytest.raises(handoff.HandoffCancelled):
+        handoff.build_handoff_zip(
+            state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True,
+            should_stop=lambda: len(fake_reports.calls) >= 2,
+        )
+    assert len(fake_reports.calls) == 2
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["state"]
+
+
+def test_stop_request_kills_running_report(tmp_path, fake_reports):
+    fake_reports.behaviour = {"systeminfo": (0, b"x", "hang")}
+    answers = iter([False, True])
+    with pytest.raises(handoff.HandoffCancelled):
+        handoff.collect_diagnostics(tmp_path / "work", should_stop=lambda: next(answers, True))
+    assert fake_reports.procs[0].killed
+
+
+def test_no_run_files_raises_before_any_report_runs(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    state.mkdir()
+    with pytest.raises(ValueError):
+        handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True)
+    assert fake_reports.calls == []
+
+
+def test_handoff_runner_reports_result_and_progress(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state)
+    dest = tmp_path / "out.zip"
+    runner = handoff.HandoffRunner(state, HOST, RUN, dest, dry_run=True)
+    results, progress = [], []
+    runner.result_ready.connect(lambda *a: results.append(a))
+    runner.progress.connect(lambda *a: progress.append(a))
+    runner.run()  # synchronously - the thread wrapper itself adds nothing
+    assert results == [(dest, "", "")]
+    assert len(progress) == len(REPORT_NAMES)
+    assert "DRY-RUN" in _zip_texts(dest)["diagnostics/README.txt"].decode("utf-8-sig")
+
+
+def test_handoff_runner_reports_missing_files_and_write_errors(tmp_path, fake_reports, monkeypatch):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    results = []
+    runner = handoff.HandoffRunner(empty, HOST, RUN, tmp_path / "a.zip")
+    runner.result_ready.connect(lambda *a: results.append(a))
+    runner.run()
+    assert results[0][0] is None and results[0][1] == "no_files"
+
+    state = tmp_path / "state"
+    _write_run(state)
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(handoff.zipfile.ZipFile, "write", _boom)
+    runner = handoff.HandoffRunner(state, HOST, RUN, tmp_path / "b.zip")
+    runner.result_ready.connect(lambda *a: results.append(a))
+    runner.run()
+    assert results[1] == (None, "failed", "disk full")
+    assert not (tmp_path / "b.zip").exists()
+
+
+def test_i18n_keys_exist_in_both_languages():
+    from portablefix import i18n
+
+    for key in (
+        "handoff_include_diagnostics", "handoff_include_diagnostics_tip", "handoff_diag_started",
+        "handoff_diag_progress", "handoff_diag_dry_run_note", "handoff_diag_busy",
+    ):
+        sk, en = i18n.translate(key, "sk"), i18n.translate(key, "en")
+        assert sk and en and sk != key and en != key and sk != en
+    assert "{index}" in i18n.translate("handoff_diag_progress", "sk")
+
+
+def test_real_process_output_and_timeout(tmp_path):
+    # The wait loop against real child processes, not the fake: output is
+    # stored byte for byte, and a hung one is killed at its timeout.
+    import sys
+
+    reports = (
+        handoff.DiagnosticSpec(
+            "out.txt", (sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xe1 ok')"),
+            30, True, "sk", "en",
+        ),
+        handoff.DiagnosticSpec(
+            "hang.txt", (sys.executable, "-c", "import time; time.sleep(60)"), 1, True, "sk", "en",
+        ),
+    )
+    results = handoff.collect_diagnostics(tmp_path, reports=reports)
+    assert [r.status for r in results] == [handoff.STATUS_OK, handoff.STATUS_TIMEOUT]
+    assert (tmp_path / "out.txt").read_bytes() == b"\xe1 ok"
+    assert not (tmp_path / "hang.txt").exists()

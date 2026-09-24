@@ -80,6 +80,20 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   `undo.ps1` (ak existuje) a krátkym README (SK+EN) o tom, ako undo
   bezpečne použiť - pripravené na e-mail alebo archív. Obsahuje len súbory
   toho jedného behu (nikdy `Data/settings.json` ani iné behy).
+  Voľba **Pribaliť diagnostiku Windows** (predvolene vypnutá, nastavenie sa
+  neukladá) pri uložení spustí vstavané reporty Windows a
+  vloží ich do priečinka `diagnostics/`: `msinfo32 /nfo`, `systeminfo`
+  (CSV), `powercfg /batteryreport` (len notebooky, na desktope sa
+  preskočí), `dxdiag /t`, `winget export` (ak je winget), kritické
+  udalosti a chyby z denníkov System a Application za 7 dní (`wevtutil
+  epl`), `driverquery /v` a `ipconfig /all`. Beží na pozadí s priebehom v
+  stavovom riadku, každý report má vlastný časový limit a zlyhaný alebo
+  zaseknutý report balík nezhodí - len sa zapíše do
+  `diagnostics/README.txt`. Nič sa neanonymizuje: README (SK+EN) opisuje
+  každý súbor a upozorňuje, že obsahuje osobné údaje (názov PC, mená
+  používateľov, sieťové nastavenia). V režime DRY-RUN sa diagnostika
+  zbiera tiež (príkazy len čítajú) a konzola aj README to povedia.
+  `powercfg /energy` chýba zámerne - trvá minútu a pridá málo.
 - **Zákazka** (tlačidlo v hornej lište, Ctrl+J): meno technika (zapamätá
   sa), klient / číslo zákazky a poznámka - zobrazia sa v hlavičke reportu.
 - **Upozornenie na koniec dávky:** ak je okno v pozadí (napr. počas

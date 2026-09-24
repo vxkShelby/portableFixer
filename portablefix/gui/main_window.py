@@ -234,6 +234,9 @@ class MainWindow(QMainWindow):
         self._update_download_dir: Path | None = None
         self._update_stage_runner = None
         self._update_launch_runner = None
+        # Handoff package with Windows diagnostics (G19) - minutes of
+        # msinfo32/dxdiag, so it runs off the GUI thread; one at a time.
+        self._handoff_runner: handoff.HandoffRunner | None = None
         # True from the download until the updater's handshake has ended;
         # _update_phase says which step runs (the banner text after a
         # language toggle) and _update_progress what the bar last showed.
@@ -427,7 +430,10 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
         update_runners = [
-            runner for runner in (self._update_download_runner, self._update_stage_runner, self._update_launch_runner)
+            runner for runner in (
+                self._update_download_runner, self._update_stage_runner, self._update_launch_runner,
+                self._handoff_runner,
+            )
             if runner is not None
         ]
         for runner in update_runners:
@@ -490,7 +496,8 @@ class MainWindow(QMainWindow):
                 runner.wait(timeout_ms)
             except RuntimeError:
                 pass
-        # No cap: all three stop within a chunk or a poll once interrupted,
+        # No cap: all of them stop within a chunk or a poll once interrupted
+        # (the handoff kills the report it is waiting on),
         # and a capped wait that ran out would destroy a live QThread (the
         # per-read socket timeout alone can exceed any sensible cap).
         for runner in update_runners:
@@ -1538,8 +1545,11 @@ class MainWindow(QMainWindow):
                 lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(undo_script_path)))
             )
             button_row.addWidget(open_undo_button)
+        diag_checkbox = self._make_handoff_diagnostics_checkbox()
+        button_row.addWidget(diag_checkbox)
         handoff_button = self._make_selection_button(
-            self._t("handoff_button"), lambda: self._save_handoff_package(self.run_id, dialog)
+            self._t("handoff_button"),
+            lambda: self._save_handoff_package(self.run_id, dialog, diag_checkbox.isChecked()),
         )
         button_row.addWidget(handoff_button)
         layout.addLayout(button_row)
@@ -2235,6 +2245,9 @@ class MainWindow(QMainWindow):
         history_heading = QLabel(self._t("history_heading"))
         history_heading.setObjectName("cardHeading")
         card_layout.addWidget(history_heading)
+        # One choice for every history row's "Save client package" button.
+        self._history_handoff_diag_checkbox = self._make_handoff_diagnostics_checkbox()
+        card_layout.addWidget(self._history_handoff_diag_checkbox)
         history_widget = QWidget()
         self._history_layout = QVBoxLayout(history_widget)
         self._history_layout.setContentsMargins(0, 0, 0, 0)
@@ -2318,20 +2331,44 @@ class MainWindow(QMainWindow):
                 )
                 row_layout.addWidget(open_button)
             handoff_button = self._make_selection_button(
-                self._t("handoff_button"), lambda rid=run.run_id: self._save_handoff_package(rid)
+                self._t("handoff_button"),
+                lambda rid=run.run_id: self._save_handoff_package(
+                    rid, include_diagnostics=self._history_handoff_diag_checkbox.isChecked()
+                ),
             )
             handoff_button.setProperty("handoffRunId", run.run_id)
             row_layout.addWidget(handoff_button)
             layout.addWidget(row)
 
-    def _save_handoff_package(self, run_id: str, parent: QWidget | None = None) -> Path | None:
-        """Ask where to save the client handoff zip of one run and write it."""
+    def _make_handoff_diagnostics_checkbox(self) -> QCheckBox:
+        # Off by default and never remembered: the reports hold personal
+        # data (names, network config), so each package is a fresh choice.
+        checkbox = QCheckBox(self._t("handoff_include_diagnostics"))
+        checkbox.setObjectName("handoffDiagnostics")
+        checkbox.setChecked(False)
+        checkbox.setToolTip(self._t("handoff_include_diagnostics_tip"))
+        checkbox.setAccessibleDescription(self._t("handoff_include_diagnostics_tip"))
+        return checkbox
+
+    def _save_handoff_package(
+        self, run_id: str, parent: QWidget | None = None, include_diagnostics: bool = False
+    ) -> Path | None:
+        """Ask where to save the client handoff zip of one run and write it.
+
+        With diagnostics the zip is built by a worker thread and this returns
+        None at once - the result arrives in _on_handoff_result."""
+        if include_diagnostics and _thread_running(self._handoff_runner):
+            QMessageBox.information(parent or self, self._t("app_title"), self._t("handoff_diag_busy"))
+            return None
         hostname = socket.gethostname()
         default_path = self.state_dir / "Reports" / handoff.default_package_name(hostname, run_id)
         dest, _ = QFileDialog.getSaveFileName(
             parent or self, self._t("handoff_button"), str(default_path), "Zip (*.zip)"
         )
         if not dest:
+            return None
+        if include_diagnostics:
+            self._start_handoff_with_diagnostics(hostname, run_id, Path(dest), parent)
             return None
         try:
             saved = handoff.build_handoff_zip(self.state_dir, hostname, run_id, Path(dest))
@@ -2342,6 +2379,56 @@ class MainWindow(QMainWindow):
             self.console.appendPlainText(self._t("handoff_failed"))
             QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{exc}")
             return None
+        self._show_handoff_saved(saved)
+        return saved
+
+    def _start_handoff_with_diagnostics(self, hostname: str, run_id: str, dest: Path, parent: QWidget | None) -> None:
+        # The reports only read the system, so DRY-RUN does not stop them -
+        # but the technician is told, and diagnostics/README.txt says so too.
+        if self.settings.dry_run:
+            self.console.appendPlainText(self._t("handoff_diag_dry_run_note"))
+        self.console.appendPlainText(self._t("handoff_diag_started"))
+        runner = handoff.HandoffRunner(
+            self.state_dir, hostname, run_id, dest, dry_run=self.settings.dry_run, parent=self
+        )
+        runner.progress.connect(self._on_handoff_progress)
+        runner.result_ready.connect(
+            lambda saved, error, detail: self._on_handoff_result(saved, error, detail, parent)
+        )
+        self._handoff_runner = runner
+        runner.start()
+
+    def _on_handoff_progress(self, index: int, total: int, name: str) -> None:
+        if self._closed:
+            return
+        text = self._t("handoff_diag_progress").format(index=index, total=total, name=name)
+        self.statusBar().showMessage(text)
+        self.console.appendPlainText(text)
+
+    def _on_handoff_result(self, saved, error: str, detail: str, parent: QWidget | None) -> None:
+        self._handoff_runner = None
+        # Stopped because the window is closing: nothing left to tell.
+        if self._closed or error == "cancelled":
+            return
+        # The summary dialog may have been closed during the minutes the
+        # reports took - never parent a message box to a deleted widget.
+        if parent is not None:
+            try:
+                parent.isVisible()
+            except RuntimeError:
+                parent = None
+        self.statusBar().clearMessage()
+        if error == "no_files":
+            QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
+            return
+        if error:
+            self.console.appendPlainText(self._t("handoff_failed"))
+            QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{detail}")
+            return
+        self.console.appendPlainText(self._t("handoff_saved").format(path=saved))
+        self._show_handoff_saved(saved)
+
+    def _show_handoff_saved(self, saved: Path) -> None:
         self.statusBar().showMessage(self._t("handoff_saved").format(path=saved), 15000)
         button = getattr(self, "_handoff_folder_button", None)
         if button is None:
@@ -2353,7 +2440,6 @@ class MainWindow(QMainWindow):
         button.setText(self._t("handoff_open_folder"))
         button.setProperty("folder", str(saved.parent))
         button.setVisible(True)
-        return saved
 
     def _open_handoff_folder(self) -> None:
         button = self._handoff_folder_button

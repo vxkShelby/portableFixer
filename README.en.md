@@ -81,6 +81,21 @@ PowerShell.
   `undo.ps1` (if any) and a short README (SK+EN) on using the undo script
   safely - ready to email or archive. It holds only that one run's files
   (never `Data/settings.json` or other runs).
+  The **Include Windows diagnostics** option (off by default, never
+  remembered) runs Windows' built-in reports when saving and adds
+  them in a `diagnostics/` folder: `msinfo32 /nfo`, `systeminfo` (CSV),
+  `powercfg /batteryreport` (laptops only, skipped on a desktop),
+  `dxdiag /t`, `winget export` (when winget exists), critical and error
+  events of the System and Application logs from the last 7 days
+  (`wevtutil epl`), `driverquery /v` and `ipconfig /all`. It runs in the
+  background with progress in the status bar, every report has its own
+  timeout, and a failed or hung report never fails the package - it is
+  only noted in `diagnostics/README.txt`. Nothing is anonymized: the
+  README (SK+EN) describes every file and warns that it contains personal
+  data (computer name, user names, network configuration). In DRY-RUN the
+  diagnostics are still collected (the commands only read) and the
+  console and README say so. `powercfg /energy` is left out on purpose -
+  it takes a minute and adds little.
 - **Job details** (top-bar button, Ctrl+J): technician name (remembered),
   client / job number and a note - shown in the report header.
 - **Batch-finished notice:** when the window is in the background (e.g.
