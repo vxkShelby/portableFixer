@@ -116,8 +116,13 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   novšia verzia, zobrazí dismissovateľný banner s ponukou stiahnuť a
   aplikovať. Sťahovanie beží na pozadí a nahradí celý balík (`App/`,
   `Modules/`, `Vendor/`, `PortableFix.cmd`) - `Data/settings.json`
-  (jazyk, dry-run) sa zachová. Pri zlyhaní (offline, timeout) je ticho
-  — nič nevypíše.
+  (jazyk, dry-run) sa zachová. Pri zlyhaní kontroly aktualizácií
+  (offline, timeout) je ticho — nič nevypíše. Stiahnutý balík sa ešte
+  pred zatvorením appky rozbalí vedľa inštalácie (`_update_stage`) a
+  overí (štruktúra, voľné miesto, `Data/SHA256SUMS`); appka sa zavrie až
+  vtedy, keď aktualizačný skript potvrdí, že naozaj beží. Záznamy
+  o aktualizácii sú v `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`,
+  `launch_<pid>.txt`).
 - **Ochrana pred zmazaním vlastných súborov:** akcie čistiace `%TEMP%`
   a `%WINDIR%\Temp` (`user_temp`, `system_temp`) rozpoznajú, ak appka
   beží zvnútra tohto priečinka, a jej priečinok vynechajú - ak sa to
@@ -216,9 +221,12 @@ nedostane k používateľom, takže krok 5 nikdy nevynechaj.
 
 Auto-update od tejto verzie sťahuje **celý balík** (exe + Data + Modules),
 nie len samotné `.exe` — takto sa k už nainštalovaným kópiám dostanú aj
-nové/zmenené moduly, nielen zmeny v Python kóde. `Data/settings.json`
-(jazyk, dry-run) sa pri update zachová, všetko ostatné v `App/`, `Modules/`
-a `PortableFix.cmd` sa nahradí.
+nové/zmenené moduly, nielen zmeny v Python kóde. `App/`, `Modules/`,
+`Vendor/` a `PortableFix.cmd` sa nahradia; z `Data/` sa inštalujú len
+`SHA256SUMS`, `PortableFix-SelfSigned.cer` a `.gitkeep`, takže
+`Data/settings.json` (jazyk, dry-run) a ostatné súbory používateľa zostanú
+nedotknuté. Verzie 1.11.4 a staršie sa samé aktualizovať nevedia (chyba pri
+spúšťaní aktualizačného skriptu) — z nich treba raz aktualizovať ručne.
 
 ## Vývoj
 
@@ -227,8 +235,14 @@ pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py
 python -m pytest tests/test_gui_main_window.py
 python -m pytest tests/test_executor.py
-python -m pytest tests/test_updater.py
+python -m pytest tests/test_updater.py tests/test_update_swap.py tests/test_update_swap_script.py
 ```
+
+`tests/test_update_swap_script.py` spúšťa statický aktualizačný skript
+naozaj - na Windows cez PowerShell 5.1, inde cez `pwsh` (cestu k nemu
+možno zadať v `PORTABLEFIX_TEST_PWSH`); bez PowerShellu sa tieto testy
+preskočia. `PORTABLEFIX_TEST_RELEASE_ZIP=<cesta k PortableFix-Portable.zip>`
+overí skutočný release zip rovnakými pravidlami, aké používa appka.
 
 `tests/test_gui_main_window.py`, `tests/test_executor.py` a
 `tests/test_updater.py` (jeho `UpdateCheckRunner`/`UpdateDownloadRunner`

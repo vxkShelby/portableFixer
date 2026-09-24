@@ -8,8 +8,7 @@ from .executor import POWERSHELL_PREFIX
 
 def _ps_quote(value: str) -> str:
     # Single-quoted PowerShell strings never interpolate $variables or
-    # subexpressions, unlike the double-quoted string this previously used -
-    # see the identical helper (and its rationale) in updater.py.
+    # subexpressions, unlike the double-quoted string this previously used.
     return "'" + value.replace("'", "''") + "'"
 
 

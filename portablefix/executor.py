@@ -7,20 +7,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-
-def powershell_executable() -> str:
-    """Windows PowerShell 5.1 by absolute path when it's where Windows always
-    puts it, bare "powershell" (PATH lookup) otherwise. A broken/overwritten
-    PATH is exactly the kind of machine this tool gets pointed at, and with
-    a bare name every action - and the updater - failed with "not found"
-    while powershell.exe sat in its usual place the whole time."""
-    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
-    if system_root:
-        candidate = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-        if os.path.isfile(candidate):
-            return candidate
-    return "powershell"
-
+# Lives in paths.py so the Qt-free updater core can use it; re-exported
+# here for the modules and tests that have always imported it from here.
+from .paths import powershell_executable  # noqa: F401
 
 POWERSHELL_PREFIX = [powershell_executable(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
 

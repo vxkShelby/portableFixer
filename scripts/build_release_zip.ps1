@@ -1,8 +1,9 @@
 # scripts/build_release_zip.ps1
 # Packages the portable folder (App/Data/Modules/PortableFix.cmd) into the
 # release zip. This exact shape - one top-level "PortableFix" folder - is a
-# contract portablefix/updater.py's build_swap_script() relies on when it
-# expands this same zip on an existing install.
+# contract portablefix/update_swap.py's stage_update() checks when it
+# unpacks this same zip next to an existing install (and so do the clients
+# of every released version, so it must never change).
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $outDir = "$root\Output"

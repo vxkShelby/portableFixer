@@ -89,8 +89,7 @@ def test_create_restore_point_keeps_embedded_double_quotes_literal(monkeypatch):
 
 def test_create_restore_point_escapes_embedded_single_quote(monkeypatch):
     # A literal ' must be doubled ('') inside a single-quoted PS string, or
-    # it prematurely ends the string - the exact bug class updater.py's
-    # _ps_quote was written to prevent, now shared here too.
+    # it prematurely ends the string.
     captured = {}
 
     def fake_run(argv, capture_output, timeout, creationflags):

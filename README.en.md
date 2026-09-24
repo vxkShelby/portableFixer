@@ -118,7 +118,12 @@ PowerShell.
   download and apply it. The download runs in the background and
   replaces the whole package (`App/`, `Modules/`, `Vendor/`,
   `PortableFix.cmd`) - `Data/settings.json` (language, dry-run) is kept.
-  On failure (offline, timeout) it stays silent - nothing is shown.
+  If the update check fails (offline, timeout) it stays silent - nothing
+  is shown. Before the app closes, the downloaded package is unpacked
+  next to the install (`_update_stage`) and verified (layout, free
+  space, `Data/SHA256SUMS`); the app closes only once the update script
+  confirms it is really running. Update logs are in
+  `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`, `launch_<pid>.txt`).
 - **Self-delete protection:** the actions that wipe `%TEMP%` and
   `%WINDIR%\Temp` (`user_temp`, `system_temp`) detect if the app is
   running from inside that folder and exclude it - if that can't be
@@ -220,8 +225,11 @@ skip step 5.
 Since this version, auto-update downloads the **whole package** (exe +
 Data + Modules), not just the `.exe` - this way already-installed
 copies also get new/changed modules, not just Python code changes.
-`Data/settings.json` (language, dry-run) is kept across an update;
-everything else in `App/`, `Modules/` and `PortableFix.cmd` is replaced.
+`App/`, `Modules/`, `Vendor/` and `PortableFix.cmd` are replaced; from
+`Data/` only `SHA256SUMS`, `PortableFix-SelfSigned.cer` and `.gitkeep` are
+installed, so `Data/settings.json` (language, dry-run) and the user's other
+files stay untouched. Versions 1.11.4 and older cannot update themselves (a
+bug in how they start the update script) - update those once by hand.
 
 ## Development
 
@@ -230,8 +238,14 @@ pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py
 python -m pytest tests/test_gui_main_window.py
 python -m pytest tests/test_executor.py
-python -m pytest tests/test_updater.py
+python -m pytest tests/test_updater.py tests/test_update_swap.py tests/test_update_swap_script.py
 ```
+
+`tests/test_update_swap_script.py` really runs the static update script -
+through PowerShell 5.1 on Windows, through `pwsh` elsewhere (its path can
+be given in `PORTABLEFIX_TEST_PWSH`); without PowerShell these tests are
+skipped. `PORTABLEFIX_TEST_RELEASE_ZIP=<path to PortableFix-Portable.zip>`
+checks a real release zip against the same rules the app applies.
 
 `tests/test_gui_main_window.py`, `tests/test_executor.py` and
 `tests/test_updater.py` (its `UpdateCheckRunner`/`UpdateDownloadRunner`

@@ -1,7 +1,5 @@
 import json
 import os
-import subprocess
-import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -12,8 +10,32 @@ from urllib.parse import urlparse
 from PySide6.QtCore import QThread, Signal
 
 from . import elevation
-from .executor import powershell_executable
-from .integrity import compute_sha256
+from .sha256sums import compute_sha256
+
+# The Qt-free core lives in update_swap; these names are re-exported because
+# main.py, the GUI and the tests have always reached them through updater.
+from .update_swap import (  # noqa: F401
+    REASON_BLOCKED,
+    REASON_CANCELLED,
+    REASON_EXITED,
+    REASON_SPAWN_ERROR,
+    REASON_TIMEOUT,
+    SWAP_FOLDERS,
+    UPDATE_STATUS_ABORTED,
+    UPDATE_STATUS_HANDED_OFF,
+    UPDATE_STATUS_IN_PROGRESS,
+    UPDATE_STATUS_OK,
+    UPDATE_STATUS_OK_SUMS_STALE,
+    UPDATE_STATUS_ROLLED_BACK,
+    LaunchResult,
+    StagedUpdate,
+    UpdateStageCancelled,
+    UpdateStageError,
+    launch_swap,
+    stage_update,
+    update_log_dir,
+    update_status_path,
+)
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
 _TRUSTED_DOWNLOAD_HOSTS = {"github.com", "objects.githubusercontent.com"}
@@ -151,8 +173,7 @@ def needs_elevation_for_update(directory: Path) -> bool:
     # write-then-read-back probe in is_writable() would "succeed" against
     # that shadow copy while the real target stays untouched, and the swap
     # script (running as powershell.exe, which is NOT virtualized) then
-    # fails for real on every Move-Item, silently, thanks to
-    # $ErrorActionPreference. Rather than trying to out-clever
+    # fails for real on every rename. Rather than trying to out-clever
     # virtualization, refuse outright when installed under a protected
     # system path and not elevated.
     if elevation.is_admin():
@@ -185,288 +206,6 @@ def is_writable(directory: Path) -> bool:
         return False
 
 
-def _ps_quote(value: str) -> str:
-    # Single-quoted PowerShell strings never interpolate $variables, unlike
-    # the double-quoted strings this previously used - a literal '$' in a
-    # path (a legal NTFS character, e.g. a username) would otherwise be
-    # misread as a variable reference and silently truncate the path.
-    return "'" + value.replace("'", "''") + "'"
-
-
-_SWAP_FOLDERS = ("App", "Modules", "Vendor")
-# The detached swap script writes one of these words into
-# Data/update_status.txt (see build_swap_script) so the next launch - of
-# whichever version ends up running - can finally tell the user what
-# happened to an update that ran while no app was around to report it.
-UPDATE_STATUS_OK = "ok"
-UPDATE_STATUS_OK_SUMS_STALE = "ok_sums_stale"
-UPDATE_STATUS_IN_PROGRESS = "in_progress"
-UPDATE_STATUS_ROLLED_BACK = "rolled_back"
-UPDATE_STATUS_ABORTED = "aborted"
-
-
-def update_log_dir() -> Path | None:
-    try:
-        return Path(tempfile.gettempdir()) / "PortableFixUpdate"
-    except OSError:
-        # tempfile.gettempdir() raises FileNotFoundError when no candidate
-        # temp directory is usable at all.
-        return None
-
-
-def update_status_path(install_dir: Path) -> Path:
-    return install_dir / "Data" / "update_status.txt"
-
-
-def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> str:
-    # The downloaded zip's contract (produced by scripts/build_release_zip.ps1):
-    # exactly one top-level folder containing App/, Data/, Modules/, Vendor/,
-    # PortableFix.cmd.
-    app_dir = _ps_quote(str(install_dir / "App"))
-    app_bak = _ps_quote(str(install_dir / "App.old"))
-    app_exe = _ps_quote(str(install_dir / "App" / "PortableFix.exe"))
-    modules_dir = _ps_quote(str(install_dir / "Modules"))
-    modules_bak = _ps_quote(str(install_dir / "Modules.old"))
-    vendor_dir = _ps_quote(str(install_dir / "Vendor"))
-    vendor_bak = _ps_quote(str(install_dir / "Vendor.old"))
-    data_dir = _ps_quote(str(install_dir / "Data"))
-    settings_json = _ps_quote(str(install_dir / "Data" / "settings.json"))
-    sums_path = _ps_quote(str(install_dir / "Data" / "SHA256SUMS"))
-    status_file = _ps_quote(str(update_status_path(install_dir)))
-    cmd_path = _ps_quote(str(install_dir / "PortableFix.cmd"))
-    zip_p = _ps_quote(str(zip_path))
-    # Staged next to the install (same volume), NOT under %TEMP%: moving a
-    # folder from %TEMP% onto a USB stick is a cross-volume copy that takes
-    # seconds to minutes on slow media, and the old App\ was already moved
-    # away by then - pulling the stick (or losing power) in that window left
-    # no PortableFix.exe at all. From the same volume every Move-Item below
-    # is a plain rename, shrinking the destructive window to milliseconds.
-    stage = _ps_quote(str(install_dir / "_update_stage"))
-    settings_bak = _ps_quote(str(zip_path.parent / "settings.json.bak"))
-    temp_log_dir = update_log_dir() or zip_path.parent
-    log_dir = _ps_quote(str(temp_log_dir))
-    log_file = _ps_quote(str(temp_log_dir / f"update_log_{current_pid}.txt"))
-    folder_pairs = ", ".join(
-        f"@({_ps_quote(str(install_dir / name))}, {_ps_quote(str(install_dir / (name + '.old')))})"
-        for name in _SWAP_FOLDERS
-    )
-    return (
-        '$ErrorActionPreference = "SilentlyContinue"\n'
-        # No diagnostics existed here before - every step below is silent by
-        # design ($ErrorActionPreference), so this log is the only evidence
-        # left behind if a swap fails. Written under %TEMP%, never under
-        # install_dir, so it's captured even when the install itself is on
-        # an unwritable/protected path.
-        f"New-Item -ItemType Directory -Force -Path {log_dir} | Out-Null\n"
-        f"function Log([string]$msg) {{ Add-Content -LiteralPath {log_file} -Value ((Get-Date -Format o) + ' ' + $msg) -EA SilentlyContinue }}\n"
-        # The app that started this script has already quit, so nothing can
-        # show the user an error from here - the next launch reads this
-        # status file instead (updater.consume_update_status).
-        f"function Set-UpdateStatus([string]$status) {{ Set-Content -LiteralPath {status_file} -Value $status -Encoding ASCII -EA SilentlyContinue; Log \"status: $status\" }}\n"
-        # Puts back any X.old whose live X is missing - a swap interrupted
-        # between "move old away" and "move new in", or a backup move that
-        # only partly succeeded before a locked folder aborted the swap
-        # (which used to leave e.g. Modules\ stranded as Modules.old and the
-        # relaunched app with no modules at all).
-        "function Restore-Backups {\n"
-        f"    foreach ($pair in @({folder_pairs})) {{\n"
-        "        if ((Test-Path -LiteralPath $pair[1]) -and -not (Test-Path -LiteralPath $pair[0])) {\n"
-        "            Move-Item -LiteralPath $pair[1] -Destination $pair[0] -Force\n"
-        "            Log \"restored $($pair[0]) from backup: $(Test-Path -LiteralPath $pair[0])\"\n"
-        "        }\n"
-        "    }\n"
-        "}\n"
-        f"Log 'update swap started, waiting for pid {current_pid} to exit'\n"
-        # A PyInstaller --onefile bootloader keeps the PID alive while it
-        # deletes its own _MEI* extraction folder after the interpreter
-        # finalizes - AV real-time scanning of that delete can push this
-        # past several seconds on some machines. 60 x 500ms = 30s, not 15s.
-        f"for ($i = 0; $i -lt 60; $i++) {{\n"
-        f"    if (-not (Get-Process -Id {current_pid} -EA SilentlyContinue)) {{ break }}\n"
-        "    Start-Sleep -Milliseconds 500\n"
-        "}\n"
-        "Start-Sleep -Milliseconds 300\n"
-        # If the old process is still alive after the wait, its exe (and
-        # anything it has open under App\) is still locked - proceeding
-        # would make Move-Item fail silently and leave a half-swapped
-        # install. Nothing has been touched on disk yet, so aborting here
-        # is a clean no-op, not a rollback.
-        f"$swapAborted = $false\n"
-        f"if (Get-Process -Id {current_pid} -EA SilentlyContinue) {{\n"
-        f"    Log 'ABORT: pid {current_pid} did not exit in time, files likely still locked - skipping swap, relaunching old version'\n"
-        "    $swapAborted = $true\n"
-        f"    Set-UpdateStatus '{UPDATE_STATUS_ABORTED}'\n"
-        "}\n"
-        "if (-not $swapAborted) {\n"
-        f"Log 'old process exited, proceeding with swap'\n"
-        # Leftovers of an earlier interrupted swap: restore what's missing,
-        # then drop stale backups whose live folder exists - Move-Item into
-        # an existing X.old would nest X inside it instead of replacing it.
-        "Restore-Backups\n"
-        f"foreach ($bak in @({app_bak}, {modules_bak}, {vendor_bak})) {{ if (Test-Path -LiteralPath $bak) {{ Remove-Item -LiteralPath $bak -Recurse -Force -EA SilentlyContinue }} }}\n"
-        # Every path below goes through -LiteralPath: -Path treats [ and ]
-        # (legal in folder names, e.g. "Tools [2024]") as wildcards, so
-        # Test-Path reported an existing App\ as missing and the swap nested
-        # the new files inside the old folder.
-        f"if (Test-Path -LiteralPath {settings_json}) {{ Copy-Item -LiteralPath {settings_json} -Destination {settings_bak} -Force }}\n"
-        f"Log \"settings.json backed up: $(Test-Path -LiteralPath {settings_bak})\"\n"
-        f"Remove-Item -LiteralPath {stage} -Recurse -Force -EA SilentlyContinue\n"
-        # Zip-slip guard, checked on the zip's own entries BEFORE extracting:
-        # the previous check listed files *inside* the stage folder after
-        # extraction, which by construction can never find one that escaped
-        # it - and on a hit it exited without relaunching the app. A bad
-        # entry now just fails $stageOk below, so the old version is
-        # relaunched like any other aborted update.
-        "$zipOk = $false\n"
-        "try {\n"
-        "    Add-Type -AssemblyName System.IO.Compression.FileSystem -EA SilentlyContinue\n"
-        f"    $stageRoot = [IO.Path]::GetFullPath({stage}).TrimEnd('\\', '/') + [IO.Path]::DirectorySeparatorChar\n"
-        f"    $zip = [IO.Compression.ZipFile]::OpenRead((Convert-Path -LiteralPath {zip_p} -EA Stop))\n"
-        "    try {\n"
-        "        $zipOk = $true\n"
-        "        foreach ($entry in $zip.Entries) {\n"
-        "            $target = [IO.Path]::GetFullPath([IO.Path]::Combine($stageRoot, $entry.FullName))\n"
-        "            if (-not $target.StartsWith($stageRoot, [StringComparison]::OrdinalIgnoreCase)) { $zipOk = $false; Log \"ABORT: zip entry escapes the staging folder: $($entry.FullName)\"; break }\n"
-        "        }\n"
-        "    } finally { $zip.Dispose() }\n"
-        "} catch { Log \"ABORT: could not read update zip: $($_.Exception.Message)\"; $zipOk = $false }\n"
-        "if ($zipOk) {\n"
-        f"    Expand-Archive -LiteralPath {zip_p} -DestinationPath {stage} -Force\n"
-        f"    Log \"expanded update zip: $(Test-Path -LiteralPath {stage})\"\n"
-        "}\n"
-        "$stagedRoot = $null\n"
-        f"if ($zipOk) {{ $stagedRoot = (Get-ChildItem -LiteralPath {stage} -Directory | Select-Object -First 1).FullName }}\n"
-        # Checked BEFORE anything live is touched: a failed/partial extract
-        # (disk full, truncated zip) left $stagedRoot empty, and
-        # "$stagedRoot\App" then silently became "\App" - the root of
-        # whatever drive the script happened to run on.
-        # Vendor\\ is required too: the post-swap verification below demands
-        # it, so a package without it used to pass here and then force the
-        # riskier rollback path instead of this clean, untouched abort.
-        "$stageOk = [bool]$stagedRoot -and (Test-Path -LiteralPath \"$stagedRoot\\App\\PortableFix.exe\") -and (Test-Path -LiteralPath \"$stagedRoot\\Modules\") -and (Test-Path -LiteralPath \"$stagedRoot\\Vendor\")\n"
-        f"if (-not $stageOk) {{ if ($zipOk) {{ Log 'ABORT: extracted update is incomplete (disk full or damaged zip?) - live install left untouched' }}; Set-UpdateStatus '{UPDATE_STATUS_ABORTED}' }}\n"
-        "if ($stageOk) {\n"
-        # Written before the first destructive rename: if the stick is
-        # pulled mid-swap, the next launch finds "in_progress" and knows the
-        # swap never finished (and main.py restores any stranded X.old).
-        f"Set-UpdateStatus '{UPDATE_STATUS_IN_PROGRESS}'\n"
-        f"if (Test-Path -LiteralPath {app_dir}) {{ Move-Item -LiteralPath {app_dir} -Destination {app_bak} -Force }}\n"
-        f"if (Test-Path -LiteralPath {modules_dir}) {{ Move-Item -LiteralPath {modules_dir} -Destination {modules_bak} -Force }}\n"
-        f"if (Test-Path -LiteralPath {vendor_dir}) {{ Move-Item -LiteralPath {vendor_dir} -Destination {vendor_bak} -Force }}\n"
-        f"Log \"old folders backed up: App.old=$(Test-Path -LiteralPath {app_bak}) Modules.old=$(Test-Path -LiteralPath {modules_bak}) Vendor.old=$(Test-Path -LiteralPath {vendor_bak})\"\n"
-        # Root-cause fix: if App/Modules/Vendor is STILL present here, the
-        # move-away above silently failed (a locked .exe/DLL - AV scanning,
-        # or the process that just exited not having released the handle
-        # yet - swallowed by $ErrorActionPreference). Move-Item into an
-        # *existing* destination directory does not overwrite it, it nests
-        # the source folder one level deeper instead (verified empirically),
-        # so the old exe would stay exactly where it is. The verification
-        # check further down would then find that old exe still there and
-        # report "swap verified OK" - a false positive on an update that
-        # never actually happened. Refuse to swap into an occupied
-        # directory rather than nesting into it.
-        f"$backupOk = (-not (Test-Path -LiteralPath {app_dir})) -and (-not (Test-Path -LiteralPath {modules_dir})) -and (-not (Test-Path -LiteralPath {vendor_dir}))\n"
-        f"if (-not $backupOk) {{ Log 'ABORT: old App/Modules/Vendor folder still present after backup move - likely locked, refusing to swap into an occupied directory'; Restore-Backups; Set-UpdateStatus '{UPDATE_STATUS_ABORTED}' }}\n"
-        "if ($backupOk) {\n"
-        f"    Move-Item -LiteralPath \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
-        f"    Move-Item -LiteralPath \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
-        f"    if (Test-Path -LiteralPath \"$stagedRoot\\Vendor\") {{ Move-Item -LiteralPath \"$stagedRoot\\Vendor\" -Destination {vendor_dir} -Force }}\n"
-        f"    Log \"new files in place: App.exe=$(Test-Path -LiteralPath {app_exe}) Modules=$(Test-Path -LiteralPath {modules_dir}) Vendor=$(Test-Path -LiteralPath {vendor_dir})\"\n"
-        f"    if ((Test-Path -LiteralPath {app_exe}) -and (Test-Path -LiteralPath {modules_dir}) -and (Get-ChildItem -LiteralPath {modules_dir} -EA SilentlyContinue) -and (Test-Path -LiteralPath {vendor_dir}) -and (Get-ChildItem -LiteralPath {vendor_dir} -EA SilentlyContinue)) {{\n"
-        "        Log 'swap verified OK, installing Data and launcher'\n"
-        # Data\ (incl. the SHA256SUMS integrity manifest) is only copied
-        # once the new App/Modules are verified in place: copied earlier, a
-        # rollback restored the OLD exe next to the NEW manifest, and every
-        # later launch showed a tamper warning for an untampered install.
-        f"        Get-ChildItem -LiteralPath \"$stagedRoot\\Data\" -Force | Copy-Item -Destination {data_dir} -Recurse -Force\n"
-        f"        Copy-Item -LiteralPath \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
-        f"        if (Test-Path -LiteralPath {settings_bak}) {{ Copy-Item -LiteralPath {settings_bak} -Destination {settings_json} -Force }}\n"
-        # A stale SHA256SUMS next to a new exe is a permanent false tamper
-        # warning on every launch, so this copy is verified (and retried -
-        # AV often holds a just-written file for a moment) rather than
-        # trusted like the silent best-effort steps around it.
-        # Hashed with .NET directly rather than Get-FileHash: under Windows
-        # PowerShell 5.1 (where Get-FileHash is a script function, not the
-        # PS7 cmdlet) this check reported a mismatch in CI although the
-        # installed bytes were identical, so updates were flagged as having a
-        # stale manifest. .NET paths are literal, so brackets are safe, and a
-        # failed hash is now logged instead of silently swallowed.
-        "        function Get-Sha256([string]$p) { try { $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes((Convert-Path -LiteralPath $p -EA Stop)))) } finally { $sha.Dispose() } } catch { Log \"hash of $p failed: $($_.Exception.Message)\"; $null } }\n"
-        "        $sumsOk = $true\n"
-        "        $stagedSums = \"$stagedRoot\\Data\\SHA256SUMS\"\n"
-        "        if (Test-Path -LiteralPath $stagedSums) {\n"
-        "            $wantSums = Get-Sha256 $stagedSums\n"
-        "            $sumsOk = $false\n"
-        "            for ($i = 0; $i -lt 5; $i++) {\n"
-        f"                $gotSums = Get-Sha256 {sums_path}\n"
-        "                if ($wantSums -and $gotSums -eq $wantSums) { $sumsOk = $true; break }\n"
-        "                Log \"SHA256SUMS check $i`: want=$wantSums got=$gotSums\"\n"
-        "                Start-Sleep -Milliseconds 1000\n"
-        f"                Copy-Item -LiteralPath $stagedSums -Destination {sums_path} -Force\n"
-        "            }\n"
-        "        }\n"
-        f"        Remove-Item -LiteralPath {app_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -LiteralPath {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -LiteralPath {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"        if ($sumsOk) {{ Set-UpdateStatus '{UPDATE_STATUS_OK}' }} else {{ Log 'Data\\SHA256SUMS could not be updated - integrity check will flag the new files'; Set-UpdateStatus '{UPDATE_STATUS_OK_SUMS_STALE}' }}\n"
-        "    } else {\n"
-        "        Log 'swap FAILED verification, rolling back to backups'\n"
-        f"        Remove-Item -LiteralPath {app_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -LiteralPath {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -LiteralPath {vendor_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"        if (Test-Path -LiteralPath {app_bak}) {{ Move-Item -LiteralPath {app_bak} -Destination {app_dir} -Force }}\n"
-        f"        if (Test-Path -LiteralPath {modules_bak}) {{ Move-Item -LiteralPath {modules_bak} -Destination {modules_dir} -Force }}\n"
-        f"        if (Test-Path -LiteralPath {vendor_bak}) {{ Move-Item -LiteralPath {vendor_bak} -Destination {vendor_dir} -Force }}\n"
-        f"        Log \"rollback done, App.exe present=$(Test-Path -LiteralPath {app_exe})\"\n"
-        f"        Set-UpdateStatus '{UPDATE_STATUS_ROLLED_BACK}'\n"
-        "    }\n"
-        "}\n"
-        "}\n"
-        "}\n"
-        # Relaunch, then clean up temp files - a freshly-downloaded zip can
-        # sit under active AV scanning for many seconds, and that must never
-        # delay the user seeing their updated app come back. Runs even if
-        # the swap above was rolled back (files restored, but the old
-        # process DID exit by that point, so it needs relaunching) - but
-        # NOT if $swapAborted, because that means the old process is still
-        # the one alive right now: relaunching would spawn a second
-        # instance that immediately loses to the single-instance mutex and
-        # silently exits, which looks exactly like "the restart did nothing".
-        "if (-not $swapAborted) {\n"
-        f"    Log \"relaunching via {app_exe}\"\n"
-        # Relaunch the GUI exe directly - NOT via PortableFix.cmd. Start-Process
-        # -FilePath on a .cmd target goes through ShellExecute's batfile
-        # handler, which spawns cmd.exe; on Windows 11 with Windows Terminal
-        # set as the default terminal app, -WindowStyle Hidden on that
-        # Start-Process is not reliably honored for the resulting console -
-        # observed directly on this machine as a visible/lingering
-        # 'cmd /K PortableFix.cmd' window regardless of /B, /C, or
-        # -WindowStyle. PortableFix.exe is a GUI app with no console of its
-        # own, so launching it directly removes cmd.exe from this path
-        # entirely - there is no console for any window-style setting to
-        # fail to hide.
-        f"    Start-Process -FilePath {app_exe} -WindowStyle Hidden -EA SilentlyContinue\n"
-        "    Start-Sleep -Milliseconds 1500\n"
-        f"    $relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object {{ $_.Path -eq {app_exe} }})\n"
-        f"    Log \"relaunch verified: $relaunchOk\"\n"
-        "    if (-not $relaunchOk) {\n"
-        f"        Log 'relaunch via Start-Process failed, retrying once'\n"
-        f"        Start-Process -FilePath {app_exe} -WindowStyle Hidden -EA SilentlyContinue\n"
-        "    }\n"
-        "} else {\n"
-        "    Log 'skipping relaunch - old process is still running (that is why the swap was aborted), it is already the running instance'\n"
-        "}\n"
-        f"Remove-Item -LiteralPath {stage} -Recurse -Force -EA SilentlyContinue\n"
-        "for ($i = 0; $i -lt 30; $i++) {\n"
-        f"    if (-not (Test-Path -LiteralPath {zip_p})) {{ break }}\n"
-        f"    Remove-Item -LiteralPath {zip_p} -Force -EA SilentlyContinue\n"
-        "    Start-Sleep -Milliseconds 1000\n"
-        "}\n"
-        f"Remove-Item -LiteralPath {settings_bak} -Force -EA SilentlyContinue\n"
-        "Log 'update swap script finished'\n"
-    )
-
-
 def recover_interrupted_swap(install_dir: Path) -> list[str]:
     """Puts back any App/Modules/Vendor folder that an interrupted update
     swap (USB stick pulled, power lost) left behind only as X.old. Runs at
@@ -474,7 +213,7 @@ def recover_interrupted_swap(install_dir: Path) -> list[str]:
     PortableFix.cmd - without App\\ there is no exe to run this - so in
     practice this covers Modules/Vendor. Returns the restored folder names."""
     restored = []
-    for name in _SWAP_FOLDERS:
+    for name in SWAP_FOLDERS:
         live = install_dir / name
         backup = install_dir / f"{name}.old"
         try:
@@ -508,85 +247,28 @@ def update_status_message_key(status: str | None, restored: list[str]) -> str | 
         return "update_status_interrupted"
     if status in (UPDATE_STATUS_ABORTED, UPDATE_STATUS_ROLLED_BACK):
         return "update_status_failed"
+    if status == UPDATE_STATUS_HANDED_OFF:
+        # The app handed off and quit, but the swap never even started
+        # working - it was killed or died after proving it was running.
+        return "update_status_incomplete"
     if status == UPDATE_STATUS_OK_SUMS_STALE:
         return "update_status_sums_stale"
     return None
 
 
-# How long apply_update() watches the freshly spawned swap script before
-# handing over. The script's first real work is waiting for THIS process
-# to exit, so it cannot legitimately finish while we're still alive - an
-# exit inside this window means PowerShell refused or failed to run it.
-SWAP_STARTUP_GRACE_SEC = 1.5
-
-
 def apply_update(zip_path: Path, install_dir: Path) -> bool:
-    """Spawns the detached swap script. True only when it is actually
-    running - the caller quits the app on True, and quitting on a script
-    that never started means the user just sees the app close with no
-    update and no explanation."""
+    """The whole hand-off in one blocking call: stage, start the swap, wait
+    for its handshake. True only when the updater proved it is running - the
+    caller quits the app on True. Kept for callers that have not moved to
+    UpdateStageRunner/UpdateLaunchRunner, which do the same off the GUI
+    thread and can show why it failed."""
     if not is_writable(install_dir):
         return False
-    current_pid = os.getpid()
     try:
-        # Inside the try: with no usable temp directory at all,
-        # tempfile.gettempdir()/mkstemp() raise instead of returning.
-        script_text = build_swap_script(current_pid, install_dir, zip_path)
-        fd, script_path_str = tempfile.mkstemp(prefix=f"portablefix_update_{current_pid}_", suffix=".ps1")
-        script_path = Path(script_path_str)
-        # Created here in Python, not by the script's own New-Item (its first
-        # line) - so this directory exists even if powershell.exe is killed
-        # before running line 1. DETACHED_PROCESS gives the child no console
-        # and no inherited std handles, so without an explicit redirect any
-        # startup failure (execution policy refusal, a missing DLL, anything
-        # printed before the script itself runs) has nowhere to go and is
-        # silently lost - confirmed live on a machine where the script never
-        # wrote its own log, with every non-code cause (Job Object breakaway,
-        # AppLocker/WDAC/ASR, Defender, GPO execution policy) ruled out.
-        log_dir = update_log_dir() or script_path.parent
-        launch_log_path = log_dir / f"popen_launch_{current_pid}.log"
-        os.close(fd)
-        script_path.write_text(script_text, encoding="utf-8-sig")
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with open(launch_log_path, "wb") as launch_log:
-            process = subprocess.Popen(
-                # Absolute path when available: a corrupted PATH on a broken
-                # machine must not be what stops the update from starting.
-                # -NonInteractive turns any unexpected confirmation prompt
-                # into an error instead of a hidden script waiting forever.
-                [
-                    powershell_executable(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                    "-WindowStyle", "Hidden", "-File", str(script_path),
-                ],
-                # DETACHED_PROCESS/CREATE_NEW_PROCESS_GROUP only affect console
-                # and Ctrl+Break group membership - neither exempts the child
-                # from a Job Object the parent belongs to (common when this exe
-                # is launched from Windows Terminal or certain elevation
-                # wrappers, which assign JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
-                # Without this flag, the swap script gets killed the instant
-                # this process exits - before it can run a single line - which
-                # looks exactly like "the app just closes, update never happens".
-                creationflags=(
-                    subprocess.DETACHED_PROCESS
-                    | subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_BREAKAWAY_FROM_JOB
-                ),
-                stdin=subprocess.DEVNULL,
-                stdout=launch_log,
-                stderr=subprocess.STDOUT,
-                close_fds=True,
-            )
-    except OSError:
+        staged = stage_update(zip_path, install_dir)
+    except UpdateStageError:
         return False
-    try:
-        # -ExecutionPolicy Bypass does not override a GPO-enforced policy,
-        # and AppLocker/WDAC can block the .ps1 outright - either way
-        # powershell.exe starts fine and exits at once, so Popen alone
-        # reported success and the app quit into a never-applied update.
-        process.wait(timeout=SWAP_STARTUP_GRACE_SEC)
-    except subprocess.TimeoutExpired:
-        return True
-    return False
+    return launch_swap(staged, install_dir).ok
 
 
 class UpdateCheckRunner(QThread):
@@ -618,3 +300,59 @@ class UpdateDownloadRunner(QThread):
             self.download_finished.emit(path, "")
         except Exception as exc:
             self.download_finished.emit(None, str(exc))
+
+
+class UpdateStageRunner(QThread):
+    """Extracting and hashing ~130 MB on a slow USB stick takes a while -
+    off the GUI thread, interruptible so closing the app never has to wait
+    for it (or destroy it while it runs)."""
+
+    stage_finished = Signal(object, str)
+    progress = Signal(int, int)
+
+    def __init__(self, zip_path: Path, install_dir: Path, version: str | None = None, parent=None):
+        super().__init__(parent)
+        self._zip_path = zip_path
+        self._install_dir = install_dir
+        self._version = version
+        self.finished.connect(self.deleteLater)
+
+    def _emit_progress(self, done: int, total: int) -> None:
+        # The signal carries C ints; a package over 2 GB is reported in KiB.
+        if total > 0x7FFFFFFF:
+            done, total = done >> 10, total >> 10
+        self.progress.emit(done, total)
+
+    def run(self) -> None:
+        try:
+            staged = stage_update(
+                self._zip_path, self._install_dir,
+                should_stop=self.isInterruptionRequested, progress=self._emit_progress, version=self._version,
+            )
+        except Exception as exc:
+            # Anything else escaping run() would end the thread without a
+            # signal and leave the GUI waiting forever.
+            self.stage_finished.emit(None, str(exc) or type(exc).__name__)
+            return
+        self.stage_finished.emit(staged, "")
+
+
+class UpdateLaunchRunner(QThread):
+    """Waits (up to update_swap.HANDSHAKE_TIMEOUT_SEC) for the swap script to
+    prove it is running. Emits a LaunchResult; on ok the caller must quit
+    right away - the script is waiting for this process to exit."""
+
+    launch_finished = Signal(object)
+
+    def __init__(self, staged: StagedUpdate, install_dir: Path, parent=None):
+        super().__init__(parent)
+        self._staged = staged
+        self._install_dir = install_dir
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        try:
+            result = launch_swap(self._staged, self._install_dir, should_stop=self.isInterruptionRequested)
+        except Exception as exc:
+            result = LaunchResult(ok=False, reason=REASON_SPAWN_ERROR, detail=f"{type(exc).__name__}: {exc}")
+        self.launch_finished.emit(result)
