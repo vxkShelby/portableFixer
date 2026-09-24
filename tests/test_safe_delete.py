@@ -52,6 +52,8 @@ STUB_GUARD_EXIT = 97
 # - a vanished entry is not a failure (another process cleaned it first);
 # - a directory that is only "not empty" because a child failed is not
 #   counted again - the child already was, as Remove-Item's count did;
+#   nor is one that cannot be listed ($left starts at 1): the walk already
+#   counted its failed enumeration;
 # - read-only is cleared only on real entries (Remove-Item -Force did that
 #   too), never on a reparse point, whose attribute calls could reach the
 #   target.
@@ -70,7 +72,7 @@ SAFE_DELETE_HELPER = (
     "for ($k = $dirs.Count - 1; $k -ge 0; $k--) { $d = $dirs[$k]; "
     "try { $a = [IO.File]::GetAttributes($d); if (($a -band $ro) -and -not ($a -band $rp)) { [IO.File]::SetAttributes($d, ($a -bxor $ro)) }; "
     "[IO.Directory]::Delete($d) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { } "
-    "catch { $left = 0; try { $left = @([IO.Directory]::GetFileSystemEntries($d)).Count } catch { }; if ($left -eq 0) { $n++ } } }; "
+    "catch { $left = 1; try { $left = @([IO.Directory]::GetFileSystemEntries($d)).Count } catch { }; if ($left -eq 0) { $n++ } } }; "
     "return $n }"
 )
 
@@ -269,6 +271,43 @@ def _link(link: Path, target: Path, kind: str) -> None:
         pytest.skip("cannot create symlinks here (Windows without Developer Mode / privilege)")
 
 
+def _backdate_link(link: Path) -> None:
+    """Age the link itself, not its target: the temp actions only delete
+    entries older than their cutoff, and enumeration reports a reparse
+    point's own timestamps. os.utime(follow_symlinks=False) needs
+    utimensat/lutimes, which Windows CPython lacks (NotImplementedError), so
+    Windows opens the reparse point itself and calls SetFileTime - that
+    covers junctions too."""
+    if sys.platform != "win32":
+        if os.utime not in os.supports_follow_symlinks:
+            pytest.skip("cannot set a link's own timestamp here")
+        os.utime(link, (OLD, OLD), follow_symlinks=False)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k32.SetFileTime.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    FILE_WRITE_ATTRIBUTES, OPEN_EXISTING = 0x100, 3
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT = 0x02000000, 0x00200000
+    share = 1 | 2 | 4  # read | write | delete
+    h = k32.CreateFileW(str(link), FILE_WRITE_ATTRIBUTES, share, None, OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, None)
+    if h in (None, wintypes.HANDLE(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        ft = int(OLD * 10_000_000) + 116444736000000000  # FILETIME: 100ns ticks since 1601
+        ftime = wintypes.FILETIME(ft & 0xFFFFFFFF, ft >> 32)
+        if not k32.SetFileTime(h, None, ctypes.byref(ftime), ctypes.byref(ftime)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        k32.CloseHandle(h)
+
+
 def _victim(tmp_path: Path) -> Path:
     victim = tmp_path / "victim"
     (victim / "sub").mkdir(parents=True)
@@ -303,8 +342,7 @@ def _plant(root: Path, victim: Path, kind: str) -> list[Path]:
         os.utime(d, (OLD, OLD))
     top = root / "top_link"
     _link(top, victim, kind)
-    if kind == "symlink":
-        os.utime(top, (OLD, OLD), follow_symlinks=False)
+    _backdate_link(top)
     return [junk, top]
 
 
@@ -408,6 +446,21 @@ def test_helper_removes_the_links_but_never_their_target(tmp_path, kind):
     _assert_victim_intact(victim)
     for p in planted + [tree, root_link]:
         assert not os.path.lexists(p), p
+
+
+@pytest.mark.parametrize("kind", LINK_KINDS)
+def test_backdating_ages_the_link_and_leaves_its_target_alone(tmp_path, kind):
+    # The cutoff-filtered temp actions only see a planted top-level link if
+    # it is old; this proves _plant really ages the link itself (and, on
+    # Windows, that the SetFileTime path works for symlinks and junctions).
+    target = tmp_path / "target"
+    target.mkdir()
+    before = os.stat(target).st_mtime
+    link = tmp_path / "link"
+    _link(link, target, kind)
+    _backdate_link(link)
+    assert abs(os.lstat(link).st_mtime - OLD) < 5
+    assert os.stat(target).st_mtime == before
 
 
 def test_helper_survives_a_tree_deeper_than_the_powershell_call_depth(tmp_path):

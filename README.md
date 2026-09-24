@@ -140,6 +140,14 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   Appka pri štarte tiež zaloguje vlastné cesty, a počas behu dávky
   kontroluje, či jej priečinok medzičasom nezmizol - ak áno, dávku
   okamžite zastaví namiesto tichého pokračovania.
+- **Mazanie nejde cez junction ani symlink:** čistenie temp priečinkov,
+  cache, Windows.old, zvyškov po upgrade, starých záloh Windows Update
+  a tlačového frontu prechádza strom samo a junction, symlink či iný
+  reparse point zmaže iba ako odkaz - nikdy nevojde dovnútra. Používateľ
+  bez admin práv tak nemôže podstrčiť odkaz napr. na `C:\Windows\System32`
+  a nechať ho vymazať zvýšeným čistením (trieda chyby CVE-2026-55567).
+  Ak je odkazom samotný čistený priečinok (napr. podstrčený `C:\NVIDIA`),
+  zmaže sa len odkaz a `takeown`/`icacls` sa nad ním nespustia.
 
 ## Keď aktualizácia zlyhá
 

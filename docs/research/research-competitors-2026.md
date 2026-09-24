@@ -257,6 +257,7 @@ Zoradené podľa priority (skóre = hodnota ÷ náročnosť; pri rovnosti nižš
 - **Zdroje:** github.com/claude-boucher/CheckCA2023 · github.com/Azure/azure-support-scripts/…/SecureBootCertCheck/readme.md · github.com/allenhouchins/fleet-extensions/…/secureboot_cert_update/README.md · github.com/fleetdm/fleet/…/microsoft-is-rotating-every-windows-pcs-secure-boot-keys.md
 
 ### 2. G22 – Odolnosť zvýšeného mazania voči junction a symlink presmerovaniu · skóre 4,0 · bezpečnosť
+- **Stav implementácie: hotovo.** Všetky katalógové akcie, ktoré mažú strom priečinkov (10 v m02, `wu_reset_cache` v m05, `print_reset_print_system` v m14), používajú vložený pomocník `Remove-PfSafe`: strom prechádza sám, reparse point zmaže len ako odkaz a nikdy doň nevojde. `tests/test_safe_delete.py` bráni návratu surového `Remove-Item -Recurse` do katalógu a spúšťa skutočné príkazy nad stromom s podstrčeným symlinkom (na Windows aj junction). Zostáva: pretek medzi kontrolou a zmazaním (vyžaduje mazanie cez handle), `takeown /R`/`icacls /T` vo vnútri priečinka, ktorý nie je odkazom, a `Remove-WithRetry -Recurse` v skripte aktualizácie (`portablefix/update_swap_script.py`).
 - **Čo robia a kto:** BleachBit 6.0.1 opravil CVE-2026-55567 (CVSS 7.8). Štandardný používateľ mohol cez podstrčený junction alebo symlink presmerovať elevované mazanie na ľubovoľný súbor a v kombinácii s Windows Installer eskalovať na SYSTEM.
 - **Oprava po overení:** Advisory potvrdzuje, že príčinou bolo chýbajúce zamykanie počas mazania. Presný spôsob opravy („zamkne a overí rodičovský priečinok“) z advisory priamo nevyplýva.
 - **Stav v PortableFix:** `system_temp`, `user_temp` a `browser_cache_sweep` v m02 posielajú deti priečinkov `$env:TEMP` a `$env:WINDIR\Temp` rovno do `Remove-Item -Recurse -Force` bez kontroly ReparsePoint. `paths.compute_temp_protected_child` rieši len to, keď je samotný %TEMP% junction (ochrana pred zmazaním seba), nie položky vnútri stromu.
@@ -622,7 +623,7 @@ Rozsah vĺn predpokladá jedného maintainera. Časové odhady sú orientačné.
 | # | Položka | Prečo teraz |
 |---|---|---|
 | 1 | **G07** Secure Boot CA 2023 verdikt (zatiaľ len SAFE status) | Termín 19. 10. 2026; príležitosť byť prví |
-| 2 | **G22** `Remove-PfSafe` + CI test junction/symlink | bezpečnostná chyba rovnakej triedy ako CVE-2026-55567 |
+| 2 | **G22** `Remove-PfSafe` + CI test junction/symlink – **hotovo** | bezpečnostná chyba rovnakej triedy ako CVE-2026-55567 |
 | 3 | **G24 + G01** bod obnovy podľa efektu akcie, aj pre panely Uninstaller a winget; `reg save` hive ako fallback | lacné, uzatvára skutočnú dieru (m13 bez bodu obnovy) |
 | 4 | **G11** pre-flight brána (+ vynútenie `requires_admin`) | zabráni opravám na PC s čakajúcim reštartom alebo plným diskom; banner začne platiť |
 | 5 | **G12** jedna revízna obrazovka batchu | 8 dialógov → 1, silnejšie bezpečnostné brány |

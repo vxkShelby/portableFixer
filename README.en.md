@@ -143,6 +143,15 @@ PowerShell.
   resolved paths at startup, and checks mid-batch whether its own
   folder has disappeared - if so, it stops the batch immediately
   instead of silently continuing.
+- **Deletes never follow junctions or symlinks:** cleaning temp folders,
+  caches, Windows.old, upgrade leftovers, stale Windows Update backups
+  and the print spooler walks the tree itself and removes a junction,
+  symlink or other reparse point as the link only - it never descends
+  into it. A standard user therefore cannot plant a link to e.g.
+  `C:\Windows\System32` and have an elevated cleanup delete it (the
+  CVE-2026-55567 class). If the folder being cleaned is itself a link
+  (e.g. a planted `C:\NVIDIA`), only the link is removed and
+  `takeown`/`icacls` are not run on it.
 
 ## When an update fails
 
