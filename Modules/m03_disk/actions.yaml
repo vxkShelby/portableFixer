@@ -20,14 +20,14 @@ actions:
     label_en: "Scan system drive (read-only)"
     risk: SAFE
     command: "Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Scan"
-    description_sk: "Skontroluje NTFS chyby na systémovom disku bez zamykania disku, nič neopravuje."
+    description_sk: "Skontroluje systémový disk na chyby NTFS bez uzamknutia zväzku, nič neopravuje."
     description_en: "Checks the system drive for NTFS errors without locking the volume; fixes nothing."
   - id: disk_spotfix
     label_sk: "Rýchla oprava disku (SpotFix)"
     label_en: "Quick disk repair (SpotFix)"
     risk: MODERATE
     command: "$r = Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -SpotFix -EA SilentlyContinue; $status = if ($r) { $r.HealthStatus } else { 'Unknown' }; Write-Output ('HealthStatus after SpotFix: ' + $status); if ($status -ne 'Healthy') { Write-Output 'Some errors could not be fixed online - run \"Full disk check at restart\" for a complete repair.' }"
-    description_sk: "Opraví známe NTFS chyby online, bez reštartu. Ak niečo nedokáže opraviť online, odporučí plnú kontrolu pri reštarte."
+    description_sk: "Opraví známe chyby NTFS online, bez reštartu. Ak niečo nedokáže opraviť online, odporučí plnú kontrolu pri reštarte."
     description_en: "Repairs known NTFS errors online, without a restart. Points to the full restart-time scan if it can't fix everything online."
   - id: disk_optimize_volume
     label_sk: "Optimalizácia disku (TRIM/defragmentácia)"
@@ -56,5 +56,5 @@ actions:
     label_en: "VSS writers status"
     risk: SAFE
     command: "vssadmin list writers"
-    description_sk: "Zobrazí stav VSS writerov (dôležité pre zálohovanie a shadow copies). Zlyhaný writer často blokuje zálohy. Nič nemení."
+    description_sk: "Zobrazí stav VSS writerov (dôležité pre zálohovanie a shadow copies). Writer v chybovom stave často blokuje zálohy. Nič nemení."
     description_en: "Shows VSS writer status (relevant for backups and shadow copies). A failed writer often blocks backups. Changes nothing."

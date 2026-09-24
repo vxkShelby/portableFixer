@@ -6,7 +6,7 @@ actions:
     label_en: "Boot configuration (BCD) report"
     risk: SAFE
     command: "$out = & bcdedit.exe /enum all 2>&1; Write-Output ($out -join \"`n\")"
-    description_sk: "Vypíše zavádzacie položky, predvolený OS, timeout a prípadné príznaky safeboot/testsigning z predchádzajúcich diagnostík. Nič nemení."
+    description_sk: "Vypíše zavádzacie položky, predvolený OS, timeout a prípadné zabudnuté príznaky safeboot/testsigning z predchádzajúcej diagnostiky. Nič nemení."
     description_en: "Lists boot entries, default OS, timeout, and any leftover safeboot/testsigning flags from a prior troubleshooting session. Changes nothing."
 
   - id: boot_tpm_status
@@ -14,7 +14,7 @@ actions:
     label_en: "TPM and Secure Boot status"
     risk: SAFE
     command: "Get-Tpm | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated | Format-List; try { Write-Output ('SecureBoot enabled: ' + (Confirm-SecureBootUEFI)) } catch { Write-Output 'SecureBoot: not supported (Legacy BIOS/CSM or firmware does not expose this check)' }"
-    description_sk: "Zobrazí stav TPM čipu a či je zapnutý Secure Boot. Nič nemení."
+    description_sk: "Zobrazí stav čipu TPM a to, či je zapnutý Secure Boot. Nič nemení."
     description_en: "Shows TPM chip status and whether Secure Boot is enabled. Changes nothing."
 
   - id: boot_bitlocker_status
@@ -22,11 +22,11 @@ actions:
     label_en: "Disk encryption (BitLocker) status"
     risk: SAFE
     command: "try { Get-BitLockerVolume -EA Stop | Select-Object MountPoint,VolumeStatus,ProtectionStatus,EncryptionPercentage | Format-Table -AutoSize } catch { $v = Get-CimInstance -Namespace 'root/cimv2/security/MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -EA SilentlyContinue; if ($v) { $v | Select-Object DriveLetter,ProtectionStatus,ConversionStatus | Format-Table -AutoSize } else { Write-Output 'BitLocker/Device Encryption not available on this Windows edition.' } }"
-    description_sk: "Zobrazí stav šifrovania diskových zväzkov (BitLocker alebo Device Encryption na Home edícii). Nič nemení."
+    description_sk: "Zobrazí stav šifrovania diskových zväzkov (BitLocker alebo Device Encryption v edícii Home). Nič nemení."
     description_en: "Shows volume encryption status (BitLocker, or Device Encryption on Home edition). Changes nothing."
 
   - id: boot_safe_mode_status
-    label_sk: "Kontrola zavádzania do Bezpečného režimu"
+    label_sk: "Kontrola zavádzania do núdzového režimu"
     label_en: "Safe Mode boot check"
     risk: SAFE
     command: "$out = & bcdedit.exe /enum '{current}' 2>&1 | Select-String -Pattern 'safeboot'; if ($out) { Write-Output ('Machine is currently configured to boot into SAFE MODE: ' + ($out -join '; ')) } else { Write-Output 'Normal boot (no safeboot flag set).' }"
@@ -34,23 +34,23 @@ actions:
       - "Machine is currently configured to boot into SAFE MODE"
     recommended_action_ids:
       - boot_clear_safe_mode_flag
-    description_sk: "Zistí, či je počítač nastavený na zavádzanie do Bezpečného režimu (často zabudnutý príznak po predchádzajúcej diagnostike). Nič nemení."
+    description_sk: "Zistí, či je počítač nastavený na zavádzanie do núdzového režimu (Safe Mode) - často zabudnutý príznak po predchádzajúcej diagnostike. Nič nemení."
     description_en: "Checks whether the machine is set to boot into Safe Mode (a commonly forgotten leftover flag from earlier troubleshooting). Changes nothing."
 
   - id: boot_clear_safe_mode_flag
-    label_sk: "Vypnutie zavádzania do Bezpečného režimu"
+    label_sk: "Vypnutie zavádzania do núdzového režimu"
     label_en: "Clear Safe Mode boot flag"
     risk: MODERATE
     command: "$me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $safebootMatch = & bcdedit.exe /enum '{current}' 2>&1 | Select-String -Pattern '^safeboot\\s+(\\S+)'; $bk = \"$root\\safe_mode_backup.json\"; if (-not (Test-Path $bk)) { $prior = if ($safebootMatch) { $safebootMatch.Matches[0].Groups[1].Value } else { $null }; [PSCustomObject]@{ SafeBoot = $prior } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8 }; & bcdedit.exe /deletevalue '{current}' safeboot | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Safe Mode flag cleared - next restart boots normally.' } else { Write-Output 'Failed to clear safeboot flag (needs administrator).' ; exit 1 }"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\safe_mode_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; if ($b.SafeBoot) { & bcdedit.exe /set '{current}' safeboot $b.SafeBoot.ToLower() | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Safe Mode flag restored (' + $b.SafeBoot + ').') } else { Write-Output 'Failed to restore safeboot flag (needs administrator).'; exit 1 } } else { Write-Output 'No safeboot flag was set before - nothing to restore.' } } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Odstráni príznak safeboot (po zálohe pôvodnej hodnoty, len pri prvom behu), aby počítač pri ďalšom štarte zaviedol normálne."
+    description_sk: "Odstráni príznak safeboot (po zálohe pôvodnej hodnoty, len pri prvom behu), aby sa počítač pri ďalšom štarte spustil normálne."
     description_en: "Removes the safeboot flag (after backing up the original value, only on first run) so the machine boots normally next time."
 
   - id: boot_enable_f8_legacy_recovery
-    label_sk: "Zapnutie F8 menu pokročilých možností spustenia"
+    label_sk: "Zapnutie ponuky F8 (pokročilé možnosti spustenia)"
     label_en: "Enable F8 Advanced Boot Options menu"
     risk: MODERATE
     command: "& bcdedit.exe /set '{current}' bootmenupolicy legacy | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Legacy F8 boot recovery enabled - hold F8 during boot to reach Advanced Boot Options.' } else { Write-Output 'Failed to set bootmenupolicy (needs administrator).'; exit 1 }"
     undo_command: "& bcdedit.exe /set '{current}' bootmenupolicy standard | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output 'Boot menu policy restored to standard (Windows 11 default).' } else { Write-Output 'Failed to restore bootmenupolicy (needs administrator).'; exit 1 }"
-    description_sk: "Zapne starý F8 zavádzací mechanizmus (Pokročilé možnosti spustenia) odstránený vo Windows 8+. Užitočné pri opakovaných problémoch so spúšťaním, kedy Windows sa dostať do WinRE automaticky nestíha. Undo vráti štandardné (Windows 11 predvolené) správanie."
+    description_sk: "Zapne starý zavádzací mechanizmus F8 (Pokročilé možnosti spustenia), odstránený od Windows 8. Užitočné pri opakovaných problémoch so spúšťaním, keď sa Windows sám spoľahlivo nedostane do WinRE. Undo vráti štandardné správanie (predvolené vo Windows 11)."
     description_en: "Enables the legacy F8 boot mechanism (Advanced Boot Options) removed since Windows 8. Useful for recurring startup problems where Windows doesn't reliably drop into WinRE on its own. Undo restores the standard (Windows 11 default) behavior."

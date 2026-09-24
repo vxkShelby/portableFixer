@@ -13,7 +13,7 @@ actions:
     label_en: "Deep component store scan"
     risk: SAFE
     command: "DISM /Online /Cleanup-Image /ScanHealth; if ($LASTEXITCODE -eq 3010) { Write-Output 'Scan completed - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
-    description_sk: "Dôkladnejšie skenovanie úložiska komponentov (dlhšie trvá)."
+    description_sk: "Dôkladnejšie skenovanie úložiska komponentov (trvá dlhšie)."
     description_en: "More thorough component store scan (takes longer)."
   - id: dism_restorehealth
     label_sk: "Oprava úložiska komponentov"
@@ -37,59 +37,59 @@ actions:
     description_sk: "Len overí integritu systémových súborov, nič nemení."
     description_en: "Only verifies system file integrity, changes nothing."
   - id: appx_reregister
-    label_sk: "Re-registrácia Windows Store aplikácií"
+    label_sk: "Opätovná registrácia aplikácií Windows Store"
     label_en: "Re-register Windows Store apps"
     risk: MODERATE
     command: "$pkgs = Get-AppXPackage -AllUsers | Where-Object { $_.InstallLocation }; $ok = 0; $failed = 0; foreach ($p in $pkgs) { try { Add-AppxPackage -DisableDevelopmentMode -Register \"$($p.InstallLocation)\\AppXManifest.xml\" -EA Stop } catch { $failed++; continue }; $ok++ }; Write-Output (\"Re-registered: \" + $ok + \", failed: \" + $failed)"
-    description_sk: "Znova zaregistruje všetky nainštalované UWP aplikácie pre všetkých používateľov. Preskakuje balíky bez inštalačnej cesty."
+    description_sk: "Znovu zaregistruje všetky nainštalované UWP aplikácie pre všetkých používateľov. Preskočí balíky bez inštalačnej cesty."
     description_en: "Re-registers all installed UWP apps for all users. Skips packages without an install path."
   - id: wmi_verify
     label_sk: "Overenie WMI repozitára"
     label_en: "Verify WMI repository"
     risk: SAFE
     command: "winmgmt /verifyrepository"
-    description_sk: "Skontroluje konzistenciu WMI repozitára bez zmien."
+    description_sk: "Skontroluje konzistenciu WMI repozitára, nič nemení."
     description_en: "Checks WMI repository consistency without making changes."
   - id: wmi_backup
     label_sk: "Záloha WMI repozitára"
     label_en: "Back up WMI repository"
     risk: SAFE
     command: "$bk = \"$env:ProgramData\\PortableFix\\wmi_backup.bin\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; winmgmt /backup $bk; if ($LASTEXITCODE -eq 0) { Write-Output ('WMI repository backed up to ' + $bk) } else { Write-Output 'WMI backup failed.'; exit 1 }"
-    description_sk: "Vytvorí zálohu WMI repozitára pred prípadným zachránením (Salvage). Odporúčané spustiť pred wmi_salvage."
+    description_sk: "Vytvorí zálohu WMI repozitára pred prípadnou záchranou (Salvage). Odporúča sa spustiť pred wmi_salvage."
     description_en: "Creates a backup of the WMI repository before a potential salvage. Recommended to run before wmi_salvage."
   - id: wmi_salvage
-    label_sk: "Zachránenie WMI repozitára"
+    label_sk: "Záchrana WMI repozitára"
     label_en: "Salvage WMI repository"
     risk: DESTRUCTIVE
     command: "winmgmt /salvagerepository"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\wmi_backup.bin\"; if (Test-Path $bk) { winmgmt /restore $bk 1; Write-Output 'WMI repository restored from backup.' } else { Write-Output 'No WMI backup found - nothing to restore.' }"
-    description_sk: "Pokúsi sa opraviť poškodený WMI repozitár. Robiť len po zálohe (akcia wmi_backup), môže stratiť vlastné WMI rozšírenia. Undo obnoví zo zálohy, ak existuje."
+    description_sk: "Pokúsi sa opraviť poškodený WMI repozitár. Spúšťajte len po zálohe (akcia wmi_backup) - môžu sa stratiť vlastné WMI rozšírenia. Undo obnoví repozitár zo zálohy, ak existuje."
     description_en: "Attempts to repair a corrupted WMI repository. Only after a backup (the wmi_backup action) - may lose custom WMI extensions. Undo restores from the backup, if one exists."
   - id: search_index_rebuild
     label_sk: "Znovuvytvorenie indexu vyhľadávania"
     label_en: "Rebuild Windows Search index"
     risk: MODERATE
     command: "$svc = Get-Service -Name WSearch -EA SilentlyContinue; if (-not $svc) { Write-Output 'Windows Search service (WSearch) not found on this system.'; exit 1 }; Stop-Service -Name WSearch -Force -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -ne 'Stopped') { Write-Output 'Could not stop Windows Search service (needs administrator).'; exit 1 }; Remove-Item -Path \"$env:ProgramData\\Microsoft\\Search\\Data\\Applications\\Windows\\Windows.edb\" -Force -EA SilentlyContinue; Start-Service -Name WSearch -EA SilentlyContinue; $svc.Refresh(); if ($svc.Status -eq 'Running') { Write-Output 'Search index database removed - Windows will rebuild it automatically in the background.' } else { Write-Output 'Search index removed but the service failed to restart (needs administrator).'; exit 1 }"
-    description_sk: "Zastaví službu Windows Search, odstráni poškodenú databázu indexu (Windows.edb) a službu znova spustí - Windows index znova vytvorí na pozadí. Vyžaduje administrátora. Bez undo (nie je čo obnoviť - index sa len znova vybuduje)."
+    description_sk: "Zastaví službu Windows Search, odstráni poškodenú databázu indexu (Windows.edb) a službu znovu spustí - Windows index automaticky znovu vytvorí na pozadí. Vyžaduje administrátora. Bez undo (nie je čo obnoviť - index sa len znovu vytvorí)."
     description_en: "Stops the Windows Search service, deletes the corrupted index database (Windows.edb), and restarts the service - Windows rebuilds the index automatically in the background. Needs administrator. No undo (there is nothing to restore to - the index just gets rebuilt)."
   - id: store_cache_reset
     label_sk: "Vyčistenie cache Microsoft Store"
     label_en: "Clear Microsoft Store cache"
     risk: MODERATE
     command: "if (Get-Command wsreset.exe -EA SilentlyContinue) { & wsreset.exe; Write-Output 'Microsoft Store cache reset triggered (the Store window may briefly appear and close on its own).' } else { Write-Output 'wsreset.exe not found - Microsoft Store is not installed on this system (e.g. LTSC/Server editions).'; exit 1 }"
-    description_sk: "Vyčistí cache Microsoft Store cez zabudovaný nástroj wsreset.exe - ľahší a cielenejší prvý krok ako plná re-registrácia (appx_reregister). Krátko sa zobrazí a zavrie okno Store."
+    description_sk: "Vyčistí cache Microsoft Store cez zabudovaný nástroj wsreset.exe - šetrnejší a cielenejší prvý krok než úplná opätovná registrácia (appx_reregister). Okno Store sa krátko zobrazí a zatvorí."
     description_en: "Clears the Microsoft Store cache via the built-in wsreset.exe tool - a lighter, more targeted first step than the full re-registration (appx_reregister). Briefly shows and closes the Store window."
   - id: perf_counters_rebuild
     label_sk: "Znovuvytvorenie počítadiel výkonu"
     label_en: "Rebuild performance counters"
     risk: MODERATE
     command: "lodctr /R | Out-Null; $lodctrExit = $LASTEXITCODE; winmgmt /resyncperf | Out-Null; $resyncExit = $LASTEXITCODE; if ($lodctrExit -eq 0 -and $resyncExit -eq 0) { Write-Output 'Performance counters rebuilt (lodctr /R) and WMI perf classes resynced (winmgmt /resyncperf).' } else { Write-Output ('Rebuild completed with issues - lodctr exit: ' + $lodctrExit + ', resyncperf exit: ' + $resyncExit + '. Needs administrator.'); exit 1 }"
-    description_sk: "Znovu vytvorí definície počítadiel výkonu z registrovej zálohy (lodctr /R) a resynchronizuje WMI výkonnostné triedy (winmgmt /resyncperf) - štandardná oprava pre chýbajúce/poškodené počítadlá v Performance Monitor alebo monitorovacích agentoch. Vyžaduje administrátora. Bez undo (nie je lepší 'predchádzajúci' stav, na ktorý sa vrátiť)."
+    description_sk: "Znovu vytvorí definície počítadiel výkonu zo zálohy v registri (lodctr /R) a resynchronizuje výkonnostné triedy WMI (winmgmt /resyncperf) - štandardná oprava chýbajúcich/poškodených počítadiel v nástroji Performance Monitor alebo v monitorovacích agentoch. Vyžaduje administrátora. Bez undo (neexistuje lepší 'predchádzajúci' stav, ku ktorému by sa dalo vrátiť)."
     description_en: "Rebuilds performance counter definitions from the registry backup (lodctr /R) and resyncs WMI's performance classes (winmgmt /resyncperf) - the standard fix for missing/corrupt counters in Performance Monitor or monitoring agents. Needs administrator. No undo (there is no better 'previous' state to roll back to)."
   - id: profile_list_report
     label_sk: "Kontrola zoznamu profilov (ProfileList)"
     label_en: "User profile list check (ProfileList)"
     risk: SAFE
     command: "$wmi = @{}; Get-CimInstance Win32_UserProfile -EA SilentlyContinue | ForEach-Object { $wmi[$_.SID] = $_ }; $rows = @(Get-ChildItem -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList' -EA SilentlyContinue | ForEach-Object { $sid = $_.PSChildName; $p = Get-ItemProperty -Path $_.PSPath -EA SilentlyContinue; $base = $sid -replace '\\.bak$',''; $user = $(try { (New-Object System.Security.Principal.SecurityIdentifier($base)).Translate([System.Security.Principal.NTAccount]).Value } catch { '?' }); $issues = @(); if ($sid -like '*.bak') { $issues += 'BAK DUPLICATE' }; if ($p.ProfileImagePath -match '\\\\TEMP(\\.[^\\\\]*)?$') { $issues += 'TEMP PROFILE' }; if ($p.ProfileImagePath -and -not (Test-Path -LiteralPath $p.ProfileImagePath)) { $issues += 'FOLDER MISSING' }; if ($p.State -and $base -notmatch '^S-1-5-(18|19|20)$') { $issues += ('STATE ' + $p.State) }; [PSCustomObject]@{ SID = $sid; User = $user; Path = $p.ProfileImagePath; State = $p.State; RefCount = $p.RefCount; Loaded = $(if ($wmi.ContainsKey($base)) { $wmi[$base].Loaded } else { '' }); Issues = ($issues -join ', ') } }); if (-not $rows) { Write-Output 'Could not read the ProfileList registry key.'; exit 1 }; $rows | Format-Table -AutoSize -Wrap | Out-String -Width 250; $bad = @($rows | Where-Object { $_.Issues }); if ($bad) { Write-Output ('' + $bad.Count + ' profile entr(y/ies) flagged - fix that specific SID by hand (e.g. remove the stray .bak duplicate after exporting the key). Nothing was changed.') } else { Write-Output 'No profile problems detected.' }"
-    description_sk: "Vypíše všetky profily z registrového kľúča ProfileList (SID, účet, cesta, State, RefCount, či je načítaný) a označí typické príčiny prihlásenia do dočasného profilu: duplikát .bak, cestu TEMP, chýbajúci priečinok profilu alebo nenulový State. Nič neopravuje - konkrétny SID treba opraviť ručne, automatická oprava by na zdieľanom PC mohla poškodiť profil iného používateľa."
+    description_sk: "Vypíše všetky profily z registrového kľúča ProfileList (SID, účet, cesta, State, RefCount, či je načítaný) a označí typické príčiny prihlásenia do dočasného profilu: duplikát .bak, cestu TEMP, chýbajúci priečinok profilu alebo nenulový State. Nič neopravuje - konkrétny SID treba opraviť ručne, pretože automatická oprava by na zdieľanom PC mohla poškodiť profil iného používateľa."
     description_en: "Lists every profile in the ProfileList registry key (SID, account, path, State, RefCount, whether loaded) and flags the usual causes of a 'signed in with a temporary profile' problem: a .bak duplicate, a TEMP path, a missing profile folder or a non-zero State. Repairs nothing - the specific SID must be fixed by hand, since an automatic fix could break another user's profile on a shared PC."

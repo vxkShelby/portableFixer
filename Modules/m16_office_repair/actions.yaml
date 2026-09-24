@@ -6,7 +6,7 @@ actions:
     label_en: "Office version and channel report"
     risk: SAFE
     command: "$c = Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Office\\ClickToRun\\Configuration' -EA SilentlyContinue; if ($c) { $c | Select-Object VersionToReport,ClientCulture,Platform,UpdateChannel | Format-List } else { Write-Output 'Click-to-Run Office configuration not found (Office not installed, or an MSI-based/volume-license install).' }"
-    description_sk: "Zobrazí verziu a update kanál Office (Click-to-Run inštalácie). Nič nemení."
+    description_sk: "Zobrazí verziu Office a kanál aktualizácií (inštalácie Click-to-Run). Nič nemení."
     description_en: "Shows Office version and update channel (Click-to-Run installs). Changes nothing."
 
   - id: office_addins_report
@@ -14,7 +14,7 @@ actions:
     label_en: "Outlook add-ins report"
     risk: SAFE
     command: "$r = Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Office\\Outlook\\Addins\\*','HKLM:\\Software\\Microsoft\\Office\\Outlook\\Addins\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Office\\Outlook\\Addins\\*' -EA SilentlyContinue | Select-Object PSChildName,FriendlyName,Description,LoadBehavior; if ($r) { $r | Format-Table -AutoSize -Wrap } else { Write-Output 'No Outlook add-ins found.' }"
-    description_sk: "Vypíše nainštalované doplnky Outlooku (časté zdroje pádov/spomalenia). Nič nemení."
+    description_sk: "Vypíše nainštalované doplnky Outlooku (častý zdroj pádov/spomalenia). Nič nemení."
     description_en: "Lists installed Outlook add-ins (a common source of crashes/slowness). Changes nothing."
 
   - id: office_ost_pst_report
@@ -22,7 +22,7 @@ actions:
     label_en: "OST/PST file size report"
     risk: SAFE
     command: "Write-Output '--- OST files ---'; Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Outlook\" -Filter *.ost -Recurse -EA SilentlyContinue | Select-Object Name,@{N='SizeGB';E={[math]::Round($_.Length/1GB,2)}},LastWriteTime | Format-Table -AutoSize; Write-Output '--- PST files ---'; Get-ChildItem \"$env:USERPROFILE\\Documents\\Outlook Files\",\"$env:LOCALAPPDATA\\Microsoft\\Outlook\" -Filter *.pst -Recurse -EA SilentlyContinue | Select-Object Name,@{N='SizeGB';E={[math]::Round($_.Length/1GB,2)}} | Format-Table -AutoSize"
-    description_sk: "Zobrazí veľkosť OST/PST súborov Outlooku - predimenzovaný súbor je častý (a ľahko zistiteľný) zdroj spomalenia. Nič nemení."
+    description_sk: "Zobrazí veľkosť OST/PST súborov Outlooku - príliš veľký súbor je častou (a ľahko zistiteľnou) príčinou spomalenia. Nič nemení."
     description_en: "Shows the size of Outlook OST/PST files - an oversized file is a frequent, easily-spotted cause of slowness. Changes nothing."
 
   - id: office_com_addin_disable_all_thirdparty
@@ -31,7 +31,7 @@ actions:
     risk: MODERATE
     command: "$bk = \"$env:ProgramData\\PortableFix\\office_addins_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $keys = Get-ChildItem 'HKCU:\\Software\\Microsoft\\Office\\Outlook\\Addins' -EA SilentlyContinue; $state = @(); foreach ($k in $keys) { if ($k.PSChildName -notmatch '^Microsoft\\.') { $lb = (Get-ItemProperty $k.PSPath -Name LoadBehavior -EA SilentlyContinue).LoadBehavior; $state += [PSCustomObject]@{ Key = $k.PSChildName; LoadBehavior = $lb }; Set-ItemProperty -Path $k.PSPath -Name LoadBehavior -Value 0 -Type DWord -EA SilentlyContinue } }; $state | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; Write-Output ('Disabled ' + $state.Count + ' third-party Outlook add-in(s), backup saved.')"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\office_addins_backup.json\"; if (Test-Path $bk) { Get-Content $bk -Raw | ConvertFrom-Json | ForEach-Object { Set-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Office\\Outlook\\Addins\\$($_.Key)\" -Name LoadBehavior -Value $_.LoadBehavior -Type DWord -EA SilentlyContinue } } else { Write-Output 'No backup found.' }"
-    description_sk: "Vypne každý doplnok Outlooku, ktorý nie je od Microsoftu (základ pri riešení pádu/spomalenia pri štarte). Záloha pôvodného stavu sa ukladá, undo ho vráti."
+    description_sk: "Vypne každý doplnok Outlooku, ktorý nie je od Microsoftu (štandardný prvý krok pri pádoch/spomalení pri štarte). Pôvodný stav sa zálohuje, undo ho obnoví."
     description_en: "Disables every non-Microsoft Outlook add-in (a standard first step for startup crashes/slowness). The original state is backed up; undo restores it."
 
   - id: office_quick_repair
@@ -40,7 +40,7 @@ actions:
     risk: MODERATE
     command: "$c2r = \"$env:ProgramFiles\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeC2RClient.exe\"; if (Test-Path $c2r) { & $c2r scenario=Repair RepairType=QuickRepair DisplayLevel=False; Write-Output 'Quick Repair started (offline, ~2-5 min).' } else { Write-Output 'Click-to-Run client not found - Office is not installed, or is an MSI-based/volume-license install that needs Control Panel > Programs repair instead.' }"
     inactivity_timeout_sec: 600
-    description_sk: "Spustí rýchlu (offline) opravu Click-to-Run Office. Nevyžaduje internet, cca 2-5 min. Poznámka: nie je isto overené, či príkaz čaká na dokončenie opravy alebo sa hlási hotový skôr - ak nástroj ohlási úspech skoro po spustení, oprava mohla pokračovať na pozadí."
+    description_sk: "Spustí rýchlu (offline) opravu Click-to-Run Office. Nevyžaduje internet, cca 2-5 min. Poznámka: nie je spoľahlivo overené, či príkaz čaká na dokončenie opravy, alebo hlási dokončenie skôr - ak nástroj ohlási úspech krátko po spustení, oprava môže ešte bežať na pozadí."
     description_en: "Runs a quick (offline) Click-to-Run Office repair. No internet needed, ~2-5 min. Note: it's not fully confirmed whether the command blocks until the repair actually finishes or reports done early - if this reports success very quickly, the repair may still be running in the background."
 
   - id: office_online_repair
@@ -49,7 +49,7 @@ actions:
     risk: MODERATE
     command: "$c2r = \"$env:ProgramFiles\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeC2RClient.exe\"; if (Test-Path $c2r) { & $c2r scenario=Repair RepairType=FullRepair DisplayLevel=False; Write-Output 'Online Repair started (needs internet, re-downloads the Office payload, can take 15-30+ min).' } else { Write-Output 'Click-to-Run client not found.' }"
     inactivity_timeout_sec: 2400
-    description_sk: "Spustí úplnú opravu Click-to-Run Office (znovu stiahne Office cez internet, 15-30+ min). Rovnaká nezistená poznámka o dokončení ako pri rýchlej oprave, tu s dlhším behom. Táto akcia má predĺžený watchdog (40 min) namiesto štandardných 300s."
+    description_sk: "Spustí úplnú opravu Click-to-Run Office (znovu stiahne Office cez internet, 15-30+ min). Platí rovnaké upozornenie o neoverenom čase dokončenia ako pri rýchlej oprave, len s dlhším behom. Táto akcia má predĺžený watchdog (40 min) namiesto štandardných 300s."
     description_en: "Runs a full Click-to-Run Office repair (re-downloads Office over the internet, 15-30+ min). Same unconfirmed caveat about completion timing as Quick Repair, with a longer run. This action has an extended watchdog (40 min) instead of the standard 300s."
 
   - id: office_reset_outlook_profile
@@ -57,5 +57,5 @@ actions:
     label_en: "Reset Outlook profile"
     risk: MODERATE
     command: "$found = $false; foreach ($v in '16.0','15.0','14.0') { $profilesKey = \"HKCU:\\Software\\Microsoft\\Office\\$v\\Outlook\\Profiles\"; if (Test-Path $profilesKey) { $found = $true; $proc = Get-Process -Name OUTLOOK -EA SilentlyContinue; if ($proc) { $proc.CloseMainWindow() | Out-Null; Start-Sleep -Seconds 3; $proc = Get-Process -Name OUTLOOK -EA SilentlyContinue; if ($proc) { Stop-Process -Name OUTLOOK -Force -EA SilentlyContinue; Start-Sleep -Seconds 2 } }; $ts = Get-Date -Format 'yyyyMMdd_HHmmss'; try { Rename-Item -Path $profilesKey -NewName (\"Profiles.bak-$ts\") -EA Stop; Write-Output (\"Outlook profile reset (Office $v). Old profile backed up under registry key 'Profiles.bak-$ts' - Outlook creates a fresh default profile on next launch.\") } catch { Write-Output (\"Failed to rename Outlook profile (registry key may still be in use): \" + $_.Exception.Message); exit 1 }; break } }; if (-not $found) { Write-Output 'No Outlook profile registry key found (Outlook not configured on this account, or an unsupported version).' }"
-    description_sk: "Skúsi Outlook zatvoriť slušne (čo dá šancu jeho vlastnému dialógu na uloženie rozpísaného e-mailu, ak nejaký je) a len ak sa nezavrie sám do 3 sekúnd, ukončí ho nasilu - potom premenuje jeho profil (kontá, nastavenia synchronizácie) nabok v registri, Outlook si pri ďalšom štarte vytvorí nový predvolený profil. Štandardný prvý krok pri opakovaných pádoch/zaseknutí Outlooku. Záloha ostane v registri, ale bez automatického undo (rovnaký princíp ako reset profilu Chrome/Edge)."
+    description_sk: "Najprv sa pokúsi Outlook korektne zatvoriť (jeho vlastný dialóg tak môže ponúknuť uloženie rozpísaného e-mailu, ak nejaký je) a až keď sa do 3 sekúnd sám nezatvorí, ukončí ho nasilu. Potom jeho profil (kontá, nastavenia synchronizácie) v registri odloží premenovaním a Outlook si pri ďalšom štarte vytvorí nový predvolený profil. Štandardný prvý krok pri opakovaných pádoch/zamŕzaní Outlooku. Pôvodný profil ostane v registri, ale bez automatického undo (rovnaký princíp ako reset profilu Chrome/Edge)."
     description_en: "Tries to close Outlook gracefully first (giving its own dialog a chance to offer saving an unfinished email, if there is one) and only force-kills it if it hasn't closed on its own within 3 seconds - then renames its profile (accounts, sync settings) aside in the registry, Outlook creates a fresh default profile on next launch. A standard first step for recurring Outlook crashes/freezes. The old profile stays in the registry but there's no automatic undo (same approach as the Chrome/Edge profile reset)."
