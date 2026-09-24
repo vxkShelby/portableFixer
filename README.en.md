@@ -33,7 +33,7 @@ PowerShell.
 
 | Module | Category | Contents |
 |---|---|---|
-| M01 | Diagnostics | System info (OS, HW, disks, processes...) |
+| M01 | Diagnostics | System info (OS, HW, disks, processes...), crash triage (stop codes, WHEA, reliability history, crash dumps) |
 | M02 | Cleanup | Temp files, cache, recycle bin, Windows Update cache... |
 | M03 | Repair | Disk: SMART, NTFS scan/SpotFix, TRIM, chkdsk on restart |
 | M04 | Repair | System integrity: DISM, SFC, AppX, WMI |
@@ -118,6 +118,19 @@ PowerShell.
   is incomplete. A winget that
   is not on PATH (e.g. in an elevated session) is still found in the
   WindowsApps folder.
+- **Crash triage (M01):** four read-only actions to run before any
+  cleanup. *Crash triage* scans 90 days of the System log (BugCheck
+  1001, Kernel-Power 41, EventLog 6008) and lists every crash with its
+  stop code and parameters, the dump path, and the name and probable
+  cause from a built-in table of the ~35 most common codes. *WHEA
+  hardware errors* summarizes 30 days of PCI Express, processor and
+  memory errors by component and count. *Reliability history* shows the
+  1-10 stability index with its trend and the top failing programs.
+  *Crash dump evidence* lists Minidump, MEMORY.DMP and LiveKernelReports
+  with size and date - the "System crash dumps" cleanup deletes them, so
+  copy them off first. Everything is read from event IDs, provider
+  names, event XML and CIM classes, never from translated message text,
+  so it works in any Windows display language.
 
 ## Safety mechanisms
 

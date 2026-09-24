@@ -32,7 +32,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 
 | Modul | Kategória | Obsah |
 |---|---|---|
-| M01 | Diagnostika | Systémové informácie (OS, HW, disky, procesy...) |
+| M01 | Diagnostika | Systémové informácie (OS, HW, disky, procesy...), triáž pádov (stop kódy, WHEA, história spoľahlivosti, výpisy pádov) |
 | M02 | Čistenie | Temp súbory, cache, kôš, Windows Update cache... |
 | M03 | Oprava | Disk: SMART, NTFS scan/SpotFix, TRIM, chkdsk pri reštarte |
 | M04 | Oprava | Integrita systému: DISM, SFC, AppX, WMI |
@@ -116,6 +116,19 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   nedá prečítať, panel ukáže zvyšok a upozorní, že zoznam nie je
   úplný. Winget mimo PATH (napr. v zvýšenej
   relácii) sa nájde aj v priečinku WindowsApps.
+- **Triáž pádov (M01):** štyri akcie len na čítanie, ktoré treba spustiť
+  pred akýmkoľvek čistením. *Triáž pádov* prejde log System za 90 dní
+  (BugCheck 1001, Kernel-Power 41, EventLog 6008) a ku každému pádu
+  vypíše stop kód s parametrami, cestu k dumpu a zo vstavanej tabuľky
+  ~35 najčastejších kódov aj názov a pravdepodobnú príčinu. *Hardvérové
+  chyby WHEA* zhrnú chyby PCI Express, procesora a pamäte za 30 dní podľa
+  súčasti a počtu. *História spoľahlivosti* ukáže index stability 1–10
+  s trendom a najčastejšie padajúce programy. *Výpisy pádov ako dôkaz*
+  vypíšu Minidump, MEMORY.DMP a LiveKernelReports s veľkosťou a dátumom -
+  čistenie „Výpisy pádov systému“ ich maže, preto si ich najprv
+  skopírujte. Údaje sa čítajú z event ID, názvov providerov, XML udalostí
+  a tried CIM, nikdy z preloženého textu správ, takže fungujú v každom
+  jazyku Windows.
 
 ## Bezpečnostné mechanizmy
 
