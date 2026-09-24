@@ -76,3 +76,35 @@ def test_m14_catalog_reset_print_system_verifies_it_actually_worked():
     assert "-EA Stop" in action.command
     assert "exit 1" in action.command
     assert "Get-Printer -EA SilentlyContinue" in action.command
+
+
+def test_m14_reset_print_system_removes_printers_only_once_the_spooler_is_back():
+    # Remove-Printer goes through the spooler: run while Spooler was stopped
+    # (the old order) it removed nothing, and the final re-check then failed
+    # every time. Stop -> clear the spool folder -> Start -> Remove -> re-check.
+    module = load_module(CATALOG_PATH)
+    command = next(a for a in module.actions if a.id == "print_reset_print_system").command
+    stop = command.index("Stop-Service")
+    spool = command.index("spool\\PRINTERS")
+    start = command.index("Start-Service")
+    remove = command.index("Remove-Printer")
+    assert stop < spool < start < remove
+    # @() so a single remaining printer object still counts and joins by name
+    recheck = command[remove:]
+    assert "@($stillThere).Count" in recheck
+    assert "(@($stillThere).Name -join ', ')" in recheck
+    assert "exit 1" in recheck
+
+
+def test_m14_remove_orphaned_drivers_never_treats_every_driver_as_orphaned():
+    # A failing Get-Printer (spooler down, corrupt queue) left $inUse empty,
+    # so EVERY driver - including ones real printers use - looked orphaned
+    # and was deleted, and failed removals still exited 0.
+    module = load_module(CATALOG_PATH)
+    command = next(a for a in module.actions if a.id == "print_remove_orphaned_drivers").command
+    assert "try { $inUse = @((Get-Printer -EA Stop).DriverName)" in command
+    listing_catch = command[command.index("catch {"):]
+    assert "exit 1" in listing_catch[:listing_catch.index("}")]
+    assert command.index("exit 1") < command.index("Remove-PrinterDriver")
+    assert "$failed++" in command
+    assert "exit 1" in command[command.rindex("if ($failed -gt 0)"):]

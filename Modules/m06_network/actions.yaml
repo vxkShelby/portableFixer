@@ -107,7 +107,7 @@ actions:
     label_sk: "Reset tlačového spooleru"
     label_en: "Reset print spooler"
     risk: MODERATE
-    command: "Stop-Service -Name Spooler -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\System32\\spool\\PRINTERS\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service -Name Spooler -EA SilentlyContinue -ErrorVariable startErrs; Write-Output ('Skipped locked/in-use items: ' + $errs.Count + '; Spooler service restart: ' + $(if ($startErrs.Count -eq 0) { 'OK' } else { 'FAILED' }))"
+    command: "Stop-Service -Name Spooler -Force -EA SilentlyContinue; Remove-Item \"$env:WINDIR\\System32\\spool\\PRINTERS\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Start-Service -Name Spooler -EA SilentlyContinue -ErrorVariable startErrs; $msg = 'Skipped locked/in-use items: ' + $errs.Count + '; Spooler service restart: '; if ($startErrs.Count -gt 0) { Write-Output ($msg + 'FAILED'); exit 1 }; Write-Output ($msg + 'OK')"
     description_sk: "Zastaví službu tlačového spooleru, vyčistí zaseknutú frontu tlače a spustí službu späť."
     description_en: "Stops the print spooler service, clears a stuck print queue, and restarts the service."
   - id: net_adapter_power_disable
