@@ -27,14 +27,6 @@ LOW_FREE_BYTES = 10 * 1024**3
 # reboot-requiring one can realistically die with the laptop mid-change.
 BATTERY_BLOCK_PERCENT = 30
 
-# The categories whose actions _run_next guards with a restore point - the
-# same list, so the review screen and the batch can never disagree.
-RESTORE_POINT_CATEGORIES = (
-    ModuleCategory.REPAIR,
-    ModuleCategory.SECURITY,
-    ModuleCategory.DRIVER_UPDATES,
-    ModuleCategory.WINGET,
-)
 # An inactivity timeout / hard cap raised this far in the catalog is how an
 # action says "I legitimately run for a long time" (DISM, chkdsk, SFC).
 LONG_INACTIVITY_SEC = 600
@@ -46,8 +38,31 @@ REBOOT_WU = "wu"
 REBOOT_FILE_RENAME = "file_rename"
 
 
+def changes_system(action: ActionDef) -> bool:
+    """Does the action change persistent system state (research G24)?
+
+    Decided by the action's effect, not its module's category: the old
+    category rule gave read-only SAFE checks in REPAIR a restore point and
+    left the MODERATE m13 debloat changes (registry policies, removed apps,
+    OneDrive) without one. The rule:
+      - DESTRUCTIVE: always (the loader rejects `changes_system: false`);
+      - otherwise the action's `changes_system` YAML field when it has one -
+        `true` for a SAFE action that still changes the system, `false`
+        for a non-SAFE one whose effect a restore point cannot cover
+        (emptying caches or the Recycle Bin, a Defender scan);
+      - otherwise non-SAFE = changes the system, SAFE = read-only.
+    """
+    if action.risk == RiskLevel.DESTRUCTIVE:
+        return True
+    if action.changes_system is not None:
+        return action.changes_system
+    return action.risk != RiskLevel.SAFE
+
+
 def needs_restore_point(module: ModuleDef, action: ActionDef) -> bool:
-    return action.risk == RiskLevel.DESTRUCTIVE or module.category in RESTORE_POINT_CATEGORIES
+    # module is kept in the signature: every caller has the pair at hand,
+    # and the review screen and _run_next must keep asking the same question.
+    return changes_system(action)
 
 
 def is_long_action(action: ActionDef) -> bool:

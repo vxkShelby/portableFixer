@@ -402,3 +402,46 @@ def test_real_module_catalog_loads_without_errors():
     modules, errors = load_all_modules(Path(__file__).resolve().parent.parent / "Modules")
     assert errors == []
     assert modules
+
+
+# --- changes_system (research G24) ---
+
+def _yaml_with(extra: str, risk: str = "SAFE") -> str:
+    return (
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"A\"\n"
+        "    label_en: \"A\"\n"
+        f"    risk: {risk}\n"
+        "    command: \"Write-Output 'hi'\"\n"
+        f"{extra}"
+    )
+
+
+@pytest.mark.parametrize(("extra", "expected"), [
+    ("", None),
+    ("    changes_system: true\n", True),
+    ("    changes_system: false\n", False),
+])
+def test_changes_system_is_optional_and_strictly_boolean(tmp_path, extra, expected):
+    path = tmp_path / "actions.yaml"
+    path.write_text(_yaml_with(extra), encoding="utf-8")
+    assert load_module(path).actions[0].changes_system is expected
+
+
+@pytest.mark.parametrize("value", ['"false"', "1", "yes please", "[]"])
+def test_changes_system_rejects_non_booleans(tmp_path, value):
+    # A quoted "false" is a truthy string - it must fail the load, not
+    # silently give (or take away) a restore point.
+    path = tmp_path / "actions.yaml"
+    path.write_text(_yaml_with(f"    changes_system: {value}\n"), encoding="utf-8")
+    with pytest.raises(ModuleLoadError, match="changes_system"):
+        load_module(path)
+
+
+def test_destructive_action_cannot_opt_out_of_the_restore_point(tmp_path):
+    path = tmp_path / "actions.yaml"
+    path.write_text(_yaml_with("    changes_system: false\n", risk="DESTRUCTIVE"), encoding="utf-8")
+    with pytest.raises(ModuleLoadError, match="DESTRUCTIVE"):
+        load_module(path)

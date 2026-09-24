@@ -28,6 +28,17 @@ def _string_list(path: Path, action_id: str, raw: dict, key: str) -> list[str]:
     return value
 
 
+def _optional_bool(path: Path, action_id: str, raw: dict, key: str) -> bool | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    # Strict: a quoted "false" is a truthy string, and a typo must fail the
+    # load loudly rather than silently decide the restore point.
+    if not isinstance(value, bool):
+        raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} {value!r} (expected true or false)")
+    return value
+
+
 def load_module(actions_yaml_path: Path) -> ModuleDef:
     data = yaml.safe_load(actions_yaml_path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
@@ -65,6 +76,13 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
             raise ModuleLoadError(f"{actions_yaml_path}: action id must be a non-empty string, got {action_id!r}")
         if not isinstance(raw["command"], str) or not raw["command"].strip():
             raise ModuleLoadError(f"{actions_yaml_path}: action '{action_id}' has an empty command")
+        changes_system = _optional_bool(actions_yaml_path, action_id, raw, "changes_system")
+        if changes_system is False and risk == RiskLevel.DESTRUCTIVE:
+            # A DESTRUCTIVE action always gets the restore point - there is
+            # no "irreversible but not worth a safety net".
+            raise ModuleLoadError(
+                f"{actions_yaml_path}: action '{action_id}' is DESTRUCTIVE and cannot set changes_system: false"
+            )
         actions.append(
             ActionDef(
                 id=action_id,
@@ -83,6 +101,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 problem_keywords=_string_list(actions_yaml_path, action_id, raw, "problem_keywords"),
                 recommended_action_ids=_string_list(actions_yaml_path, action_id, raw, "recommended_action_ids"),
                 exclude_from_select_all=raw.get("exclude_from_select_all", False) is True,
+                changes_system=changes_system,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

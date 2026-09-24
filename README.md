@@ -87,7 +87,23 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   rešpektujú DRY-RUN (len vypíšu príkazy), pred akoukoľvek zmenou sa
   opýtajú a každý program, balík aj vymazaný zvyšok v registri (ten sa
   pred vymazaním zálohuje do `Backups/<run-id>/*.reg`) sa zapíše do
-  audit logu.
+  audit logu. Pred ostrým odinštalovaním, aktualizáciou aj čistením
+  zvyškov sa vytvorí bod obnovenia (rovnako ako pri dávke, vrátane
+  otázky pri jeho zlyhaní). Kým beží dávka akcií, panely ostré
+  odinštalovanie ani aktualizáciu nespustia (dva body obnovenia naraz
+  by si prepísali nastavenie limitu), a ak sa počas vytvárania bodu
+  zapne DRY-RUN, zmena sa už nevykoná. Ak odinštalovaný alebo aktualizovaný program
+  práve beží (podľa cesty k spustenému súboru), panel ho vymenuje a
+  požiada o zatvorenie: Retry skontroluje znova, Ignore pokračuje
+  (zapíše sa), Cancel nič nezmení.
+- **Chránené programy:** Uninstaller odmietne odinštalovať ovládače
+  grafiky, zvuku a čipovej sady (NVIDIA, AMD, Intel, Realtek), runtime
+  WebView2, súčasti Windows (Store, winget, Zabezpečenie Windows) a
+  samotný nainštalovaný PortableFix. Riadok ukáže značku „chránené“ s
+  dôvodom a nedá sa zaškrtnúť. Zoznam je zámerne krátky: antivírus,
+  RMM agent či Visual C++ runtime technik bežne vymieňa, tie chránené
+  nie sú. Rozpoznáva sa podľa vydavateľa, názvu produktu a kľúča v
+  registri, nie podľa preložených textov.
 - **Winget panel nikdy neklame „všetko aktuálne“:** ak winget chýba
   alebo sa nedá spustiť (nie je Inštalátor aplikácií, nie je
   zaregistrovaný pre účet, chýbajú mu závislosti), panel to napíše aj
@@ -127,13 +143,35 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 - **DRY-RUN:** predvolene zapnutý — akcie sa len vypíšu (alebo spustia
   read-only náhľad), nič sa nemení. Preto sa v DRY-RUN nič nepotvrdzuje
   a pre-flight kontrola ani bod obnovenia sa nerobia.
-- **Bod obnovenia:** pred prvou DESTRUCTIVE akciou alebo akoukoľvek
-  akciou z kategórie Oprava/Zabezpečenie sa raz za dávku vytvorí System
-  Restore Point na systémovom disku (best-effort; pri zlyhaní sa
-  aplikácia opýta, či pokračovať). Windowsový 24-hodinový limit na
-  vytváranie bodov obnovenia sa na tento jeden bod dočasne zruší a
-  pôvodné nastavenie sa hneď obnoví - predtým Windows bod potichu
-  preskočil a dávka bežala bez neho.
+- **Bod obnovenia:** raz za dávku, pred prvou akciou, ktorá **mení
+  systém**, sa vytvorí System Restore Point na systémovom disku
+  (best-effort; pri zlyhaní sa aplikácia opýta, či pokračovať).
+  Rozhoduje účinok akcie, nie kategória modulu: DESTRUCTIVE vždy;
+  inak pole `changes_system: true/false` v `actions.yaml`, ak ho akcia
+  má; inak MODERATE / REQUIRES_REBOOT áno a SAFE nie. Čisto
+  diagnostické kontroly tak bod obnovenia nikdy nespustia a debloat
+  z M13 (MODERATE zmeny registra, odstránenie OneDrive) ho už má.
+  `changes_system: false` majú akcie, ktorých účinok bod obnovenia
+  nevie vrátiť (Kôš, cache prehliadačov a písiem, výpisy pádov,
+  prepis voľného miesta, aktualizácia a sken Defendera), SAFE akcia,
+  ktorá mení stav systému, musí mať `changes_system: true` (stráži to
+  test katalógu). Windowsový 24-hodinový limit na vytváranie bodov
+  obnovenia sa na tento jeden bod dočasne zruší a pôvodné nastavenie
+  sa hneď obnoví - predtým Windows bod potichu preskočil a dávka
+  bežala bez neho. Dávka len zo SAFE akcií, ktoré systém nemenia,
+  nemá bod obnovenia ani pre-flight kontrolu, a preto môže bežať aj
+  popri odinštalovaní či winget aktualizácii.
+- **Úplná záloha registra (voliteľná):** pri dávke s DESTRUCTIVE
+  akciou ponúkne kontrolná obrazovka (nezaškrtnuté) aj `reg save`
+  HKLM\SOFTWARE a HKLM\SYSTEM s odhadom veľkosti. Záloha sa uloží
+  do `Backups/<run-id>/hives-<čas>/` tesne pred prvou DESTRUCTIVE
+  akciou, zapíše sa do audit logu a reportu a `undo.ps1` uvedie
+  priečinok s postupom ručnej obnovy offline (WinRE). PortableFix ju
+  nikdy neobnoví sám - vrátila by všetky zmeny registra od zálohy, nielen
+  tie jeho. Ak sa záloha nepodarí, aplikácia sa opýta, či DESTRUCTIVE
+  akcie spustiť aj bez nej. Priečinok obsahuje celý register klienta
+  vrátane uložených hesiel (napr. automatického prihlásenia) a boot
+  kľúča - po zákazke ho zmažte alebo odovzdajte klientovi.
 - **undo.ps1:** akcie s vratným účinkom (napr. reset hosts súboru,
   zastavenie služieb, zmena plánu napájania) priebežne zapisujú svoje
   undo príkazy do `Backups/<run-id>/undo.ps1` — v opačnom (LIFO)
@@ -419,7 +457,5 @@ lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
   opravy sú z princípu nevratné (kryje ich bod obnovenia).
 - Undo pri kombinovaných akciách (napr. zastavenie 4 služieb naraz) sa
   zapíše len pri plnom úspechu akcie.
-- Bod obnovenia sa vytvára aj pri čisto diagnostických akciách z
-  kategórií Oprava/Zabezpečenie (zámerné, konzervatívne správanie).
 - `regsvr32`/`UsoClient` kroky v M05 hlásia úspech aj pri tichom
   zlyhaní (neblokujúce procesy).

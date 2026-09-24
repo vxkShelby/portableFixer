@@ -13,7 +13,7 @@ from portablefix.gui.main_window import MainWindow
 from portablefix.settings import Settings
 
 
-def _write_module(base_dir, module_id, category, action_id):
+def _write_module(base_dir, module_id, category, action_id, changes_system=None):
     module_dir = base_dir / "Modules" / module_id
     module_dir.mkdir(parents=True)
     (module_dir / "actions.yaml").write_text(
@@ -24,7 +24,8 @@ def _write_module(base_dir, module_id, category, action_id):
         "    label_sk: \"X\"\n"
         "    label_en: \"X\"\n"
         "    risk: SAFE\n"
-        "    command: \"Write-Output 'x'\"\n",
+        + (f"    changes_system: {str(changes_system).lower()}\n" if changes_system is not None else "")
+        + "    command: \"Write-Output 'x'\"\n",
         encoding="utf-8",
     )
 
@@ -591,6 +592,10 @@ def test_moderate_risk_action_declined_does_not_run_but_logs_the_decline(qtbot, 
 
 
 def test_moderate_risk_action_accepted_runs_and_logs(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    # G24: a MODERATE change gets a restore point whatever its category.
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     base_dir = _make_base_dir(tmp_path, MODERATE_ACTIONS_YAML)
     settings = Settings(language="sk", dry_run=False)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="testrun")
@@ -1110,7 +1115,8 @@ def test_repair_category_safe_action_triggers_restore_point_and_undo_script(qtbo
         return True, ""
 
     monkeypatch.setattr(restore_point, "create_restore_point", fake_create_restore_point)
-    _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action")
+    # G24: a SAFE action gets one only when it declares that it changes the system.
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action", changes_system=True)
 
     settings = Settings(language="en", dry_run=False)
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_repair")
@@ -1174,11 +1180,13 @@ def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot
         "    label_sk: \"X\"\n"
         "    label_en: \"X\"\n"
         "    risk: SAFE\n"
+        "    changes_system: true\n"
         "    command: \"Write-Output 'repair-ran'\"\n"
         "  - id: other_repair_action\n"
         "    label_sk: \"Y\"\n"
         "    label_en: \"Y\"\n"
         "    risk: SAFE\n"
+        "    changes_system: true\n"
         "    command: \"Write-Output 'other-ran'\"\n",
         encoding="utf-8",
     )
@@ -1252,6 +1260,7 @@ def test_failed_action_with_undo_command_not_added_to_undo_script(qtbot, tmp_pat
         "    label_sk: \"X\"\n"
         "    label_en: \"X\"\n"
         "    risk: SAFE\n"
+        "    changes_system: true\n"
         "    command: \"exit 1\"\n"
         "    undo_command: \"Write-Output 'should-not-appear'\"\n",
         encoding="utf-8",
@@ -2991,7 +3000,7 @@ def test_restore_point_sequence_flows_from_runner_into_audit_log(qtbot, tmp_path
             True, "", {"sequence_number": 123, "creation_time": "20260924101530.123456-000"},
         ),
     )
-    _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action")
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action", changes_system=True)
     window = MainWindow(
         assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False),
         is_admin=True, run_id="run_rp_seq",
@@ -3753,6 +3762,10 @@ def test_uninstaller_confirmed_run_logs_each_program_as_warned_and_irreversible(
     from portablefix import uninstaller
     from portablefix.gui.main_window import _thread_running
 
+    from portablefix import restore_point
+
+    # G01: the real run makes a restore point first - never a real one here.
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     program = _fake_installed_program("Real App", plain="realapp-uninst.exe")
     monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
     window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_uninst_yes", [program], dry_run=False)
@@ -3827,7 +3840,10 @@ def test_orphan_cleanup_dry_run_starts_unchecked_and_deletes_nothing(qtbot, tmp_
 
 
 def test_orphan_cleanup_deletes_only_entries_whose_registry_backup_succeeded(qtbot, tmp_path, monkeypatch):
-    from portablefix import uninstaller
+    from portablefix import restore_point, uninstaller
+
+    # G01: the real cleanup makes a restore point first - never a real one here.
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
 
     program = _fake_installed_program("Some App", quiet="someapp.exe /S")
     orphans = [
@@ -3861,6 +3877,8 @@ def test_orphan_cleanup_deletes_only_entries_whose_registry_backup_succeeded(qtb
 
     _panel_button(card, window._t("uninstaller_clean_leftovers_button")).click()
 
+    # The deletes run once the restore point is settled (asynchronously).
+    qtbot.waitUntil(lambda: removed == [orphans[1].registry_path], timeout=10000)
     assert len(shown) == 1 and "Tool Unbackupable" in shown[0] and "Tool Backed Up" in shown[0]
     assert removed == [orphans[1].registry_path]
     backup_file = tmp_path / "Backups" / "run_orphan_real" / "uninstall_Tool_Backed_Up.reg"
@@ -3947,8 +3965,11 @@ def test_winget_update_declined_confirmation_starts_no_runner_and_logs_the_decli
 
 
 def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monkeypatch):
-    from portablefix import winget_updates
+    from portablefix import restore_point, winget_updates
     from portablefix.gui.main_window import _thread_running
+
+    # G01: the real update makes a restore point first - never a real one here.
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
 
     monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed"))
     window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_yes", False, _fake_outdated_package())
@@ -4881,7 +4902,9 @@ def test_batch_review_lists_restore_point_irreversible_and_reboot_on_screen(qtbo
     _check(window, "wipe_thing", "reboot_thing", "tweak_one")
     window.run_selected_actions()
 
-    assert texts[0] == i18n.translate("review_restore_point_no", "en")
+    # G24: the MODERATE and REQUIRES_REBOOT actions change the system too,
+    # so the restore point stays planned with the DESTRUCTIVE one unticked.
+    assert texts[0] == i18n.translate("review_restore_point_yes", "en")
     assert i18n.translate("review_restore_point_yes", "en") in texts[1:]
     assert "Cannot be undone through PortableFix: Wipe thing, Reboot thing" in texts
     assert "Needs a restart to finish: Reboot thing" in texts
@@ -4925,8 +4948,9 @@ def test_batch_review_unticked_destructive_is_declined_rest_runs(qtbot, tmp_path
     [declined] = _system_events(log_path, "risk_declined")
     wipe = next(i for i in reviews[0].review.items if i.action_id == "wipe_thing")
     assert declined["subject"] == "m02_cleanup/wipe_thing" and declined["warning_text"] == wipe.warning_text
-    # The declined DESTRUCTIVE action was the only reason for a restore point.
-    assert _system_events(log_path, "restore_point") == []
+    # G24: the MODERATE change that did run still got its restore point.
+    [rp] = _system_events(log_path, "restore_point")
+    assert rp["subject"] == "m02_cleanup/tweak_one"
 
 
 def test_batch_review_of_only_destructive_actions_needs_a_tick_to_confirm(qtbot, tmp_path, monkeypatch):
@@ -5067,8 +5091,8 @@ def test_real_preflight_probes_use_the_window_elevation_and_jobs(qtbot, tmp_path
 
 
 def test_warning_only_preflight_still_shows_review_for_a_safe_repair_batch(qtbot, tmp_path, monkeypatch):
-    # A SAFE action in a REPAIR module gets a restore point - it changes the
-    # system, so a pre-flight warning (battery) is worth one look.
+    # A SAFE action that declares changes_system gets a restore point (G24) -
+    # it changes the system, so a pre-flight warning (battery) is worth one look.
     from portablefix import preflight, restore_point
 
     module_dir = tmp_path / "Modules" / "m03_disk"
@@ -5076,6 +5100,7 @@ def test_warning_only_preflight_still_shows_review_for_a_safe_repair_batch(qtbot
     (module_dir / "actions.yaml").write_text(
         "module_id: m03_disk\ncategory: REPAIR\nactions:\n"
         "  - id: scan_disk\n    label_sk: \"Sken\"\n    label_en: \"Scan\"\n    risk: SAFE\n"
+        "    changes_system: true\n"
         "    command: \"Write-Output 'scan-ran'\"\n",
         encoding="utf-8",
     )
@@ -5506,3 +5531,736 @@ def test_quiet_mode_survives_a_language_toggle(qtbot, tmp_path, monkeypatch):
     assert window._sysinfo_labels["ping"].text() == translate("quiet_mode_value", "sk")
     assert window._quiet_status_label.text() == translate("quiet_mode_status_on", "sk")
     assert not window._ping_timer.isActive()
+
+
+# --- G24: restore point by effect, optional full registry hive backup ---
+
+
+def _fake_save_hives(calls, success=True, log_path=None):
+    """Stands in for hive_backup.save_hives: records the call and, when a log
+    path is given, which real action entries were already logged by then."""
+    from portablefix import hive_backup
+
+    def fake(dest_dir, run=None):
+        executed_before = _executed_action_ids(log_path) if log_path is not None else []
+        calls.append((Path(dest_dir), executed_before))
+        if not success:
+            return hive_backup.HiveBackupResult(False, "reg save HKLM\\SOFTWARE failed (exit 1).", Path(dest_dir))
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        files = []
+        for hive in hive_backup.HIVES:
+            target = Path(dest_dir) / f"{hive}{hive_backup.HIVE_FILE_SUFFIX}"
+            target.write_bytes(b"regf")
+            files.append(target)
+        return hive_backup.HiveBackupResult(True, "", Path(dest_dir), files)
+
+    return fake
+
+
+def _answer_review_with_hive_backup(monkeypatch, hive=True):
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    shown = []
+
+    def fake_exec(self):
+        shown.append(self)
+        for checkbox in self.destructive_checkboxes.values():
+            checkbox.setChecked(True)
+        if hive and self.hive_backup_checkbox is not None:
+            self.hive_backup_checkbox.setChecked(True)
+        self.confirm_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", fake_exec)
+    return shown
+
+
+def test_read_only_safe_action_in_repair_no_longer_creates_a_restore_point(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: pytest.fail("read-only check made a restore point"))
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "read_only_check")
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False),
+        is_admin=True, run_id="run_g24_readonly",
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["read_only_check"].setChecked(True)
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_g24_readonly")
+    assert _executed_action_ids(log_path) == ["read_only_check"]
+    assert _system_events(log_path, "restore_point") == []
+
+
+def test_moderate_change_outside_repair_categories_now_gets_a_restore_point_first(qtbot, tmp_path, monkeypatch):
+    # The m13 debloat gap: MODERATE registry changes in a CLEANUP module ran
+    # with no restore point under the old category rule.
+    from portablefix import restore_point
+
+    calls = []
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: calls.append(d) or (True, ""))
+    module_dir = tmp_path / "Modules" / "m13_debloat"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m13_debloat\ncategory: CLEANUP\nactions:\n"
+        "  - id: debloat_tweak\n    label_sk: \"X\"\n    label_en: \"X\"\n    risk: MODERATE\n"
+        "    command: \"Write-Output 'tweak-ran'\"\n"
+        "  - id: cache_sweep\n    label_sk: \"Y\"\n    label_en: \"Y\"\n    risk: MODERATE\n"
+        "    changes_system: false\n    command: \"Write-Output 'sweep-ran'\"\n",
+        encoding="utf-8",
+    )
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False),
+        is_admin=True, run_id="run_g24_debloat",
+    )
+    qtbot.addWidget(window)
+    reviews = _answer_review(monkeypatch)
+    window._action_checkboxes["debloat_tweak"].setChecked(True)
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert len(calls) == 1
+    assert reviews[0].review.restore_point_planned is True
+    log_path = audit_log_path(tmp_path, "run_g24_debloat")
+    [event] = _system_events(log_path, "restore_point")
+    assert event["subject"] == "m13_debloat/debloat_tweak"
+
+
+def test_changes_system_false_action_runs_without_a_restore_point(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: pytest.fail("no restore point expected"))
+    module_dir = tmp_path / "Modules" / "m02_cleanup"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m02_cleanup\ncategory: CLEANUP\nactions:\n"
+        "  - id: cache_sweep\n    label_sk: \"Y\"\n    label_en: \"Y\"\n    risk: MODERATE\n"
+        "    changes_system: false\n    command: \"Write-Output 'sweep-ran'\"\n",
+        encoding="utf-8",
+    )
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False),
+        is_admin=True, run_id="run_g24_cache",
+    )
+    qtbot.addWidget(window)
+    reviews = _answer_review(monkeypatch)
+    window._action_checkboxes["cache_sweep"].setChecked(True)
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert reviews[0].review.restore_point_planned is False
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_g24_cache")) == ["cache_sweep"]
+
+
+def test_hive_backup_is_offered_unticked_only_for_a_destructive_batch(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_offer")
+    seen = []
+
+    def capture(self):
+        box = self.hive_backup_checkbox
+        seen.append((self.review.offers_hive_backup, None if box is None else (box.isChecked(), box.isEnabled())))
+        self.cancel_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", capture)
+    _check(window, "tweak_one")
+    window.run_selected_actions()
+    window._action_checkboxes["tweak_one"].setChecked(False)
+    _check(window, "wipe_thing")
+    window.run_selected_actions()
+
+    # MODERATE only: nothing offered. DESTRUCTIVE: offered, unticked, and
+    # disabled while the DESTRUCTIVE action itself is not ticked.
+    assert seen == [(False, None), (True, (False, False))]
+
+
+def test_hive_backup_checkbox_follows_the_destructive_tick_and_shows_the_size(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+    from portablefix.gui.batch_review import BatchReviewDialog, build_review
+    from portablefix.models import ActionDef, ModuleDef, RiskLevel
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_size")
+    action = ActionDef(id="wipe", label_sk="W", label_en="Wipe", risk=RiskLevel.DESTRUCTIVE, command="x")
+    review = build_review(
+        [(ModuleDef("m02_cleanup", [action]), action)], preflight.PreflightResult(), "en",
+        hive_backup_bytes=250 * 1024**2,
+    )
+    dialog = BatchReviewDialog(review, parent=window)
+    assert "250 MB" in dialog.hive_backup_checkbox.text()
+    assert not dialog.hive_backup_checkbox.isEnabled()
+    dialog.destructive_checkboxes["wipe"].setChecked(True)
+    assert dialog.hive_backup_checkbox.isEnabled() and not dialog.hive_backup_checkbox.isChecked()
+    dialog.hive_backup_checkbox.setChecked(True)
+    dialog.confirm_button.click()
+    assert dialog.decision().hive_backup is True
+
+
+def test_requested_hive_backup_is_written_before_the_first_destructive_action_and_named_in_undo(qtbot, tmp_path, monkeypatch):
+    from portablefix import hive_backup
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_yes")
+    log_path = audit_log_path(tmp_path, "run_hive_yes")
+    calls = []
+    monkeypatch.setattr(hive_backup, "save_hives", _fake_save_hives(calls, log_path=log_path))
+    _answer_review_with_hive_backup(monkeypatch)
+    _check(window, "tweak_one", "wipe_thing", "look_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    [(dest, executed_before)] = calls
+    assert dest.parent == tmp_path / "Backups" / "run_hive_yes" and dest.name.startswith("hives-")
+    # Right before the DESTRUCTIVE action - after the restore point, and
+    # nothing DESTRUCTIVE had run yet.
+    assert "wipe_thing" not in executed_before
+    assert "wipe_thing" in _executed_action_ids(log_path)
+    [event] = _system_events(log_path, "hive_backup")
+    assert event["exit_code"] == 0 and event["subject"] == "m02_cleanup/wipe_thing"
+    assert str(dest) in event["output"] and "reg save HKLM\\SOFTWARE" in event["command"]
+    kinds = [e["action_id"] for e in _audit_entries(log_path)]
+    assert kinds.index("restore_point") < kinds.index("hive_backup") < kinds.index("wipe_thing")
+    [review_event] = _system_events(log_path, "batch_review")
+    assert "hive backup requested" in review_event["output"]
+    undo_text = (tmp_path / "Backups" / "run_hive_yes" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert str(dest) in undo_text and "manual restore only" in undo_text
+    assert all(line.startswith("#") for line in undo_text.splitlines() if str(dest) in line)
+
+
+def test_unticked_hive_backup_makes_none(qtbot, tmp_path, monkeypatch):
+    from portablefix import hive_backup
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_no")
+    monkeypatch.setattr(hive_backup, "save_hives", lambda *a, **k: pytest.fail("hive backup not requested"))
+    _answer_review_with_hive_backup(monkeypatch, hive=False)
+    _check(window, "wipe_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_hive_no")
+    assert "wipe_thing" in _executed_action_ids(log_path)
+    assert _system_events(log_path, "hive_backup") == []
+    assert not list((tmp_path / "Backups" / "run_hive_no").glob("hives-*"))
+
+
+def test_failed_hive_backup_declined_skips_only_the_destructive_actions(qtbot, tmp_path, monkeypatch):
+    from portablefix import hive_backup
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_fail")
+    monkeypatch.setattr(hive_backup, "save_hives", _fake_save_hives([], success=False))
+    asked = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: asked.append(text) or QMessageBox.No)
+    _answer_review_with_hive_backup(monkeypatch)
+    _check(window, "wipe_thing", "tweak_one")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_hive_fail")
+    assert asked == [window._t("hive_backup_failed_confirm")]
+    assert _executed_action_ids(log_path) == ["tweak_one"]
+    [event] = _system_events(log_path, "hive_backup")
+    assert event["exit_code"] == 1 and "exit 1" in event["output"]
+    [decision] = _system_events(log_path, "hive_backup_decision")
+    assert decision["decision"] == "skip" and decision["warned"] is True
+    undo_path = tmp_path / "Backups" / "run_hive_fail" / "undo.ps1"
+    assert not undo_path.exists() or "HIVE BACKUP" not in undo_path.read_text(encoding="utf-8-sig")
+
+
+def test_failed_hive_backup_proceed_runs_the_destructive_action(qtbot, tmp_path, monkeypatch):
+    from portablefix import hive_backup
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_proceed")
+    monkeypatch.setattr(hive_backup, "save_hives", _fake_save_hives([], success=False))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    _answer_review_with_hive_backup(monkeypatch)
+    _check(window, "wipe_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_hive_proceed")
+    assert _executed_action_ids(log_path) == ["wipe_thing"]
+    [decision] = _system_events(log_path, "hive_backup_decision")
+    assert decision["decision"] == "proceed"
+
+
+def test_dry_run_destructive_batch_never_makes_a_hive_backup(qtbot, tmp_path, monkeypatch):
+    from portablefix import hive_backup
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_hive_dry", dry_run=True)
+    monkeypatch.setattr(hive_backup, "save_hives", lambda *a, **k: pytest.fail("DRY-RUN made a hive backup"))
+    _check(window, "wipe_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert not (tmp_path / "Backups").exists()
+
+
+# --- G01: restore point, protected programs and running programs in the panels ---
+
+
+def _stub_restore_point(monkeypatch, success=True):
+    from portablefix import restore_point
+
+    calls = []
+    monkeypatch.setattr(
+        restore_point, "create_restore_point",
+        lambda description: calls.append(description) or ((True, "") if success else (False, "System Protection is off")),
+    )
+    return calls
+
+
+def test_uninstall_creates_a_restore_point_before_running(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    program = _fake_installed_program("Real App", plain="realapp-uninst.exe")
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_uninst_rp", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    log_path = audit_log_path(tmp_path, "run_g01_uninst_rp")
+    qtbot.waitUntil(lambda: any(e["module_id"] == "_uninstaller" for e in _audit_entries(log_path)), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    assert rp_calls == ["PortableFix run_g01_uninst_rp"]
+    kinds = [(e["module_id"], e["action_id"]) for e in _audit_entries(log_path)]
+    assert kinds.index(("_system", "restore_point")) < kinds.index(("_uninstaller", "Real App"))
+    [event] = _system_events(log_path, "restore_point")
+    assert event["exit_code"] == 0 and event["subject"] == "_uninstaller/Real App"
+
+
+def test_uninstall_with_failed_restore_point_declined_uninstalls_nothing(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    _stub_restore_point(monkeypatch, success=False)
+    program = _fake_installed_program("Real App")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_uninst_rp_no", [program], dry_run=False)
+    answers = iter([QMessageBox.Yes, QMessageBox.No])  # confirm the uninstall, then decline "continue without?"
+    asked = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: asked.append(text) or next(answers))
+
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+
+    log_path = audit_log_path(tmp_path, "run_g01_uninst_rp_no")
+    qtbot.waitUntil(lambda: bool(_system_events(log_path, "restore_point_decision")), timeout=10000)
+    assert asked[1] == window._t("restore_point_failed_confirm")
+    [event] = _system_events(log_path, "restore_point")
+    assert event["exit_code"] == 1 and "System Protection is off" in event["output"]
+    [decision] = _system_events(log_path, "restore_point_decision")
+    assert decision["decision"] == "skip" and decision["subject"] == "_uninstaller/Real App"
+    assert not [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+    assert button.isEnabled()
+    assert window._t("panel_cancelled_no_restore_point") in _panel_console_text(card)
+
+
+def test_protected_program_cannot_be_ticked_and_is_refused_even_if_forced(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    driver = _fake_installed_program(
+        "NVIDIA Grafiktreiber 546.33",
+        registry_path=r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}_Display.Driver",
+    )
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_protected", [driver], dry_run=False)
+    informed = []
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text, *a: informed.append(text))
+
+    box = _panel_checkbox(card, "NVIDIA Grafiktreiber")
+    assert not box.isEnabled()
+    assert window._t("uninstaller_protected_marker") in box.text()
+    assert window._t("uninstaller_protected_gpu_driver") in box.toolTip()
+    _panel_button(card, window._t("select_all")).click()
+    assert not box.isChecked()
+
+    box.setChecked(True)  # programmatically - the refusal must still hold
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    assert rp_calls == []
+    assert len(informed) == 1 and "NVIDIA Grafiktreiber" in informed[0]
+    log_path = audit_log_path(tmp_path, "run_g01_protected")
+    [event] = _system_events(log_path, "protected_program")
+    assert event["subject"] == "_uninstaller/NVIDIA Grafiktreiber 546.33" and "gpu_driver" in event["output"]
+    assert not [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+
+
+def test_protected_program_in_dry_run_is_only_noted_in_the_console(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    store = _fake_installed_program("Microsoft Store")
+    ordinary = _fake_installed_program("Ordinary App", plain="ordinary-uninst.exe")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_protected_dry", [store, ordinary], dry_run=True)
+
+    _panel_checkbox(card, "Microsoft Store").setChecked(True)
+    _panel_checkbox(card, "Ordinary App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    console = _panel_console_text(card)
+    assert "Microsoft Store" in console and "[DRY-RUN] Ordinary App" in console
+    entries = [e for e in _audit_entries(audit_log_path(tmp_path, "run_g01_protected_dry")) if e["module_id"] == "_uninstaller"]
+    assert [e["action_id"] for e in entries] == ["Ordinary App"]
+
+
+def test_running_program_cancel_stops_the_uninstall_and_logs_every_decline(qtbot, tmp_path, monkeypatch):
+    from portablefix import panel_safety, uninstaller
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    app = _fake_installed_program("Busy App", location=r"D:\Apps\BusyApp")
+    other = _fake_installed_program("Idle App")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    monkeypatch.setattr(
+        panel_safety, "list_processes", lambda: [panel_safety.RunningProcess(4321, r"D:\Apps\BusyApp\busy.exe")],
+    )
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_running", [app, other], dry_run=False)
+    asked = []
+
+    def warning(parent, title, text, buttons=None, default=None):
+        asked.append(text)
+        return QMessageBox.Yes if len(asked) == 1 else QMessageBox.Cancel
+
+    monkeypatch.setattr(QMessageBox, "warning", warning)
+    _panel_checkbox(card, "Busy App").setChecked(True)
+    _panel_checkbox(card, "Idle App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    assert rp_calls == []
+    assert "Busy App: busy.exe (PID 4321)" in asked[1] and "Idle App" not in asked[1]
+    log_path = audit_log_path(tmp_path, "run_g01_running")
+    declined = _system_events(log_path, "risk_declined")
+    assert sorted(e["subject"] for e in declined) == ["_uninstaller/Busy App", "_uninstaller/Idle App"]
+    assert all(e["warning_text"] == asked[1] and e["decision"] == "declined" for e in declined)
+
+
+def test_running_program_retry_rechecks_and_continues_once_it_is_closed(qtbot, tmp_path, monkeypatch):
+    from portablefix import panel_safety, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    app = _fake_installed_program("Busy App", location=r"D:\Apps\BusyApp")
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    snapshots = [[panel_safety.RunningProcess(4321, r"D:\Apps\BusyApp\busy.exe")], []]
+    monkeypatch.setattr(panel_safety, "list_processes", lambda: snapshots.pop(0) if snapshots else [])
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_retry", [app], dry_run=False)
+    answers = iter([QMessageBox.Yes, QMessageBox.Retry])
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: next(answers))
+
+    _panel_checkbox(card, "Busy App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    log_path = audit_log_path(tmp_path, "run_g01_retry")
+    qtbot.waitUntil(lambda: any(e["module_id"] == "_uninstaller" for e in _audit_entries(log_path)), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    assert len(rp_calls) == 1
+    assert _system_events(log_path, "running_programs_decision") == []
+
+
+def test_running_program_ignore_is_logged_and_the_uninstall_goes_ahead(qtbot, tmp_path, monkeypatch):
+    from portablefix import panel_safety, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    _stub_restore_point(monkeypatch)
+    app = _fake_installed_program("Busy App", location=r"D:\Apps\BusyApp")
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    monkeypatch.setattr(
+        panel_safety, "list_processes", lambda: [panel_safety.RunningProcess(4321, r"D:\Apps\BusyApp\busy.exe")],
+    )
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_ignore", [app], dry_run=False)
+    answers = iter([QMessageBox.Yes, QMessageBox.Ignore])
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: next(answers))
+
+    _panel_checkbox(card, "Busy App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    log_path = audit_log_path(tmp_path, "run_g01_ignore")
+    qtbot.waitUntil(lambda: any(e["module_id"] == "_uninstaller" for e in _audit_entries(log_path)), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    [decision] = _system_events(log_path, "running_programs_decision")
+    assert decision["decision"] == "proceed" and decision["subject"] == "_uninstaller/Busy App"
+    assert "busy.exe" in decision["warning_text"]
+
+
+def test_orphan_cleanup_creates_a_restore_point_before_deleting(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    program = _fake_installed_program("Some App", quiet="someapp.exe /S")
+    orphans = [_fake_installed_program("Tool Backed Up", location=r"C:\Gone\B")]
+    removed = []
+
+    def fake_backup(hive, path, dest_file):
+        Path(dest_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest_file).write_text("REGEDIT", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(uninstaller, "backup_registry_key", fake_backup)
+    monkeypatch.setattr(uninstaller, "remove_registry_key", lambda hive, path: removed.append(path) or True)
+    window, card = _uninstaller_window(
+        qtbot, tmp_path, monkeypatch, "run_g01_orphan_rp", [program], dry_run=True, orphans=orphans,
+    )
+    _panel_checkbox(card, "Some App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    assert rp_calls == []  # the DRY-RUN preview made none
+    window.dry_run_checkbox.setChecked(False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    _panel_checkbox(card, "Tool Backed Up").setChecked(True)
+
+    _panel_button(card, window._t("uninstaller_clean_leftovers_button")).click()
+
+    qtbot.waitUntil(lambda: removed == [orphans[0].registry_path], timeout=10000)
+    assert len(rp_calls) == 1
+    log_path = audit_log_path(tmp_path, "run_g01_orphan_rp")
+    kinds = [e["action_id"] for e in _audit_entries(log_path)]
+    assert kinds.index("restore_point") < kinds.index("orphan_cleanup:Tool Backed Up")
+    [event] = _system_events(log_path, "restore_point")
+    assert event["subject"] == "_uninstaller/orphan_cleanup:Tool Backed Up"
+
+
+def test_winget_update_creates_a_restore_point_and_warns_about_the_running_program(qtbot, tmp_path, monkeypatch):
+    from portablefix import panel_safety, uninstaller, winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed"))
+    installed = _fake_installed_program("Fake Editor", location=r"C:\Tools\FakeEditor")
+    monkeypatch.setattr(uninstaller, "list_installed_programs", lambda *a, **k: [installed])
+    monkeypatch.setattr(
+        panel_safety, "list_processes", lambda: [panel_safety.RunningProcess(77, r"C:\Tools\FakeEditor\editor.exe")],
+    )
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_g01_winget", False, _fake_outdated_package())
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: warned.append(text) or QMessageBox.Ignore)
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    log_path = audit_log_path(tmp_path, "run_g01_winget")
+    qtbot.waitUntil(lambda: any(e["module_id"] == "_winget" for e in _audit_entries(log_path)), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_update_runner), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    assert len(warned) == 1 and "Fake Editor: editor.exe (PID 77)" in warned[0]
+    assert len(rp_calls) == 1
+    kinds = [(e["module_id"], e["action_id"]) for e in _audit_entries(log_path)]
+    assert kinds.index(("_system", "running_programs_decision")) < kinds.index(("_system", "restore_point"))
+    assert kinds.index(("_system", "restore_point")) < kinds.index(("_winget", "Fake.Editor"))
+    [event] = _system_events(log_path, "restore_point")
+    assert event["subject"] == "_winget/Fake.Editor"
+
+
+def test_winget_dry_run_never_creates_a_restore_point(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point, winget_updates
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: pytest.fail("DRY-RUN made a restore point"))
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_g01_winget_dry", True, _fake_outdated_package())
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    assert window._pending_restore_point_runner is None
+    assert window._pending_panel_restore_point_runner is None
+    assert _system_events(audit_log_path(tmp_path, "run_g01_winget_dry"), "restore_point") == []
+
+
+def test_panel_restore_point_is_refused_while_another_one_is_being_made(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    program = _fake_installed_program("Real App")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_busy", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+
+    class _Busy:
+        def isRunning(self):
+            return True
+
+    window._pending_panel_restore_point_runner = _Busy()
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+    window._pending_panel_restore_point_runner = None
+
+    assert rp_calls == []
+    assert button.isEnabled()
+    assert window.statusBar().currentMessage() == window._t("panel_restore_point_busy")
+
+
+def test_panel_refuses_a_restore_point_and_uninstall_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
+    # A batch that started with a long SAFE scan reaches its own restore
+    # point later - a panel's Checkpoint-Computer running then would
+    # overlap it and could leave the 24h throttle disabled for good.
+    from portablefix import uninstaller
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    program = _fake_installed_program("Real App")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_batch_busy", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+
+    window._batch_active = True
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+    window._batch_active = False
+
+    assert rp_calls == []
+    assert window._pending_panel_restore_point_runner is None
+    assert button.isEnabled()
+    assert window.statusBar().currentMessage() == window._t("panel_blocked_by_batch")
+
+
+def test_batch_restore_point_waits_for_a_running_panel_restore_point(qtbot, tmp_path, monkeypatch):
+    # The last line behind pre-flight and the panel refusal: the batch never
+    # starts a second checkpoint while a panel's is still being made, and
+    # the panel's runner stays tracked (close waits for it).
+    import threading
+
+    from portablefix import restore_point, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    gate = threading.Event()
+    in_flight = []
+    overlaps = []
+
+    def fake_create(description):
+        in_flight.append(description)
+        if len(in_flight) > 1:
+            overlaps.append(len(in_flight))
+        if len(in_flight) == 1 and not gate.is_set():
+            gate.wait(10)
+        in_flight.pop()
+        return True, ""
+
+    monkeypatch.setattr(restore_point, "create_restore_point", fake_create)
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    program = _fake_installed_program("Real App")
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_rp_overlap", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    # The batch's action itself is not the point here - only its restore point.
+    monkeypatch.setattr(window, "_dispatch_action", lambda module, action: window._run_next())
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    panel_runner = window._pending_panel_restore_point_runner
+    assert _thread_running(panel_runner)
+
+    # A batch already in progress (its SAFE scans done) reaches its first
+    # MODERATE action now.
+    from portablefix.models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
+
+    action = ActionDef(id="mod_x", label_sk="x", label_en="x", risk=RiskLevel.MODERATE, command="Write-Output 'x'")
+    window.modules.append(ModuleDef(module_id="m99", actions=[action], category=ModuleCategory.CLEANUP))
+    window._queue = [action.id]
+    window._queue_total = 1
+    window._batch_active = True
+    window._run_next()
+
+    assert window._pending_restore_point_runner is None
+    assert window._queue == [action.id]
+    gate.set()
+    qtbot.waitUntil(lambda: window._restore_point_attempted, timeout=10000)
+    assert window._pending_panel_restore_point_runner is panel_runner
+    qtbot.waitUntil(lambda: not _thread_running(window._pending_restore_point_runner), timeout=10000)
+    _wait_batch_idle(qtbot, window)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    assert overlaps == []
+
+
+def test_panel_uninstall_is_dropped_when_dry_run_is_switched_on_during_the_restore_point(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    gate = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: gate.wait(10) and (True, ""))
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    program = _fake_installed_program("Real App")
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_rp_dry", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+    runner = window._pending_panel_restore_point_runner
+    assert _thread_running(runner)
+
+    window._on_dry_run_toggled(True)
+    gate.set()
+
+    log_path = audit_log_path(tmp_path, "run_g01_rp_dry")
+    qtbot.waitUntil(lambda: bool(_system_events(log_path, "risk_declined")), timeout=10000)
+    [declined] = _system_events(log_path, "risk_declined")
+    assert declined["subject"] == "_uninstaller/Real App" and declined["decision"] == "declined"
+    assert not [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+    assert button.isEnabled()
+    qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10000)
+
+
+def test_close_waits_for_a_running_panel_restore_point(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    gate = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: gate.wait(10) and (True, ""))
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    program = _fake_installed_program("Real App")
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_rp_close", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    runner = window._pending_panel_restore_point_runner
+    assert _thread_running(runner)
+
+    window.close()
+    assert window._close_after_restore_point is True
+    assert window._closed is False
+    assert window.statusBar().currentMessage() == window._t("closing_waiting_restore_point")
+    gate.set()
+    qtbot.waitUntil(lambda: window._closed, timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10000)
+    # The uninstall it guarded never started once the window was closing.
+    assert not [e for e in _audit_entries(audit_log_path(tmp_path, "run_g01_rp_close")) if e["module_id"] == "_uninstaller"]
+
+
+def test_review_restore_point_label_follows_the_only_destructive_tick(qtbot, tmp_path, monkeypatch):
+    from portablefix import i18n
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_rp_flip")
+    texts = []
+
+    def capture(self):
+        # With a read-only SAFE check beside it, the DESTRUCTIVE action is the
+        # only reason for a restore point - unticked, none is planned.
+        texts.append(self.restore_point_label.text())
+        self.destructive_checkboxes["wipe_thing"].setChecked(True)
+        texts.append(self.restore_point_label.text())
+        self.cancel_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", capture)
+    _check(window, "wipe_thing", "look_thing")
+    window.run_selected_actions()
+
+    assert texts == [
+        i18n.translate("review_restore_point_no", "en"), i18n.translate("review_restore_point_yes", "en"),
+    ]

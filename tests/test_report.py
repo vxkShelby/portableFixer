@@ -994,3 +994,21 @@ def test_restore_point_failure_reason_strips_only_the_english_prefix(output, rea
     from portablefix.report import _restore_point_failure_reason
 
     assert _restore_point_failure_reason(output) == reason
+
+
+def test_hive_backup_and_panel_safety_events_reach_the_reports_safety_section(tmp_path):
+    # G24/G01: the full registry backup, a refused protected program and an
+    # "uninstall anyway while it runs" answer are safety facts on record.
+    folder = r"D:\PortableFix\Backups\run_hive\hives-20260924-100000"
+    for action_id, output, decision in (
+        ("hive_backup", f"Registry hive backup saved: {folder} (SOFTWARE.hiv, SYSTEM.hiv).", ""),
+        ("protected_program", "Uninstall refused - protected program (gpu_driver).", ""),
+        ("running_programs_decision", "Technician chose to continue while the program was still running.", "proceed"),
+    ):
+        append_entry(tmp_path, "run_hive", make_entry(
+            "_system", action_id, "", 0, output, False, "run_hive", decision=decision, subject="m/a",
+        ))
+    content = generate_report(tmp_path, "run_hive", [], "en", {}, {})[0].read_text(encoding="utf-8")
+    assert "hive_backup" in content and folder in content
+    assert "protected_program" in content and "gpu_driver" in content
+    assert "running_programs_decision" in content
