@@ -132,6 +132,7 @@ def build_report_data(
     language: str,
     snapshot_before: dict,
     snapshot_after: dict,
+    job: dict | None = None,
 ) -> dict:
     entries = _read_audit_entries(base_dir, run_id)
     actions = []
@@ -164,7 +165,39 @@ def build_report_data(
         "requires_restart": [a for a in actions if a["risk"] == "REQUIRES_REBOOT"],
         "previous_comparison": _build_comparison(previous, actions, snapshot_after),
         "module_summary": _build_module_summary(actions),
+        "job": _clean_job(job),
     }
+
+
+_JOB_FIELDS = ("technician", "client", "note")
+
+
+def _clean_job(job: dict | None) -> dict:
+    """Technician / client / note for the report header - strings only,
+    trimmed, empty fields dropped (so an unset job adds nothing)."""
+    if not isinstance(job, dict):
+        return {}
+    cleaned = {}
+    for key in _JOB_FIELDS:
+        value = job.get(key)
+        if isinstance(value, str) and value.strip():
+            cleaned[key] = value.strip()
+    return cleaned
+
+
+def _render_job(job: dict, t) -> str:
+    if not job:
+        return ""
+    parts = []
+    if job.get("technician"):
+        parts.append(f"{t('report_job_technician')}: <strong>{html.escape(job['technician'])}</strong>")
+    if job.get("client"):
+        parts.append(f"{t('report_job_client')}: <strong>{html.escape(job['client'])}</strong>")
+    line = " &middot; ".join(parts)
+    note = ""
+    if job.get("note"):
+        note = f'<div class="job-note"><span class="lbl">{t("report_job_note")}</span>{html.escape(job["note"])}</div>'
+    return f'<div class="job">{line}{note}</div>'
 
 
 _RISK_COLORS = {
@@ -247,8 +280,15 @@ input[type="search"]::placeholder { color: #8b93b8; }
 .empty { color: #9aa5ce; font-style: italic; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
            clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.job { background: #24283b; border-radius: 8px; padding: 10px 14px; margin: 0 0 14px 0; line-height: 1.6; }
+.job strong { color: #c0caf5; }
+.job-note { white-space: pre-wrap; margin-top: 4px; color: #c0caf5; }
+.job-note .lbl { display: block; font-size: 11px; color: #9aa5ce; text-transform: uppercase; }
 @media print {
   @page { margin: 14mm; }
+  .job { background: #fff; border: 1px solid #bbb; color: #111; }
+  .job strong, .job-note { color: #111; }
+  .job-note .lbl { color: #444; }
   body { background: #fff; color: #111; padding: 0; font-size: 11pt; }
   .wrap { max-width: none; }
   h1 { color: #111; }
@@ -504,6 +544,7 @@ def _render_html(data: dict) -> str:
 <style>{_CSS}</style></head>
 <body><main class="wrap">
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
+{_render_job(data.get('job') or dict(), t)}
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
 {t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}</div>
@@ -535,8 +576,9 @@ def generate_report(
     language: str,
     snapshot_before: dict,
     snapshot_after: dict,
+    job: dict | None = None,
 ) -> tuple[Path, Path]:
-    data = build_report_data(base_dir, run_id, modules, language, snapshot_before, snapshot_after)
+    data = build_report_data(base_dir, run_id, modules, language, snapshot_before, snapshot_after, job)
     reports_dir = base_dir / "Reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     html_path = reports_dir / f"{data['hostname']}_{run_id}.html"

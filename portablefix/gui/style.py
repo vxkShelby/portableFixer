@@ -562,4 +562,20 @@ QPushButton#presetBtn[custom="true"]:checked {
     color: #e6d6ff;
     font-weight: bold;
 }
+QPushButton#jobBtn {
+    background-color: #141a24;
+    border: 1px dashed #2a3542;
+    border-radius: 10px;
+    padding: 5px 12px;
+    color: #8a97a8;
+}
+QPushButton#jobBtn:hover {
+    border: 1px solid #2fe6ff;
+    color: #2fe6ff;
+}
+QPushButton#jobBtn[set="true"] {
+    border: 1px solid #2fe6ff;
+    color: #8ff2ff;
+    background-color: rgba(47, 230, 255, 18);
+}
 """

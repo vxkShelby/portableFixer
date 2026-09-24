@@ -7,6 +7,7 @@ DEFAULT_LANGUAGE = "sk"
 SUPPORTED_LANGUAGES = ("sk", "en")
 MAX_CUSTOM_PRESETS = 20
 MAX_PRESET_NAME_LENGTH = 40
+MAX_TECHNICIAN_NAME_LENGTH = 60
 
 
 @dataclass
@@ -17,6 +18,9 @@ class Settings:
     winget_auto_check_minutes: int = 0
     # User-saved action selections, name -> action ids (insertion-ordered).
     custom_presets: dict[str, list[str]] = field(default_factory=dict)
+    # Remembered across runs (it's the same person on every client visit);
+    # the client/ticket and note are per-run and deliberately not stored here.
+    technician_name: str = ""
 
 
 def settings_path(base_dir: Path) -> Path:
@@ -41,6 +45,7 @@ def load_settings(base_dir: Path) -> Settings:
     ignored = data.get("winget_ignored_ids")
     minutes = data.get("winget_auto_check_minutes")
     presets = data.get("custom_presets")
+    technician = data.get("technician_name")
     return Settings(
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
         dry_run=dry_run if isinstance(dry_run, bool) else True,
@@ -49,6 +54,7 @@ def load_settings(base_dir: Path) -> Settings:
             minutes if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes >= 0 else 0
         ),
         custom_presets=_valid_custom_presets(presets),
+        technician_name=technician.strip()[:MAX_TECHNICIAN_NAME_LENGTH] if isinstance(technician, str) else "",
     )
 
 

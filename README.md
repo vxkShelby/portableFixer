@@ -70,6 +70,13 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   (všetky / len zlyhané / len zmeny) a vyhľadávaním. Tlačidlo **Tlačiť /
   uložiť ako PDF** dá čistý biely výtlačok pre klienta. Report je jeden
   samostatný súbor bez internetu.
+- **Zákazka** (tlačidlo v hornej lište, Ctrl+J): meno technika (zapamätá
+  sa), klient / číslo zákazky a poznámka - zobrazia sa v hlavičke reportu.
+- **Upozornenie na koniec dávky:** ak je okno v pozadí (napr. počas
+  dlhého DISM/SFC), bliká na paneli úloh a zobrazí systémovú notifikáciu
+  s počtom OK/zlyhaných akcií.
+- **Klávesové skratky:** F5 spustiť, Ctrl+A vybrať všetko, Ctrl+F hľadať,
+  Esc vymazať hľadanie, Ctrl+S uložiť predvoľbu, Ctrl+J zákazka, F1 prehľad.
 
 ## Bezpečnostné mechanizmy
 

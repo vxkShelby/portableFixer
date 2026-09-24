@@ -6,7 +6,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QSystemTrayIcon,
     QToolButton,
     QVBoxLayout,
     QLabel,
@@ -42,7 +45,13 @@ from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
-from ..settings import MAX_CUSTOM_PRESETS, MAX_PRESET_NAME_LENGTH, Settings, save_settings
+from ..settings import (
+    MAX_CUSTOM_PRESETS,
+    MAX_PRESET_NAME_LENGTH,
+    MAX_TECHNICIAN_NAME_LENGTH,
+    Settings,
+    save_settings,
+)
 from ..version import APP_VERSION
 
 # Keys of user-saved presets in _preset_buttons, kept apart from the
@@ -125,6 +134,12 @@ class MainWindow(QMainWindow):
         self._recommended_action_ids: set[str] = set()
         self._summary_dialog: QDialog | None = None
         self._closed = False
+        # Per-run job details for the report header. Kept on self (not in a
+        # widget) so a language toggle's full UI rebuild doesn't lose them;
+        # the technician name lives in settings since it rarely changes.
+        self._job_client = ""
+        self._job_note = ""
+        self._tray_icon: QSystemTrayIcon | None = None
         self._cancel_requested = False
         self._pending_update_info = None
         self._update_check_runner = None
@@ -158,6 +173,38 @@ class MainWindow(QMainWindow):
         self._select_all_shortcut.activated.connect(self._on_select_all_shortcut)
         self._run_shortcut = QShortcut(QKeySequence("F5"), self)
         self._run_shortcut.activated.connect(self._on_run_shortcut)
+        self._extra_shortcuts = []
+        for keys, handler in (
+            ("Ctrl+F", self._on_search_shortcut),
+            ("Ctrl+S", self._on_save_preset_clicked),
+            ("Ctrl+J", self._open_job_dialog),
+            ("F1", self._show_shortcuts_help),
+        ):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(handler)
+            self._extra_shortcuts.append(shortcut)
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched is getattr(self, "search_box", None)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self.search_box.text()
+        ):
+            self.search_box.clear()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _on_search_shortcut(self) -> None:
+        self.search_box.setFocus()
+        self.search_box.selectAll()
+
+    def _show_shortcuts_help(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle(self._t("shortcuts_title"))
+        box.setText(self._t("shortcuts_body"))
+        box.setIcon(QMessageBox.Icon.Information)
+        box.open()
 
     def _on_select_all_shortcut(self) -> None:
         # Qt.WindowShortcut fires regardless of which child widget has focus,
@@ -288,6 +335,11 @@ class MainWindow(QMainWindow):
         self.restart_admin_button.clicked.connect(self._on_restart_as_admin)
         top_bar.addWidget(self.restart_admin_button)
         top_bar.addStretch(1)
+        self.job_button = self._make_selection_button(self._t("job_button"), self._open_job_dialog)
+        self.job_button.setObjectName("jobBtn")
+        self.job_button.setToolTip(self._t("job_tooltip"))
+        top_bar.addWidget(self.job_button)
+        self._refresh_job_button()
         self.dry_run_checkbox = QCheckBox(self._t("dry_run_toggle"))
         self.dry_run_checkbox.setChecked(self.settings.dry_run)
         self.dry_run_checkbox.toggled.connect(self._on_dry_run_toggled)
@@ -428,6 +480,10 @@ class MainWindow(QMainWindow):
         self.search_box.setPlaceholderText(self._t("search_placeholder"))
         self.search_box.setMaximumWidth(220)
         self.search_box.textChanged.connect(self._on_search_changed)
+        # Esc clears the search - handled on the box itself (eventFilter)
+        # rather than as a window-wide shortcut, which would also swallow
+        # Esc from dialogs and the console.
+        self.search_box.installEventFilter(self)
         preset_row.addWidget(self.search_box)
         center_layout.addLayout(preset_row)
 
@@ -882,6 +938,87 @@ class MainWindow(QMainWindow):
         self._preset_button_group.addButton(button)
         self._preset_buttons[preset_key] = button
         return button
+
+    def _job_info(self) -> dict:
+        return {
+            "technician": self.settings.technician_name,
+            "client": self._job_client,
+            "note": self._job_note,
+        }
+
+    def _refresh_job_button(self) -> None:
+        client = self._job_client
+        if client:
+            shown = client if len(client) <= 24 else client[:23] + "…"
+            self.job_button.setText(self._t("job_button_set").format(client=shown))
+        else:
+            self.job_button.setText(self._t("job_button"))
+        self.job_button.setProperty("set", bool(client or self.settings.technician_name))
+        self.job_button.style().unpolish(self.job_button)
+        self.job_button.style().polish(self.job_button)
+
+    def _set_job(self, technician: str, client: str, note: str) -> None:
+        technician = technician.strip()[:MAX_TECHNICIAN_NAME_LENGTH]
+        if technician != self.settings.technician_name:
+            self.settings.technician_name = technician
+            self._persist_settings()
+        self._job_client = client.strip()[:120]
+        self._job_note = note.strip()[:2000]
+        self._refresh_job_button()
+
+    def _open_job_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("job_dialog_title"))
+        dialog.setStyleSheet(style.STYLE)
+        dialog.setMinimumWidth(420)
+        form = QFormLayout(dialog)
+        technician_edit = QLineEdit(self.settings.technician_name)
+        technician_edit.setObjectName("searchBox")
+        technician_edit.setMaxLength(MAX_TECHNICIAN_NAME_LENGTH)
+        client_edit = QLineEdit(self._job_client)
+        client_edit.setObjectName("searchBox")
+        client_edit.setMaxLength(120)
+        note_edit = QPlainTextEdit(self._job_note)
+        note_edit.setObjectName("actionDetailCommand")
+        note_edit.setFixedHeight(90)
+        form.addRow(self._t("job_technician_label"), technician_edit)
+        form.addRow(self._t("job_client_label"), client_edit)
+        form.addRow(self._t("job_note_label"), note_edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        # Qt ships no Slovak translations for standard buttons - label it ourselves.
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self._t("dialog_cancel"))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        (client_edit if self.settings.technician_name else technician_edit).setFocus()
+        self._job_dialog = dialog
+        dialog.accepted.connect(
+            lambda: self._set_job(technician_edit.text(), client_edit.text(), note_edit.toPlainText())
+        )
+        dialog.open()
+
+    def _notify_batch_finished(self) -> None:
+        # Long batches (DISM, SFC, chkdsk) run for many minutes - a technician
+        # usually switches to something else meanwhile. Flash the taskbar
+        # entry and, where a system tray exists, show a notification with the
+        # outcome. Nothing happens when the window is already in front.
+        if self.isActiveWindow():
+            return
+        ok_count = sum(1 for _, code in self._batch_results if code == 0)
+        failed = len(self._batch_results) - ok_count
+        QApplication.alert(self, 0)
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if self._tray_icon is None:
+            self._tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+            self._tray_icon.activated.connect(lambda _reason: (self.showNormal(), self.activateWindow()))
+        self._tray_icon.show()
+        self._tray_icon.showMessage(
+            self._t("batch_done_title"),
+            self._t("batch_done_message").format(ok=ok_count, failed=failed),
+            QSystemTrayIcon.MessageIcon.Warning if failed else QSystemTrayIcon.MessageIcon.Information,
+            8000,
+        )
 
     def _rebuild_custom_preset_buttons(self) -> None:
         while self._custom_preset_layout.count():
@@ -2168,12 +2305,15 @@ class MainWindow(QMainWindow):
                         self.settings.language,
                         self._snapshot_before,
                         snapshot_after,
+                        job=self._job_info(),
                     )
                 except OSError:
                     html_path = None
                     if not self._closed:
                         self.console.appendPlainText(self._t("disk_write_failed"))
                 self._refresh_dashboard()
+                if not self._closed:
+                    self._notify_batch_finished()
                 if html_path is not None and not self._closed:
                     self._show_batch_summary(html_path)
             return

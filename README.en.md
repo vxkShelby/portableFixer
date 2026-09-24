@@ -71,6 +71,13 @@ PowerShell.
   (all / failed only / changes only) and search. **Print / save as PDF**
   gives a clean white printout for the client. The report is a single
   self-contained file that needs no internet.
+- **Job details** (top-bar button, Ctrl+J): technician name (remembered),
+  client / job number and a note - shown in the report header.
+- **Batch-finished notice:** when the window is in the background (e.g.
+  during a long DISM/SFC run) the taskbar entry flashes and a system
+  notification shows the OK/failed counts.
+- **Keyboard shortcuts:** F5 run, Ctrl+A select all, Ctrl+F search, Esc
+  clear search, Ctrl+S save preset, Ctrl+J job details, F1 overview.
 
 ## Safety mechanisms
 

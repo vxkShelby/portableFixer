@@ -117,3 +117,12 @@ def test_custom_presets_are_sanitized(tmp_path):
 def test_custom_presets_are_capped(tmp_path):
     _write_raw(tmp_path, json.dumps({"custom_presets": {f"p{i}": ["a"] for i in range(50)}}))
     assert len(load_settings(tmp_path).custom_presets) == 20
+
+
+def test_technician_name_round_trip_and_sanitized(tmp_path):
+    save_settings(tmp_path, Settings(technician_name="Ján Technik"))
+    assert load_settings(tmp_path).technician_name == "Ján Technik"
+    _write_raw(tmp_path, json.dumps({"technician_name": 42}))
+    assert load_settings(tmp_path).technician_name == ""
+    _write_raw(tmp_path, json.dumps({"technician_name": "x" * 100}))
+    assert len(load_settings(tmp_path).technician_name) == 60

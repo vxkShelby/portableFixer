@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import elevation
 from portablefix.audit_log import audit_log_path
@@ -2563,3 +2563,72 @@ def test_dashboard_history_lists_past_runs(qtbot, tmp_path):
     rows = [window._history_layout.itemAt(i).widget() for i in range(window._history_layout.count())]
     assert len(rows) == 1
     assert rows[0].property("failed") is True
+
+
+def test_job_details_are_kept_and_technician_persisted(qtbot, tmp_path):
+    from portablefix.settings import load_settings
+
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_job")
+    qtbot.addWidget(window)
+    assert window.job_button.text() == "Zákazka…"
+    window._set_job("  Ján Technik ", "Firma s.r.o. #1234", "Pomalý štart, vírus?")
+    assert window._job_info() == {
+        "technician": "Ján Technik",
+        "client": "Firma s.r.o. #1234",
+        "note": "Pomalý štart, vírus?",
+    }
+    assert window.job_button.text() == "Zákazka: Firma s.r.o. #1234"
+    assert load_settings(base_dir).technician_name == "Ján Technik"
+    # Survives the full UI rebuild of a language toggle.
+    window._on_toggle_language()
+    assert window.job_button.text() == "Job: Firma s.r.o. #1234"
+
+
+def test_job_dialog_accept_applies_values(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLineEdit, QPlainTextEdit
+
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_job2")
+    qtbot.addWidget(window)
+    window._open_job_dialog()
+    dialog = window._job_dialog
+    edits = dialog.findChildren(QLineEdit)
+    edits[0].setText("Eva")
+    edits[1].setText("Klient X")
+    dialog.findChild(QPlainTextEdit).setPlainText("poznámka")
+    dialog.accept()
+    assert window._job_info() == {"technician": "Eva", "client": "Klient X", "note": "poznámka"}
+
+
+def test_ctrl_f_focuses_search_and_esc_clears_it(qtbot, tmp_path):
+    from PySide6.QtCore import Qt
+
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_keys")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    window.activateWindow()
+    window._on_search_shortcut()
+    # Offscreen windows never become active, so check the window's focus
+    # child rather than application focus.
+    assert window.focusWidget() is window.search_box
+    window.search_box.setText("abc")
+    qtbot.keyClick(window.search_box, Qt.Key.Key_Escape)
+    assert window.search_box.text() == ""
+
+
+def test_batch_finished_notification_is_silent_when_window_is_active(qtbot, tmp_path, monkeypatch):
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_notify")
+    qtbot.addWidget(window)
+    alerts = []
+    monkeypatch.setattr(QApplication, "alert", lambda *a: alerts.append(a))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    window._notify_batch_finished()
+    assert alerts == []
+    monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+    window._batch_results = [("one", 0), ("two", 1)]
+    window._notify_batch_finished()
+    assert len(alerts) == 1

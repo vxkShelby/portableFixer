@@ -455,3 +455,20 @@ def test_module_summary_shows_localized_category_names(tmp_path):
 
     assert f'<td class="cat">{translate("category_" + category.lower(), "sk")}</td>' in content
     assert '<td class="cat">UNKNOWN</td>' in content
+
+
+def test_report_header_shows_job_details_escaped(tmp_path):
+    job = {"technician": "Ján", "client": "<b>Firma</b>", "note": "riadok 1\nriadok 2", "extra": "x"}
+    html_path, json_path = generate_report(tmp_path, "run_job", [], "sk", {}, {}, job=job)
+    content = html_path.read_text(encoding="utf-8")
+    assert "Technik: <strong>Ján</strong>" in content
+    assert "&lt;b&gt;Firma&lt;/b&gt;" in content and "<b>Firma</b>" not in content
+    assert "riadok 1\nriadok 2" in content
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["job"] == {"technician": "Ján", "client": "<b>Firma</b>", "note": "riadok 1\nriadok 2"}
+
+
+def test_report_without_job_has_no_job_block(tmp_path):
+    html_path, json_path = generate_report(tmp_path, "run_nojob", [], "en", {}, {}, job={"technician": "  "})
+    assert 'class="job"' not in html_path.read_text(encoding="utf-8")
+    assert json.loads(json_path.read_text(encoding="utf-8"))["job"] == {}
