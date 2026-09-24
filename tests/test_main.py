@@ -66,8 +66,8 @@ def _fake_main_env(monkeypatch, base_dir, events):
         def setStyle(self, *a):
             pass
 
-        def setStyleSheet(self, *a):
-            pass
+        def setStyleSheet(self, sheet):
+            events.append(("stylesheet", sheet))
 
         def setWindowIcon(self, *a):
             pass
@@ -100,6 +100,23 @@ def test_main_stops_the_integrity_check_after_the_event_loop_ends(tmp_path, monk
 
     assert main_module.main() == 0
     assert events.index("exec") < events.index("integrity_stop")
+
+
+def test_main_skips_custom_theme_under_windows_high_contrast(tmp_path, monkeypatch):
+    # research-accessibility.md Finding 3: High Contrast users need their
+    # system colors - the dark theme must not be forced on them.
+    from portablefix.gui import style
+
+    events = []
+    main_module = _fake_main_env(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(style, "is_high_contrast", lambda: True)
+    main_module.main()
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "stylesheet"] == [("stylesheet", "")]
+
+    events.clear()
+    monkeypatch.setattr(style, "is_high_contrast", lambda: False)
+    main_module.main()
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "stylesheet"] == [("stylesheet", style.STYLE)]
 
 
 def test_main_reports_the_outcome_of_the_last_update_once(tmp_path, monkeypatch):

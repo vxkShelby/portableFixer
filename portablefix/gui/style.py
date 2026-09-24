@@ -12,6 +12,9 @@ single row drowned out the handful of rows that actually need attention
 (MODERATE/DESTRUCTIVE/REQUIRES_REBOOT).
 """
 
+import ctypes
+import sys
+
 RISK_COLORS = {
     "SAFE": "#39ff88",
     "MODERATE": "#ffb020",
@@ -593,3 +596,60 @@ QPushButton#jobBtn[set="true"] {
     background-color: rgba(47, 230, 255, 18);
 }
 """
+
+
+# --- Windows High Contrast (research-accessibility.md Finding 3) ---
+#
+# A user who turned on High Contrast needs *their* colors (often yellow on
+# black, or black on white at large contrast) - the dark neon theme above
+# overrides every one of them. Qt already fills the application palette
+# from the High Contrast system colors, so in that mode the app simply
+# applies no stylesheet and lets the (Fusion) style paint with that palette.
+# The QStyleHints color scheme is not enough to detect this: it only
+# reports light/dark, not "the user needs forced colors".
+
+SPI_GETHIGHCONTRAST = 0x0042
+HCF_HIGHCONTRASTON = 0x00000001
+
+
+class _HighContrastW(ctypes.Structure):
+    # HIGHCONTRASTW from winuser.h.
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("dwFlags", ctypes.c_uint32),
+        ("lpszDefaultScheme", ctypes.c_void_p),
+    ]
+
+
+def is_high_contrast(system_parameters_info=None) -> bool:
+    """True when Windows High Contrast is on.
+
+    `system_parameters_info` stands in for user32.SystemParametersInfoW
+    (same arguments, gets a ctypes pointer to the struct) so tests can
+    drive it; off Windows, with no stand-in, this is always False."""
+    if system_parameters_info is None:
+        if sys.platform != "win32":
+            return False
+        try:
+            system_parameters_info = ctypes.windll.user32.SystemParametersInfoW
+        except (AttributeError, OSError):
+            return False
+    info = _HighContrastW()
+    info.cbSize = ctypes.sizeof(info)
+    try:
+        ok = system_parameters_info(SPI_GETHIGHCONTRAST, info.cbSize, ctypes.pointer(info), 0)
+    except (OSError, ctypes.ArgumentError):
+        # Unknown is treated as "off" - the app's own theme is the default.
+        return False
+    return bool(ok) and bool(info.dwFlags & HCF_HIGHCONTRASTON)
+
+
+def stylesheet(high_contrast: bool | None = None) -> str:
+    """The stylesheet every window/dialog should apply (never STYLE directly),
+    so High Contrast is honored everywhere consistently: "" in High
+    Contrast mode, the custom theme otherwise. Checked on each call (it is
+    cheap); the application-wide sheet is set once at startup, so switching
+    the mode while the app runs fully applies after a restart."""
+    if high_contrast is None:
+        high_contrast = is_high_contrast()
+    return "" if high_contrast else STYLE

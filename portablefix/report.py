@@ -157,6 +157,8 @@ def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
         "risk": entry.get("risk") or "",
         "warning_text": entry.get("warning_text", ""),
         "decision": entry.get("decision", ""),
+        # None in logs written before the field existed.
+        "restore_point_sequence": entry.get("restore_point_sequence"),
     }
 
 
@@ -171,6 +173,7 @@ def _summarize_restore_points(events: list[dict]) -> list[dict]:
                 "created": event["exit_code"] == 0,
                 "detail": event["output"],
                 "decision": None,
+                "sequence": event.get("restore_point_sequence"),
             })
         elif event["kind"] == "restore_point_decision" and points and points[-1]["decision"] is None:
             points[-1]["decision"] = event["decision"] or None
@@ -572,7 +575,12 @@ def _restore_point_text(point: dict, language: str) -> str:
 
     when = html.escape(_format_timestamp(point["timestamp"]))
     if point["created"]:
-        return f"{t('report_restore_point')}: {t('report_rp_created')} ({when})"
+        # "#123" is the SequenceNumber rstrui / Get-ComputerRestorePoint
+        # show - lets anyone find the exact point later. Omitted when not
+        # recorded (older logs, or the lookup failed).
+        sequence = point.get("sequence")
+        number = f" (#{sequence})" if isinstance(sequence, int) and not isinstance(sequence, bool) else ""
+        return f"{t('report_restore_point')}: {t('report_rp_created')}{number} ({when})"
     text = f"{t('report_restore_point')}: <span class=\"rp-fail\">{t('report_rp_failed')}</span> ({when})"
     if point.get("decision") == "proceed":
         text += f" &mdash; {t('report_rp_proceeded')}"
@@ -587,7 +595,10 @@ def _render_event(event: dict, language: str) -> str:
 
     kind = event.get("kind")
     if kind == "restore_point":
-        point = {"timestamp": event["timestamp"], "created": event["exit_code"] == 0}
+        point = {
+            "timestamp": event["timestamp"], "created": event["exit_code"] == 0,
+            "sequence": event.get("restore_point_sequence"),
+        }
         body = _restore_point_text(point, language)
         if event["exit_code"] != 0 and event.get("output"):
             body += f'<div class="warn-text">{html.escape(event["output"])}</div>'

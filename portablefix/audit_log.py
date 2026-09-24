@@ -31,6 +31,11 @@ class AuditEntry:
     # Technician's answer to a safety prompt: "declined" (risk warning),
     # "proceed" / "skip" (restore point failed - continue without one?).
     decision: str = ""
+    # For a created restore point: its SequenceNumber and WMI CreationTime as
+    # Get-ComputerRestorePoint reports them - identifies *which* point in
+    # rstrui's list this run made. None/"" when it could not be looked up.
+    restore_point_sequence: int | None = None
+    restore_point_created: str = ""
 
 
 def make_entry(
@@ -47,6 +52,8 @@ def make_entry(
     warning_text: str = "",
     subject: str = "",
     decision: str = "",
+    restore_point_sequence: int | None = None,
+    restore_point_created: str = "",
 ) -> AuditEntry:
     return AuditEntry(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -64,6 +71,8 @@ def make_entry(
         warning_text=warning_text,
         subject=subject,
         decision=decision,
+        restore_point_sequence=restore_point_sequence,
+        restore_point_created=restore_point_created,
     )
 
 

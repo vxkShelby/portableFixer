@@ -1,13 +1,21 @@
 import subprocess
 
 from portablefix.executor import POWERSHELL_PREFIX
-from portablefix.restore_point import build_restore_point_command, create_restore_point
+from portablefix import restore_point
+from portablefix.restore_point import (
+    RESULT_MARKER,
+    RestorePointRunner,
+    build_restore_point_command,
+    create_restore_point,
+    parse_restore_point_output,
+)
 
 
 class _FakeResult:
-    def __init__(self, returncode: int, stderr: bytes = b""):
+    def __init__(self, returncode: int, stderr: bytes = b"", stdout: bytes = b""):
         self.returncode = returncode
         self.stderr = stderr
+        self.stdout = stdout
 
 
 def test_create_restore_point_success(monkeypatch):
@@ -135,3 +143,102 @@ def test_restore_point_command_turns_skip_warning_into_failure():
     command = build_restore_point_command("x")
     assert "-WarningAction Stop" in command
     assert "exit 1" in command
+
+
+# --- created restore point identity (research-reporting.md F1) ---
+
+
+def test_restore_point_command_looks_up_created_point_only_after_success():
+    # The lookup must come after the try/catch/finally: the catch exits 1,
+    # so it only runs once Checkpoint-Computer really created a point, and
+    # the 24h throttle is already restored by then.
+    command = build_restore_point_command("PortableFix run_1")
+    lookup = command.index("Get-ComputerRestorePoint")
+    assert lookup > command.index("finally")
+    assert "$desc = 'PortableFix run_1'" in command
+    assert "Checkpoint-Computer -Description $desc" in command
+    assert "$_.Description -eq $desc" in command[lookup:]
+    assert "Sort-Object SequenceNumber | Select-Object -Last 1" in command[lookup:]
+    assert RESULT_MARKER in command[lookup:]
+
+
+def test_restore_point_lookup_failure_cannot_fail_the_command():
+    # A created restore point whose number can't be read is still a success:
+    # the lookup sits in its own try with an empty catch and never exits 1.
+    command = build_restore_point_command("x")
+    lookup_part = command[command.index("Get-ComputerRestorePoint"):]
+    assert lookup_part.rstrip().endswith("catch { }")
+    assert "exit" not in lookup_part
+
+
+def test_parse_restore_point_output_reads_marker_line_among_noise():
+    stdout = (
+        "some cmdlet noise\r\n"
+        f'{RESULT_MARKER}{{"sequence":123,"created":"20260924101530.123456-000","description":"PortableFix r1"}}\r\n'
+    )
+    assert parse_restore_point_output(stdout) == {
+        "sequence_number": 123,
+        "creation_time": "20260924101530.123456-000",
+        "description": "PortableFix r1",
+    }
+
+
+def test_parse_restore_point_output_missing_or_malformed_is_empty():
+    assert parse_restore_point_output("") == {}
+    assert parse_restore_point_output("WARNING: something\n") == {}
+    assert parse_restore_point_output(f"{RESULT_MARKER}{{not json") == {}
+    assert parse_restore_point_output(f"{RESULT_MARKER}[1, 2]") == {}
+    assert parse_restore_point_output(f'{RESULT_MARKER}{{"created":"x"}}') == {}
+    assert parse_restore_point_output(f'{RESULT_MARKER}{{"sequence":"12"}}') == {}
+    assert parse_restore_point_output(f'{RESULT_MARKER}{{"sequence":true}}') == {}
+
+
+def test_create_restore_point_returns_sequence_and_still_unpacks_as_pair(monkeypatch):
+    stdout = f'{RESULT_MARKER}{{"sequence":42,"created":"c","description":"d"}}\n'.encode()
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, capture_output, timeout, creationflags: _FakeResult(0, stdout=stdout),
+    )
+    result = create_restore_point("d")
+    success, detail = result
+    assert (success, detail) == (True, "")
+    assert result == (True, "")
+    assert result.sequence_number == 42
+    assert result.info == {"sequence_number": 42, "creation_time": "c", "description": "d"}
+
+
+def test_create_restore_point_success_without_marker_has_no_sequence(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, capture_output, timeout, creationflags: _FakeResult(0, stdout=b"noise\n"),
+    )
+    result = create_restore_point("d")
+    assert result == (True, "")
+    assert result.sequence_number is None
+    assert result.info == {}
+
+
+def test_create_restore_point_failure_has_no_sequence(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"denied"),
+    )
+    result = create_restore_point("d")
+    assert result == (False, "denied")
+    assert result.sequence_number is None
+
+
+def test_runner_emits_info_and_tolerates_plain_tuple_stubs(monkeypatch):
+    # run() is called directly (synchronously): only the emitted values matter.
+    emitted = []
+    monkeypatch.setattr(
+        restore_point, "create_restore_point",
+        lambda description: restore_point.RestorePointResult(True, "", {"sequence_number": 5}),
+    )
+    runner = RestorePointRunner("d")
+    runner.result_ready.connect(lambda *args: emitted.append(args))
+    runner.run()
+    # Older stubs (and any caller-provided fake) return a bare 2-tuple.
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (False, "boom"))
+    runner.run()
+    assert emitted == [(True, "", {"sequence_number": 5}), (False, "boom", {})]
