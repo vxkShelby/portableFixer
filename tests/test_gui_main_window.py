@@ -3760,7 +3760,7 @@ def test_uninstaller_confirmed_run_logs_each_program_as_warned_and_irreversible(
         return button.isEnabled() and any(e["module_id"] == "_uninstaller" for e in _audit_entries(log_path))
 
     qtbot.waitUntil(uninstall_logged, timeout=10000)
-    qtbot.waitUntil(lambda: not _thread_running(card._uninstall_runner), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
     entries = [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
     assert len(entries) == 1
     entry = entries[0]
@@ -4369,6 +4369,75 @@ def test_long_running_tasks_names_each_kind_of_work(qtbot, tmp_path):
     window._batch_active = False
     window._report_runner = None
     window._speed_test_busy = False
+
+
+def test_long_running_tasks_names_an_uninstall_in_progress(qtbot, tmp_path):
+    # An uninstaller can wait minutes for the user - the updater would give
+    # up waiting for this process to exit.
+    class _Running:
+        def isRunning(self):
+            return True
+
+    window = _update_window(qtbot, tmp_path, "run_update_tasks_uninstall")
+    window._uninstall_runner = _Running()
+    assert window._long_running_tasks() == [window._t("update_busy_uninstall")]
+    window._uninstall_runner = None
+
+
+def test_closing_during_an_uninstall_waits_for_the_running_one_and_skips_the_rest(qtbot, tmp_path, monkeypatch):
+    # Not waited for, the uninstall's QThread was destroyed with the window
+    # and the process aborted.
+    import threading
+
+    from portablefix import uninstaller
+
+    started = threading.Event()
+    release = threading.Event()
+    ran = []
+
+    def fake_uninstall(program, *a, **k):
+        ran.append(program.name)
+        started.set()
+        release.wait(10)
+        return True, ""
+
+    waits = []
+
+    class _RecordingRunner(uninstaller.UninstallRunner):
+        def wait(self, *args):
+            waits.append(args)
+            return super().wait(*args)
+
+    monkeypatch.setattr(uninstaller, "uninstall_program", fake_uninstall)
+    window = _update_window(qtbot, tmp_path, "run_close_mid_uninstall")
+    programs = [_fake_installed_program(name, plain=f"{name}.exe") for name in ("One", "Two", "Three")]
+    runner = _RecordingRunner(programs, parent=window)
+    window._uninstall_runner = runner
+    runner.start()
+    assert started.wait(5)
+    threading.Timer(0.5, release.set).start()
+
+    window.close()
+
+    assert waits == [(uninstaller.UNINSTALL_TIMEOUT_SEC * 1000 + 10_000,)]
+    assert runner.isFinished()
+    assert ran == ["One"]
+
+
+def test_winget_update_says_why_it_does_nothing_while_the_app_update_starts(qtbot, tmp_path, monkeypatch):
+    from portablefix import winget_updates
+
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_app_update", False, _fake_outdated_package())
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: pytest.fail("no confirmation while the update starts"))
+    window._update_phase = "launch"
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    assert window._winget_update_runner is None
+    assert window.statusBar().currentMessage() == window._t("winget_update_blocked_by_app_update")
+    window._update_phase = None
 
 
 def test_closing_during_an_update_download_stops_it_cleanly(qtbot, tmp_path, monkeypatch):

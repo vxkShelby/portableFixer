@@ -294,3 +294,29 @@ def test_orphan_backup_path_sanitizes_the_name_and_never_reuses_a_file(tmp_path)
         tmp_path / "uninstall_Ghost_App_x64_Čeština_2.reg"
     )
     assert uninstaller.orphan_backup_path(tmp_path, "???").name == "uninstall_entry.reg"
+
+
+def test_uninstall_runner_stops_between_programs_once_interrupted(qtbot, monkeypatch):
+    # Closing the window waits for the uninstaller already running, not for
+    # the rest of the list (each one may take up to UNINSTALL_TIMEOUT_SEC).
+    import threading
+
+    first_started = threading.Event()
+    release = threading.Event()
+    ran = []
+
+    def fake_uninstall(program, *a, **k):
+        ran.append(program.name)
+        first_started.set()
+        release.wait(10)
+        return True, ""
+
+    monkeypatch.setattr(uninstaller, "uninstall_program", fake_uninstall)
+    runner = uninstaller.UninstallRunner([_program("One"), _program("Two"), _program("Three")])
+    with qtbot.waitSignal(runner.all_finished, timeout=10000):
+        runner.start()
+        assert first_started.wait(10)
+        runner.requestInterruption()
+        release.set()
+    runner.wait(10000)
+    assert ran == ["One"]

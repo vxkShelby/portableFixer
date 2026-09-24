@@ -1,7 +1,19 @@
 import ctypes
 import os
 
+import pytest
+
 from portablefix.elevation import is_admin, relaunch_as_admin
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_onefile_reset(monkeypatch):
+    # A successful relaunch_as_admin keeps PYINSTALLER_RESET_ENVIRONMENT set
+    # (the app quits right after). Set, then deleted, so monkeypatch records
+    # it and removes it again at teardown - delenv alone records nothing
+    # for a variable that is not there.
+    monkeypatch.setenv("PYINSTALLER_RESET_ENVIRONMENT", "x")
+    monkeypatch.delenv("PYINSTALLER_RESET_ENVIRONMENT")
 
 
 def test_is_admin_returns_bool():

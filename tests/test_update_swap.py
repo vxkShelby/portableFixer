@@ -646,7 +646,13 @@ def test_launch_swap_real_powershell_handshake(tmp_path, staged, monkeypatch):
 
     try:
         assert result.ok is True, result.detail
-        assert result.route == ROUTE_DIRECT
+        # Inside the CI runner's own Job Object, whether breakaway is allowed
+        # depends on that job's limits - both routes are correct there (as in
+        # test_update_spawn_windows._assert_route).
+        if update_swap.job_facts().get("app_in_job"):
+            assert result.route in (ROUTE_DIRECT, ROUTE_NO_BREAKAWAY)
+        else:
+            assert result.route == ROUTE_DIRECT
         assert _status(tmp_path) == update_swap.UPDATE_STATUS_HANDED_OFF
     finally:
         if result.child_pid:

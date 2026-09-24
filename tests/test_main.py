@@ -388,12 +388,80 @@ def test_dev_update_switch_needs_the_env_var(tmp_path, monkeypatch):
     args = main_module._parse_startup_args(["PortableFix.exe", "--update-from-zip", "p.zip", "--sha256", "00"])
 
     monkeypatch.delenv("PORTABLEFIX_DEV_UPDATE", raising=False)
-    main_module._start_dev_update(window, args)
+    main_module._start_dev_update(window, args, tmp_path)
     assert not window.start_local_update.called
 
     monkeypatch.setenv("PORTABLEFIX_DEV_UPDATE", "1")
-    main_module._start_dev_update(window, args)
+    main_module._start_dev_update(window, args, tmp_path)
     window.start_local_update.assert_called_once_with(main_module.Path("p.zip"), "00")
+
+
+def test_dev_update_switch_refuses_to_replace_a_git_working_tree(tmp_path, monkeypatch):
+    # build.ps1 builds into the repo's own App\ - updating that "install"
+    # would delete the working tree's Modules\ and Vendor\.
+    from unittest.mock import MagicMock
+
+    import main as main_module
+
+    (tmp_path / ".git").mkdir()
+    boxes = []
+    monkeypatch.setattr(main_module, "_message_box", boxes.append)
+    monkeypatch.setenv("PORTABLEFIX_DEV_UPDATE", "1")
+    window = MagicMock()
+    args = main_module._parse_startup_args(["PortableFix.exe", "--update-from-zip", "p.zip"])
+
+    main_module._start_dev_update(window, args, tmp_path)
+
+    assert not window.start_local_update.called
+    assert len(boxes) == 1 and "git" in boxes[0]
+
+
+def test_main_moves_a_frozen_build_off_the_app_folder(tmp_path, monkeypatch):
+    # Started from App\ (a <= 1.11.4 shortcut, Explorer), every child the
+    # app spawns would inherit App\ as its cwd - and one that outlives the
+    # app (m02 restarts explorer.exe) blocks the next update's App rename.
+    import os
+
+    events = []
+    main_module = _fake_main_env(monkeypatch, tmp_path, events)
+    (tmp_path / "App").mkdir()
+    monkeypatch.chdir(tmp_path / "App")
+    monkeypatch.setattr(main_module.sys, "frozen", True, raising=False)
+
+    main_module.main()
+
+    assert os.path.samefile(os.getcwd(), tmp_path)
+
+
+def test_leave_app_folder_keeps_a_relative_dev_zip_pointing_at_the_same_file(tmp_path, monkeypatch):
+    import os
+
+    import main as main_module
+
+    (tmp_path / "App").mkdir()
+    monkeypatch.chdir(tmp_path / "App")
+    monkeypatch.setattr(main_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(main_module, "get_base_dir", lambda: tmp_path)
+    args = main_module._parse_startup_args(["PortableFix.exe", "--update-from-zip", "p.zip"])
+
+    main_module._leave_app_folder(args)
+
+    assert os.path.samefile(os.getcwd(), tmp_path)
+    assert main_module.Path(args.update_zip).resolve() == (tmp_path / "App" / "p.zip").resolve()
+
+
+def test_leave_app_folder_is_a_no_op_when_running_from_source(tmp_path, monkeypatch):
+    import os
+
+    import main as main_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delattr(main_module.sys, "frozen", raising=False)
+    monkeypatch.setattr(main_module, "get_base_dir", lambda: tmp_path / "elsewhere")
+
+    main_module._leave_app_folder(main_module._parse_startup_args(["main.py"]))
+
+    assert os.path.samefile(os.getcwd(), tmp_path)
 
 
 def _age(path, days):

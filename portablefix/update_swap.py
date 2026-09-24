@@ -53,6 +53,9 @@ UPDATE_STATUS_OK = "ok"
 UPDATE_STATUS_OK_SUMS_STALE = "ok_sums_stale"
 UPDATE_STATUS_IN_PROGRESS = "in_progress"
 UPDATE_STATUS_ROLLED_BACK = "rolled_back"
+# The new folders failed verification and an old one could not be put back
+# (a new folder locked in its place): old and new files are now mixed.
+UPDATE_STATUS_ROLLBACK_FAILED = "rollback_failed"
 UPDATE_STATUS_ABORTED = "aborted"
 # Written by the app right after the handshake, before it quits. The script
 # overwrites it once it starts working, so if it is still there at the next

@@ -44,8 +44,12 @@
   premenúva s opakovaním, pri zlyhaní vráti pôvodný stav a novú verziu
   spustí s čistým prostredím (už nie „Failed to load Python DLL“) z
   priečinka inštalácie.
-- Kým beží dávka, report, test rýchlosti, winget alebo vytváranie bodu
-  obnovenia, appka aktualizáciu odmietne a povie prečo.
+- Kým beží dávka, report, test rýchlosti, winget, odinštalovanie programov
+  alebo vytváranie bodu obnovenia, appka aktualizáciu odmietne a povie
+  prečo.
+- Appka pri štarte opustí priečinok `App\` (napr. keď ju spustí starý
+  odkaz), takže procesy, ktoré spustí a ktoré ju prežijú (napr. reštart
+  Prieskumníka), už nebránia ďalšej aktualizácii.
 - Z `Data\` sa inštalujú len `SHA256SUMS`, certifikát a `.gitkeep` -
   `settings.json` sa nikdy neprepíše.
 - Appka spustená počas aktualizácie iba oznámi, že sa aktualizuje;
@@ -102,8 +106,11 @@
   renames folders with retries, restores the old state on failure and
   starts the new version with a clean environment (no more "Failed to load
   Python DLL") from the install folder.
-- While a batch, report, speed test, winget task or restore point is
-  running, the app refuses to update and says why.
+- While a batch, report, speed test, winget task, program uninstall or
+  restore point is running, the app refuses to update and says why.
+- The app leaves the `App\` folder at startup (e.g. when an old shortcut
+  starts it there), so processes it starts that outlive it (such as a
+  restarted Explorer) no longer block the next update.
 - From `Data\` only `SHA256SUMS`, the certificate and `.gitkeep` are
   installed - `settings.json` is never replaced.
 - An app started during the update only says that it is updating; an

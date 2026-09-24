@@ -152,16 +152,43 @@ def _message_box(text: str) -> None:
     ctypes.windll.user32.MessageBoxW(None, text, "PortableFix", 0x40)
 
 
-def _start_dev_update(window, args: StartupArgs) -> None:
+def _leave_app_folder(args: StartupArgs) -> None:
+    """Moves a frozen build's working directory to the install root. Started
+    from App\\ (Explorer, or the shortcuts of <= 1.11.4 Setup installs), every
+    process this app starts without its own cwd - repair PowerShells, what
+    they Start-Process (m02 restarts explorer.exe), ShellExecute targets, the
+    elevated copy - would inherit App\\ too. One of them outliving the app
+    holds App\\ open, and the next update's App -> App.old rename fails."""
+    if not getattr(sys, "frozen", False):
+        return
+    # A relative --update-from-zip path was meant relative to where the
+    # developer typed it.
+    if args.update_zip:
+        args.update_zip = os.path.abspath(args.update_zip)
+    try:
+        os.chdir(get_base_dir())
+    except OSError:
+        pass
+
+
+def _start_dev_update(window, args: StartupArgs, install_dir: Path) -> None:
     # Developer-only, so a stray argument in a shortcut can never make an
     # end user's copy install an arbitrary local zip.
-    if args.update_zip and os.environ.get(_DEV_UPDATE_ENV) == "1":
-        window.start_local_update(Path(args.update_zip), args.update_sha256)
+    if not args.update_zip or os.environ.get(_DEV_UPDATE_ENV) != "1":
+        return
+    # build.ps1 puts the exe into the repo's own App\: an update run from
+    # there would replace the working tree's Modules\ and Vendor\ and then
+    # delete the old ones, uncommitted edits included.
+    if (install_dir / ".git").exists():
+        _message_box(f"--update-from-zip refused: {install_dir} is a git working tree. Copy the built folder elsewhere first.")
+        return
+    window.start_local_update(Path(args.update_zip), args.update_sha256)
 
 
 def main() -> int:
     args = _parse_startup_args(sys.argv)
     sys.argv[:] = args.argv
+    _leave_app_folder(args)
     for pid in args.wait_pids:
         update_swap.wait_for_process_exit(pid, _WAIT_PID_TIMEOUT_SEC)
     # A running swap is renaming App\, Modules\ and Vendor\ - an instance
@@ -261,7 +288,7 @@ def main() -> int:
         # doesn't also hold up the background check.
         if update_message:
             QMessageBox.warning(window, i18n.translate("app_title", settings.language), update_message)
-        _start_dev_update(window, args)
+        _start_dev_update(window, args, raw_base_dir)
 
         exit_code = app.exec()
         integrity_runner.stop()

@@ -124,9 +124,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   nepodarí, appka zostane otvorená a ukáže dôvod (napr. kód ukončenia
   PowerShellu a koniec jeho výstupu), priečinok s logmi a odkaz na ručné
   stiahnutie; pripravená aktualizácia zostane, takže ďalší pokus už nič
-  nesťahuje. Kým beží dávka, zápis reportu, test rýchlosti, winget alebo
-  vytváranie bodu obnovenia, appka odovzdanie aktualizácie odmietne a
-  povie prečo. Zatvorenie appky počas sťahovania ho čisto preruší. Po
+  nesťahuje. Kým beží dávka, zápis reportu, test rýchlosti, winget,
+  odinštalovanie programov alebo vytváranie bodu obnovenia, appka
+  odovzdanie aktualizácie odmietne a povie prečo. Zatvorenie appky počas sťahovania ho čisto preruší. Po
   aktualizácii sa appka spustí sama; kým aktualizácia beží, ručne
   spustená appka iba oznámi, že sa práve aktualizuje. Záznamy
   o aktualizácii sú v `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`,
@@ -169,7 +169,9 @@ nič sa nenainštaluje); tie treba raz aktualizovať ručne: zavri appku a
 rozbaľ obsah priečinka `PortableFix` z `PortableFix-Portable.zip` do
 priečinka appky (súbory nahraď - zip neobsahuje `Data\settings.json`,
 takže nastavenia zostanú), alebo spusti `PortableFix-Setup.exe` do toho
-istého priečinka.
+istého priečinka. Rovnako postupuj, ak appka po štarte oznámi, že sa
+pôvodnú verziu nepodarilo úplne vrátiť (inštalácia potom môže obsahovať
+zmes starých a nových súborov).
 
 ## Štruktúra priečinkov
 
@@ -296,11 +298,16 @@ lokálnom zipe - rovnakým postupom (overenie, rozbalenie, otázka na
 reštart, odovzdanie aktualizátoru), aký appka použije pre stiahnutý balík:
 
 ```powershell
+Expand-Archive Output\PortableFix-Portable.zip C:\PFTest   # alebo starší release
 $env:PORTABLEFIX_DEV_UPDATE = "1"
-.\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
+C:\PFTest\PortableFix\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
 ```
 
-Bez `PORTABLEFIX_DEV_UPDATE=1` appka tieto parametre ignoruje.
+Vždy na kópii, nikdy nie priamo z repozitára: aktualizácia nahradí `App`,
+`Modules` a `Vendor` v priečinku, z ktorého exe beží, a staré priečinky
+natrvalo zmaže - v repozitári by prišli aj o neuložené úpravy. Spustenie
+z priečinka s `.git` appka odmietne. Bez `PORTABLEFIX_DEV_UPDATE=1` appka
+tieto parametre ignoruje.
 
 ## Vývoj
 

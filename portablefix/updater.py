@@ -30,6 +30,7 @@ from .update_swap import (  # noqa: F401
     UPDATE_STATUS_IN_PROGRESS,
     UPDATE_STATUS_OK,
     UPDATE_STATUS_OK_SUMS_STALE,
+    UPDATE_STATUS_ROLLBACK_FAILED,
     UPDATE_STATUS_ROLLED_BACK,
     STAGE_DIR_NAME,
     LaunchResult,
@@ -311,6 +312,8 @@ def consume_update_status(install_dir: Path) -> str | None:
 def update_status_message_key(status: str | None, restored: list[str]) -> str | None:
     """i18n key describing the last update's outcome, or None when there's
     nothing to tell (no update ran, or it succeeded cleanly)."""
+    if status == UPDATE_STATUS_ROLLBACK_FAILED:
+        return "update_status_rollback_failed"
     if status == UPDATE_STATUS_IN_PROGRESS or restored:
         return "update_status_interrupted"
     if status in (UPDATE_STATUS_ABORTED, UPDATE_STATUS_ROLLED_BACK):

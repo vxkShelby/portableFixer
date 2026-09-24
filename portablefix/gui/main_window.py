@@ -236,6 +236,7 @@ class MainWindow(QMainWindow):
         self._hw_sensor_runner = None
         self._winget_scan_runner = None
         self._winget_update_runner = None
+        self._uninstall_runner = None
         self._ping_busy = False
         self._vpn_busy = False
         self._speed_test_busy = False
@@ -373,6 +374,11 @@ class MainWindow(QMainWindow):
             self._runner.cancel()
         if self._winget_update_runner is not None:
             self._winget_update_runner.request_stop()
+        if self._uninstall_runner is not None:
+            try:
+                self._uninstall_runner.requestInterruption()
+            except RuntimeError:
+                pass
         update_runners = [
             runner for runner in (self._update_download_runner, self._update_stage_runner, self._update_launch_runner)
             if runner is not None
@@ -417,6 +423,9 @@ class MainWindow(QMainWindow):
             # exit, gives up, and relaunches the still-old exe.
             (self._winget_scan_runner, 65_000),
             (self._winget_update_runner, winget_updates._UPDATE_TIMEOUT_SEC * 1000 + 10_000),
+            # Stops between programs once interrupted, but the uninstaller
+            # already running cannot be cut short.
+            (self._uninstall_runner, uninstaller.UNINSTALL_TIMEOUT_SEC * 1000 + 10_000),
         )
         for runner in quick_runners:
             if runner is None:
@@ -1835,6 +1844,7 @@ class MainWindow(QMainWindow):
             # its handshake; one begun during it would hold up the exit the
             # updater is waiting for.
             if self._update_phase == "launch" or self._closing_for_update:
+                self.statusBar().showMessage(self._t("winget_update_blocked_by_app_update"))
                 return
             # Installs a newer version with no way back - a MODERATE change
             # by the catalog's own yardstick, confirmed like one.
@@ -2508,8 +2518,10 @@ class MainWindow(QMainWindow):
             select_none_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("uninstaller_running"))
+            # On self, not the card: closeEvent and the app update's hand-off
+            # guard must both know an uninstall is still running.
             runner = uninstaller.UninstallRunner(selected, parent=card)
-            card._uninstall_runner = runner  # keep a reference alive
+            self._uninstall_runner = runner
 
             def on_program_finished(name: str, ok: bool, output: str) -> None:
                 # Recorded before any widget is touched, so a console error
@@ -2792,6 +2804,8 @@ class MainWindow(QMainWindow):
             tasks.append(self._t("update_busy_winget_update"))
         if _thread_running(self._pending_restore_point_runner):
             tasks.append(self._t("update_busy_restore_point"))
+        if _thread_running(self._uninstall_runner):
+            tasks.append(self._t("update_busy_uninstall"))
         return tasks
 
     def _show_update_available(self) -> None:

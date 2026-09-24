@@ -539,6 +539,7 @@ def test_consume_update_status_reads_once_then_deletes(tmp_path):
         (None, ["Modules"], "update_status_interrupted"),
         ("aborted", [], "update_status_failed"),
         ("rolled_back", [], "update_status_failed"),
+        ("rollback_failed", [], "update_status_rollback_failed"),
         ("ok_sums_stale", [], "update_status_sums_stale"),
         # The app handed off, but the updater died before it wrote anything.
         ("handed_off", [], "update_status_incomplete"),

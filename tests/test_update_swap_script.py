@@ -187,6 +187,14 @@ def test_swap_script_does_no_path_arithmetic_and_uses_literal_paths_only():
         assert f"{cmdlet} $" not in code, cmdlet
 
 
+def test_swap_script_times_the_wait_for_the_app_with_a_monotonic_clock():
+    # Get-Date is local wall-clock time: a DST change or an NTP correction
+    # mid-wait would stretch the 600 s limit to 70 min or end it at once.
+    code = "\n".join(line for line in SWAP_SCRIPT.splitlines() if not line.lstrip().startswith("#"))
+    assert "(Get-Date).AddSeconds" not in code
+    assert "[System.Diagnostics.Stopwatch]::StartNew()" in code
+
+
 def test_swap_script_bytes_are_identical_for_any_paths(tmp_path):
     _, _, plain = _prepare(tmp_path / "a")
     _, _, hostile = _prepare(tmp_path / "b", install_parent=_HOSTILE_INSTALL, log_name=_HOSTILE_TEMP)
@@ -385,6 +393,72 @@ def test_swap_reports_stale_manifest_when_the_sums_copy_cannot_be_verified(tmp_p
 
     assert (install_dir / "App" / "PortableFix.exe").read_bytes() == _relaunch_probe()
     assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK_SUMS_STALE
+
+
+def test_swap_verifies_the_last_sums_copy_too(tmp_path):
+    # The DataCopies copy of SHA256SUMS "fails" (Test-Path on the staged
+    # manifest says no, once), so only Update-Sums' single re-copy installs
+    # it - which must then be checked, not reported as stale unchecked.
+    install_dir, _, job = _prepare(tmp_path, sums_tries=1)
+    stub = (
+        "$script:sumsMisses = 1\n"
+        "function Test-Path { [CmdletBinding()] param([string]$LiteralPath, [string]$PathType) "
+        "if (($script:sumsMisses -gt 0) -and ($LiteralPath -like '*_update_stage*SHA256SUMS')) { $script:sumsMisses--; return $false } "
+        "if ($PathType) { Microsoft.PowerShell.Management\\Test-Path -LiteralPath $LiteralPath -PathType $PathType } "
+        "else { Microsoft.PowerShell.Management\\Test-Path -LiteralPath $LiteralPath } }\n"
+    )
+
+    _run(job, tmp_path, prepend=stub)
+
+    assert "SHA256SUMS check 0" in _log(job)
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK
+    assert (install_dir / "Data" / "SHA256SUMS").read_bytes() == sums_for(release_files(exe=_relaunch_probe()))
+
+
+def test_swap_writes_the_status_and_relaunches_before_removing_the_backups(tmp_path):
+    # A backup AV keeps open costs RenameTries x RenameDelayMs (30 s in
+    # production) - after the relaunch, not before it, and never with the
+    # status still saying 'in_progress'.
+    install_dir, _, job = _prepare(tmp_path)
+    stub = (
+        "function Remove-Item { [CmdletBinding()] param([string]$LiteralPath, [switch]$Recurse, [switch]$Force) "
+        "if ($LiteralPath -like '*App.old') { return } "
+        "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force }\n"
+    )
+
+    _run(job, tmp_path, prepend=stub)
+
+    log = _log(job)
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK
+    stuck = log.index("could not remove " + str(install_dir / "App.old"))
+    assert log.index("status: ok") < stuck
+    assert log.index("relaunch") < stuck
+    # The other backups and the stage still go.
+    for gone in ("Modules.old", "Vendor.old", "_update_stage"):
+        assert not (install_dir / gone).exists(), gone
+
+
+def test_swap_does_not_claim_a_rollback_it_could_not_finish(tmp_path):
+    # The new App\ can neither be parked (a leftover App.failed is in the
+    # way and cannot be removed) nor deleted: the old App cannot go back.
+    install_dir, staged, job = _prepare(tmp_path)
+    shutil.rmtree(staged.stage_root / "Vendor")
+    (staged.stage_root / "Vendor").mkdir()
+    (install_dir / "App.failed").mkdir()
+    (install_dir / "App.failed" / "x").write_bytes(b"x")
+    stub = (
+        "function Remove-Item { [CmdletBinding()] param([string]$LiteralPath, [switch]$Recurse, [switch]$Force) "
+        "if (($LiteralPath -like '*App.failed') -or ($LiteralPath -like '*App')) { return } "
+        "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force }\n"
+    )
+
+    _run(job, tmp_path, prepend=stub)
+
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_ROLLBACK_FAILED
+    # The only good copy of the old exe must survive the cleanup.
+    assert (install_dir / "App.old" / "PortableFix.exe").read_bytes() == b"old-exe"
+    assert (install_dir / "Modules" / "mod.yaml").read_bytes() == b"old-m"
+    assert (install_dir / "Vendor" / "vendor.dll").read_bytes() == b"old-v"
 
 
 def test_swap_rollback_keeps_the_old_folders_and_manifest(tmp_path):

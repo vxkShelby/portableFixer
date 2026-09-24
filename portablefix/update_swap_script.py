@@ -110,7 +110,8 @@ function Test-Exited($Proc) {
 
 # The app may legitimately take minutes to close (a winget update it waits
 # for), far longer than the 30 s the generated script used to allow.
-$deadline = (Get-Date).AddSeconds([int]$Cfg.MaxWaitSec)
+# Measured with a Stopwatch: wall-clock time can jump (DST, NTP) mid-wait.
+$waited = [System.Diagnostics.Stopwatch]::StartNew()
 $pending = @($procs)
 while ($pending.Count -gt 0) {
     $still = @()
@@ -119,7 +120,7 @@ while ($pending.Count -gt 0) {
     }
     $pending = $still
     if ($pending.Count -eq 0) { break }
-    if ((Get-Date) -gt $deadline) {
+    if ($waited.Elapsed.TotalSeconds -gt [int]$Cfg.MaxWaitSec) {
         # Nothing was touched yet, and the old app is still the one running:
         # relaunching would only start a second instance that loses to the
         # single-instance mutex and quits, so there is no relaunch either.
@@ -205,12 +206,16 @@ function Copy-File([string]$Source, [string]$Destination) {
 function Update-Sums {
     if (-not (Test-Path -LiteralPath $Cfg.SumsSrc -PathType Leaf)) { Log 'the package has no SHA256SUMS'; return $false }
     $want = Get-Sha256 $Cfg.SumsSrc
-    for ($i = 0; $i -lt [int]$Cfg.SumsTries; $i++) {
+    # Check 0 is the DataCopies copy; each of the SumsTries re-copies is
+    # checked too, the last one included.
+    for ($i = 0; $i -le [int]$Cfg.SumsTries; $i++) {
+        if ($i -gt 0) {
+            Start-Sleep -Milliseconds ([int]$Cfg.SumsDelayMs)
+            Copy-File -Source $Cfg.SumsSrc -Destination $Cfg.SumsDst
+        }
         $got = Get-Sha256 $Cfg.SumsDst
         if ($want -and ($got -eq $want)) { return $true }
         Log ('SHA256SUMS check ' + $i + ': want=' + $want + ' got=' + $got)
-        Start-Sleep -Milliseconds ([int]$Cfg.SumsDelayMs)
-        Copy-File -Source $Cfg.SumsSrc -Destination $Cfg.SumsDst
     }
     return $false
 }
@@ -230,6 +235,9 @@ $inTheWay = @($Folders | Where-Object { Test-Path -LiteralPath $_.Backup })
 $stageMissing = @($Folders | Where-Object { -not (Test-Path -LiteralPath $_.Staged) })
 
 $outcome = 'aborted'
+# Set only once the new folders are in place: until then an X.old may be
+# the only good copy of X.
+$dropBackups = $false
 if ($inTheWay.Count -gt 0) {
     Log 'ABORT: a stale backup folder could not be removed - nothing was changed'
 } elseif ($stageMissing.Count -gt 0) {
@@ -266,7 +274,7 @@ if ($inTheWay.Count -gt 0) {
             foreach ($c in $DataCopies) { Copy-File -Source $c.Src -Destination $c.Dst }
             foreach ($c in $RootCopies) { Copy-File -Source $c.Src -Destination $c.Dst }
             $sumsOk = Update-Sums
-            foreach ($f in $Folders) { $null = Remove-WithRetry $f.Backup }
+            $dropBackups = $true
             if ($sumsOk) {
                 $outcome = 'ok'
             } else {
@@ -275,6 +283,7 @@ if ($inTheWay.Count -gt 0) {
             }
         } else {
             Log 'swap FAILED verification, rolling back'
+            $restoredAll = $true
             foreach ($f in $Folders) {
                 if (Test-Path -LiteralPath $f.Backup) {
                     # Renamed aside, not deleted in place: a recursive delete
@@ -285,14 +294,24 @@ if ($inTheWay.Count -gt 0) {
                     }
                     $back = Move-WithRetry -Source $f.Backup -Destination $f.Live
                     Log ('rolled back ' + $f.Live + ': ' + $back)
+                    if (-not $back) { $restoredAll = $false }
                 }
             }
-            $outcome = 'rolled_back'
+            # 'rolled_back' tells the user the old version was kept - not
+            # true while a new folder is stuck where an old one belongs.
+            if ($restoredAll) {
+                $outcome = 'rolled_back'
+            } else {
+                Log 'ROLLBACK INCOMPLETE: the install now mixes old and new folders; the old ones are left as *.old'
+                $outcome = 'rollback_failed'
+            }
         }
     }
 }
+# The final status goes out before any cleanup: a backup AV keeps open can
+# cost RenameTries x RenameDelayMs each, and an updater killed during that
+# (logoff) must not leave 'in_progress' behind for a finished update.
 Set-UpdateStatus $outcome
-$null = Remove-WithRetry $Cfg.StageDir
 
 # The old process has exited in every outcome that gets here, so the app is
 # relaunched even after an abort or a rollback - otherwise the user is left
@@ -323,8 +342,13 @@ try {
 } catch {
     Log ('relaunch FAILED for ' + $Cfg.AppExe + ': ' + $_.Exception.Message)
 }
-# Cleanup that must not delay the relaunch.
+# Cleanup that must not delay the relaunch. An X.old that survives it is
+# harmless: the next swap drops stale backups before it starts.
+if ($dropBackups) {
+    foreach ($f in $Folders) { $null = Remove-WithRetry $f.Backup }
+}
 foreach ($f in $Folders) { $null = Remove-WithRetry $f.Discard }
+$null = Remove-WithRetry $Cfg.StageDir
 Log 'update swap finished'
 exit 0
 """

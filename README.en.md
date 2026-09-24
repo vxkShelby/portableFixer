@@ -126,8 +126,8 @@ PowerShell.
   shows the reason (e.g. PowerShell's exit code and the end of its
   output), the log folder and the manual download link; the prepared
   update is kept, so the next attempt downloads nothing. While a batch,
-  report, speed test, winget task or restore point is running, the app
-  refuses to hand the update off and says why. Closing the app during a
+  report, speed test, winget task, program uninstall or restore point is
+  running, the app refuses to hand the update off and says why. Closing the app during a
   download stops it cleanly. After the update the app restarts by
   itself; while the update is running, an app started by hand only says
   so. Update logs are in `%TEMP%\PortableFixUpdate`
@@ -172,7 +172,9 @@ nothing is installed); update those once by hand: close the app and
 extract the contents of the `PortableFix` folder in
 `PortableFix-Portable.zip` into the app's folder (replace the files - the
 zip carries no `Data\settings.json`, so the settings stay), or run
-`PortableFix-Setup.exe` into the same folder.
+`PortableFix-Setup.exe` into the same folder. Do the same when the app
+says at startup that the previous version could not be fully put back
+(the install may then mix old and new files).
 
 ## Folder layout
 
@@ -298,11 +300,16 @@ zip - through the same steps (verify, unpack, restart question, hand-off
 to the updater) the app uses for a downloaded package:
 
 ```powershell
+Expand-Archive Output\PortableFix-Portable.zip C:\PFTest   # or an older release
 $env:PORTABLEFIX_DEV_UPDATE = "1"
-.\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
+C:\PFTest\PortableFix\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
 ```
 
-Without `PORTABLEFIX_DEV_UPDATE=1` the app ignores these arguments.
+Always on a copy, never straight from the repository: the update replaces
+`App`, `Modules` and `Vendor` in the folder the exe runs from and deletes
+the old ones for good - in the repository, uncommitted edits included. The
+app refuses to run it from a folder that contains `.git`. Without
+`PORTABLEFIX_DEV_UPDATE=1` the app ignores these arguments.
 
 ## Development
 
