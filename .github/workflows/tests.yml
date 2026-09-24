@@ -55,7 +55,10 @@ jobs:
             $lastOutput = ""
             for ($attempt = 1; $attempt -le 2; $attempt++) {
               $lastOutput = python -m pytest $id -q --timeout=90 --timeout-method=thread 2>&1 | Out-String
-              if ($lastOutput -match "1 passed") {
+              # Exit code, not just the text: "1 passed, 1 error" (test body
+              # passed, teardown raised - e.g. conftest's unexpected-dialog
+              # guard) still matched "1 passed" and was counted as green.
+              if ($LASTEXITCODE -eq 0 -and $lastOutput -match "1 passed") {
                 $ok = $true
                 break
               }

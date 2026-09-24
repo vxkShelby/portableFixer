@@ -572,8 +572,13 @@ def test_build_swap_script_rejects_zip_entries_that_escape_the_stage_directory()
         install_dir=PureWindowsPath(r"C:\App"),
         zip_path=PureWindowsPath(r"C:\Temp\PortableFix-update.zip"),
     )
-    assert "-not $_.FullName.StartsWith($stageFull)" in script
-    assert "exit 1" in script
+    # Checked on the zip's own entries before extraction (the old check
+    # listed the stage folder afterwards and could never trip), and a hit
+    # fails $stageOk so the old version is still relaunched - no exit.
+    assert "[IO.Compression.ZipFile]::OpenRead(" in script
+    assert "$target.StartsWith($stageRoot, [StringComparison]::OrdinalIgnoreCase)" in script
+    assert script.index("$zip.Entries") < script.index("Expand-Archive")
+    assert "exit 1" not in script
 
 
 def test_build_swap_script_preserves_settings_json_across_the_swap():
@@ -979,7 +984,9 @@ def test_build_swap_script_uses_literal_paths_only():
         assert f"{cmdlet} '" not in script, cmdlet
 
 
-def _make_swap_zip(tmp_path: Path, *, with_exe: bool = True, with_vendor: bool = True, sums: bytes = b"new-sums") -> Path:
+def _make_swap_zip(
+    tmp_path: Path, *, with_exe: bool = True, with_vendor: bool = True, empty_vendor: bool = False, sums: bytes = b"new-sums"
+) -> Path:
     import shutil
 
     src = tmp_path / "zip_src2" / "PortableFix"
@@ -990,7 +997,8 @@ def _make_swap_zip(tmp_path: Path, *, with_exe: bool = True, with_vendor: bool =
     (src / "Modules" / "mod.yaml").write_bytes(b"new-m")
     if with_vendor:
         (src / "Vendor").mkdir()
-        (src / "Vendor" / "vendor.dll").write_bytes(b"new-v")
+        if not empty_vendor:
+            (src / "Vendor" / "vendor.dll").write_bytes(b"new-v")
     (src / "Data").mkdir()
     (src / "Data" / "settings.json").write_text("{}")
     (src / "Data" / "SHA256SUMS").write_bytes(sums)
@@ -1065,7 +1073,9 @@ def test_swap_script_rollback_keeps_the_old_integrity_manifest(_swap_temp):
     tmp_path = _swap_temp
     install_dir = tmp_path / "install"
     _make_swap_install(install_dir)
-    zip_path = _make_swap_zip(tmp_path, with_vendor=False)  # fails verification
+    # An empty Vendor\ passes the pre-swap package check but fails the
+    # post-swap verification, forcing the rollback path.
+    zip_path = _make_swap_zip(tmp_path, empty_vendor=True)
 
     _run_script(build_swap_script(current_pid=999_995, install_dir=install_dir, zip_path=zip_path), tmp_path)
 
@@ -1238,6 +1248,41 @@ def test_launcher_cmd_restores_app_folder_stranded_as_app_old():
     # Without App\PortableFix.exe there is no Python code left to run any
     # recovery - the launcher is the only thing that can put App.old back.
     cmd = (Path(__file__).resolve().parent.parent / "PortableFix.cmd").read_text(encoding="utf-8")
-    restore = 'if not exist "%~dp0App\\PortableFix.exe" if exist "%~dp0App.old\\PortableFix.exe" move "%~dp0App.old" "%~dp0App"'
+    restore = 'if not exist "%~dp0App\\" if exist "%~dp0App.old\\PortableFix.exe" move "%~dp0App.old" "%~dp0App"'
     assert restore in cmd
     assert cmd.index(restore) < cmd.rindex('"%~dp0App\\PortableFix.exe"')
+
+
+def test_swap_script_rejects_zip_slip_entry_and_still_relaunches(_swap_temp):
+    import zipfile
+
+    tmp_path = _swap_temp
+    install_dir = tmp_path / "install"
+    _make_swap_install(install_dir)
+    zip_path = _make_swap_zip(tmp_path)
+    # A crafted release whose entry climbs out of the staging folder.
+    with zipfile.ZipFile(zip_path, "a") as zf:
+        zf.writestr("../../escaped.txt", b"pwned")
+
+    _run_script(build_swap_script(current_pid=999_980, install_dir=install_dir, zip_path=zip_path), tmp_path)
+
+    assert not (install_dir.parent / "escaped.txt").exists()
+    assert not (install_dir / "escaped.txt").exists()
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"old-exe"
+    assert _status(install_dir) == updater_module.UPDATE_STATUS_ABORTED
+    # Previously the guard exited without relaunching - the user was left
+    # with no app running at all.
+    assert (tmp_path / "relaunched.txt").exists()
+
+
+def test_swap_script_aborts_cleanly_when_package_has_no_vendor(_swap_temp):
+    tmp_path = _swap_temp
+    install_dir = tmp_path / "install"
+    _make_swap_install(install_dir)
+    zip_path = _make_swap_zip(tmp_path, with_vendor=False)
+
+    _run_script(build_swap_script(current_pid=999_979, install_dir=install_dir, zip_path=zip_path), tmp_path)
+
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"old-exe"
+    assert not (install_dir / "App.old").exists()
+    assert _status(install_dir) == updater_module.UPDATE_STATUS_ABORTED

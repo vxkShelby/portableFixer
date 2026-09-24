@@ -59,3 +59,9 @@ def test_recent_runs_missing_dir_and_display_date(tmp_path):
     assert recent_runs(reports, "PC1")[0].display_date() == "garbage"
     _write_report(reports, "PC1", "s", [], generated_at="2026-09-24T10:00:00+00:00")
     assert recent_runs(reports, "PC1", exclude_run_id="r")[0].display_date().startswith("2026-09-24")
+
+
+def test_display_date_survives_out_of_range_dates(tmp_path):
+    reports = tmp_path / "Reports"
+    _write_report(reports, "PC1", "r", [], generated_at="0001-01-01T00:00:00+00:00")
+    assert recent_runs(reports, "PC1")[0].display_date()  # no exception

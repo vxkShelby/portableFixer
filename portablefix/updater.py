@@ -311,20 +311,40 @@ def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> st
         f"if (Test-Path -LiteralPath {settings_json}) {{ Copy-Item -LiteralPath {settings_json} -Destination {settings_bak} -Force }}\n"
         f"Log \"settings.json backed up: $(Test-Path -LiteralPath {settings_bak})\"\n"
         f"Remove-Item -LiteralPath {stage} -Recurse -Force -EA SilentlyContinue\n"
-        f"Expand-Archive -LiteralPath {zip_p} -DestinationPath {stage} -Force\n"
-        f"Log \"expanded update zip: $(Test-Path -LiteralPath {stage})\"\n"
-        # Zip-slip guard: refuse to proceed if any extracted entry landed
-        # outside the staging directory (a crafted zip with '../' entries).
-        f"$stageFull = (Resolve-Path -LiteralPath {stage}).Path\n"
-        f"$escaped = Get-ChildItem -LiteralPath {stage} -Recurse -File | Where-Object {{ -not $_.FullName.StartsWith($stageFull) }}\n"
-        f"if ($escaped) {{ Log 'ABORT: zip-slip guard tripped'; Set-UpdateStatus '{UPDATE_STATUS_ABORTED}'; Remove-Item -LiteralPath {stage} -Recurse -Force -EA SilentlyContinue; exit 1 }}\n"
-        f"$stagedRoot = (Get-ChildItem -LiteralPath {stage} -Directory | Select-Object -First 1).FullName\n"
+        # Zip-slip guard, checked on the zip's own entries BEFORE extracting:
+        # the previous check listed files *inside* the stage folder after
+        # extraction, which by construction can never find one that escaped
+        # it - and on a hit it exited without relaunching the app. A bad
+        # entry now just fails $stageOk below, so the old version is
+        # relaunched like any other aborted update.
+        "$zipOk = $false\n"
+        "try {\n"
+        "    Add-Type -AssemblyName System.IO.Compression.FileSystem -EA SilentlyContinue\n"
+        f"    $stageRoot = [IO.Path]::GetFullPath({stage}).TrimEnd('\\', '/') + [IO.Path]::DirectorySeparatorChar\n"
+        f"    $zip = [IO.Compression.ZipFile]::OpenRead((Convert-Path -LiteralPath {zip_p} -EA Stop))\n"
+        "    try {\n"
+        "        $zipOk = $true\n"
+        "        foreach ($entry in $zip.Entries) {\n"
+        "            $target = [IO.Path]::GetFullPath([IO.Path]::Combine($stageRoot, $entry.FullName))\n"
+        "            if (-not $target.StartsWith($stageRoot, [StringComparison]::OrdinalIgnoreCase)) { $zipOk = $false; Log \"ABORT: zip entry escapes the staging folder: $($entry.FullName)\"; break }\n"
+        "        }\n"
+        "    } finally { $zip.Dispose() }\n"
+        "} catch { Log \"ABORT: could not read update zip: $($_.Exception.Message)\"; $zipOk = $false }\n"
+        "if ($zipOk) {\n"
+        f"    Expand-Archive -LiteralPath {zip_p} -DestinationPath {stage} -Force\n"
+        f"    Log \"expanded update zip: $(Test-Path -LiteralPath {stage})\"\n"
+        "}\n"
+        "$stagedRoot = $null\n"
+        f"if ($zipOk) {{ $stagedRoot = (Get-ChildItem -LiteralPath {stage} -Directory | Select-Object -First 1).FullName }}\n"
         # Checked BEFORE anything live is touched: a failed/partial extract
         # (disk full, truncated zip) left $stagedRoot empty, and
         # "$stagedRoot\App" then silently became "\App" - the root of
         # whatever drive the script happened to run on.
-        "$stageOk = [bool]$stagedRoot -and (Test-Path -LiteralPath \"$stagedRoot\\App\\PortableFix.exe\") -and (Test-Path -LiteralPath \"$stagedRoot\\Modules\")\n"
-        f"if (-not $stageOk) {{ Log 'ABORT: extracted update is incomplete (disk full or damaged zip?) - live install left untouched'; Set-UpdateStatus '{UPDATE_STATUS_ABORTED}' }}\n"
+        # Vendor\\ is required too: the post-swap verification below demands
+        # it, so a package without it used to pass here and then force the
+        # riskier rollback path instead of this clean, untouched abort.
+        "$stageOk = [bool]$stagedRoot -and (Test-Path -LiteralPath \"$stagedRoot\\App\\PortableFix.exe\") -and (Test-Path -LiteralPath \"$stagedRoot\\Modules\") -and (Test-Path -LiteralPath \"$stagedRoot\\Vendor\")\n"
+        f"if (-not $stageOk) {{ if ($zipOk) {{ Log 'ABORT: extracted update is incomplete (disk full or damaged zip?) - live install left untouched' }}; Set-UpdateStatus '{UPDATE_STATUS_ABORTED}' }}\n"
         "if ($stageOk) {\n"
         # Written before the first destructive rename: if the stick is
         # pulled mid-swap, the next launch finds "in_progress" and knows the

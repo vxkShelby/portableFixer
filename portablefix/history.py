@@ -26,7 +26,9 @@ class RunSummary:
     def display_date(self) -> str:
         try:
             moment = datetime.fromisoformat(self.generated_at).astimezone()
-        except (TypeError, ValueError):
+        # OverflowError/OSError: .astimezone() on a corrupt far-past date on
+        # Windows - this runs while the window is being built, so never raise.
+        except (TypeError, ValueError, OverflowError, OSError):
             return self.generated_at or "?"
         return moment.strftime("%Y-%m-%d %H:%M")
 

@@ -76,7 +76,7 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
 _MAX_PREVIOUS_REPORT_BYTES = 10 * 1024 * 1024
 
 
-def _find_previous_report(reports_dir: Path, hostname: str) -> dict | None:
+def _find_previous_report(reports_dir: Path, hostname: str, run_id: str | None = None) -> dict | None:
     if not reports_dir.exists():
         return None
     # Filtered by prefix rather than glob(f"{hostname}_*.json") - a Windows
@@ -85,8 +85,12 @@ def _find_previous_report(reports_dir: Path, hostname: str) -> dict | None:
     # main.py's run_id format), so filenames already sort chronologically -
     # and stay correct after a USB copy/backup/restore resets mtimes.
     prefix = f"{hostname}_"
+    # The current run's own report is rewritten after every batch of the
+    # session - without excluding it, the second batch compared the run
+    # against itself ("since last visit": +0.0 GB, same run id).
+    own_name = f"{hostname}_{run_id}.json" if run_id else None
     candidates = sorted(
-        (p for p in reports_dir.glob("*.json") if p.name.startswith(prefix)),
+        (p for p in reports_dir.glob("*.json") if p.name.startswith(prefix) and p.name != own_name),
         key=lambda p: p.name,
     )
     if not candidates:
@@ -222,7 +226,7 @@ def build_report_data(
             }
         )
     hostname = socket.gethostname()
-    previous = _find_previous_report(base_dir / "Reports", hostname)
+    previous = _find_previous_report(base_dir / "Reports", hostname, run_id)
     return {
         "run_id": run_id,
         "language": language,

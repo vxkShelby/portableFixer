@@ -591,3 +591,21 @@ def test_report_elevation_not_admin(tmp_path):
     ))
     content = generate_report(tmp_path, "run_el", modules, "en", {}, {})[0].read_text(encoding="utf-8")
     assert "Run as administrator: no" in content
+
+
+def test_second_batch_of_a_session_does_not_compare_the_run_with_itself(tmp_path):
+    # Report files are per run_id and rewritten after each batch; the
+    # comparison must skip the current run's own earlier report.
+    import socket
+
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    hostname = socket.gethostname()
+    older = {"run_id": "20260901T000000-old", "generated_at": "2026-09-01T00:00:00+00:00",
+             "snapshot_after": {"free_gb": 5.0}, "actions": []}
+    (reports_dir / f"{hostname}_20260901T000000-old.json").write_text(json.dumps(older), encoding="utf-8")
+    append_entry(tmp_path, "20260924T000000-now", make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, "20260924T000000-now"))
+    generate_report(tmp_path, "20260924T000000-now", _fixture_modules(), "en", {}, {"free_gb": 8.0})
+    data = build_report_data(tmp_path, "20260924T000000-now", _fixture_modules(), "en", {}, {"free_gb": 9.0})
+    assert data["previous_comparison"]["previous_run_id"] == "20260901T000000-old"
+    assert data["previous_comparison"]["free_gb_delta"] == 4.0
