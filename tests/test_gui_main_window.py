@@ -2400,6 +2400,72 @@ def test_batch_summary_shows_space_freed_delta(qtbot, tmp_path, monkeypatch):
     assert any("+1.5 GB" in t for t in texts)
 
 
+def test_batch_summary_shows_before_after_metrics(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False),
+                        is_admin=True, run_id="run_snap_metrics")
+    qtbot.addWidget(window)
+    window._batch_results = [("hello", 0)]
+    window._snapshot_before = {
+        "free_gb": 40.0, "temp_user_mb": 3000.0, "temp_user_complete": False,
+        "startup_entries": 8, "recycle_bin_mb": 500.0, "mem_available_mb": 4000,
+    }
+    window._snapshot_after = {
+        "free_gb": 43.5, "temp_user_mb": 10.0, "temp_user_complete": True,
+        "startup_entries": 9, "recycle_bin_mb": None, "mem_available_mb": 4000,
+    }
+
+    window._show_batch_summary(tmp_path / "report.html")
+
+    dialog = window._summary_dialog
+    names = [w.text() for w in dialog.findChildren(QLabel, "summaryMetricName")]
+    assert names == [
+        "Free space on the system drive", "User temporary files (%TEMP%)",
+        "Startup programs (Run keys)", "Available memory (RAM)",
+    ]  # Recycle Bin unknown after the batch -> omitted
+    deltas = {w.text(): w.property("trend") for w in dialog.findChildren(QLabel, "summaryMetricDelta")}
+    assert deltas["(+3.5 GB)"] == "good"
+    assert deltas["(+1)"] == "bad"
+    assert deltas["(0 MB)"] == "same"
+    assert any(t.startswith("(≤ −") and trend == "good" for t, trend in deltas.items())
+    texts = [w.text() for w in dialog.findChildren(QLabel)]
+    assert "40 GB → 43.5 GB" in texts
+    assert "≥ 2.93 GB → 10 MB" in texts
+    assert window._t("snapshot_lower_bound_note") in texts
+
+
+def test_batch_summary_without_comparable_metrics_shows_no_metrics(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False),
+                        is_admin=True, run_id="run_snap_empty")
+    qtbot.addWidget(window)
+    window._batch_results = [("hello", 0)]
+    window._snapshot_before = {"free_gb": None, "startup_entries": 3}
+    window._snapshot_after = {}
+
+    window._show_batch_summary(tmp_path / "report.html")
+
+    assert window._summary_dialog.findChildren(QLabel, "summaryMetricName") == []
+
+
+def test_take_snapshot_returns_extended_metrics_without_raising(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+                        is_admin=True, run_id="run_snap_keys")
+    qtbot.addWidget(window)
+
+    snap = window._take_snapshot()
+
+    for key in ("free_gb", "total_gb", "temp_user_mb", "temp_windows_mb", "recycle_bin_mb",
+                "startup_entries", "mem_available_mb"):
+        assert key in snap
+    json.dumps(snap)
+
+
 def test_batch_summary_open_undo_script_button_present_when_undo_steps_exist(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QPushButton
 

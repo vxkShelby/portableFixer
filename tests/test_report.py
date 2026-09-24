@@ -690,3 +690,104 @@ def test_report_runner_still_answers_when_generation_hits_a_bug(qtbot, tmp_path,
     assert blocker.args == [None, False]
     assert surfaced == [KeyError]
     runner.wait(5000)
+
+
+# --- "Before / after" snapshot table ------------------------------------------
+
+_SNAP_BEFORE = {
+    "free_gb": 40.0, "total_gb": 237.0,
+    "temp_user_mb": 2600.0, "temp_user_files": 41000, "temp_user_complete": False,
+    "temp_windows_mb": 310.0, "temp_windows_complete": True,
+    "recycle_bin_mb": 850.0, "startup_entries": 11, "mem_available_mb": 5100,
+}
+_SNAP_AFTER = {
+    "free_gb": 43.8, "total_gb": 237.0,
+    "temp_user_mb": 12.5, "temp_user_files": 30, "temp_user_complete": True,
+    "temp_windows_mb": 320.0, "temp_windows_complete": True,
+    "recycle_bin_mb": 0.0, "startup_entries": 11, "mem_available_mb": None,
+}
+
+
+def _snapshot_section(content: str) -> str:
+    start = content.index('<section aria-labelledby="pf-h-snapshot">')
+    return content[start:content.index("</section>", start)]
+
+
+def test_html_report_renders_before_after_table_with_deltas(tmp_path):
+    html_path, json_path = generate_report(tmp_path, "run_snap", [], "en", _SNAP_BEFORE, _SNAP_AFTER)
+    section = _snapshot_section(html_path.read_text(encoding="utf-8"))
+
+    assert "Before / after" in section
+    assert "Free space on the system drive" in section
+    assert "+3.8 GB" in section
+    # lower-bound "before", exact "after" -> "at most" delta, good direction
+    assert "≥ 2.54 GB" in section
+    assert 'class="n delta good"' in section
+    assert "≤ −" in section
+    assert "the real value is higher" in section
+    # windows temp grew -> bad; startup unchanged -> same
+    assert 'class="n delta bad"' in section
+    assert 'class="n delta same"' in section
+    # memory unknown after -> row omitted rather than shown as None
+    assert "Available memory" not in section
+    assert "None" not in section
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["snapshot_before"] == _SNAP_BEFORE
+    assert data["snapshot_after"]["temp_user_mb"] == 12.5
+
+
+def test_html_report_before_after_table_is_slovak(tmp_path):
+    html_path, _ = generate_report(tmp_path, "run_snap_sk", [], "sk", _SNAP_BEFORE, _SNAP_AFTER)
+    section = _snapshot_section(html_path.read_text(encoding="utf-8"))
+    assert "Pred / po" in section
+    assert "Kôš" in section
+    assert "zlepšenie" in section
+    assert "Before" not in section
+
+
+def test_html_report_old_snapshot_without_new_keys_renders_as_before(tmp_path):
+    html_path, _ = generate_report(tmp_path, "run_old", [], "en", {"free_gb": 11.0}, {"free_gb": 12.0})
+    content = html_path.read_text(encoding="utf-8")
+    assert "Free space: 11.0 GB &rarr; 12.0 GB (+1.0 GB)" in content
+    assert "pf-h-snapshot" not in content
+
+
+def test_html_report_handles_unknown_free_space(tmp_path):
+    html_path, _ = generate_report(tmp_path, "run_none", [], "en", {"free_gb": None}, {"free_gb": None})
+    content = html_path.read_text(encoding="utf-8")
+    assert "Free space: ? GB &rarr; ? GB" in content
+
+
+def test_render_html_old_report_json_without_new_keys(tmp_path):
+    # Report data shaped like a JSON written by an older version, re-rendered.
+    from portablefix.report import _render_html
+
+    data = build_report_data(tmp_path, "run_legacy", [], "en", {"free_gb": 5.0}, {"free_gb": 6.0})
+    data["snapshot_before"] = {"free_gb": 5.0, "total_gb": 50.0}
+    data["snapshot_after"] = {"free_gb": 6.0, "total_gb": 50.0}
+    content = _render_html(data)
+    assert "+1.0 GB" in content
+    assert "pf-h-snapshot" not in content
+
+
+def test_before_after_table_escapes_values(tmp_path, monkeypatch):
+    from portablefix import report
+
+    evil = "<script>alert(1)</script>"
+    monkeypatch.setattr(report, "compare_snapshots", lambda b, a: [{
+        "key": "temp_user_mb", "label_key": "snapshot_temp_user", "before": evil, "after": evil,
+        "delta": evil, "delta_value": -1.0, "trend": "good", "lower_bound": False,
+    }])
+    html_path, _ = generate_report(tmp_path, "run_esc", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert evil not in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in _snapshot_section(content)
+
+
+def test_before_after_table_has_print_styles(tmp_path):
+    html_path, _ = generate_report(tmp_path, "run_print", [], "en", _SNAP_BEFORE, _SNAP_AFTER)
+    content = html_path.read_text(encoding="utf-8")
+    print_css = content[content.index("@media print"):]
+    assert "table.snapshot td.delta.good" in print_css
+    assert "table.snapshot td.delta.bad" in print_css
