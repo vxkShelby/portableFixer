@@ -206,8 +206,69 @@ def _kernel32():
         k32.QueryInformationJobObject.argtypes = [
             wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
         ]
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.OpenMutexW.restype = wintypes.HANDLE
+        k32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         _kernel32_cache = k32
     return _kernel32_cache
+
+
+_SYNCHRONIZE = 0x00100000
+_ERROR_ACCESS_DENIED = 5
+
+
+def create_mutex(name: str) -> tuple[int, int]:
+    """CreateMutexW -> (handle or 0, last error). The caller owns the handle:
+    183 (ERROR_ALREADY_EXISTS) still returns one, which must be closed or the
+    caller itself keeps the mutex alive."""
+    k32 = _kernel32()
+    handle = k32.CreateMutexW(None, False, name)
+    return handle or 0, ctypes.get_last_error()
+
+
+def close_handle(handle: int) -> None:
+    if handle:
+        _kernel32().CloseHandle(handle)
+
+
+def update_mutex_present() -> bool:
+    """True while a swap script holds UPDATE_MUTEX_NAME, i.e. an update is
+    replacing this install right now."""
+    if sys.platform != "win32":
+        return False
+    try:
+        k32 = _kernel32()
+        handle = k32.OpenMutexW(_SYNCHRONIZE, False, UPDATE_MUTEX_NAME)
+        error = ctypes.get_last_error()
+    except (OSError, AttributeError):
+        return False
+    if handle:
+        k32.CloseHandle(handle)
+        return True
+    # A mutex created by an elevated updater can refuse a non-elevated
+    # caller - it exists all the same.
+    return error == _ERROR_ACCESS_DENIED
+
+
+def wait_for_process_exit(pid: int, timeout_sec: float) -> bool:
+    """Waits until pid has exited (True), or timeout_sec passed (False). A
+    PID that cannot be opened counts as gone."""
+    if sys.platform != "win32":
+        return True
+    try:
+        k32 = _kernel32()
+        handle = k32.OpenProcess(_SYNCHRONIZE, False, int(pid))
+    except (OSError, AttributeError, ValueError):
+        return True
+    if not handle:
+        return True
+    try:
+        return k32.WaitForSingleObject(handle, int(timeout_sec * 1000)) == 0
+    finally:
+        k32.CloseHandle(handle)
 
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000

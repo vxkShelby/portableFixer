@@ -122,8 +122,18 @@ PowerShell.
   is shown. Before the app closes, the downloaded package is unpacked
   next to the install (`_update_stage`) and verified (layout, free
   space, `Data/SHA256SUMS`); the app closes only once the update script
-  confirms it is really running. Update logs are in
-  `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`, `launch_<pid>.txt`).
+  confirms it is really running. If it does not, the app stays open and
+  shows the reason (e.g. PowerShell's exit code and the end of its
+  output), the log folder and the manual download link; the prepared
+  update is kept, so the next attempt downloads nothing. While a batch,
+  report, speed test, winget task or restore point is running, the app
+  refuses to hand the update off and says why. Closing the app during a
+  download stops it cleanly. After the update the app restarts by
+  itself; while the update is running, an app started by hand only says
+  so. Update logs are in `%TEMP%\PortableFixUpdate`
+  (`update_log_<pid>.txt`, `launch_<pid>.txt`) - the temp cleanup
+  (`user_temp`) leaves them alone; the app removes ones older than 14
+  days at startup.
 - **Self-delete protection:** the actions that wipe `%TEMP%` and
   `%WINDIR%\Temp` (`user_temp`, `system_temp`) detect if the app is
   running from inside that folder and exclude it - if that can't be
@@ -230,6 +240,17 @@ copies also get new/changed modules, not just Python code changes.
 installed, so `Data/settings.json` (language, dry-run) and the user's other
 files stay untouched. Versions 1.11.4 and older cannot update themselves (a
 bug in how they start the update script) - update those once by hand.
+
+Before publishing a release, the real update can be tried on a local
+zip - through the same steps (verify, unpack, restart question, hand-off
+to the updater) the app uses for a downloaded package:
+
+```powershell
+$env:PORTABLEFIX_DEV_UPDATE = "1"
+.\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
+```
+
+Without `PORTABLEFIX_DEV_UPDATE=1` the app ignores these arguments.
 
 ## Development
 

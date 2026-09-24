@@ -12,7 +12,6 @@ from portablefix.updater import (
     UpdateDownloadRunner,
     UpdateInfo,
     UpdateVerificationError,
-    apply_update,
     check_for_update,
     download_update,
     is_newer,
@@ -376,7 +375,7 @@ def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
 def test_update_download_runner_forwards_progress_signal(qtbot, tmp_path):
     info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
 
-    def fake_download_update(info, dest_dir, on_progress=None):
+    def fake_download_update(info, dest_dir, on_progress=None, should_stop=None):
         on_progress(50, 100)
         on_progress(100, 100)
         return tmp_path / "PortableFix-update.zip"
@@ -388,6 +387,70 @@ def test_update_download_runner_forwards_progress_signal(qtbot, tmp_path):
         with qtbot.waitSignal(runner.download_finished, timeout=2000):
             runner.start()
     assert progress_calls == [(50, 100), (100, 100)]
+
+
+def test_download_update_stops_between_chunks_and_deletes_the_partial_file(tmp_path):
+    # Closing the app mid-download used to wait out the whole download (or
+    # destroy its QThread); now it stops at the next chunk.
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+    mock_resp = MagicMock()
+    mock_resp.read.side_effect = [b"a" * 10, b"b" * 10, b""]
+    mock_resp.getheader.return_value = "20"
+    mock_resp.__enter__.return_value = mock_resp
+    stop_after = iter([False, True])
+
+    with patch("portablefix.updater.urllib.request.urlopen", return_value=mock_resp) as urlopen:
+        with pytest.raises(updater_module.UpdateDownloadCancelled):
+            download_update(info, tmp_path / "dest", should_stop=lambda: next(stop_after))
+
+    assert mock_resp.read.call_count == 1
+    assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
+    # The .sha256 manifest is never fetched for a cancelled download.
+    assert urlopen.call_count == 1
+
+
+def test_copy_local_update_copies_and_verifies_without_touching_the_source(tmp_path):
+    source = tmp_path / "PortableFix-Portable.zip"
+    source.write_bytes(b"release" * 1000)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    progress = []
+
+    copied = updater_module.copy_local_update(
+        source, digest.upper(), tmp_path / "dest", on_progress=lambda d, t: progress.append((d, t)),
+    )
+
+    assert copied == tmp_path / "dest" / "PortableFix-update.zip"
+    assert copied.read_bytes() == source.read_bytes()
+    assert source.exists()
+    assert progress[-1] == (7000, 7000)
+
+
+@pytest.mark.parametrize("sha256", ["", "abc", "0" * 64])
+def test_copy_local_update_refuses_a_missing_or_wrong_hash(tmp_path, sha256):
+    source = tmp_path / "p.zip"
+    source.write_bytes(b"zip")
+
+    with pytest.raises(UpdateVerificationError):
+        updater_module.copy_local_update(source, sha256, tmp_path / "dest")
+
+    assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
+
+
+def test_update_download_runner_copies_a_local_zip_for_the_dev_switch(qtbot, tmp_path):
+    source = tmp_path / "p.zip"
+    source.write_bytes(b"zip")
+    info = UpdateInfo(version="p.zip (dev)", package_url=str(source), sha256_url=None, notes="")
+    runner = UpdateDownloadRunner(
+        info, tmp_path / "dest", local_zip=source, local_sha256=hashlib.sha256(b"zip").hexdigest(),
+    )
+    with qtbot.waitSignal(runner.download_finished, timeout=5000) as blocker:
+        runner.start()
+    assert blocker.args == [tmp_path / "dest" / "PortableFix-update.zip", ""]
 
 
 def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
@@ -505,38 +568,6 @@ def test_swap_backups_use_the_names_startup_recovery_restores(tmp_path):
         assert Path(folder["Backup"]) == tmp_path / f"{folder['Name']}.old"
         Path(folder["Backup"]).mkdir()
     assert updater_module.recover_interrupted_swap(tmp_path) == ["App", "Modules", "Vendor"]
-
-
-def test_apply_update_returns_false_without_staging_when_not_writable(tmp_path, monkeypatch):
-    staged = []
-    monkeypatch.setattr(updater_module, "stage_update", lambda *a, **k: staged.append(1))
-
-    assert apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=tmp_path / "missing") is False
-    assert staged == []
-
-
-def test_apply_update_returns_false_when_the_package_does_not_stage(tmp_path, monkeypatch):
-    def fail(*a, **k):
-        raise updater_module.UpdateStageError("the update package has no Vendor folder")
-
-    launched = []
-    monkeypatch.setattr(updater_module, "stage_update", fail)
-    monkeypatch.setattr(updater_module, "launch_swap", lambda *a, **k: launched.append(1))
-
-    assert apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=tmp_path) is False
-    assert launched == []
-
-
-@pytest.mark.parametrize("ok", [True, False])
-def test_apply_update_is_true_only_after_the_handshake(tmp_path, monkeypatch, ok):
-    staged = object()
-    monkeypatch.setattr(updater_module, "stage_update", lambda zip_path, install_dir: staged)
-    monkeypatch.setattr(
-        updater_module, "launch_swap",
-        lambda s, install_dir: updater_module.LaunchResult(ok=ok, reason="" if ok else "exited"),
-    )
-
-    assert apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=tmp_path) is ok
 
 
 def test_update_stage_runner_emits_the_staged_update(qtbot, tmp_path):

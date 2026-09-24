@@ -655,3 +655,35 @@ def test_launch_swap_real_powershell_handshake(tmp_path, staged, monkeypatch):
             except OSError:
                 pass
     assert (tmp_path / "install" / "App" / "PortableFix.exe").read_bytes() == b"old-exe"
+
+
+# --- Startup helpers (main.py) ----------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Win32 mutex")
+def test_update_mutex_present_sees_a_held_update_mutex():
+    assert update_swap.update_mutex_present() is False
+    handle, error = update_swap.create_mutex(update_swap.UPDATE_MUTEX_NAME)
+    try:
+        assert handle and error == 0
+        assert update_swap.update_mutex_present() is True
+    finally:
+        update_swap.close_handle(handle)
+    assert update_swap.update_mutex_present() is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Win32 process handle")
+def test_wait_for_process_exit_waits_for_a_real_process():
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
+    try:
+        assert update_swap.wait_for_process_exit(proc.pid, 0.05) is False
+        assert update_swap.wait_for_process_exit(proc.pid, 30) is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Win32 calls are real there")
+def test_startup_helpers_are_harmless_off_windows():
+    assert update_swap.update_mutex_present() is False
+    assert update_swap.wait_for_process_exit(os.getpid(), 0.01) is True

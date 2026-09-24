@@ -42,7 +42,7 @@ def test_m02_user_temp_never_deletes_the_running_apps_own_files():
         assert "-notmatch $excludePattern" in command
         assert "_MEI" in command
         assert "PortableFix" in command
-        assert "PortableFixUpdate_" in command
+        assert "^PortableFixUpdate|" in command
         assert "portablefix_update_" in command
         assert "wmic" not in (action.preview_command or "").lower()
 
@@ -235,3 +235,18 @@ def test_shadow_copies_oldest_preview_and_descriptions_state_the_24h_protection(
     assert "24 h" in action.description_sk and "24 h" in action.description_en
     assert "práve vytvoril" in action.description_sk
     assert "just created" in action.description_en
+
+
+def test_m02_user_temp_exclude_pattern_protects_the_update_logs_and_downloads():
+    # %TEMP%\PortableFixUpdate holds the updater's launch diagnostics - the
+    # evidence for why an update failed; '^PortableFixUpdate_' let a 3-day
+    # temp cleanup delete it.
+    import re
+
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "user_temp")
+    for command in (action.command, action.preview_command):
+        pattern = re.search(r"\$excludePattern = '([^']*)'", command).group(1)
+        for name in ("PortableFixUpdate", "PortableFixUpdate_abc123", "_MEI12345", "PortableFix"):
+            assert re.search(pattern, name), name
+        assert not re.search(pattern, "SomeOtherApp")

@@ -120,9 +120,18 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   (offline, timeout) je ticho — nič nevypíše. Stiahnutý balík sa ešte
   pred zatvorením appky rozbalí vedľa inštalácie (`_update_stage`) a
   overí (štruktúra, voľné miesto, `Data/SHA256SUMS`); appka sa zavrie až
-  vtedy, keď aktualizačný skript potvrdí, že naozaj beží. Záznamy
+  vtedy, keď aktualizačný skript potvrdí, že naozaj beží. Ak sa to
+  nepodarí, appka zostane otvorená a ukáže dôvod (napr. kód ukončenia
+  PowerShellu a koniec jeho výstupu), priečinok s logmi a odkaz na ručné
+  stiahnutie; pripravená aktualizácia zostane, takže ďalší pokus už nič
+  nesťahuje. Kým beží dávka, zápis reportu, test rýchlosti, winget alebo
+  vytváranie bodu obnovenia, appka odovzdanie aktualizácie odmietne a
+  povie prečo. Zatvorenie appky počas sťahovania ho čisto preruší. Po
+  aktualizácii sa appka spustí sama; kým aktualizácia beží, ručne
+  spustená appka iba oznámi, že sa práve aktualizuje. Záznamy
   o aktualizácii sú v `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`,
-  `launch_<pid>.txt`).
+  `launch_<pid>.txt`) - čistenie temp súborov (`user_temp`) ich
+  nemaže; staršie ako 14 dní appka pri štarte odstráni.
 - **Ochrana pred zmazaním vlastných súborov:** akcie čistiace `%TEMP%`
   a `%WINDIR%\Temp` (`user_temp`, `system_temp`) rozpoznajú, ak appka
   beží zvnútra tohto priečinka, a jej priečinok vynechajú - ak sa to
@@ -227,6 +236,17 @@ nové/zmenené moduly, nielen zmeny v Python kóde. `App/`, `Modules/`,
 `Data/settings.json` (jazyk, dry-run) a ostatné súbory používateľa zostanú
 nedotknuté. Verzie 1.11.4 a staršie sa samé aktualizovať nevedia (chyba pri
 spúšťaní aktualizačného skriptu) — z nich treba raz aktualizovať ručne.
+
+Pred zverejnením releasu sa dá skutočná aktualizácia vyskúšať na
+lokálnom zipe - rovnakým postupom (overenie, rozbalenie, otázka na
+reštart, odovzdanie aktualizátoru), aký appka použije pre stiahnutý balík:
+
+```powershell
+$env:PORTABLEFIX_DEV_UPDATE = "1"
+.\App\PortableFix.exe --update-from-zip Output\PortableFix-Portable.zip --sha256 (Get-FileHash Output\PortableFix-Portable.zip).Hash
+```
+
+Bez `PORTABLEFIX_DEV_UPDATE=1` appka tieto parametre ignoruje.
 
 ## Vývoj
 

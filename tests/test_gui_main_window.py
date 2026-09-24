@@ -85,6 +85,46 @@ def _make_base_dir(tmp_path: Path, yaml_text: str = ACTIONS_YAML) -> Path:
     return tmp_path
 
 
+def _fake_staged(tmp_path: Path, version: str | None):
+    from portablefix.updater import StagedUpdate
+
+    stage_dir = tmp_path / "_update_stage"
+    root = stage_dir / "PortableFix"
+    (root / "App").mkdir(parents=True, exist_ok=True)
+    (root / "App" / "PortableFix.exe").write_bytes(b"new-exe")
+    return StagedUpdate(stage_dir=stage_dir, stage_root=root, file_count=1, byte_count=7, version=version)
+
+
+def _patch_update_flow(monkeypatch, tmp_path: Path, launch_results: list) -> dict:
+    """Replaces the network, the staging and the updater spawn behind the
+    real Download/Stage/Launch runners; returns the call counts. Nothing
+    touches the real install folder (paths.get_base_dir() in a test)."""
+    from portablefix import updater
+
+    calls = {"download": 0, "stage": 0, "launch": 0}
+
+    def fake_download(info, dest, on_progress=None, should_stop=None):
+        calls["download"] += 1
+        zip_path = dest / "PortableFix-update.zip"
+        zip_path.write_bytes(b"zip")
+        return zip_path
+
+    def fake_stage(zip_path, install_dir, should_stop=None, progress=None, version=None):
+        calls["stage"] += 1
+        calls["staged_version"] = version
+        return _fake_staged(tmp_path, version)
+
+    def fake_launch(staged, install_dir, should_stop=None, **kwargs):
+        calls["launch"] += 1
+        return launch_results.pop(0)
+
+    monkeypatch.setattr(updater, "download_update", fake_download)
+    monkeypatch.setattr(updater, "is_writable", lambda p: True)
+    monkeypatch.setattr(updater, "stage_update", fake_stage)
+    monkeypatch.setattr(updater, "launch_swap", fake_launch)
+    return calls
+
+
 def test_main_window_loads_m01_actions(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="testrun")
@@ -496,7 +536,22 @@ def test_restart_as_admin_passes_no_args_when_frozen(qtbot, tmp_path, monkeypatc
 
     window._on_restart_as_admin()
 
-    assert calls[0][1] is None
+    assert calls[0][1] == []
+
+
+def test_restart_as_admin_makes_the_new_instance_wait_for_this_one(qtbot, tmp_path, monkeypatch):
+    # Without --wait-pid the elevated copy raced this one for the
+    # single-instance mutex and usually lost - "already running", no app.
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=False, run_id="testrun")
+    qtbot.addWidget(window)
+    calls = []
+    monkeypatch.setattr(elevation, "relaunch_as_admin", lambda *a, **k: calls.append(k) or 42)
+    monkeypatch.setattr(window, "close", lambda: None)
+
+    window._on_restart_as_admin()
+
+    assert calls[0]["wait_pids"][0] == os.getpid()
 
 
 def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
@@ -1709,28 +1764,25 @@ def test_update_button_click_declined_confirm_does_not_start_download(qtbot, tmp
     assert window._update_download_runner is None
 
 
-def test_update_button_click_confirmed_downloads_and_applies_update(qtbot, tmp_path, monkeypatch):
-    from portablefix.updater import UpdateInfo
-    from portablefix.gui import main_window as mw_module
+def test_update_button_click_confirmed_downloads_stages_and_hands_off(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import LaunchResult, UpdateInfo
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
-    fake_exe = tmp_path / "PortableFix.new.exe"
-    fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
-    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
-    applied = {}
-    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+    calls = _patch_update_flow(monkeypatch, tmp_path, [LaunchResult(ok=True, route="direct")])
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update7")
     qtbot.addWidget(window)
-    monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
+    quit_calls = []
+    monkeypatch.setattr(window, "_quit_app", lambda: quit_calls.append(True))
     window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 
-    qtbot.waitUntil(lambda: applied.get("called") is True, timeout=5000)
-    assert applied.get("quit_called") is True
+    qtbot.waitUntil(lambda: quit_calls == [True], timeout=5000)
+    assert calls["download"] == 1 and calls["stage"] == 1 and calls["launch"] == 1
+    assert calls["staged_version"] == "9.9.9"
+    assert window._closing_for_update is True
 
 
 def test_update_download_progress_signal_updates_progress_bar(qtbot, tmp_path, monkeypatch):
@@ -1743,14 +1795,14 @@ def test_update_download_progress_signal_updates_progress_bar(qtbot, tmp_path, m
     fake_exe = tmp_path / "PortableFix.new.exe"
     fake_exe.write_bytes(b"x")
 
-    def fake_download_update(info, dest, on_progress=None):
+    def fake_download_update(info, dest, on_progress=None, should_stop=None):
         on_progress(50, 100)
         resume.wait(timeout=5)
         return fake_exe
 
     monkeypatch.setattr(mw_module.updater, "download_update", fake_download_update)
-    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
-    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: True)
+    # Ends the flow right after the download, so the bar is hidden again.
+    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_progress")
@@ -1774,7 +1826,7 @@ def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_pat
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
 
-    def raise_it(info, dest, on_progress=None):
+    def raise_it(info, dest, on_progress=None, should_stop=None):
         raise Exception("boom")
 
     monkeypatch.setattr(mw_module.updater, "download_update", raise_it)
@@ -1788,6 +1840,8 @@ def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_pat
 
     qtbot.waitUntil(lambda: window.update_button.isEnabled() is True, timeout=5000)
     assert window.update_banner_label.text() == "Downloading the update failed. Try again later."
+    assert window.update_banner_label.toolTip() == "boom"
+    assert window.progress_bar.isVisibleTo(window) is False
 
 
 def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monkeypatch):
@@ -1797,10 +1851,10 @@ def test_update_not_writable_shows_error_without_applying(qtbot, tmp_path, monke
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     fake_exe = tmp_path / "PortableFix.new.exe"
     fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, **k: fake_exe)
     monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
     applied = {}
-    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+    monkeypatch.setattr(mw_module.updater, "stage_update", lambda *a, **k: applied.setdefault("called", True))
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update9")
@@ -1820,11 +1874,11 @@ def test_update_needs_admin_shows_elevation_hint_without_applying(qtbot, tmp_pat
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     fake_exe = tmp_path / "PortableFix.new.exe"
     fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
+    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, **k: fake_exe)
     monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: False)
     monkeypatch.setattr(mw_module.updater, "needs_elevation_for_update", lambda p: True)
     applied = {}
-    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+    monkeypatch.setattr(mw_module.updater, "stage_update", lambda *a, **k: applied.setdefault("called", True))
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update_needs_admin")
@@ -1945,35 +1999,26 @@ def test_run_selected_actions_does_nothing_while_update_is_in_progress(qtbot, tm
     assert window._runner is None
 
 
-def test_update_restart_declined_reverts_banner_without_applying(qtbot, tmp_path, monkeypatch):
+def test_update_restart_declined_reverts_banner_and_keeps_the_stage(qtbot, tmp_path, monkeypatch):
     from portablefix.updater import UpdateInfo
-    from portablefix.gui import main_window as mw_module
 
-    calls = {"n": 0}
-
-    def fake_question(*a, **k):
-        calls["n"] += 1
-        return QMessageBox.Yes if calls["n"] == 1 else QMessageBox.No
-
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
-    fake_exe = tmp_path / "PortableFix.new.exe"
-    fake_exe.write_bytes(b"x")
-    monkeypatch.setattr(mw_module.updater, "download_update", lambda info, dest, on_progress=None: fake_exe)
-    monkeypatch.setattr(mw_module.updater, "is_writable", lambda p: True)
-    applied = {}
-    monkeypatch.setattr(mw_module.updater, "apply_update", lambda *a, **k: applied.setdefault("called", True))
+    answers = [QMessageBox.Yes, QMessageBox.No]
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: answers.pop(0)))
+    calls = _patch_update_flow(monkeypatch, tmp_path, [])
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_update10")
     qtbot.addWidget(window)
-    monkeypatch.setattr(window, "_quit_app", lambda: applied.setdefault("quit_called", True))
+    monkeypatch.setattr(window, "_quit_app", lambda: calls.__setitem__("quit", True))
     window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
 
     window.update_button.click()
 
     qtbot.waitUntil(lambda: window.update_banner_label.text() == "Version 9.9.9 is available", timeout=5000)
-    assert applied.get("called") is None
-    assert applied.get("quit_called") is None
+    assert answers == []
+    assert calls["launch"] == 0 and "quit" not in calls
+    assert window._staged_update is not None
+    assert window.update_button.isEnabled() and window.progress_bar.isVisibleTo(window) is False
 
 
 MIXED_RISK_ACTIONS_YAML = """
@@ -2224,34 +2269,38 @@ def test_close_event_cancels_and_waits_on_an_in_flight_batch_runner(qtbot, tmp_p
 
 
 def test_close_event_waits_longer_for_uncancellable_network_runners(qtbot, tmp_path):
-    from portablefix import updater as updater_module
-
     class _FakeRunner:
         def __init__(self):
             self.wait_calls = []
+            self.interrupted = False
 
-        def wait(self, timeout_ms):
-            self.wait_calls.append(timeout_ms)
+        def wait(self, *args):
+            self.wait_calls.append(args)
             return True
+
+        def requestInterruption(self):
+            self.interrupted = True
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_slow")
     qtbot.addWidget(window)
 
-    # The speed test and update download each make one blocking,
-    # uninterruptible network call - closeEvent can't cancel them, so it
-    # must wait long enough to cover their real worst-case duration instead
-    # of the 5s used for everything else, or it risks destroying a live
-    # QThread.
+    # The speed test makes one blocking, uninterruptible network call -
+    # closeEvent can't cancel it, so it must wait long enough to cover its
+    # real worst-case duration instead of the 5s used for everything else.
+    # The update runners stop once interrupted and are waited for without
+    # any cap: a capped wait that ran out destroyed a live QThread.
     speed_test_runner = _FakeRunner()
-    update_download_runner = _FakeRunner()
+    update_runners = [_FakeRunner(), _FakeRunner(), _FakeRunner()]
     window._speed_test_runner = speed_test_runner
-    window._update_download_runner = update_download_runner
+    window._update_download_runner, window._update_stage_runner, window._update_launch_runner = update_runners
 
     window.close()
 
-    assert speed_test_runner.wait_calls == [25_000]
-    assert update_download_runner.wait_calls == [updater_module.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000]
+    assert speed_test_runner.wait_calls == [(25_000,)]
+    for runner in update_runners:
+        assert runner.interrupted is True
+        assert runner.wait_calls == [()]
 
 
 def test_presets_only_reference_action_ids_that_exist_in_the_real_catalogs():
@@ -3821,7 +3870,7 @@ def test_orphan_cleanup_deletes_only_entries_whose_registry_backup_succeeded(qtb
     assert f"reg import '{backup_file}'" in undo_text
 
 
-def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package):
+def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package, **settings):
     from PySide6.QtWidgets import QCheckBox
 
     from portablefix import winget_updates
@@ -3830,7 +3879,7 @@ def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package):
     monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [package])
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
-        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=dry_run),
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=dry_run, **settings),
         is_admin=True, run_id=run_id,
     )
     qtbot.addWidget(window)
@@ -4172,3 +4221,315 @@ def test_custom_preset_restores_excluded_action(qtbot, tmp_path, monkeypatch):
     monkeypatch.setitem(PRESETS, "_test_builtin_excl", saved)
     window._apply_preset("_test_builtin_excl")
     assert _checked_ids(window) == {"drv_safe"}
+
+
+# --- In-app update: stage, confirm, guard, hand-off, close ---
+
+
+def _update_window(qtbot, tmp_path, run_id, language="en", **settings):
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language=language, **settings),
+        is_admin=True, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
+    return window
+
+
+def test_update_handshake_ok_closes_the_window_for_the_updater(qtbot, tmp_path, monkeypatch):
+    from portablefix.updater import LaunchResult
+
+    questions = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda p, t, text, *a, **k: questions.append(text) or QMessageBox.Yes))
+    calls = _patch_update_flow(monkeypatch, tmp_path, [LaunchResult(ok=True, route="direct")])
+    window = _update_window(qtbot, tmp_path, "run_update_handoff")
+
+    window.update_button.click()
+
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=5000)
+    assert window._closing_for_update is True
+    assert calls["launch"] == 1
+    assert len(questions) == 2 and "9.9.9" in questions[1]
+
+
+def test_close_for_update_skips_the_batch_prompt(qtbot, tmp_path):
+    # The updater is already waiting for this process: a "close anyway?"
+    # question nobody answers would leave it to time out and give up.
+    window = _update_window(qtbot, tmp_path, "run_update_close_no_prompt")
+    window._closing_for_update = True
+    window._batch_active = True
+
+    # conftest turns any QMessageBox.question into a test failure.
+    window.close()
+
+    assert not window.isVisible()
+    window._batch_active = False
+
+
+def test_update_launch_failure_stays_open_explains_and_retries_without_a_new_download(qtbot, tmp_path, monkeypatch):
+    from portablefix import i18n, updater
+    from portablefix.updater import LaunchResult
+
+    questions, warnings = [], []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda p, t, text, *a, **k: questions.append(text) or QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda p, t, text, *a, **k: warnings.append(text)))
+    failure = LaunchResult(
+        ok=False, reason=updater.REASON_EXITED, exit_code=1,
+        detail="exit code 0x00000001: ParserError: Unexpected token", log_dir=tmp_path / "logs",
+    )
+    calls = _patch_update_flow(monkeypatch, tmp_path, [failure, LaunchResult(ok=True)])
+    window = _update_window(qtbot, tmp_path, "run_update_launch_fail")
+
+    window.update_button.click()
+    qtbot.waitUntil(lambda: len(warnings) == 1, timeout=5000)
+
+    assert window.isVisible() and window._closing_for_update is False
+    text = warnings[0]
+    assert i18n.translate("update_reason_exited", "en") in text
+    assert "0x00000001" in text and "ParserError" in text
+    assert str(tmp_path / "logs") in text
+    assert updater.RELEASES_PAGE_URL in text
+    assert window.update_banner_label.text() == i18n.translate("update_apply_failed", "en")
+    assert window.update_button.isEnabled() and window.progress_bar.isVisibleTo(window) is False
+
+    # The verified stage is reused: straight to the restart question.
+    window.update_button.click()
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=5000)
+    assert calls["download"] == 1 and calls["stage"] == 1 and calls["launch"] == 2
+    assert len(questions) == 3
+    assert questions[1] == questions[2] == i18n.translate("update_confirm_restart", "en").format(version="9.9.9")
+
+
+def test_update_is_staged_again_when_the_kept_stage_disappeared(qtbot, tmp_path, monkeypatch):
+    import shutil as shutil_module
+
+    from portablefix import updater
+    from portablefix.updater import LaunchResult
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    failure = LaunchResult(ok=False, reason=updater.REASON_TIMEOUT, detail="no response")
+    calls = _patch_update_flow(monkeypatch, tmp_path, [failure, LaunchResult(ok=True)])
+    window = _update_window(qtbot, tmp_path, "run_update_stage_gone")
+
+    window.update_button.click()
+    qtbot.waitUntil(lambda: calls["launch"] == 1 and window.update_button.isEnabled(), timeout=5000)
+    shutil_module.rmtree(tmp_path / "_update_stage")
+
+    window.update_button.click()
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=5000)
+    assert calls["download"] == 2 and calls["stage"] == 2
+
+
+def test_update_hand_off_is_refused_while_a_winget_update_runs(qtbot, tmp_path, monkeypatch):
+    from portablefix import i18n
+
+    class _BusyRunner:
+        def isRunning(self):
+            return True
+
+        def request_stop(self):
+            pass
+
+        def wait(self, *args):
+            return True
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda p, t, text, *a, **k: warnings.append(text)))
+    calls = _patch_update_flow(monkeypatch, tmp_path, [])
+    window = _update_window(qtbot, tmp_path, "run_update_busy")
+    window._winget_update_runner = _BusyRunner()
+
+    window.update_button.click()
+    qtbot.waitUntil(lambda: len(warnings) == 1, timeout=5000)
+
+    assert i18n.translate("update_busy_winget_update", "en") in warnings[0]
+    assert calls["launch"] == 0
+    assert window._staged_update is not None
+    assert window.update_banner_label.text() == "Version 9.9.9 is available"
+    assert window.update_button.isEnabled()
+    window._winget_update_runner = None
+
+
+def test_long_running_tasks_names_each_kind_of_work(qtbot, tmp_path):
+    window = _update_window(qtbot, tmp_path, "run_update_tasks")
+    assert window._long_running_tasks() == []
+
+    window._batch_active = True
+    window._report_runner = object()
+    window._speed_test_busy = True
+    assert window._long_running_tasks() == [
+        window._t("update_busy_batch"), window._t("update_busy_report"), window._t("update_busy_speed_test"),
+    ]
+    window._batch_active = False
+    window._report_runner = None
+    window._speed_test_busy = False
+
+
+def test_closing_during_an_update_download_stops_it_cleanly(qtbot, tmp_path, monkeypatch):
+    import threading
+    import time
+
+    from portablefix import updater
+
+    started = threading.Event()
+
+    def slow_download(info, dest, on_progress=None, should_stop=None):
+        partial = dest / "PortableFix-update.zip"
+        partial.write_bytes(b"partial")
+        started.set()
+        deadline = time.monotonic() + 20
+        while not should_stop() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        partial.unlink()
+        raise updater.UpdateDownloadCancelled()
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(updater, "download_update", slow_download)
+    window = _update_window(qtbot, tmp_path, "run_update_close_mid_download")
+
+    window.update_button.click()
+    assert started.wait(5)
+    runner = window._update_download_runner
+    download_dir = window._update_download_dir
+    began = time.monotonic()
+
+    window.close()
+
+    # Returned because the download stopped, not because a wait ran out -
+    # a still-running QThread destroyed with the window aborts the process.
+    assert time.monotonic() - began < 10
+    assert runner.isFinished()
+    assert not download_dir.exists()
+    # The queued "download finished" signal must not act on a closed window.
+    qtbot.wait(100)
+
+
+def test_language_toggle_during_staging_keeps_the_progress_bar_and_step_text(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import i18n, updater
+
+    release = threading.Event()
+
+    def slow_stage(zip_path, install_dir, should_stop=None, progress=None, version=None):
+        progress(5, 10)
+        release.wait(10)
+        raise updater.UpdateStageError("SHA256 mismatch: App/python312.dll")
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda p, t, text, *a, **k: warnings.append(text)))
+    _patch_update_flow(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(updater, "stage_update", slow_stage)
+    window = _update_window(qtbot, tmp_path, "run_update_toggle_stage")
+
+    window.update_button.click()
+    qtbot.waitUntil(lambda: window._update_phase == "stage" and window.progress_bar.maximum() == 10, timeout=5000)
+    window._on_toggle_language()
+
+    # The shown window shows its rebuilt widgets on the next event loop pass
+    # - unless one was hidden explicitly, which is the bug this guards.
+    qtbot.waitUntil(lambda: window.progress_bar.isVisibleTo(window), timeout=2000)
+    assert (window.progress_bar.value(), window.progress_bar.maximum()) == (5, 10)
+    assert window.update_banner_label.text() == i18n.translate("update_preparing", "sk")
+    assert window.update_button.isEnabled() is False
+
+    release.set()
+    qtbot.waitUntil(lambda: len(warnings) == 1, timeout=5000)
+    assert "SHA256 mismatch: App/python312.dll" in warnings[0]
+    assert updater.RELEASES_PAGE_URL in warnings[0]
+    assert window.update_banner_label.text() == i18n.translate("update_stage_failed", "sk")
+    assert window.progress_bar.isVisibleTo(window) is False
+    assert window.update_button.isEnabled() is True
+    assert window._update_download_dir is None
+
+
+def test_winget_auto_check_skips_while_the_app_updates(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer
+
+    from portablefix import winget_updates
+
+    window, card, _row = _winget_window(
+        qtbot, tmp_path, monkeypatch, "run_update_winget_tick", False, _fake_outdated_package(),
+        winget_auto_check_minutes=15,
+    )
+    timers = [t for t in card.findChildren(QTimer) if t.isActive() and t.interval() == 15 * 60_000]
+    assert len(timers) == 1
+    started = []
+
+    class _RecordingScan:
+        def __init__(self, parent=None):
+            started.append(True)
+            self.scan_finished = self
+
+        def connect(self, slot):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(winget_updates, "WingetScanRunner", _RecordingScan)
+    window._update_in_progress = True
+    timers[0].timeout.emit()
+    assert started == []
+
+    window._update_in_progress = False
+    window._closing_for_update = True
+    timers[0].timeout.emit()
+    assert started == []
+
+    window._closing_for_update = False
+    timers[0].timeout.emit()
+    assert started == [True]
+    window._winget_scan_runner = None
+
+
+def test_dev_update_switch_runs_a_local_zip_through_the_same_flow(qtbot, tmp_path, monkeypatch):
+    import hashlib
+
+    from portablefix import updater
+
+    source = tmp_path / "PortableFix-Portable.zip"
+    source.write_bytes(b"local release")
+    staged_from = []
+    questions = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda p, t, text, *a, **k: questions.append(text) or QMessageBox.No))
+    calls = _patch_update_flow(monkeypatch, tmp_path, [])
+
+    def record_stage(zip_path, install_dir, should_stop=None, progress=None, version=None):
+        staged_from.append(zip_path.read_bytes())
+        return _fake_staged(tmp_path, version)
+
+    monkeypatch.setattr(updater, "stage_update", record_stage)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_dev_update")
+    qtbot.addWidget(window)
+
+    window.start_local_update(source, hashlib.sha256(b"local release").hexdigest())
+
+    qtbot.waitUntil(lambda: len(questions) == 1, timeout=5000)
+    # No download question, the real copy-and-verify, then the usual
+    # restart question; declining it launches nothing.
+    assert staged_from == [b"local release"]
+    assert "PortableFix-Portable.zip (dev)" in questions[0]
+    assert source.exists()
+    assert calls["download"] == 0 and calls["launch"] == 0
+
+
+def test_a_late_release_check_does_not_replace_the_update_in_progress(qtbot, tmp_path):
+    from portablefix.updater import UpdateInfo
+
+    window = _update_window(qtbot, tmp_path, "run_update_late_check")
+    local = window._pending_update_info
+    window._update_in_progress = True
+
+    window._on_update_check_finished(UpdateInfo(version="10.0.0", package_url="https://y", sha256_url=None, notes=""))
+
+    assert window._pending_update_info is local
+    window._update_in_progress = False

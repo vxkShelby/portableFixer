@@ -1,12 +1,16 @@
 import ctypes
+import os
 import sys
+import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from portablefix import i18n, updater
+from portablefix import i18n, update_swap, updater
 from portablefix.audit_log import append_entry, make_entry
 from portablefix.diagnostics import install_excepthook, write_crash_log
 from portablefix.elevation import is_admin
@@ -58,25 +62,124 @@ def _update_status_message(install_dir, language: str) -> str | None:
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Global\\PortableFix_SingleInstance_Mutex"
 _ERROR_ALREADY_EXISTS = 183
+# Kept for the process lifetime: closing the last handle would free the name.
+_single_instance_handle = 0
+# Per --wait-pid: the exiting app normally goes within seconds, but a close
+# waits for its own background work first.
+_WAIT_PID_TIMEOUT_SEC = 60.0
+# A relaunch (after an update, or 'Restart as administrator') can start
+# while the old instance still holds the mutex on its way out.
+_RELAUNCH_RETRY_SEC = 30.0
+_RETRY_INTERVAL_SEC = 0.25
+_DEV_UPDATE_ENV = "PORTABLEFIX_DEV_UPDATE"
 
 
-def _acquire_single_instance_lock() -> bool:
-    """Named Win32 mutex, held for the process lifetime (never explicitly
-    released - Windows tears it down on exit). Returns False when another
-    instance already holds it, so a second launch can bail out before it
-    locks the .exe file a running instance needs to be replaceable/updatable."""
-    ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
-    return ctypes.windll.kernel32.GetLastError() != _ERROR_ALREADY_EXISTS
+@dataclass
+class StartupArgs:
+    argv: list[str]
+    post_update: bool = False
+    wait_pids: list[int] = field(default_factory=list)
+    update_zip: str | None = None
+    update_sha256: str = ""
+
+    @property
+    def is_relaunch(self) -> bool:
+        return self.post_update or bool(self.wait_pids)
+
+
+def _parse_startup_args(argv: list[str]) -> StartupArgs:
+    """Takes the app's own relaunch switches out of argv before Qt sees it:
+    --post-update (started by the swap script), --wait-pid N (repeatable;
+    'Restart as administrator') and the developer-only --update-from-zip
+    ZIP --sha256 HEX. A malformed value is dropped, never fatal."""
+    args = StartupArgs(argv=argv[:1])
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        value = argv[i + 1] if i + 1 < len(argv) else None
+        if arg == "--post-update":
+            args.post_update = True
+        elif arg in ("--wait-pid", "--update-from-zip", "--sha256"):
+            i += 1
+            if value is None:
+                break
+            if arg == "--wait-pid":
+                try:
+                    args.wait_pids.append(int(value))
+                except ValueError:
+                    pass
+            elif arg == "--update-from-zip":
+                args.update_zip = value
+            else:
+                args.update_sha256 = value
+        else:
+            args.argv.append(arg)
+        i += 1
+    return args
+
+
+def _retry(attempt, retry_sec: float, *, clock=time.monotonic, sleep=time.sleep) -> bool:
+    deadline = clock() + retry_sec
+    while True:
+        if attempt():
+            return True
+        if clock() >= deadline:
+            return False
+        sleep(_RETRY_INTERVAL_SEC)
+
+
+def _try_single_instance_lock() -> bool:
+    global _single_instance_handle
+    handle, error = update_swap.create_mutex(_SINGLE_INSTANCE_MUTEX_NAME)
+    if handle and error != _ERROR_ALREADY_EXISTS:
+        _single_instance_handle = handle
+        return True
+    # A NULL handle means the name exists but is not ours to open - e.g. an
+    # elevated instance's mutex (ERROR_ACCESS_DENIED): another instance runs.
+    # Ours must be closed, or a retry would keep finding our own handle.
+    update_swap.close_handle(handle)
+    return False
+
+
+def _acquire_single_instance_lock(retry_sec: float = 0.0) -> bool:
+    """Named Win32 mutex, held for the process lifetime. Returns False when
+    another instance already holds it, so a second launch can bail out before
+    it locks the .exe file a running instance needs to be replaceable/updatable."""
+    return _retry(_try_single_instance_lock, retry_sec)
+
+
+def _message_box(text: str) -> None:
+    ctypes.windll.user32.MessageBoxW(None, text, "PortableFix", 0x40)
+
+
+def _start_dev_update(window, args: StartupArgs) -> None:
+    # Developer-only, so a stray argument in a shortcut can never make an
+    # end user's copy install an arbitrary local zip.
+    if args.update_zip and os.environ.get(_DEV_UPDATE_ENV) == "1":
+        window.start_local_update(Path(args.update_zip), args.update_sha256)
 
 
 def main() -> int:
-    if not _acquire_single_instance_lock():
-        ctypes.windll.user32.MessageBoxW(
-            None,
-            "PortableFix uz bezi (skontroluj taskbar/tray).\nPortableFix is already running (check taskbar/tray).",
-            "PortableFix",
-            0x40,
-        )
+    args = _parse_startup_args(sys.argv)
+    sys.argv[:] = args.argv
+    for pid in args.wait_pids:
+        update_swap.wait_for_process_exit(pid, _WAIT_PID_TIMEOUT_SEC)
+    # A running swap is renaming App\, Modules\ and Vendor\ - an instance
+    # started now would lock them or load half-replaced modules.
+    retry_sec = _RELAUNCH_RETRY_SEC if args.is_relaunch else 0.0
+    if not _retry(lambda: not update_swap.update_mutex_present(), retry_sec):
+        if not args.is_relaunch:
+            _message_box(
+                i18n.translate("update_in_progress_running", "sk") + "\n" + i18n.translate("update_in_progress_running", "en")
+            )
+        return 0
+    if not _acquire_single_instance_lock(retry_sec):
+        # A relaunch that still finds an instance after the retry lost to a
+        # manual start - that instance is what the user sees; no box.
+        if not args.is_relaunch:
+            _message_box(
+                "PortableFix uz bezi (skontroluj taskbar/tray).\nPortableFix is already running (check taskbar/tray)."
+            )
         return 0
     crash_log_dir = None
     try:
@@ -117,6 +220,11 @@ def main() -> int:
                 i18n.translate("fallback_banner_path", settings.language).format(path=base_dir),
             )
         update_message = _update_status_message(raw_base_dir, settings.language)
+        try:
+            updater.cleanup_update_leftovers(raw_base_dir)
+        except Exception:
+            # Housekeeping only - never a reason not to start.
+            pass
 
         # Timestamp prefix makes Reports/Logs/Backups filenames sort
         # chronologically - a bare random id doesn't, which breaks the
@@ -153,6 +261,7 @@ def main() -> int:
         # doesn't also hold up the background check.
         if update_message:
             QMessageBox.warning(window, i18n.translate("app_title", settings.language), update_message)
+        _start_dev_update(window, args)
 
         exit_code = app.exec()
         integrity_runner.stop()

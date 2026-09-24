@@ -1,5 +1,8 @@
 import json
 import os
+import re
+import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -10,7 +13,8 @@ from urllib.parse import urlparse
 from PySide6.QtCore import QThread, Signal
 
 from . import elevation
-from .sha256sums import compute_sha256
+from .sha256sums import _sha256_unless_stopped
+from .version import APP_VERSION
 
 # The Qt-free core lives in update_swap; these names are re-exported because
 # main.py, the GUI and the tests have always reached them through updater.
@@ -27,10 +31,12 @@ from .update_swap import (  # noqa: F401
     UPDATE_STATUS_OK,
     UPDATE_STATUS_OK_SUMS_STALE,
     UPDATE_STATUS_ROLLED_BACK,
+    STAGE_DIR_NAME,
     LaunchResult,
     StagedUpdate,
     UpdateStageCancelled,
     UpdateStageError,
+    _remove_tree,
     launch_swap,
     stage_update,
     update_log_dir,
@@ -38,6 +44,9 @@ from .update_swap import (  # noqa: F401
 )
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
+# Shown with every update failure: the way out when the in-app update
+# cannot work on this machine.
+RELEASES_PAGE_URL = "https://github.com/vxkShelby/portableFixer/releases/latest"
 _TRUSTED_DOWNLOAD_HOSTS = {"github.com", "objects.githubusercontent.com"}
 # urlretrieve has no timeout at all - a stalled connection hangs the download
 # thread forever. This bounds each individual socket read/connect instead.
@@ -52,6 +61,10 @@ def _is_trusted_download_url(url: str) -> bool:
 
 class UpdateVerificationError(Exception):
     pass
+
+
+class UpdateDownloadCancelled(Exception):
+    """The app is closing - the partial download was deleted."""
 
 
 @dataclass
@@ -114,6 +127,7 @@ def download_update(
     info: UpdateInfo,
     dest_dir: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Path:
     # Fail closed: a release published without a .sha256 asset (CI mishap, or
     # a tampered release that simply omits it) must not be trusted silently -
@@ -132,6 +146,10 @@ def download_update(
                 total = 0
             downloaded = 0
             while True:
+                # Checked per chunk: closing the app must not have to wait
+                # for (or destroy the thread of) a 55 MB download.
+                if should_stop is not None and should_stop():
+                    raise UpdateDownloadCancelled()
                 chunk = resp.read(_DOWNLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
@@ -150,10 +168,60 @@ def download_update(
     if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
         zip_path.unlink(missing_ok=True)
         raise UpdateVerificationError("SHA256 manifest is empty or malformed - refusing to install.")
-    actual = compute_sha256(zip_path)
+    _verify_zip_sha256(zip_path, expected, should_stop)
+    return zip_path
+
+
+def _verify_zip_sha256(zip_path: Path, expected: str, should_stop) -> None:
+    try:
+        actual = _sha256_unless_stopped(zip_path, should_stop)
+    except OSError:
+        zip_path.unlink(missing_ok=True)
+        raise
+    if actual is None:
+        zip_path.unlink(missing_ok=True)
+        raise UpdateDownloadCancelled()
     if actual.lower() != expected:
         zip_path.unlink(missing_ok=True)
         raise UpdateVerificationError("Downloaded package does not match expected SHA256.")
+
+
+_SHA256_HEX = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def copy_local_update(
+    source_zip: Path,
+    expected_sha256: str,
+    dest_dir: Path,
+    on_progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> Path:
+    """The developer switch's stand-in for download_update: copies a local
+    release zip into dest_dir and verifies it the same way. A copy, because
+    staging deletes the zip it was given."""
+    if not _SHA256_HEX.fullmatch(expected_sha256 or ""):
+        raise UpdateVerificationError("--sha256 must be the 64-digit hex SHA256 of the zip - refusing to install.")
+    source_zip = Path(source_zip)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = dest_dir / "PortableFix-update.zip"
+    try:
+        total = source_zip.stat().st_size
+        copied = 0
+        with source_zip.open("rb") as src, zip_path.open("wb") as dst:
+            while True:
+                if should_stop is not None and should_stop():
+                    raise UpdateDownloadCancelled()
+                chunk = src.read(_DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                copied += len(chunk)
+                if on_progress is not None:
+                    on_progress(copied, total)
+    except BaseException:
+        zip_path.unlink(missing_ok=True)
+        raise
+    _verify_zip_sha256(zip_path, expected_sha256.lower(), should_stop)
     return zip_path
 
 
@@ -256,19 +324,71 @@ def update_status_message_key(status: str | None, restored: list[str]) -> str | 
     return None
 
 
-def apply_update(zip_path: Path, install_dir: Path) -> bool:
-    """The whole hand-off in one blocking call: stage, start the swap, wait
-    for its handshake. True only when the updater proved it is running - the
-    caller quits the app on True. Kept for callers that have not moved to
-    UpdateStageRunner/UpdateLaunchRunner, which do the same off the GUI
-    thread and can show why it failed."""
-    if not is_writable(install_dir):
-        return False
+_DAY_SEC = 24 * 3600
+_LOG_KEEP_SEC = 14 * _DAY_SEC
+# Everything launch_swap and the swap script write into update_log_dir().
+_UPDATE_LOG_PATTERNS = ("launch_*.txt", "popen_launch_*.log", "update_log_*.txt", "swap_*.ps1", "swap_*.json", "swap_*.marker")
+
+
+def _age_sec(path: Path, now: float) -> float:
     try:
-        staged = stage_update(zip_path, install_dir)
-    except UpdateStageError:
-        return False
-    return launch_swap(staged, install_dir).ok
+        return now - path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _stage_version(stage_dir: Path) -> str | None:
+    try:
+        return (stage_dir / "version.txt").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def cleanup_update_leftovers(
+    install_dir: Path,
+    *,
+    temp_dir: Path | None = None,
+    log_dir: Path | None = None,
+    current_version: str | None = None,
+    now: float | None = None,
+) -> list[Path]:
+    """Removes what earlier update attempts left behind: download folders,
+    a stage that can no longer be installed, old launch/update logs and the
+    generated scripts of versions up to 1.11. Called at startup only, after
+    main() made sure no swap is running. Best effort; returns what it
+    removed."""
+    now = time.time() if now is None else now
+    current_version = current_version or APP_VERSION
+    if temp_dir is None:
+        try:
+            temp_dir = Path(tempfile.gettempdir())
+        except OSError:
+            temp_dir = None
+    if log_dir is None:
+        log_dir = update_log_dir()
+    candidates: list[Path] = []
+    if temp_dir is not None:
+        # A failed or abandoned download; a live one belongs to this very
+        # process and cannot exist yet at startup.
+        candidates += [p for p in temp_dir.glob("PortableFixUpdate_*") if _age_sec(p, now) > _DAY_SEC]
+        # The generated swap scripts of <= 1.11.x, never cleaned up by them.
+        candidates += list(temp_dir.glob("portablefix_update_*.ps1"))
+    stage_dir = Path(install_dir) / STAGE_DIR_NAME
+    if stage_dir.exists():
+        version = _stage_version(stage_dir)
+        if _age_sec(stage_dir, now) > _DAY_SEC or version is None or not is_newer(version, current_version):
+            candidates.append(stage_dir)
+    if log_dir is not None:
+        for pattern in _UPDATE_LOG_PATTERNS:
+            candidates += [p for p in log_dir.glob(pattern) if _age_sec(p, now) > _LOG_KEEP_SEC]
+    removed = []
+    for path in candidates:
+        try:
+            _remove_tree(path)
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
 
 
 class UpdateCheckRunner(QThread):
@@ -285,21 +405,38 @@ class UpdateCheckRunner(QThread):
 
 
 class UpdateDownloadRunner(QThread):
+    """Downloads the release zip - or, for the developer switch, copies a
+    local one (local_zip plus its SHA256) - and verifies it."""
+
     download_finished = Signal(object, str)
     progress = Signal(int, int)
 
-    def __init__(self, info: UpdateInfo, dest_dir: Path, parent=None):
+    def __init__(
+        self, info: UpdateInfo, dest_dir: Path, parent=None,
+        local_zip: Path | None = None, local_sha256: str = "",
+    ):
         super().__init__(parent)
         self._info = info
         self._dest_dir = dest_dir
+        self._local_zip = local_zip
+        self._local_sha256 = local_sha256
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
         try:
-            path = download_update(self._info, self._dest_dir, on_progress=self.progress.emit)
+            if self._local_zip is not None:
+                path = copy_local_update(
+                    self._local_zip, self._local_sha256, self._dest_dir,
+                    on_progress=self.progress.emit, should_stop=self.isInterruptionRequested,
+                )
+            else:
+                path = download_update(
+                    self._info, self._dest_dir,
+                    on_progress=self.progress.emit, should_stop=self.isInterruptionRequested,
+                )
             self.download_finished.emit(path, "")
         except Exception as exc:
-            self.download_finished.emit(None, str(exc))
+            self.download_finished.emit(None, str(exc) or type(exc).__name__)
 
 
 class UpdateStageRunner(QThread):
