@@ -166,6 +166,19 @@ PowerShell.
   (`update_log_<pid>.txt`, `launch_<pid>.txt`) - the temp cleanup
   (`user_temp`) leaves them alone; the app removes ones older than 14
   days at startup.
+- **Quiet mode (no background network):** a toggle above the system
+  info panel, saved in `Data/settings.json` (`quiet_mode`, off by
+  default). When on, the app never reaches the network on its own: it
+  stops the ping to 8.8.8.8 every 4 s, the VPN check (powershell.exe
+  every 60 s), the GitHub update check at startup and the automatic
+  winget check. Useful on a client's corporate network, where a
+  repeated ping could trigger an EDR alert. The manual buttons keep
+  working and reach the network only when clicked: "Check ping and VPN
+  now", "Check for updates", "Speed test" and "Refresh" in the winget
+  panel. The mode is shown on the right of the status bar. Regardless
+  of the mode, all panel polling (CPU, RAM, sensors, ping, VPN) stops
+  while the window is minimized and resumes right away when it is
+  restored.
 - **Self-delete protection:** the actions that wipe `%TEMP%` and
   `%WINDIR%\Temp` (`user_temp`, `system_temp`) detect if the app is
   running from inside that folder and exclude it - if that can't be

@@ -5167,3 +5167,303 @@ def test_batch_review_confirmed_after_the_window_closed_starts_nothing(qtbot, tm
     [event] = _system_events(log_path, "batch_review")
     assert event["decision"] == "cancelled"
     assert [e["subject"] for e in _system_events(log_path, "risk_declined")] == ["m02_cleanup/tweak_one"]
+
+
+class _FakeSignal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        for slot in list(self.slots):
+            slot(*args)
+
+
+def _recording_runner(log: list, name: str, *signal_names: str):
+    """A stand-in for a network QThread runner: records each creation and
+    never touches the network or starts a thread."""
+
+    class _Runner:
+        def __init__(self, *args, **kwargs):
+            for signal_name in signal_names:
+                setattr(self, signal_name, _FakeSignal())
+            log.append((name, self))
+
+        def start(self):
+            pass
+
+        def isRunning(self):
+            return False
+
+        def wait(self, *_args):
+            return True
+
+    return _Runner
+
+
+def _patch_network_runners(monkeypatch, frozen: bool = True) -> list:
+    """Replaces every runner that reaches the network - ping, VPN check,
+    GitHub update check, winget scan - with recording fakes; frozen makes
+    the update check at start a real candidate, as in PortableFix.exe."""
+    import sys as sys_module
+
+    from portablefix import sysinfo, updater, winget_updates
+
+    log = []
+    monkeypatch.setattr(sysinfo, "PingRunner", _recording_runner(log, "ping", "ping_ready"))
+    monkeypatch.setattr(sysinfo, "VpnStatusRunner", _recording_runner(log, "vpn", "vpn_status_ready"))
+    monkeypatch.setattr(updater, "UpdateCheckRunner", _recording_runner(log, "update", "check_finished"))
+    monkeypatch.setattr(
+        winget_updates, "WingetScanRunner", _recording_runner(log, "winget", "scan_finished", "scan_failed")
+    )
+    if frozen:
+        monkeypatch.setattr(sys_module, "frozen", True, raising=False)
+    else:
+        monkeypatch.delattr(sys_module, "frozen", raising=False)
+    return log
+
+
+def _names(log: list) -> list[str]:
+    return [name for name, _runner in log]
+
+
+def test_quiet_mode_starts_nothing_network_related_at_window_creation(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer
+
+    from portablefix.i18n import translate
+
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir,
+        settings=Settings(language="en", quiet_mode=True, winget_auto_check_minutes=15),
+        is_admin=True, run_id="run_quiet_start",
+    )
+    qtbot.addWidget(window)
+    qtbot.wait(50)
+
+    assert log == []
+    assert not window._ping_timer.isActive()
+    assert not window._vpn_timer.isActive()
+    # Local-only polling (CPU, RAM, sensors) keeps running.
+    assert window._sysinfo_timer.isActive()
+    assert window._hw_sensor_timer.isActive()
+    # The saved winget auto-check interval is kept but its timer never runs.
+    assert not [t for t in window.findChildren(QTimer) if t.isActive() and t.interval() == 15 * 60_000]
+    assert window.quiet_mode_checkbox.isChecked()
+    assert window._sysinfo_labels["ping"].text() == translate("quiet_mode_value", "en")
+    assert window._sysinfo_labels["vpn"].text() == translate("quiet_mode_value", "en")
+    assert window._quiet_status_label.text() == translate("quiet_mode_status_on", "en")
+    assert not window.check_network_button.isHidden()
+    assert not window.check_updates_button.isHidden()
+
+
+def test_default_mode_still_polls_and_checks_for_updates_at_start(qtbot, tmp_path, monkeypatch):
+    from portablefix.i18n import translate
+
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_loud",
+    )
+    qtbot.addWidget(window)
+
+    assert sorted(set(_names(log))) == ["ping", "update", "vpn", "winget"]
+    assert window._ping_timer.isActive() and window._ping_timer.interval() == 4000
+    assert window._vpn_timer.isActive() and window._vpn_timer.interval() == 60_000
+    assert not window.quiet_mode_checkbox.isChecked()
+    assert window._quiet_status_label.text() == translate("quiet_mode_status_off", "en")
+    assert window.check_network_button.isHidden()
+    assert window.check_updates_button.isHidden()
+
+
+def test_quiet_mode_toggle_stops_and_restarts_network_timers_and_persists(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer
+
+    from portablefix import winget_updates
+    from portablefix.settings import load_settings
+
+    log = _patch_network_runners(monkeypatch)
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [])
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", winget_auto_check_minutes=15),
+        is_admin=True, run_id="run_quiet_toggle",
+    )
+    qtbot.addWidget(window)
+
+    def auto_check_timers():
+        return [t for t in window.findChildren(QTimer) if t.isActive() and t.interval() == 15 * 60_000]
+
+    assert len(auto_check_timers()) == 1
+    # Let the first ping/VPN answers land so the busy flags clear.
+    for name, runner in log:
+        if name == "ping":
+            runner.ping_ready.emit(12.0)
+        elif name == "vpn":
+            runner.vpn_status_ready.emit("")
+    log.clear()
+
+    window.quiet_mode_checkbox.setChecked(True)
+    assert window.settings.quiet_mode is True
+    assert load_settings(base_dir).quiet_mode is True
+    assert not window._ping_timer.isActive()
+    assert not window._vpn_timer.isActive()
+    assert auto_check_timers() == []
+    assert window.settings.winget_auto_check_minutes == 15
+    assert log == []
+
+    window.quiet_mode_checkbox.setChecked(False)
+    assert load_settings(base_dir).quiet_mode is False
+    assert window._ping_timer.isActive()
+    assert window._vpn_timer.isActive()
+    assert len(auto_check_timers()) == 1
+    # Switching back refreshes right away rather than one interval late.
+    assert sorted(_names(log)) == ["ping", "vpn"]
+
+
+def test_leaving_quiet_mode_runs_the_skipped_winget_scan_once(qtbot, tmp_path, monkeypatch):
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", quiet_mode=True),
+        is_admin=True, run_id="run_quiet_leave",
+    )
+    qtbot.addWidget(window)
+    assert log == []
+
+    window.quiet_mode_checkbox.setChecked(False)
+    assert sorted(_names(log)) == ["ping", "vpn", "winget"]
+    window._winget_scan_runner = None
+
+
+def test_manual_update_click_during_the_start_up_check_reports_its_answer(qtbot, tmp_path, monkeypatch):
+    from portablefix import updater
+    from portablefix.i18n import translate
+
+    log = _patch_network_runners(monkeypatch)
+    running = _recording_runner(log, "update", "check_finished")
+    running.isRunning = lambda self: True
+    monkeypatch.setattr(updater, "UpdateCheckRunner", running)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_upd_twice",
+    )
+    qtbot.addWidget(window)
+    startup = [runner for name, runner in log if name == "update"]
+    assert len(startup) == 1
+
+    window._on_check_updates_clicked()
+    # No second request while the first is out; its answer is reported.
+    assert len([name for name in _names(log) if name == "update"]) == 1
+    startup[0].check_finished.emit(None)
+    assert window.statusBar().currentMessage() == translate("update_check_none", "en")
+
+
+def test_quiet_mode_manual_buttons_still_reach_the_network(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+
+    from portablefix.i18n import translate
+
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", quiet_mode=True),
+        is_admin=True, run_id="run_quiet_manual",
+    )
+    qtbot.addWidget(window)
+    assert log == []
+
+    window.check_network_button.click()
+    assert sorted(_names(log)) == ["ping", "vpn"]
+    runners = dict(log)
+    runners["ping"].ping_ready.emit(23.0)
+    runners["vpn"].vpn_status_ready.emit("Corp VPN")
+    assert window._sysinfo_labels["ping"].text() == "23 ms"
+    assert "Corp VPN" in window._sysinfo_labels["vpn"].text()
+    # Still quiet: one answer per click, no timer came back.
+    assert not window._ping_timer.isActive()
+    assert not window._vpn_timer.isActive()
+    log.clear()
+
+    window.check_updates_button.click()
+    assert _names(log) == ["update"]
+    assert window.statusBar().currentMessage() == translate("update_check_running", "en")
+    log[0][1].check_finished.emit(None)
+    assert window.statusBar().currentMessage() == translate("update_check_none", "en")
+    log.clear()
+
+    refresh = next(
+        b for b in window.findChildren(QPushButton) if b.text() == translate("winget_refresh_button", "en")
+    )
+    refresh.click()
+    assert _names(log) == ["winget"]
+    window._winget_scan_runner = None
+
+
+def test_manual_update_check_from_source_says_it_needs_the_packaged_build(qtbot, tmp_path, monkeypatch):
+    from portablefix.i18n import translate
+
+    log = _patch_network_runners(monkeypatch, frozen=False)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", quiet_mode=True),
+        is_admin=True, run_id="run_quiet_dev",
+    )
+    qtbot.addWidget(window)
+    window.check_updates_button.click()
+    assert log == []
+    assert window.statusBar().currentMessage() == translate("update_check_dev_build", "en")
+
+
+def test_minimized_window_pauses_all_polling_and_resumes_on_restore(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_minimized",
+    )
+    qtbot.addWidget(window)
+    for name, runner in log:
+        if name == "ping":
+            runner.ping_ready.emit(None)
+        elif name == "vpn":
+            runner.vpn_status_ready.emit(None)
+    timers = (window._sysinfo_timer, window._hw_sensor_timer, window._ping_timer, window._vpn_timer)
+    assert all(t.isActive() for t in timers)
+    log.clear()
+
+    window.setWindowState(Qt.WindowState.WindowMinimized)
+    assert not any(t.isActive() for t in timers)
+
+    window.setWindowState(Qt.WindowState.WindowNoState)
+    assert all(t.isActive() for t in timers)
+    assert sorted(_names(log)) == ["ping", "vpn"]
+
+    # Restoring a quiet-mode window brings back only the local polling.
+    window.quiet_mode_checkbox.setChecked(True)
+    window.setWindowState(Qt.WindowState.WindowMinimized)
+    window.setWindowState(Qt.WindowState.WindowNoState)
+    assert window._sysinfo_timer.isActive() and window._hw_sensor_timer.isActive()
+    assert not window._ping_timer.isActive() and not window._vpn_timer.isActive()
+
+
+def test_quiet_mode_survives_a_language_toggle(qtbot, tmp_path, monkeypatch):
+    from portablefix.i18n import translate
+
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", quiet_mode=True),
+        is_admin=True, run_id="run_quiet_lang",
+    )
+    qtbot.addWidget(window)
+    window._on_toggle_language()
+    assert log == []
+    assert window.quiet_mode_checkbox.isChecked()
+    assert window._sysinfo_labels["ping"].text() == translate("quiet_mode_value", "sk")
+    assert window._quiet_status_label.text() == translate("quiet_mode_status_on", "sk")
+    assert not window._ping_timer.isActive()
