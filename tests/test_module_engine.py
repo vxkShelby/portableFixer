@@ -341,3 +341,64 @@ def test_load_module_without_undo_command_defaults_to_none(tmp_path):
     )
     module = load_module(yaml_path)
     assert module.actions[0].undo_command is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "- just\n- a list\n",
+        "module_id: m_test\nactions: not-a-list\n",
+        "module_id: m_test\nactions:\n  - \"id label_sk label_en risk command\"\n",
+        "module_id: m_test\nactions:\n  - null\n",
+    ],
+)
+def test_load_module_rejects_malformed_structure(tmp_path, content):
+    # Previously a bare-string action slipped past the required-field check
+    # (substring match) or raised TypeError, escaping load_all_modules'
+    # error collection and crashing startup.
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(content, encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "    inactivity_timeout_sec: \"600\"\n",
+        "    hard_cap_sec: true\n",
+        "    hard_cap_sec: -5\n",
+        "    problem_keywords: \"slow\"\n",
+        "    recommended_action_ids: [1, 2]\n",
+    ],
+)
+def test_load_module_rejects_invalid_field_types(tmp_path, extra):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML + extra, encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_module_rejects_empty_command(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML.replace("\"Write-Output 'hi'\"", "\"   \""), encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_all_modules_collects_malformed_module_instead_of_crashing(tmp_path):
+    good = tmp_path / "m_good"
+    good.mkdir()
+    (good / "actions.yaml").write_text(VALID_YAML, encoding="utf-8")
+    bad = tmp_path / "m_bad"
+    bad.mkdir()
+    (bad / "actions.yaml").write_text("module_id: m_bad\nactions:\n  - oops\n", encoding="utf-8")
+    modules, errors = load_all_modules(tmp_path)
+    assert [m.module_id for m in modules] == ["m_test"]
+    assert len(errors) == 1 and "m_bad" in errors[0]
+
+
+def test_real_module_catalog_loads_without_errors():
+    modules, errors = load_all_modules(Path(__file__).resolve().parent.parent / "Modules")
+    assert errors == []
+    assert modules

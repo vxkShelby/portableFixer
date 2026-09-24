@@ -65,8 +65,11 @@ PowerShell.
   preview), nothing changes.
 - **Restore point:** before the first DESTRUCTIVE action, or any action
   from the Repair/Security category, a System Restore Point is created
-  once per batch (best-effort; on failure the app asks whether to
-  continue anyway).
+  once per batch on the system drive (best-effort; on failure the app
+  asks whether to continue anyway). Windows' 24-hour restore point
+  throttle is lifted for that one checkpoint and the original setting
+  is put back right after - previously Windows silently skipped the
+  checkpoint and the batch ran without one.
 - **undo.ps1:** actions with a reversible effect (e.g. resetting the
   hosts file, stopping services, changing the power plan) append their
   undo command to `Backups/<run-id>/undo.ps1` as they run - in reverse

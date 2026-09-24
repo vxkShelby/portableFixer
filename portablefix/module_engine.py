@@ -11,8 +11,27 @@ class ModuleLoadError(ValueError):
     pass
 
 
+def _optional_positive_int(path: Path, action_id: str, raw: dict, key: str) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    # bool is an int subclass - `true` in YAML must not become a 1-second timeout.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} {value!r}")
+    return value
+
+
+def _string_list(path: Path, action_id: str, raw: dict, key: str) -> list[str]:
+    value = raw.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} (expected a list of strings)")
+    return value
+
+
 def load_module(actions_yaml_path: Path) -> ModuleDef:
     data = yaml.safe_load(actions_yaml_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ModuleLoadError(f"{actions_yaml_path}: top level must be a mapping")
     module_id = data.get("module_id")
     if not module_id:
         raise ModuleLoadError(f"{actions_yaml_path}: missing module_id")
@@ -23,8 +42,17 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
     except ValueError:
         raise ModuleLoadError(f"{actions_yaml_path}: unknown category '{category_raw}'") from None
 
+    raw_actions = data.get("actions") or []
+    if not isinstance(raw_actions, list):
+        raise ModuleLoadError(f"{actions_yaml_path}: 'actions' must be a list")
+
     actions = []
-    for raw in data.get("actions", []):
+    for raw in raw_actions:
+        # A malformed entry (e.g. a bare string) used to raise TypeError or,
+        # worse, pass the field check via substring matching - either way it
+        # escaped load_all_modules' error collection and broke startup.
+        if not isinstance(raw, dict):
+            raise ModuleLoadError(f"{actions_yaml_path}: action entry must be a mapping, got {raw!r}")
         missing = [f for f in REQUIRED_ACTION_FIELDS if f not in raw]
         if missing:
             raise ModuleLoadError(f"{actions_yaml_path}: action missing fields {missing}")
@@ -32,9 +60,14 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
             risk = RiskLevel(raw["risk"])
         except ValueError:
             raise ModuleLoadError(f"{actions_yaml_path}: unknown risk '{raw['risk']}'") from None
+        action_id = raw["id"]
+        if not isinstance(action_id, str) or not action_id:
+            raise ModuleLoadError(f"{actions_yaml_path}: action id must be a non-empty string, got {action_id!r}")
+        if not isinstance(raw["command"], str) or not raw["command"].strip():
+            raise ModuleLoadError(f"{actions_yaml_path}: action '{action_id}' has an empty command")
         actions.append(
             ActionDef(
-                id=raw["id"],
+                id=action_id,
                 label_sk=raw["label_sk"],
                 label_en=raw["label_en"],
                 risk=risk,
@@ -43,11 +76,13 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 description_en=raw.get("description_en", ""),
                 preview_command=raw.get("preview_command"),
                 undo_command=raw.get("undo_command"),
-                inactivity_timeout_sec=raw.get("inactivity_timeout_sec"),
-                hard_cap_sec=raw.get("hard_cap_sec"),
-                problem_keywords=raw.get("problem_keywords", []),
-                recommended_action_ids=raw.get("recommended_action_ids", []),
-                exclude_from_select_all=raw.get("exclude_from_select_all", False),
+                inactivity_timeout_sec=_optional_positive_int(
+                    actions_yaml_path, action_id, raw, "inactivity_timeout_sec"
+                ),
+                hard_cap_sec=_optional_positive_int(actions_yaml_path, action_id, raw, "hard_cap_sec"),
+                problem_keywords=_string_list(actions_yaml_path, action_id, raw, "problem_keywords"),
+                recommended_action_ids=_string_list(actions_yaml_path, action_id, raw, "recommended_action_ids"),
+                exclude_from_select_all=raw.get("exclude_from_select_all", False) is True,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

@@ -1,7 +1,7 @@
 import subprocess
 
 from portablefix.executor import POWERSHELL_PREFIX
-from portablefix.restore_point import create_restore_point
+from portablefix.restore_point import build_restore_point_command, create_restore_point
 
 
 class _FakeResult:
@@ -108,3 +108,30 @@ def test_create_restore_point_single_quotes_do_not_interpolate_dollar_sign(monke
     create_restore_point("PortableFix run$1")
     command = captured["argv"][-1]
     assert "'PortableFix run$1'" in command
+
+
+def test_restore_point_command_uses_system_drive_not_hard_coded_c():
+    # Windows isn't always installed on C: - protection must follow the OS drive.
+    command = build_restore_point_command("x")
+    assert "$env:SystemDrive" in command
+    assert '"C:\\"' not in command
+
+
+def test_restore_point_command_lifts_24h_throttle_and_restores_it():
+    # Checkpoint-Computer silently skips (warning + exit 0) when a restore
+    # point already exists from the last 24h - the batch then ran with no
+    # fresh restore point while the app reported success.
+    command = build_restore_point_command("x")
+    assert "SystemRestorePointCreationFrequency" in command
+    assert "-Value 0" in command
+    # The previous value is put back (or removed if it didn't exist) in a
+    # finally block, so the system setting is never left modified.
+    finally_block = command[command.index("finally"):]
+    assert "Set-ItemProperty" in finally_block
+    assert "Remove-ItemProperty" in finally_block
+
+
+def test_restore_point_command_turns_skip_warning_into_failure():
+    command = build_restore_point_command("x")
+    assert "-WarningAction Stop" in command
+    assert "exit 1" in command

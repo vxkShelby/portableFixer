@@ -64,8 +64,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   read-only náhľad), nič sa nemení.
 - **Bod obnovenia:** pred prvou DESTRUCTIVE akciou alebo akoukoľvek
   akciou z kategórie Oprava/Zabezpečenie sa raz za dávku vytvorí System
-  Restore Point (best-effort; pri zlyhaní sa aplikácia opýta, či
-  pokračovať).
+  Restore Point na systémovom disku (best-effort; pri zlyhaní sa
+  aplikácia opýta, či pokračovať). Windowsový 24-hodinový limit na
+  vytváranie bodov obnovenia sa na tento jeden bod dočasne zruší a
+  pôvodné nastavenie sa hneď obnoví - predtým Windows bod potichu
+  preskočil a dávka bežala bez neho.
 - **undo.ps1:** akcie s vratným účinkom (napr. reset hosts súboru,
   zastavenie služieb, zmena plánu napájania) priebežne zapisujú svoje
   undo príkazy do `Backups/<run-id>/undo.ps1` — v opačnom (LIFO)
