@@ -791,3 +791,169 @@ def test_before_after_table_has_print_styles(tmp_path):
     print_css = content[content.index("@media print"):]
     assert "table.snapshot td.delta.good" in print_css
     assert "table.snapshot td.delta.bad" in print_css
+
+
+# --- Robustness: legacy-encoded files, real reboots, sentinel exit codes -----
+
+
+def _write_cp1250_report(reports_dir, name):
+    # An older build / another tool saved the report in the Windows ANSI code
+    # page: "Ján" in cp1250 is b"J\xe1n", which is not valid UTF-8.
+    body = json.dumps({
+        "run_id": name, "generated_at": "2026-09-01T10:00:00+00:00",
+        "snapshot_after": {"free_gb": 1.0}, "actions": [], "job": {"technician": "@@"},
+    }).encode("ascii").replace(b"@@", "Ján".encode("cp1250"))
+    (reports_dir / f"{name}.json").write_bytes(body)
+
+
+def test_non_utf8_previous_report_does_not_stop_the_report(tmp_path):
+    import socket
+
+    hostname = socket.gethostname()
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    _write_cp1250_report(reports_dir, f"{hostname}_20260901T100000-aaaaaaaa")
+    run_id = "20260924T090000-bbbbbbbb"
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, run_id))
+
+    html_path, json_path = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {"free_gb": 9.0})
+
+    assert html_path.exists() and json_path.exists()
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["run_id"] == run_id
+    assert data["previous_comparison"] is None
+
+
+def test_non_utf8_previous_report_falls_back_to_an_older_valid_one(tmp_path):
+    import socket
+
+    hostname = socket.gethostname()
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    older = {"run_id": "20260815T100000-cccccccc", "generated_at": "2026-08-15T10:00:00+00:00",
+             "snapshot_after": {"free_gb": 5.0}, "actions": [{"action_id": "a"}]}
+    (reports_dir / f"{hostname}_20260815T100000-cccccccc.json").write_text(json.dumps(older), encoding="utf-8")
+    _write_cp1250_report(reports_dir, f"{hostname}_20260901T100000-aaaaaaaa")
+    run_id = "20260924T090000-bbbbbbbb"
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, run_id))
+
+    html_path, json_path = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {"free_gb": 9.0})
+
+    comparison = json.loads(json_path.read_text(encoding="utf-8"))["previous_comparison"]
+    assert comparison["previous_run_id"] == "20260815T100000-cccccccc"
+    assert comparison["free_gb_delta"] == 4.0
+    assert comparison["previous_action_count"] == 1
+    assert "20260815T100000-cccccccc" in html_path.read_text(encoding="utf-8")
+
+
+def test_audit_line_with_invalid_utf8_does_not_drop_the_other_entries(tmp_path):
+    run_id = "run_enc"
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, "first", False, run_id))
+    path = audit_log_path(tmp_path, run_id)
+    # A complete entry except for its encoding - only the decode can reject it.
+    bad = json.dumps({
+        "timestamp": "2026-09-24T10:00:00+00:00", "module_id": "m02_cleanup", "action_id": "user_temp",
+        "command": "cmd", "exit_code": 0, "output": "@@", "dry_run": False,
+    }).encode("ascii").replace(b"@@", "Ján".encode("cp1250"))
+    with path.open("ab") as f:
+        f.write(bad + b"\n")
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, "second", False, run_id))
+
+    html_path, json_path = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {})
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert [a["output"] for a in data["actions"]] == ["first", "second"]
+    content = html_path.read_text(encoding="utf-8")
+    assert "first" in content and "second" in content
+
+
+def test_requires_restart_lists_only_real_successful_reboot_actions(tmp_path):
+    run_id = "run_reboot"
+    # Dry-run and failed runs changed nothing that a restart would apply.
+    append_entry(tmp_path, run_id, make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "", True, run_id, risk="REQUIRES_REBOOT"))
+    append_entry(tmp_path, run_id, make_entry(
+        "m02_cleanup", "user_temp", "cmd", 5, "boom", False, run_id, risk="REQUIRES_REBOOT"))
+    data = build_report_data(tmp_path, run_id, _fixture_modules(), "en", {}, {})
+    assert data["requires_restart"] == []
+    content = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
+    assert "Requires restart" not in content
+
+    append_entry(tmp_path, run_id, make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "applied", False, run_id, risk="REQUIRES_REBOOT"))
+    data = build_report_data(tmp_path, run_id, _fixture_modules(), "en", {}, {})
+    assert [(a["exit_code"], a["dry_run"], a["output"]) for a in data["requires_restart"]] == [(0, False, "applied")]
+
+
+def test_report_sentinel_codes_match_the_executor():
+    # report.py mirrors these instead of importing executor.py (see the
+    # comment there) - this keeps the two from drifting apart.
+    from portablefix.executor import ActionRunner
+    from portablefix.report import _SENTINEL_EXIT_KEYS
+
+    assert _SENTINEL_EXIT_KEYS == {
+        ActionRunner.TIMEOUT_EXIT_CODE: "report_exit_timeout",
+        ActionRunner.CANCELLED_EXIT_CODE: "report_exit_cancelled",
+        ActionRunner.POWERSHELL_NOT_FOUND_EXIT_CODE: "report_exit_no_powershell",
+    }
+
+
+def _run_with_exit_codes(tmp_path, run_id, codes):
+    for code in codes:
+        append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "cmd", code, "", False, run_id))
+
+
+def test_report_explains_timeout_exit_code_in_slovak(tmp_path):
+    import html as html_mod
+
+    from portablefix.i18n import translate
+
+    _run_with_exit_codes(tmp_path, "run_sent_sk", [-2, 5])
+    html_path, json_path = generate_report(tmp_path, "run_sent_sk", _fixture_modules(), "sk", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    timeout_text = html_mod.escape(translate("report_exit_timeout", "sk"))
+    # Both the action card and the failed-actions list explain it.
+    assert content.count(timeout_text) == 2
+    assert "kód -2" not in content
+    # A real exit code is still shown as a code.
+    assert content.count("kód 5") == 2
+    # The JSON keeps the raw code for machines.
+    assert [a["exit_code"] for a in json.loads(json_path.read_text(encoding="utf-8"))["actions"]] == [-2, 5]
+
+
+def test_report_explains_cancelled_and_missing_powershell_in_english(tmp_path):
+    import html as html_mod
+
+    from portablefix.i18n import translate
+
+    _run_with_exit_codes(tmp_path, "run_sent_en", [-3, -4, 5])
+    content = generate_report(tmp_path, "run_sent_en", _fixture_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
+    for key in ("report_exit_cancelled", "report_exit_no_powershell"):
+        assert content.count(html_mod.escape(translate(key, "en"))) == 2
+    assert "exit -3" not in content and "exit -4" not in content
+    assert content.count("exit 5") == 2
+
+
+def test_failed_restore_point_shows_only_the_reason_not_the_english_prefix(tmp_path):
+    output = "System Restore Point creation failed: disabled"
+    append_entry(tmp_path, "run_rpx", make_entry(
+        "_system", "restore_point", "Checkpoint-Computer", 1, output, False, "run_rpx",
+    ))
+    html_path, json_path = generate_report(tmp_path, "run_rpx", [], "sk", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert '<div class="warn-text">disabled</div>' in content
+    assert "System Restore Point creation failed" not in content
+    # Only the rendering changes - the JSON keeps the logged text verbatim.
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["events"][0]["output"] == output
+    assert data["restore_points"][0]["detail"] == output
+
+
+def test_failed_restore_point_without_a_reason_adds_no_detail_line(tmp_path):
+    append_entry(tmp_path, "run_rpy", make_entry(
+        "_system", "restore_point", "Checkpoint-Computer", 1, "System Restore Point creation failed.", False, "run_rpy",
+    ))
+    content = generate_report(tmp_path, "run_rpy", [], "en", {}, {})[0].read_text(encoding="utf-8")
+    assert 'Restore point: <span class="rp-fail">FAILED</span>' in content
+    assert "System Restore Point creation failed" not in content
+    assert '<div class="warn-text">' not in content

@@ -1,6 +1,7 @@
 import html
 import json
 import platform
+import re
 import socket
 import sys
 from datetime import datetime, timezone
@@ -60,8 +61,15 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
     if not path.exists():
         return []
     entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    # Decoded line by line, not as one file: a single line with invalid
+    # UTF-8 (a torn write, bytes from a tool writing in the ANSI code page)
+    # made read_text raise for the whole log and aborted the report, taking
+    # every good entry with it.
+    for raw_line in path.read_bytes().splitlines():
+        try:
+            line = raw_line.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            continue
         if not line:
             continue
         try:
@@ -78,6 +86,10 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
 
 
 _MAX_PREVIOUS_REPORT_BYTES = 10 * 1024 * 1024
+# How many of the newest earlier reports are tried before giving up - enough
+# to step over a few unreadable ones, bounded so a Reports folder full of
+# broken files can't stall the report written at every batch end.
+_MAX_PREVIOUS_REPORT_CANDIDATES = 20
 
 
 def _find_previous_report(reports_dir: Path, hostname: str, run_id: str | None = None) -> dict | None:
@@ -97,20 +109,24 @@ def _find_previous_report(reports_dir: Path, hostname: str, run_id: str | None =
         (p for p in reports_dir.glob("*.json") if p.name.startswith(prefix) and p.name != own_name),
         key=lambda p: p.name,
     )
-    if not candidates:
-        return None
-    latest = candidates[-1]
-    try:
-        if latest.stat().st_size > _MAX_PREVIOUS_REPORT_BYTES:
-            return None
-        parsed = json.loads(latest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    # A prior report that's syntactically valid JSON but not the shape this
-    # tool itself ever writes (corrupted, hand-edited, or from a future/past
-    # schema) must degrade to "no previous report" rather than let a
-    # malformed field crash the comparison a few lines later.
-    return parsed if isinstance(parsed, dict) else None
+    # Newest first, falling back to older visits: one unreadable report (not
+    # UTF-8, cut short by an unplugged USB, hand-edited) must neither abort
+    # this run's report nor hide every earlier visit behind it.
+    for candidate in reversed(candidates[-_MAX_PREVIOUS_REPORT_CANDIDATES:]):
+        try:
+            if candidate.stat().st_size > _MAX_PREVIOUS_REPORT_BYTES:
+                continue
+            parsed = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # ValueError covers both UnicodeDecodeError and JSONDecodeError.
+            continue
+        # A prior report that's syntactically valid JSON but not the shape
+        # this tool itself ever writes (corrupted, hand-edited, or from a
+        # future/past schema) is skipped rather than let a malformed field
+        # crash the comparison a few lines later.
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def _build_comparison(previous: dict | None, actions: list[dict], snapshot_after: dict) -> dict | None:
@@ -243,7 +259,13 @@ def build_report_data(
         "snapshot_before": snapshot_before,
         "snapshot_after": snapshot_after,
         "actions": actions,
-        "requires_restart": [a for a in actions if a["risk"] == "REQUIRES_REBOOT"],
+        # Only a real, successful run left a change that a restart applies -
+        # a dry-run or a failed attempt listed here sent the client into a
+        # needless reboot.
+        "requires_restart": [
+            a for a in actions
+            if a["risk"] == "REQUIRES_REBOOT" and a["exit_code"] == 0 and not a["dry_run"]
+        ],
         "previous_comparison": _build_comparison(previous, actions, snapshot_after),
         "module_summary": _build_module_summary(actions),
         "job": _clean_job(job),
@@ -495,6 +517,29 @@ def _format_timestamp(value) -> str:
         return str(value)
 
 
+# executor.ActionRunner's sentinel exit codes (TIMEOUT / CANCELLED /
+# POWERSHELL_NOT_FOUND). Mirrored rather than imported: executor.py is the
+# QThread process runner and resolves powershell.exe on disk at import time -
+# rendering a report from logged data shouldn't depend on any of that.
+# tests/test_report.py pins these to ActionRunner's values.
+_SENTINEL_EXIT_KEYS = {
+    -2: "report_exit_timeout",
+    -3: "report_exit_cancelled",
+    -4: "report_exit_no_powershell",
+}
+
+
+def _exit_text(code, language: str) -> str:
+    # "kód -2" told the client nothing - these codes are PortableFix's own
+    # markers, not something the command returned, so say what happened.
+    # isinstance: a corrupted log can hold any JSON value, and a list or
+    # dict isn't even hashable for the lookup.
+    key = _SENTINEL_EXIT_KEYS.get(code) if isinstance(code, int) else None
+    if key is not None:
+        return translate(key, language)
+    return translate("report_exit", language).format(code=code)
+
+
 def _render_action_card(a: dict, language: str, index: int) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
@@ -509,7 +554,7 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         output_block = (
             f"<details><summary>{t('report_output')}</summary><pre>{html.escape(a['output'])}</pre></details>"
         )
-    exit_note = "" if ok else f'<span class="mod">{t("report_exit").format(code=html.escape(str(a["exit_code"])))}</span>'
+    exit_note = "" if ok else f'<span class="mod">{html.escape(_exit_text(a["exit_code"], language))}</span>'
     # a.get(): report JSON written before these fields existed has no key.
     warned_tag = f'<span class="warned-tag">{t("report_warned_tag")}</span>' if a.get("warned") else ""
     warn_text = ""
@@ -625,7 +670,7 @@ def _render_failed_list(actions: list[dict], language: str) -> str:
     items = "".join(
         f'<li><a href="#action-{i}">{html.escape(a["label"])}</a>'
         f'<span class="mod">{html.escape(a["module_id"])} &middot; '
-        f'{html.escape(translate("report_exit", language).format(code=a["exit_code"]))}</span></li>'
+        f'{html.escape(_exit_text(a["exit_code"], language))}</span></li>'
         for i, a in failed
     )
     return (
@@ -654,6 +699,18 @@ def _restore_point_text(point: dict, language: str) -> str:
     return text
 
 
+# The English sentence main_window logs in front of the restore-point failure
+# reason ("... failed: <reason>") - the line it is shown on already says
+# "FAILED" / "NEPODARIL SA" in the report's own language.
+_RP_FAILED_PREFIX = re.compile(r"\s*System Restore Point creation failed[:.\s]*")
+
+
+def _restore_point_failure_reason(output: str) -> str:
+    # Display only: the JSON event and the audit log keep the text verbatim.
+    match = _RP_FAILED_PREFIX.match(output)
+    return output[match.end():] if match else output
+
+
 def _render_event(event: dict, language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
@@ -665,8 +722,9 @@ def _render_event(event: dict, language: str) -> str:
             "sequence": event.get("restore_point_sequence"),
         }
         body = _restore_point_text(point, language)
-        if event["exit_code"] != 0 and event.get("output"):
-            body += f'<div class="warn-text">{html.escape(event["output"])}</div>'
+        reason = _restore_point_failure_reason(str(event.get("output") or "")) if event["exit_code"] != 0 else ""
+        if reason:
+            body += f'<div class="warn-text">{html.escape(reason)}</div>'
         # The timestamp is already part of _restore_point_text.
         return f"<li>{body}</li>"
     when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"]))}</span>'

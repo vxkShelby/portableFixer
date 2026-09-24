@@ -246,6 +246,9 @@ _STRINGS = {
         "winget_update_confirm_text": "Aktualizovať tieto balíky cez winget ({count})?\n\n{packages}\n\nInštalátory bežia potichu a predchádzajúcu verziu nie je možné obnoviť cez PortableFix.",
         "winget_update_dry_run_notice": "DRY-RUN: nič sa neaktualizuje – iba náhľad príkazov winget, ktoré by sa spustili.",
         "uninstaller_no_command": "chýba príkaz na odinštalovanie",
+        "report_exit_timeout": "prekročený časový limit – ukončené",
+        "report_exit_cancelled": "zrušené technikom",
+        "report_exit_no_powershell": "PowerShell sa nenašiel",
     },
     "en": {
         "app_title": "PortableFix",
@@ -494,6 +497,9 @@ _STRINGS = {
         "winget_update_confirm_text": "Update these packages with winget ({count})?\n\n{packages}\n\nThe installers run silently and the previous version cannot be restored through PortableFix.",
         "winget_update_dry_run_notice": "DRY-RUN: nothing is updated - this only previews the winget commands that would run.",
         "uninstaller_no_command": "no uninstall command",
+        "report_exit_timeout": "timed out – terminated",
+        "report_exit_cancelled": "cancelled by the technician",
+        "report_exit_no_powershell": "PowerShell not found",
     },
 }
 
