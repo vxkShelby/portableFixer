@@ -48,6 +48,9 @@ actions:
     label_en: "Securely wipe free space (system drive)"
     risk: MODERATE
     changes_system: false  # overwrites free space only, no system state changes
+    # G13: cipher /w writes all free space three times - as hard on a
+    # dying disk as a defrag, so the pre-flight asks for its health first.
+    stresses_disk: true
     command: "$target = \"$env:SystemDrive\\\"; $out = & cipher (\"/w:\" + $target) 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0) { Write-Output ('Free space on ' + $target + ' securely wiped (previously deleted file remnants overwritten). Can take a long time on large/mostly-full drives.') } else { Write-Output ('cipher /w failed: ' + (($out | Select-Object -Last 3) -join ' ')); exit 1 }"
     inactivity_timeout_sec: 1800
     hard_cap_sec: 21600

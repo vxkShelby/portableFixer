@@ -12,6 +12,8 @@ import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from . import disk_health
+from .disk_health import DiskVerdict
 from .i18n import translate
 from .models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 
@@ -85,11 +87,18 @@ class BatchProfile:
     # Servicing work (REPAIR category changes, REQUIRES_REBOOT): what a
     # pending reboot breaks - DISM/SFC on a half-applied update fail or lie.
     servicing: bool = False
+    # An action flagged `stresses_disk` (chkdsk /r, defrag, NTFS repair):
+    # the only thing that asks the disk health probe (research G13). It is
+    # checked even in an otherwise read-only batch - reading every sector
+    # of a dying disk is what finishes it off.
+    stresses_disk: bool = False
 
 
 def profile_for(items: Iterable[tuple[ModuleDef, ActionDef]]) -> BatchProfile:
-    changes = admin = long_or_reboot = servicing = False
+    changes = admin = long_or_reboot = servicing = stresses_disk = False
     for module, action in items:
+        if action.stresses_disk:
+            stresses_disk = True
         risky = action.risk != RiskLevel.SAFE
         if risky or needs_restore_point(module, action):
             changes = True
@@ -99,7 +108,7 @@ def profile_for(items: Iterable[tuple[ModuleDef, ActionDef]]) -> BatchProfile:
             long_or_reboot = True
         if action.risk == RiskLevel.REQUIRES_REBOOT or (risky and module.category == ModuleCategory.REPAIR):
             servicing = True
-    return BatchProfile(changes, admin, long_or_reboot, servicing)
+    return BatchProfile(changes, admin, long_or_reboot, servicing, stresses_disk)
 
 
 @dataclass(frozen=True)
@@ -120,6 +129,9 @@ class Probes:
     # Names (already translated) of PortableFix jobs that are changing the
     # system right now - winget/uninstall panels, an update being applied.
     busy_tasks: Callable[[], list[str]] = lambda: []
+    # Per-disk verdicts of the m03 disk_health_verdict script; asked only
+    # for a batch with a disk-stressing action. None = unknown.
+    disk_health: Callable[[], list[DiskVerdict] | None] = lambda: None
 
 
 @dataclass(frozen=True)
@@ -181,10 +193,33 @@ def _gb(value: int) -> float:
     return round(value / 1024**3, 1)
 
 
+def _disk_health_issue(probes: Probes) -> Issue | None:
+    verdicts = _call(probes.disk_health)
+    if not verdicts:
+        return None
+    disks = disk_health.gate_disks(verdicts)
+    status = disk_health.worst(disks)
+    if status not in (disk_health.FAILING, disk_health.WARNING):
+        # OK or UNKNOWN (VM, USB bridge, no admin): an unknown never blocks.
+        return None
+    shown = "; ".join(v.describe() for v in disks if v.status == status)
+    # Both are blockers, not warnings: chkdsk /r or a defrag on a disk with
+    # early signs of failure is the costliest mistake a technician can
+    # make (ddrescue: "never try to repair a file system on a drive with
+    # I/O errors"). The override tick stays - the client may have a fresh
+    # backup - and main_window logs it.
+    code = "disk_failing" if status == disk_health.FAILING else "disk_warning"
+    return Issue(code, BLOCKER, {"disks": shown})
+
+
 def run_preflight(profile: BatchProfile, probes: Probes) -> PreflightResult:
-    if not profile.changes_system:
-        return PreflightResult()
     issues: list[Issue] = []
+    if profile.stresses_disk:
+        disk_issue = _disk_health_issue(probes)
+        if disk_issue is not None:
+            issues.append(disk_issue)
+    if not profile.changes_system:
+        return PreflightResult(tuple(issues))
 
     busy = _call(probes.busy_tasks, []) or []
     if busy:
@@ -297,6 +332,12 @@ def _windows_system_free_bytes() -> int | None:
         return None
 
 
+def _windows_disk_health() -> list[DiskVerdict] | None:
+    # One PowerShell launch with a timeout (disk_health.PROBE_TIMEOUT_SEC),
+    # made only when the batch has a disk-stressing action.
+    return disk_health.windows_probe()
+
+
 def system_probes(
     is_admin: Callable[[], bool | None], busy_tasks: Callable[[], list[str]]
 ) -> Probes:
@@ -308,4 +349,5 @@ def system_probes(
         system_free_bytes=_windows_system_free_bytes,
         is_admin=is_admin,
         busy_tasks=busy_tasks,
+        disk_health=_windows_disk_health,
     )

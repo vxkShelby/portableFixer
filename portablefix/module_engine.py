@@ -102,6 +102,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 recommended_action_ids=_string_list(actions_yaml_path, action_id, raw, "recommended_action_ids"),
                 exclude_from_select_all=raw.get("exclude_from_select_all", False) is True,
                 changes_system=changes_system,
+                stresses_disk=_optional_bool(actions_yaml_path, action_id, raw, "stresses_disk") is True,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

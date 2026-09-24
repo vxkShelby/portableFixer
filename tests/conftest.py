@@ -1,6 +1,6 @@
 import pytest
 
-from portablefix import preflight
+from portablefix import disk_health, preflight
 
 try:
     from PySide6.QtCore import QThread
@@ -67,6 +67,12 @@ def _healthy_preflight_probes(request, monkeypatch):
     monkeypatch.setattr(preflight, "_windows_power", lambda: preflight.PowerStatus(on_battery=False, percent=None))
     monkeypatch.setattr(preflight, "_windows_pending_reboot", lambda: [])
     monkeypatch.setattr(preflight, "_windows_system_free_bytes", lambda: 100 * 1024**3)
+    # The disk health probe launches PowerShell (G13) - a healthy system
+    # disk here, so no GUI test pays for it or trips over the host's disks.
+    monkeypatch.setattr(
+        preflight, "_windows_disk_health",
+        lambda: [disk_health.DiskVerdict(disk="0", status=disk_health.OK, system=True)],
+    )
 
 
 @pytest.fixture(autouse=True)

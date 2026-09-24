@@ -35,7 +35,7 @@ PowerShell.
 |---|---|---|
 | M01 | Diagnostics | System info (OS, HW, disks, processes...) |
 | M02 | Cleanup | Temp files, cache, recycle bin, Windows Update cache... |
-| M03 | Repair | Disk: SMART, NTFS scan/SpotFix, TRIM, chkdsk on restart |
+| M03 | Repair | Disk: SMART, disk health verdict, NTFS scan/SpotFix, TRIM, chkdsk on restart |
 | M04 | Repair | System integrity: DISM, SFC, AppX, WMI |
 | M05 | Repair | Windows Update: service/cache reset, DLL re-registration, detection |
 | M06 | Repair | Network: DNS, hosts, DHCP, Winsock, TCP/IP |
@@ -146,6 +146,32 @@ PowerShell.
   rename operations. A blocker (except another running job) can be
   overridden deliberately with a tick; the override is written to the
   audit log and the report.
+- **Image first - disk health gate:** actions that put heavy load on the
+  disk carry `stresses_disk: true` in `actions.yaml` (M03: the full
+  `chkdsk /f /r` at restart, TRIM/defrag optimization, the online
+  SpotFix repair; M22: the `cipher /w` free-space wipe). When one is in
+  a real batch, the pre-flight runs the same script as the SAFE **Disk
+  health - verdict** action once, when the review screen opens (a single
+  PowerShell launch with a 20 s timeout). If the system disk reports
+  FAILING or WARNING, a blocker says "back up or image the disk first";
+  it can only be overridden with a deliberate tick, and the override is
+  written to the audit log. When the system disk cannot be identified,
+  the worst disk decides. UNKNOWN (VM, USB adapter, missing rights) or a
+  failed probe never blocks. SFC and DISM are not flagged: they only
+  read the Windows files (a few GB, much like a regular update), and
+  blocking them would stop most repairs even on a worn but working SSD.
+- **Disk health - verdict (M03, SAFE):** for every physical disk it
+  prints `Get-PhysicalDisk` (HealthStatus, OperationalStatus, MediaType,
+  BusType), `Get-StorageReliabilityCounter` (wear, temperature,
+  uncorrected read errors, power-on hours, where readable) and the SMART
+  failure prediction from `root\wmi`
+  `MSStorageDriver_FailurePredictStatus`. It ends with one `VERDICT:`
+  line per disk - OK, WARNING, FAILING or UNKNOWN - with the codes of
+  the rules that decided. **FAILING:** HealthStatus Unhealthy,
+  OperationalStatus Predictive Failure / Error / Non-Recoverable Error,
+  or PredictFailure. **WARNING:** HealthStatus Warning, a Degraded /
+  Stressed status, uncorrected read errors or wear of 90% or more. Only
+  numeric values and CIM enum names decide, never localized text.
 - **DRY-RUN:** on by default — actions only print (or run a read-only
   preview), nothing changes. So a DRY-RUN asks for no confirmation and
   makes no pre-flight check or restore point.

@@ -42,6 +42,10 @@ class ActionDef:
     # (preflight.changes_system): None = derived from the risk tier, so only
     # an exception to "non-SAFE changes the system" needs the YAML field.
     changes_system: bool | None = None
+    # Does the action put heavy I/O on the system disk (chkdsk /r surface
+    # scan, defrag, online NTFS repair)? Pre-flight then asks the disk
+    # health probe first and blocks on a failing disk (research G13).
+    stresses_disk: bool = False
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk
