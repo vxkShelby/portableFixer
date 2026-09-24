@@ -254,3 +254,38 @@ def test_build_report_data_skips_valid_json_line_missing_required_fields(tmp_pat
 
     assert len(data["actions"]) == 1
     assert data["actions"][0]["action_id"] == "user_temp"
+
+
+def test_html_report_is_localized_to_slovak(tmp_path):
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_sk", make_entry("m02_cleanup", "user_temp", "cmd", 1, "boom", False, "run_sk"))
+    html_path, _ = generate_report(
+        tmp_path, "run_sk", modules, "sk",
+        snapshot_before={"free_gb": 10.0}, snapshot_after={"free_gb": 11.0},
+    )
+    content = html_path.read_text(encoding="utf-8")
+    assert '<html lang="sk">' in content
+    assert "ZLYHALO" in content
+    assert "Volne miesto" in content
+    assert "Vystup" in content
+    assert "FAILED" not in content
+    assert "Free space" not in content
+
+
+def test_html_report_is_english_when_language_is_en(tmp_path):
+    html_path, _ = generate_report(tmp_path, "run_en", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert '<html lang="en">' in content
+    assert "Free space" in content
+
+
+def test_previous_report_with_non_list_actions_does_not_crash(tmp_path):
+    import socket
+
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    hostname = socket.gethostname()
+    old = {"run_id": "old", "generated_at": "x", "snapshot_after": {}, "actions": 7}
+    (reports_dir / f"{hostname}_old.json").write_text(json.dumps(old), encoding="utf-8")
+    data = build_report_data(tmp_path, "run_new", [], "en", {}, {})
+    assert data["previous_comparison"]["previous_action_count"] == 0

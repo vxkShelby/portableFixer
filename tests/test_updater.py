@@ -832,3 +832,46 @@ def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
         with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
             runner.start()
     assert blocker.args == [None, "bad hash"]
+
+
+@pytest.mark.parametrize("manifest", [b"", b"   \n", b"not-a-hash  PortableFix-Portable.zip"])
+def test_download_update_rejects_empty_or_malformed_manifest(tmp_path, manifest):
+    # Previously an empty manifest raised IndexError instead of a
+    # verification error, and a non-hash token was compared as-is.
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(b"fake-zip-content")
+        return _mock_response(manifest)
+
+    dest = tmp_path / "dest"
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(UpdateVerificationError):
+            download_update(info, dest)
+    assert not (dest / "PortableFix-update.zip").exists()
+
+
+def test_download_update_accepts_uppercase_manifest_hash_with_filename(tmp_path):
+    content = b"fake-zip-content"
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+    manifest = f"{hashlib.sha256(content).hexdigest().upper()}  PortableFix-Portable.zip\n".encode()
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(content)
+        return _mock_response(manifest)
+
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        result_path = download_update(info, tmp_path / "dest")
+    assert result_path.read_bytes() == content

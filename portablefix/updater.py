@@ -120,7 +120,13 @@ def download_update(
         zip_path.unlink(missing_ok=True)
         raise
     with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
-        expected = resp.read().decode("utf-8").strip().split()[0].lower()
+        manifest = resp.read().decode("utf-8", errors="replace").split()
+    # An empty or garbled manifest must fail as a verification error (which
+    # the UI reports), not an IndexError, and never be compared as-is.
+    expected = manifest[0].lower() if manifest else ""
+    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        zip_path.unlink(missing_ok=True)
+        raise UpdateVerificationError("SHA256 manifest is empty or malformed - refusing to install.")
     actual = compute_sha256(zip_path)
     if actual.lower() != expected:
         zip_path.unlink(missing_ok=True)
