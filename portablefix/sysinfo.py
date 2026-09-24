@@ -12,6 +12,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from .executor import powershell_executable
+
 
 @dataclass
 class StaticInfo:
@@ -104,7 +106,7 @@ def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
     # subprocess cost once per launch.
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+            [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command",
              "(Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 -ExpandProperty Speed); "
              "'---PF_SEP---'; "
              "(Get-PhysicalDisk | Select-Object -ExpandProperty HealthStatus) -join ', '"],
@@ -389,7 +391,7 @@ def check_vpn_status() -> str | None:
     )
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )

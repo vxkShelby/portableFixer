@@ -3,6 +3,8 @@ import os
 import shutil
 from pathlib import Path
 
+import pytest
+
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import elevation
@@ -1256,8 +1258,8 @@ def test_undo_steps_accumulate_across_batches_in_same_run(qtbot, tmp_path, monke
 
     window._action_checkboxes["step_one"].setChecked(True)
     window.run_selected_actions()
-    reports_dir = tmp_path / "Reports"
-    qtbot.waitUntil(lambda: reports_dir.exists(), timeout=10000)
+    # The report is written off the GUI thread; Run re-enables once it's done.
+    qtbot.waitUntil(lambda: window.run_button.isEnabled(), timeout=10000)
     assert window._undo_steps == ["Write-Output 'undo-one'"]
 
     window._action_checkboxes["step_one"].setChecked(False)
@@ -2863,6 +2865,7 @@ def test_report_is_flagged_when_state_dir_is_the_temp_fallback(qtbot, tmp_path, 
     window._queue = []
     window._run_next()
 
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=10000)
     assert captured["storage_fallback"] is True
     same = MainWindow(assets_dir=assets_dir, state_dir=assets_dir, settings=Settings(language="en"), is_admin=True, run_id="run_nofb")
     qtbot.addWidget(same)
@@ -2954,6 +2957,7 @@ def test_batch_progress_is_announced_to_screen_readers(qtbot, tmp_path, monkeypa
     monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
     window._batch_results = [("hello", 0)]
     window._run_next()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=10000)
     assert announced[-1] == window._t("batch_done_message").format(ok=1, failed=0)
     assert window._batch_active is False
 
@@ -2991,3 +2995,207 @@ def test_style_muted_text_meets_wcag_aa_contrast():
             assert contrast(color, surface) >= 4.5, (selector, color, surface)
     assert "QToolButton:focus" in style.STYLE
     assert 'QFrame#actionCard[tile="true"]:focus' in style.STYLE
+
+
+def _report_window(qtbot, tmp_path, monkeypatch, run_id):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id=run_id)
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_take_snapshot", lambda: {})
+    # What run_selected_actions leaves behind right before the last action ends.
+    window._batch_active = True
+    window.run_button.setEnabled(False)
+    window.language_button.setEnabled(False)
+    window._queue = []
+    window._batch_results = [("hello", 0)]
+    return window
+
+
+def test_batch_end_report_is_generated_off_the_gui_thread_then_summary_follows(qtbot, tmp_path, monkeypatch):
+    # research-app-performance.md 4.3: the report used to be written on the
+    # GUI thread, freezing the window at every batch end.
+    import threading
+
+    from portablefix import report
+
+    window = _report_window(qtbot, tmp_path, monkeypatch, "run_report_thread")
+    release = threading.Event()
+    report_threads = []
+    order = []
+
+    def slow_generate_report(*args, **kwargs):
+        report_threads.append(threading.current_thread())
+        release.wait(5)
+        return tmp_path / "r.html", tmp_path / "r.json"
+
+    monkeypatch.setattr(report, "generate_report", slow_generate_report)
+    real_refresh = window._refresh_dashboard
+    monkeypatch.setattr(window, "_refresh_dashboard", lambda: order.append("dashboard") or real_refresh())
+    monkeypatch.setattr(window, "_notify_batch_finished", lambda: order.append("notify"))
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: order.append(("summary", path)))
+
+    window._run_next()
+
+    # _run_next returned while the report is still being written - the GUI
+    # thread is free, and nothing that needs the report has happened yet.
+    assert window._batch_active is False
+    assert order == []
+    assert window.run_button.isEnabled() is False
+    assert window.language_button.isEnabled() is False
+    release.set()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=10000)
+
+    assert report_threads and report_threads[0] is not threading.main_thread()
+    assert order == ["dashboard", "notify", ("summary", tmp_path / "r.html")]
+    assert window.run_button.isEnabled() is True
+    assert window.language_button.isEnabled() is True
+
+
+def test_batch_end_report_write_failure_still_finishes_the_batch(qtbot, tmp_path, monkeypatch):
+    from portablefix import report
+
+    window = _report_window(qtbot, tmp_path, monkeypatch, "run_report_oserror")
+    order = []
+
+    def failing_generate_report(*args, **kwargs):
+        raise OSError("USB unplugged")
+
+    monkeypatch.setattr(report, "generate_report", failing_generate_report)
+    monkeypatch.setattr(window, "_notify_batch_finished", lambda: order.append("notify"))
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: order.append("summary"))
+
+    window._run_next()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=10000)
+
+    assert window.console.toPlainText().count(window._t("disk_write_failed")) == 1
+    # No report, so no "report is ready" summary - but the batch still ends.
+    assert order == ["notify"]
+    assert window.run_button.isEnabled() is True
+
+
+def test_new_batch_is_refused_while_previous_report_is_being_written(qtbot, tmp_path, monkeypatch):
+    # A second batch would append to the audit log the report thread is
+    # reading and race it for the same report files.
+    window = _report_window(qtbot, tmp_path, monkeypatch, "run_report_busy")
+    window._batch_active = False
+    window._report_runner = object()
+    window._action_checkboxes["hello"].setChecked(True)
+
+    window.run_selected_actions()
+    window._on_run_shortcut()
+
+    assert window._batch_active is False
+    assert window._queue == []
+    window._report_runner = None
+
+
+def test_close_event_waits_for_an_in_flight_report_runner(qtbot, tmp_path, monkeypatch):
+    import threading
+    import time
+
+    from portablefix import report
+
+    window = _report_window(qtbot, tmp_path, monkeypatch, "run_report_close")
+    started = threading.Event()
+    done = threading.Event()
+
+    def slow_generate_report(*args, **kwargs):
+        started.set()
+        time.sleep(0.5)
+        done.set()
+        return tmp_path / "r.html", tmp_path / "r.json"
+
+    monkeypatch.setattr(report, "generate_report", slow_generate_report)
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: pytest.fail("summary after close"))
+    window._run_next()
+    assert started.wait(5)
+
+    window.close()
+
+    # closeEvent returned only once the thread finished (Qt aborts the
+    # process if a running QThread is destroyed with its parent).
+    assert done.is_set()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=10000)
+
+
+def test_batch_ending_after_close_writes_the_report_without_a_thread(qtbot, tmp_path, monkeypatch):
+    # closeEvent has already waited on every runner by then - a new thread
+    # could outlive the window.
+    import threading
+
+    from portablefix import report
+
+    window = _report_window(qtbot, tmp_path, monkeypatch, "run_report_closed")
+    calls = []
+    monkeypatch.setattr(
+        report, "generate_report",
+        lambda *a, **kw: calls.append(threading.current_thread()) or (tmp_path / "r.html", tmp_path / "r.json"),
+    )
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: pytest.fail("summary after close"))
+    window._closed = True
+
+    window._run_next()
+
+    assert calls == [threading.main_thread()]
+    assert window._report_runner is None
+
+
+_UNDO_PAIR_YAML = """
+module_id: m05_windows_update
+category: REPAIR
+actions:
+  - id: step_one
+    label_sk: "X"
+    label_en: "X"
+    risk: SAFE
+    command: "Write-Output 'one'"
+    undo_command: "Write-Output 'undo-one'"
+  - id: step_two
+    label_sk: "Y"
+    label_en: "Y"
+    risk: SAFE
+    command: "Write-Output 'two'"
+    undo_command: "Write-Output 'undo-two'"
+"""
+
+
+def test_undo_script_is_only_rewritten_when_its_content_changes(qtbot, tmp_path, monkeypatch):
+    # research-app-performance.md 4.2: every later batch's pre-restore-point
+    # write used to rewrite an identical undo.ps1.
+    from types import SimpleNamespace
+
+    from portablefix import undo
+
+    module_dir = tmp_path / "Modules" / "m05_windows_update"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(_UNDO_PAIR_YAML, encoding="utf-8")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False), is_admin=True, run_id="run_undo_cheap")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_run_next", lambda: None)
+    writes = []
+    real_create = undo.create_undo_script
+    monkeypatch.setattr(undo, "create_undo_script", lambda *a, **kw: writes.append(1) or real_create(*a, **kw))
+    undo_path = tmp_path / "Backups" / "run_undo_cheap" / "undo.ps1"
+    runner = SimpleNamespace(captured_output=[])
+
+    window._write_undo_script()
+    window._write_undo_script()
+    assert len(writes) == 1 and undo_path.exists()
+
+    # Still written after every successful action, newest step first, so a
+    # crash mid-batch leaves a correct script.
+    window._on_action_finished("m05_windows_update", "step_one", "cmd", 0, runner)
+    assert len(writes) == 2
+    assert "Write-Output 'undo-one'" in undo_path.read_text(encoding="utf-8-sig")
+    window._on_action_finished("m05_windows_update", "step_two", "cmd", 0, runner)
+    content = undo_path.read_text(encoding="utf-8-sig")
+    assert content.index("Write-Output 'undo-two'") < content.index("Write-Output 'undo-one'")
+    assert content.startswith("# PortableFix undo script")
+    assert "# full report:" in content
+
+    window._write_undo_script()  # next batch's pre-restore-point write
+    assert len(writes) == 3  # unchanged -> skipped
+
+    undo_path.unlink()
+    window._write_undo_script()
+    assert len(writes) == 4 and undo_path.exists()

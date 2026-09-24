@@ -9,9 +9,11 @@ $distStage = "$root\App"
 # actual app code lived in a separate _internal/PYZ-00.pyz next to a
 # thin bootloader .exe, so swapping only the .exe would have left stale
 # code running.
+# Modules/ and Data/ are deliberately NOT bundled: the app reads them from
+# the drive next to App/ (paths.get_base_dir, never sys._MEIPASS), so an
+# embedded copy was only extracted to %TEMP% on every launch and never
+# read - and Data/ would have baked the build machine's settings.json in.
 pyinstaller --onefile --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
-  --add-data "$root\Modules;Modules" `
-  --add-data "$root\Data;Data" `
   --add-data "$root\portablefix.ico;." `
   --icon "$root\portablefix.ico" `
   --name PortableFix `

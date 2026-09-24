@@ -2,8 +2,11 @@ import html
 import json
 import platform
 import socket
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from PySide6.QtCore import QThread, Signal
 
 from .audit_log import audit_log_path
 from .i18n import translate
@@ -755,3 +758,35 @@ def generate_report(
     html_path.write_text(_render_html(data), encoding="utf-8")
     json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return html_path, json_path
+
+
+class ReportRunner(QThread):
+    """generate_report re-reads and re-renders the whole session's audit log
+    (it grows with every batch), so on a slow USB stick it runs off the GUI
+    thread - otherwise the window froze at every batch end before the
+    summary dialog could appear."""
+
+    # (html_path or None, write_failed) - write_failed is the OSError case
+    # the GUI reports as disk_write_failed.
+    result_ready = Signal(object, bool)
+
+    def __init__(self, base_dir: Path, run_id: str, modules: list[ModuleDef], language: str,
+                 snapshot_before: dict, snapshot_after: dict, job: dict | None = None,
+                 storage_fallback: bool = False, parent=None):
+        super().__init__(parent)
+        self._args = (base_dir, run_id, modules, language, snapshot_before, snapshot_after)
+        self._kwargs = {"job": job, "storage_fallback": storage_fallback}
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        try:
+            html_path, _ = generate_report(*self._args, **self._kwargs)
+        except OSError:
+            self.result_ready.emit(None, True)
+        except Exception:
+            # Always answer, or the GUI waits forever with Run disabled -
+            # but still surface the bug like an uncaught GUI-thread error.
+            sys.excepthook(*sys.exc_info())
+            self.result_ready.emit(None, False)
+        else:
+            self.result_ready.emit(html_path, False)

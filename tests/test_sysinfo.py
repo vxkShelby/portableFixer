@@ -1,6 +1,5 @@
 import subprocess
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from portablefix import sysinfo
@@ -285,3 +284,20 @@ def test_run_upload_test_computes_mbps_from_elapsed_time():
 def test_run_upload_test_returns_none_on_failure():
     with patch("portablefix.sysinfo.urllib.request.urlopen", side_effect=OSError("network down")):
         assert sysinfo.run_upload_test() is None
+
+
+def test_sysinfo_powershell_calls_use_the_absolute_powershell_path(monkeypatch):
+    # A broken PATH must not blank the RAM speed/disk health/VPN tiles while
+    # powershell.exe sits in System32 - same lookup as the action executor.
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return MagicMock(stdout="")
+
+    exe = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    monkeypatch.setattr(sysinfo, "powershell_executable", lambda: exe)
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=fake_run):
+        sysinfo._get_ram_speed_and_disk_health()
+        sysinfo.check_vpn_status()
+    assert [argv[0] for argv in calls] == [exe, exe]
