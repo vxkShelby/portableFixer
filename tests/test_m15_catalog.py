@@ -181,7 +181,7 @@ UPDATED = {"UEFICA2023Status": "Updated", "WindowsUEFICA2023Capable": 2}
 
 def _run_secureboot(tmp_path, confirm="on", db=DB_2023, kek=KEK_2023, firmware_denied=False,
                     state=None, servicing=None, root=None, issuer="CN=Windows UEFI CA 2023, O=Microsoft Corporation"):
-    """confirm: 'on' | 'off' | 'unsupported' | 'denied'. state/servicing/root:
+    """confirm: 'on' | 'off' | 'unsupported' | 'unsupported_fqid' | 'denied'. state/servicing/root:
     registry values under SecureBoot\\State, SecureBoot\\Servicing and
     SecureBoot (None = key absent)."""
     def reg(values):
@@ -198,6 +198,12 @@ def _run_secureboot(tmp_path, confirm="on", db=DB_2023, kek=KEK_2023, firmware_d
         # Legacy BIOS: the real cmdlet throws "Cmdlet not supported on this
         # platform" as a PlatformNotSupportedException (localized message).
         "unsupported": "throw [System.PlatformNotSupportedException]::new('Rutina cmdlet nie je na tejto platforme podporovaná.')",
+        # Same case when the error surfaces only through its error id, with
+        # a generic exception type.
+        "unsupported_fqid": "$PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new("
+        "[System.InvalidOperationException]::new('Nepodporované.'), "
+        "'NotSupported,Microsoft.SecureBoot.Commands.ConfirmSecureBootUefiCommand', "
+        "[System.Management.Automation.ErrorCategory]::NotImplemented, $null))",
         "denied": denied,
     }[confirm]
     firmware = denied if firmware_denied else (
@@ -219,8 +225,9 @@ def _run_secureboot(tmp_path, confirm="on", db=DB_2023, kek=KEK_2023, firmware_d
     return _run_ps(stubs, names, _action(SB_ID).command, extra_env={"SystemRoot": str(tmp_path / "Windows")})
 
 
-def test_secureboot_legacy_bios_is_not_applicable(tmp_path):
-    result = _run_secureboot(tmp_path, confirm="unsupported")
+@pytest.mark.parametrize("confirm", ["unsupported", "unsupported_fqid"])
+def test_secureboot_legacy_bios_is_not_applicable(tmp_path, confirm):
+    result = _run_secureboot(tmp_path, confirm=confirm)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Secure Boot: unsupported" in result.stdout
     assert _verdict(result.stdout).startswith("VERDICT: NOT APPLICABLE - legacy BIOS")
@@ -324,6 +331,19 @@ def test_secureboot_not_elevated_and_not_updated_needs_action(tmp_path):
     assert _verdict(result.stdout).startswith("VERDICT: ACTION NEEDED")
 
 
+def test_secureboot_not_elevated_and_switched_but_not_updated_explains_why(tmp_path):
+    # Capable=2 alone does not prove the KEK 2023 certificate is present, so
+    # the verdict stays ACTION NEEDED - but it must name a reason.
+    result = _run_secureboot(
+        tmp_path, confirm="denied", firmware_denied=True, state={"UEFISecureBootEnabled": 1},
+        servicing={"WindowsUEFICA2023Capable": 2},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _verdict(result.stdout).startswith("VERDICT: ACTION NEEDED")
+    assert " - db/KEK could not be checked without administrator rights" in result.stdout
+    assert "not yet booting with the 2023-signed boot manager" not in result.stdout
+
+
 def test_secureboot_not_elevated_and_registry_off_is_not_applicable(tmp_path):
     result = _run_secureboot(tmp_path, confirm="denied", state={"UEFISecureBootEnabled": 0})
     assert result.returncode == 0, result.stdout + result.stderr
@@ -382,7 +402,7 @@ QMR_XML = (
 
 
 def _run_winre(tmp_path, enabled=True, xml_state=None, reagentc_exit=0, wim=False,
-               part_free_mb=600, qmr=QMR_XML, qmr_exit=0):
+               part_free_mb=600, part_gpt="{de94bba4-06d1-4d40-a16a-bfd50179d6ac}", qmr=QMR_XML, qmr_exit=0):
     """xml_state: None = no ReAgent.xml, else its InstallState (1/0)."""
     recovery = tmp_path / "Windows" / "System32" / "Recovery"
     recovery.mkdir(parents=True)
@@ -406,7 +426,7 @@ def _run_winre(tmp_path, enabled=True, xml_state=None, reagentc_exit=0, wim=Fals
         f"[pscustomobject]@{{ ExitCode = {qmr_exit} }} }}",
         "function Get-Partition { [CmdletBinding()] param([int] $DiskNumber, [int] $PartitionNumber) "
         f"Add-Content -Path {lg} -Value ('Get-Partition ' + $DiskNumber + ' ' + $PartitionNumber); "
-        "[pscustomobject]@{ Type = 'Recovery'; Size = 750MB } }",
+        f"[pscustomobject]@{{ Type = 'Recovery'; GptType = {_ps_quote(part_gpt)}; MbrType = $null; Size = 750MB }} }}",
         "function Get-Volume { [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)] $InputObject) "
         f"process {{ [pscustomobject]@{{ SizeRemaining = {part_free_mb}MB }} }} }}",
     ]
@@ -440,6 +460,16 @@ def test_winre_low_free_space_on_partition_is_flagged(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "free 90 MB" in result.stdout
     assert _verdict(result.stdout).startswith("VERDICT: OK - WinRE is enabled, but its partition has less than 250 MB free")
+
+
+def test_winre_low_free_space_on_a_non_recovery_partition_is_not_flagged(tmp_path):
+    # Guards against reagentc's partition number pointing at another
+    # partition (e.g. the 100 MB EFI one): report it, do not raise the note.
+    result, _, _ = _run_winre(tmp_path, enabled=True, xml_state=1, part_free_mb=90,
+                              part_gpt="{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "free 90 MB (not a recovery-type partition" in result.stdout
+    assert _verdict(result.stdout).startswith("VERDICT: OK - WinRE is enabled;")
 
 
 def test_winre_disabled_with_wim_present_needs_reagentc_enable(tmp_path):
@@ -524,10 +554,11 @@ def test_m15_catalog_scripts_parse_without_powershell_7_only_syntax(tmp_path):
 
 
 # The only patterns the two commands may match: a FullyQualifiedErrorId
-# fragment, the reagentc device path, a GUID and the QMR XML element names -
-# none of them is display-language text.
+# fragment, the reagentc device path, a GUID, the recovery partition GPT type
+# and the QMR XML element names - none of them is display-language text.
 ALLOWED_PATTERNS = {
     "NotSupported",
+    "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
     r"(?i)\\\\\?\\GLOBALROOT\\device\\harddisk(\d+)\\partition(\d+)\\[^\s]*",
     r"(?!\{?0{8}-0{4}-0{4}-0{4}-0{12})\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?",
     r'<CloudRemediation\s[^>]*state="(\d+)"',
