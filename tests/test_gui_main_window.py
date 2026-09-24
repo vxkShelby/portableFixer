@@ -3926,3 +3926,249 @@ def test_panel_confirmation_list_is_capped(qtbot, tmp_path):
     assert lines[0] == "• Program 0" and lines[19] == "• Program 19"
     assert lines[20] == window._t("uninstaller_and_more").format(count=5)
     assert window._panel_confirm_list(["Only one"]) == "• Only one"
+
+
+SLOW_AND_QUICK_ACTIONS_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: slow_one
+    label_sk: "Pomalá"
+    label_en: "Slow one"
+    risk: SAFE
+    command: "Start-Sleep -Seconds 2; Write-Output 'slow-done'"
+  - id: quick_one
+    label_sk: "Rýchla"
+    label_en: "Quick one"
+    risk: SAFE
+    command: "Write-Output 'quick-done'"
+"""
+
+
+def _checked_ids(window) -> set[str]:
+    return {aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()}
+
+
+def test_dashboard_analyze_is_ignored_and_disabled_mid_batch(qtbot, tmp_path, monkeypatch):
+    # Analyze applies a preset and starts a batch. Mid-batch it used to stay
+    # clickable: it wiped the checkbox selection, overwrote the running
+    # _queue and started a second ActionRunner next to the first one.
+    import threading
+
+    from portablefix import report
+    from portablefix.gui.main_window import PRESETS
+
+    monkeypatch.setitem(PRESETS, "full_diagnostic", ["quick_one"])
+    release_report = threading.Event()
+    real_generate_report = report.generate_report
+
+    def gated_generate_report(*args, **kwargs):
+        release_report.wait(10)
+        return real_generate_report(*args, **kwargs)
+
+    monkeypatch.setattr(report, "generate_report", gated_generate_report)
+    base_dir = _make_base_dir(tmp_path, SLOW_AND_QUICK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_analyze_mid_batch")
+    qtbot.addWidget(window)
+    assert window.dashboard_analyze_button.isEnabled() is True
+    window._action_checkboxes["slow_one"].setChecked(True)
+
+    window.run_selected_actions()
+    assert window._batch_active is True
+    runner = window._runner
+    assert runner is not None
+    queue = list(window._queue)
+    checked = _checked_ids(window)
+    assert window.dashboard_analyze_button.isEnabled() is False
+
+    window._run_dashboard_analysis()
+    window.dashboard_analyze_button.click()
+
+    assert window._runner is runner
+    assert window._queue == queue
+    assert _checked_ids(window) == checked
+
+    # Still locked after the batch while its report is being written...
+    qtbot.waitUntil(lambda: not window._batch_active, timeout=15000)
+    assert window._report_runner is not None
+    assert window.dashboard_analyze_button.isEnabled() is False
+    release_report.set()
+    _wait_batch_idle(qtbot, window)
+    # ...and unlocked together with run_button once it is written.
+    assert window.dashboard_analyze_button.isEnabled() is True
+    assert window.run_button.isEnabled() is True
+    assert "slow-done" in window.console.toPlainText()
+    assert "quick-done" not in window.console.toPlainText()
+
+
+def test_analyze_button_disabled_after_language_toggle_mid_batch(qtbot, tmp_path):
+    # The language button itself is locked mid-batch (see
+    # test_language_toggle_mid_batch_restores_run_state_on_the_rebuilt_widgets),
+    # so drive the rebuild directly: a freshly built dashboard must not hand
+    # back an enabled Analyze button while a batch or its report is running.
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_analyze_toggle_mid_batch")
+    qtbot.addWidget(window)
+    window._batch_active = True
+    window._queue = ["hello"]
+    window._queue_total = 2
+
+    window._on_toggle_language()
+    assert window.dashboard_analyze_button.isEnabled() is False
+    assert window.run_button.isEnabled() is False
+
+    window._batch_active = False
+    window._queue = []
+    window._report_runner = object()
+    window._on_toggle_language()
+    assert window.dashboard_analyze_button.isEnabled() is False
+
+    window._report_runner = None
+    window._on_toggle_language()
+    assert window.dashboard_analyze_button.isEnabled() is True
+
+
+def test_analyze_button_unlocks_when_update_download_spanning_a_language_toggle_ends(qtbot, tmp_path):
+    # The language button stays usable during an update download, and the
+    # rebuilt dashboard locks Analyze for it - the download's end must
+    # unlock it again, or it stays dead until some later batch finishes.
+    from portablefix.updater import UpdateInfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_analyze_toggle_mid_dl")
+    qtbot.addWidget(window)
+    window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
+    window._update_in_progress = True
+    window.update_button.setEnabled(False)
+    window.update_dismiss_button.setEnabled(False)
+
+    window._on_toggle_language()
+    assert window.dashboard_analyze_button.isEnabled() is False
+
+    window._on_update_download_finished(None, "network down")
+    assert window.dashboard_analyze_button.isEnabled() is True
+
+
+def test_cancel_then_analyze_during_restore_point_does_not_uncancel(qtbot, tmp_path, monkeypatch):
+    # Cancel clicked while Checkpoint-Computer runs, then Analyze (or any
+    # other path into run_selected_actions): the re-entry used to reset
+    # _cancel_requested, so the restore point's result then dispatched the
+    # DESTRUCTIVE action the technician had just cancelled.
+    import time
+
+    from portablefix import restore_point
+    from portablefix.gui.main_window import PRESETS
+
+    def slow_create_restore_point(description):
+        time.sleep(0.4)
+        return True, ""
+
+    monkeypatch.setattr(restore_point, "create_restore_point", slow_create_restore_point)
+    monkeypatch.setitem(PRESETS, "full_diagnostic", ["risky_thing"])
+    dispatched = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: dispatched.append(a) or QMessageBox.Yes))
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False), is_admin=True, run_id="run_cancel_analyze_rp")
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+
+    window.run_selected_actions()
+    rp_runner = window._pending_restore_point_runner
+    assert rp_runner is not None
+    window._on_cancel_clicked()
+    assert window._batch_active is True
+    assert window._cancel_requested is True
+
+    window.run_selected_actions()
+    window._run_dashboard_analysis()
+
+    assert window._cancel_requested is True
+    assert window._queue == []
+    assert window._pending_restore_point_runner is rp_runner
+    _wait_batch_idle(qtbot, window)
+    assert dispatched == []
+    assert "destructive-ran" not in window.console.toPlainText()
+    assert "risky_thing" not in _executed_action_ids(audit_log_path(base_dir, "run_cancel_analyze_rp"))
+
+
+def _write_module_with_excluded_risk_actions(base_dir):
+    module_dir = base_dir / "Modules" / "m08_security"
+    module_dir.mkdir(parents=True)
+    actions = [
+        ("safe_normal", "SAFE", False),
+        ("safe_excluded", "SAFE", True),
+        ("mod_normal", "MODERATE", False),
+        ("mod_excluded", "MODERATE", True),
+        ("reboot_normal", "REQUIRES_REBOOT", False),
+        ("reboot_excluded", "REQUIRES_REBOOT", True),
+    ]
+    lines = ["module_id: m08_security", "category: SECURITY", "actions:"]
+    for action_id, risk, excluded in actions:
+        lines += [
+            f"  - id: {action_id}",
+            "    label_sk: \"Akcia\"",
+            f"    label_en: \"{action_id}\"",
+            f"    risk: {risk}",
+            "    command: \"Write-Output 'x'\"",
+        ]
+        if excluded:
+            lines.append("    exclude_from_select_all: true")
+    (module_dir / "actions.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return base_dir
+
+
+def test_global_risk_buttons_skip_excluded_actions(qtbot, tmp_path):
+    # "Select MODERATE only" used to sweep in hard_disable_rdp,
+    # drv_restore_backup, backup_restore_latest and crash_dumps, and
+    # "REQUIRES_REBOOT only" hard_lsa_protection_enable - the opt-out
+    # applied to "select all" alone.
+    from portablefix.models import ModuleCategory
+
+    base_dir = _write_module_with_excluded_risk_actions(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_excl")
+    qtbot.addWidget(window)
+
+    window.global_select_moderate_button.click()
+    assert _checked_ids(window) == {"mod_normal"}
+
+    window.global_select_reboot_button.click()
+    assert _checked_ids(window) == {"reboot_normal"}
+
+    window.global_select_safe_button.click()
+    assert _checked_ids(window) == {"safe_normal"}
+
+    window.global_select_none_button.click()
+    _all_btn, category_safe_btn, _none_btn = window._category_select_buttons[ModuleCategory.SECURITY]
+    category_safe_btn.click()
+    assert _checked_ids(window) == {"safe_normal"}
+
+    # Deliberate selection still works, from either view.
+    window._action_checkboxes["mod_excluded"].setChecked(True)
+    window._risk_view_checkboxes["reboot_excluded"].setChecked(True)
+    assert _checked_ids(window) == {"safe_normal", "mod_excluded", "reboot_excluded"}
+
+
+def test_custom_preset_restores_excluded_action(qtbot, tmp_path, monkeypatch):
+    # A custom preset is saved from boxes checked by hand, opt-out actions
+    # included - applying it used to go through the "select all" path,
+    # which silently dropped exactly those.
+    from portablefix.gui.main_window import PRESETS
+
+    _write_module_with_excluded_action(tmp_path, "m10_drivers", "DRIVER_UPDATES", "drv_safe", "drv_restore_backup")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id="run_custom_excl")
+    qtbot.addWidget(window)
+    saved = ["drv_safe", "drv_restore_backup"]
+    assert window._save_custom_preset("Obnova ovládačov", saved) is True
+    # An id that has since left the catalog is skipped, not an error.
+    window.settings.custom_presets["Obnova ovládačov"].append("gone_from_catalog")
+    window._apply_selection(list(window._action_checkboxes), "none")
+    assert _checked_ids(window) == set()
+
+    window._preset_buttons["custom:Obnova ovládačov"].click()
+
+    assert _checked_ids(window) == set(saved)
+    assert window._preset_buttons["custom:Obnova ovládačov"].isChecked() is True
+
+    # Built-in presets keep the bulk path and its opt-out.
+    monkeypatch.setitem(PRESETS, "_test_builtin_excl", saved)
+    window._apply_preset("_test_builtin_excl")
+    assert _checked_ids(window) == {"drv_safe"}

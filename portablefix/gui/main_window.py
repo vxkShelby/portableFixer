@@ -951,7 +951,15 @@ class MainWindow(QMainWindow):
     def _apply_preset(self, preset_key: str) -> None:
         wanted = [aid for aid in self._preset_action_ids(preset_key) if aid in self._action_checkboxes]
         self._apply_selection(list(self._action_checkboxes), "none")
-        self._apply_selection(wanted, "all")
+        if preset_key.startswith(CUSTOM_PRESET_PREFIX):
+            # A custom preset is a snapshot of boxes the technician checked
+            # by hand, opt-out ones (drv_restore_backup, ...) included - the
+            # bulk "all" path would silently drop exactly those, so restore
+            # every saved id as-is.
+            for action_id in wanted:
+                self._action_checkboxes[action_id].setChecked(True)
+        else:
+            self._apply_selection(wanted, "all")
         # Exclusive QButtonGroup membership already unchecks the other two
         # preset buttons on a real click; set this one explicitly too so the
         # highlight is correct even when _apply_preset is called directly
@@ -1275,18 +1283,16 @@ class MainWindow(QMainWindow):
             checked_preset.setChecked(False)
             self._preset_button_group.setExclusive(True)
         for action_id in action_ids:
-            if mode == "all":
-                # Recovery/restore-style actions (e.g. drv_restore_backup)
-                # opt out of blanket "select all" - they must be checked
-                # deliberately via their own checkbox, never swept in as a
-                # side effect of selecting everything in their category.
-                _, action = self._find_action(action_id)
-                checked = not action.exclude_from_select_all
-            elif mode == "none":
+            if mode == "none":
                 checked = False
             else:
+                # Recovery/restore-style actions (e.g. drv_restore_backup,
+                # hard_disable_rdp) opt out of every bulk sweep - "select
+                # all" and the select-by-risk buttons alike. They must be
+                # checked deliberately via their own checkbox; "MODERATE
+                # only" used to sweep four of them in as a side effect.
                 _, action = self._find_action(action_id)
-                checked = action.risk.value == mode
+                checked = not action.exclude_from_select_all and (mode == "all" or action.risk.value == mode)
             self._action_checkboxes[action_id].setChecked(checked)
 
     def _build_snapshot_metrics_widget(self) -> QWidget | None:
@@ -1948,10 +1954,15 @@ class MainWindow(QMainWindow):
         score_box.addWidget(score_caption)
         self._dashboard_score_label = score_value
         top_row.addLayout(score_box)
-        analyze_button = QPushButton(self._t("dashboard_analyze_button"))
-        analyze_button.setObjectName("runButton")
-        analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
-        top_row.addWidget(analyze_button)
+        # Kept on self so batch start/end can lock it together with
+        # run_button - it starts a batch too. Its initial state matters when
+        # a language toggle rebuilds the dashboard while a batch, its report
+        # or an update download is still in flight.
+        self.dashboard_analyze_button = QPushButton(self._t("dashboard_analyze_button"))
+        self.dashboard_analyze_button.setObjectName("runButton")
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
+        self.dashboard_analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
+        top_row.addWidget(self.dashboard_analyze_button)
         top_row.addStretch(1)
         card_layout.addLayout(top_row)
 
@@ -2026,6 +2037,11 @@ class MainWindow(QMainWindow):
             self.category_list.setCurrentRow(self._categories_order.index(category))
 
     def _run_dashboard_analysis(self) -> None:
+        # Checked before _apply_preset, not left to run_selected_actions:
+        # mid-batch the preset would still wipe the technician's checkbox
+        # selection even though no second batch starts.
+        if self._batch_start_blocked():
+            return
         if "full_diagnostic" in PRESETS:
             self._apply_preset("full_diagnostic")
             self.run_selected_actions()
@@ -2580,6 +2596,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.update_button.setEnabled(True)
         self.update_dismiss_button.setEnabled(True)
+        # A language toggle mid-download rebuilt the dashboard with Analyze
+        # locked (_build_dashboard_card) - nothing else would unlock it.
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
         if not zip_path:
             self.update_banner_label.setText(self._t("update_download_failed"))
             return
@@ -2668,9 +2687,17 @@ class MainWindow(QMainWindow):
             _, action = self._find_action(action_id)
             checkbox.setAccessibleName(self._action_accessible_name(action, text))
 
+    def _batch_start_blocked(self) -> bool:
+        # A batch is running, the previous batch's report is still being
+        # written (see _run_next) or an update is downloading.
+        return self._batch_active or self._update_in_progress or self._report_runner is not None
+
     def run_selected_actions(self) -> None:
-        # The previous batch's report is still being written - see _run_next.
-        if self._update_in_progress or self._report_runner is not None:
+        # Mid-batch re-entry (the dashboard's Analyze button, a direct call)
+        # would overwrite _queue, reset _cancel_requested - un-cancelling a
+        # batch whose Cancel was clicked during its restore point - and start
+        # a second ActionRunner alongside the running one.
+        if self._batch_start_blocked():
             return
         self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self._queue_total = len(self._queue)
@@ -2685,6 +2712,7 @@ class MainWindow(QMainWindow):
             self._batch_active = True
             self._snapshot_before = self._take_snapshot()
             self.run_button.setEnabled(False)
+            self.dashboard_analyze_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
@@ -2696,6 +2724,7 @@ class MainWindow(QMainWindow):
         self._report_runner = None
         if not self._closed:
             self.run_button.setEnabled(True)
+            self.dashboard_analyze_button.setEnabled(True)
             self.language_button.setEnabled(True)
             if write_failed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
