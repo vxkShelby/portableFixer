@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from portablefix import preflight
@@ -180,10 +182,37 @@ def test_is_long_action():
     assert not preflight.is_long_action(_action())
 
 
+@pytest.mark.real_preflight_probes
 def test_system_probes_are_unknown_off_windows(monkeypatch):
     monkeypatch.setattr(preflight.sys, "platform", "linux")
     probes = preflight.system_probes(is_admin=lambda: True, busy_tasks=lambda: [])
     assert probes.power() is None
     assert probes.pending_reboot() is None
     assert probes.system_free_bytes() is None
+    assert run_preflight(CHANGING, probes).issues == ()
+
+
+@pytest.mark.real_preflight_probes
+@pytest.mark.skipif(sys.platform != "win32", reason="the real probes read Win32/registry state")
+def test_real_windows_probes_return_well_formed_values():
+    # Smoke test on the Windows CI runner: struct layout, winreg types and
+    # the %SystemDrive% path are only exercised here.
+    power = preflight._windows_power()
+    assert power is None or isinstance(power, PowerStatus)
+    if power is not None and power.percent is not None:
+        assert 0 <= power.percent <= 100
+    reboot = preflight._windows_pending_reboot()
+    assert reboot is None or (
+        isinstance(reboot, list)
+        and all(s in (preflight.REBOOT_CBS, preflight.REBOOT_WU, preflight.REBOOT_FILE_RENAME) for s in reboot)
+    )
+    free = preflight._windows_system_free_bytes()
+    assert isinstance(free, int) and free > 0
+
+
+def test_healthy_probe_defaults_keep_the_host_state_out_of_tests():
+    # tests/conftest.py: without the opt-out marker the real probes report
+    # a healthy machine, so a pending restart on the host blocks no test.
+    probes = preflight.system_probes(is_admin=lambda: True, busy_tasks=lambda: [])
+    assert probes.pending_reboot() == []
     assert run_preflight(CHANGING, probes).issues == ()

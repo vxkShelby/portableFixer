@@ -540,6 +540,29 @@ def test_report_lists_declined_confirmation_in_safety_log_not_as_action(tmp_path
     assert "WARNING: irreversible" in content
 
 
+@pytest.mark.parametrize(
+    ("language", "decision", "expected"),
+    [
+        ("en", "override", "Pre-run batch review: <span class=\"rp-fail\">technician confirmed the batch despite blocking findings</span>"),
+        ("sk", "override", "Kontrola pred spustením dávky: <span class=\"rp-fail\">technik dávku potvrdil napriek blokujúcim zisteniam</span>"),
+        ("en", "confirmed", "Pre-run batch review: <span>technician confirmed the batch</span>"),
+        ("sk", "cancelled", "Kontrola pred spustením dávky: <span>technik dávku zrušil - nič sa nespustilo</span>"),
+    ],
+)
+def test_report_renders_batch_review_decision_translated_with_the_quoted_findings(tmp_path, language, decision, expected):
+    # G12: an override "is recorded in the report" - in the report's own
+    # language and with the findings the technician overrode, not the raw
+    # English audit line.
+    append_entry(tmp_path, "run_review", make_entry(
+        "_system", "batch_review", "", 0, "Pre-flight: blockers: low_disk; warnings: none. Technician confirmed.",
+        False, "run_review", warned=True, warning_text="Only 2.0 GB <free>", decision=decision,
+    ))
+    content = generate_report(tmp_path, "run_review", [], language, {}, {})[0].read_text(encoding="utf-8")
+    assert expected in content
+    assert "Only 2.0 GB &lt;free&gt;" in content
+    assert "batch_review:" not in content
+
+
 def test_report_shows_restore_point_created(tmp_path):
     # research-reporting.md F1: restore-point outcome visible in the report.
     append_entry(tmp_path, "run_rp", make_entry(
