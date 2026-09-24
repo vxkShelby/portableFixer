@@ -6,7 +6,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -81,6 +81,48 @@ PRESETS: dict[str, list[str]] = {
 }
 
 
+try:
+    # Qt 6.8+. requirements.txt still pins 6.7.2, where announcements are a
+    # silent no-op - the status bar text stays readable either way.
+    from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent
+except ImportError:  # pragma: no cover - depends on the installed PySide6
+    QAccessible = QAccessibleAnnouncementEvent = None
+
+
+def _announce_to_screen_reader(widget: QWidget, text: str) -> None:
+    # QStatusBar.showMessage() is silent for Narrator/NVDA - batch progress
+    # and the final outcome would only reach sighted users otherwise
+    # (research-accessibility.md Finding 4).
+    if QAccessibleAnnouncementEvent is None or not text:
+        return
+    QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(widget, text))
+
+
+class _DashboardTile(QFrame):
+    """Dashboard category tile. Was a QFrame with a patched mousePressEvent,
+    unreachable by Tab and silent for screen readers
+    (research-accessibility.md "keyboard-only operability")."""
+
+    activated = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Picked up by the "tile" focus rule in style.py.
+        self.setProperty("tile", "true")
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activated.emit()
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.activated.emit()
+            return
+        super().keyPressEvent(event)
+
+
 def _score_state(score: int) -> str:
     """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
     if score >= 80:
@@ -106,6 +148,11 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.is_admin = is_admin
         self.run_id = run_id
+        # main.py hands over the raw USB dir as assets_dir and the writable
+        # dir as state_dir - they only differ when resolve_writable_base_dir
+        # fell back to %TEMP% on the client machine, which the report must
+        # then say (research-reporting.md F4).
+        self._storage_fallback = Path(state_dir) != Path(assets_dir)
         self.modules, module_load_errors = load_all_modules(assets_dir / "Modules")
         if module_load_errors:
             QMessageBox.warning(
@@ -130,6 +177,9 @@ class MainWindow(QMainWindow):
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
         self._undo_steps: list[str] = []
+        # Non-SAFE changes that ran for real but have no undo_command -
+        # listed in undo.ps1 so it never implies everything was reversible.
+        self._irreversible_actions: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
         self._recommended_action_ids: set[str] = set()
         self._summary_dialog: QDialog | None = None
@@ -523,6 +573,8 @@ class MainWindow(QMainWindow):
                 self._category_module_action_counts.get(module.category, 0) + len(module.actions)
             )
         self._dashboard_tile_count_labels: dict[ModuleCategory, QLabel] = {}
+        self._dashboard_tiles: dict[ModuleCategory, _DashboardTile] = {}
+        self._category_i18n_keys = category_i18n_keys
         self._dashboard_score_label: QLabel | None = None
         for category in self._categories_order:
             if category == ModuleCategory.DASHBOARD:
@@ -1297,7 +1349,15 @@ class MainWindow(QMainWindow):
             button_row.addWidget(open_undo_button)
         layout.addLayout(button_row)
 
+        open_button.setDefault(True)
         dialog.show()
+        # A batch often finishes while the technician is elsewhere - bring the
+        # (non-modal) results forward and put keyboard focus on its primary
+        # button so Enter opens the report and a screen reader lands on it
+        # (research-accessibility.md Finding 7).
+        dialog.raise_()
+        dialog.activateWindow()
+        open_button.setFocus()
         self._summary_dialog = dialog
 
     def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog) -> None:
@@ -1761,7 +1821,7 @@ class MainWindow(QMainWindow):
         tile_categories = [c for c in self._categories_order if c != ModuleCategory.DASHBOARD]
         columns = 4
         for index, category in enumerate(tile_categories):
-            tile = QFrame()
+            tile = _DashboardTile()
             tile.setObjectName("actionCard")
             tile.setCursor(Qt.CursorShape.PointingHandCursor)
             tile_layout = QVBoxLayout(tile)
@@ -1782,7 +1842,10 @@ class MainWindow(QMainWindow):
             sub_label.setObjectName("selectionScope")
             tile_layout.addWidget(sub_label)
             self._dashboard_tile_count_labels[category] = count_pill
-            tile.mousePressEvent = lambda _event, c=category: self._dashboard_tile_clicked(c)
+            self._dashboard_tiles[category] = tile
+            tile.setAccessibleDescription(self._t("a11y_dashboard_tile_hint"))
+            self._update_dashboard_tile_accessible_name(category)
+            tile.activated.connect(lambda c=category: self._dashboard_tile_clicked(c))
             grid.addWidget(tile, index // columns, index % columns)
         card_layout.addLayout(grid)
 
@@ -1803,6 +1866,21 @@ class MainWindow(QMainWindow):
 
         card_layout.addStretch(1)
         return card
+
+    def _update_dashboard_tile_accessible_name(self, category: ModuleCategory) -> None:
+        # The tile's text lives in child QLabels focus never reaches - fold
+        # name, recommended-fix count and action count into the tile itself.
+        tile = self._dashboard_tiles.get(category)
+        if tile is None:
+            return
+        name = self._t(self._category_i18n_keys.get(category, ""))
+        pill = self._dashboard_tile_count_labels.get(category)
+        findings = pill.text() if pill is not None else "0"
+        parts = [name, self._t("a11y_dashboard_tile_findings").format(count=findings)]
+        action_count = self._category_module_action_counts.get(category, 0)
+        if action_count:
+            parts.append(self._t("dashboard_actions_count").format(count=action_count))
+        tile.setAccessibleName(", ".join(parts))
 
     def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
         if category in self._categories_order:
@@ -1875,6 +1953,7 @@ class MainWindow(QMainWindow):
             pill.setProperty("state", "warn" if needs_fix_count else "ok")
             pill.style().unpolish(pill)
             pill.style().polish(pill)
+            self._update_dashboard_tile_accessible_name(category)
 
     _AVATAR_COLORS = ["#5ee6ff", "#39c2ff", "#6bd4c2", "#8f7cff", "#4dd0e1", "#64b5f6"]
 
@@ -2235,7 +2314,9 @@ class MainWindow(QMainWindow):
             self._runner.cancel()
 
     def _action_accessible_name(self, action: ActionDef, status_text: str = "") -> str:
-        name = f"{action.label(self.settings.language)} — risk: {action.risk.value}"
+        # "riziko"/"risk" translated - Narrator reads the whole name in the
+        # UI language, and a lone English word mid-sentence is jarring.
+        name = f"{action.label(self.settings.language)} — {self._t('a11y_risk')}: {action.risk.value}"
         if status_text:
             name += f", {status_text}"
         return name
@@ -2306,6 +2387,7 @@ class MainWindow(QMainWindow):
                         self._snapshot_before,
                         snapshot_after,
                         job=self._job_info(),
+                        storage_fallback=self._storage_fallback,
                     )
                 except OSError:
                     html_path = None
@@ -2315,6 +2397,12 @@ class MainWindow(QMainWindow):
                 if not self._closed:
                     self._notify_batch_finished()
                 if html_path is not None and not self._closed:
+                    # batch_done_message says "the report is ready" - only
+                    # true on this branch.
+                    ok_count = sum(1 for _, code in self._batch_results if code == 0)
+                    _announce_to_screen_reader(self, self._t("batch_done_message").format(
+                        ok=ok_count, failed=len(self._batch_results) - ok_count,
+                    ))
                     self._show_batch_summary(html_path)
             return
         if not self._app_dir_intact():
@@ -2349,11 +2437,11 @@ class MainWindow(QMainWindow):
         module, action = self._find_action(action_id)
         position = self._queue_total - len(self._queue)
         if not self._closed:
-            self.statusBar().showMessage(
-                self._t("status_bar_running").format(
-                    pos=position, total=self._queue_total, label=action.label(self.settings.language)
-                )
+            running_text = self._t("status_bar_running").format(
+                pos=position, total=self._queue_total, label=action.label(self.settings.language)
             )
+            self.statusBar().showMessage(running_text)
+            _announce_to_screen_reader(self, running_text)
             self.progress_bar.setValue(position - 1)
 
         needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
@@ -2364,13 +2452,7 @@ class MainWindow(QMainWindow):
         )
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
             self._restore_point_attempted = True
-            try:
-                self._undo_script_path = undo.create_undo_script(
-                    self.state_dir, self.run_id, steps=list(reversed(self._undo_steps))
-                )
-            except OSError:
-                if not self._closed:
-                    self.console.appendPlainText(self._t("disk_write_failed"))
+            self._write_undo_script()
             rp_runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
                 lambda success, detail, m=module, a=action: self._on_restore_point_checked(success, detail, m, a)
@@ -2385,21 +2467,12 @@ class MainWindow(QMainWindow):
         output = "System Restore Point created." if success else (
             f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
         )
-        entry = make_entry(
-            "_system",
-            "restore_point",
-            f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
-            0 if success else 1,
-            output,
-            self.settings.dry_run,
-            self.run_id,
-            elevated=self.is_admin,
+        subject = f"{module.module_id}/{action.id}"
+        self._log_system_event(
+            "restore_point", 0 if success else 1, output,
+            command=f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
+            subject=subject,
         )
-        try:
-            append_entry(self.state_dir, self.run_id, entry)
-        except OSError:
-            if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
         if self._cancel_requested:
             # Cancel was clicked while the restore point was still being
             # created - the action it was guarding must never run, and
@@ -2413,32 +2486,64 @@ class MainWindow(QMainWindow):
                 self._t("restore_point_failed_confirm"),
                 QMessageBox.Yes | QMessageBox.No,
             )
+            # "Continue without a safety net" is exactly what a later dispute
+            # is about - record the answer explicitly (research-reporting.md F3).
+            self._log_system_event(
+                "restore_point_decision", 0,
+                "Technician chose to continue without a restore point." if proceed == QMessageBox.Yes
+                else "Technician declined to continue without a restore point - high-risk actions skipped.",
+                warned=True, warning_text=self._t("restore_point_failed_confirm"),
+                subject=subject, decision="proceed" if proceed == QMessageBox.Yes else "skip",
+            )
             if proceed != QMessageBox.Yes:
                 self._skip_high_risk_actions_in_queue()
                 self._run_next()
                 return
         self._dispatch_action(module, action)
 
+    def _log_system_event(self, action_id: str, exit_code: int | None, output: str, **fields) -> None:
+        # Safety facts about the run (restore point, the technician's answers
+        # to safety prompts) go in the same audit log as the actions, under
+        # the "_system" module report.py lists in its safety section.
+        entry = make_entry(
+            "_system", action_id, fields.pop("command", ""), exit_code, output,
+            self.settings.dry_run, self.run_id, elevated=self.is_admin, **fields,
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+
     def _dispatch_action(self, module: ModuleDef, action: ActionDef) -> None:
+        warning_text = ""
+        confirmed = QMessageBox.Yes
         if action.risk == RiskLevel.DESTRUCTIVE:
+            warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_destructive_action')}"
             confirmed = QMessageBox.warning(
                 self,
                 self._t("app_title"),
-                f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_destructive_action')}",
+                warning_text,
                 QMessageBox.Yes | QMessageBox.No,
             )
-            if confirmed != QMessageBox.Yes:
-                self._run_next()
-                return
         elif action.risk != RiskLevel.SAFE:
+            warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}"
             confirmed = QMessageBox.question(
                 self,
                 self._t("app_title"),
-                f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}",
+                warning_text,
             )
-            if confirmed != QMessageBox.Yes:
-                self._run_next()
-                return
+        if warning_text and confirmed != QMessageBox.Yes:
+            # A "No" is as much a part of the record as a "Yes" - without it
+            # the log can't show the technician was warned and backed off
+            # (research-reporting.md F2).
+            self._log_system_event(
+                "risk_declined", None, "Technician declined the risk confirmation - action not run.",
+                risk=action.risk.value, warned=True, warning_text=warning_text,
+                subject=f"{module.module_id}/{action.id}", decision="declined",
+            )
+            self._run_next()
+            return
 
         app_dir = paths.get_base_dir()
         temp_protect = paths.compute_temp_protected_child(app_dir)
@@ -2483,20 +2588,24 @@ class MainWindow(QMainWindow):
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)
         runner.finished_with_code.connect(
-            lambda code, m=module.module_id, a=action.id, c=action.command, r=runner: self._on_action_finished(
-                m, a, c, code, r
+            lambda code, m=module.module_id, a=action.id, c=action.command, r=runner, w=warning_text: self._on_action_finished(
+                m, a, c, code, r, w
             )
         )
         runner.start()
 
     def _on_action_finished(
-        self, module_id: str, action_id: str, command: str, exit_code: int, runner: ActionRunner
+        self, module_id: str, action_id: str, command: str, exit_code: int, runner: ActionRunner,
+        warning_text: str = "",
     ) -> None:
         output = "\n".join(runner.captured_output)
         _, action = self._find_action(action_id)
+        # warned/warning_text come from the dialog _dispatch_action actually
+        # showed and the technician accepted, not re-derived from the risk.
         entry = make_entry(
             module_id, action_id, command, exit_code, output, self.settings.dry_run, self.run_id,
-            risk=action.risk.value, warned=action.risk != RiskLevel.SAFE, elevated=self.is_admin,
+            risk=action.risk.value, warned=bool(warning_text), elevated=self.is_admin,
+            warning_text=warning_text,
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -2513,17 +2622,29 @@ class MainWindow(QMainWindow):
         elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
-        if not self.settings.dry_run and exit_code == 0:
-            if action.undo_command:
+        if not self.settings.dry_run:
+            if exit_code == 0 and action.undo_command:
                 self._undo_steps.append(action.undo_command)
-                try:
-                    self._undo_script_path = undo.create_undo_script(
-                        self.state_dir, self.run_id, steps=list(reversed(self._undo_steps))
-                    )
-                except OSError:
-                    if not self._closed:
-                        self.console.appendPlainText(self._t("disk_write_failed"))
+                self._write_undo_script()
+            elif not action.undo_command and action.risk != RiskLevel.SAFE:
+                # A failed run may still have changed part of the system, so
+                # it is listed too - with its exit code, not hidden.
+                entry_text = f"[{action.risk.value}] {action.label(self.settings.language)} ({action.id})"
+                if exit_code != 0:
+                    entry_text += f" - exit {exit_code}"
+                self._irreversible_actions.append(entry_text)
+                self._write_undo_script()
         self._run_next()
+
+    def _write_undo_script(self) -> None:
+        try:
+            self._undo_script_path = undo.create_undo_script(
+                self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)),
+                irreversible=self._irreversible_actions,
+            )
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
 
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()

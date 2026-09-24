@@ -248,9 +248,11 @@ QPushButton#presetBtn:checked {
     color: #8ff2ff;
     font-weight: bold;
 }
+/* Muted text is #7c8799, not the earlier #6b7686 (3.8:1 on #141a24):
+   9pt text needs WCAG AA 4.5:1 on every card/button surface it sits on. */
 QLabel#selectionScope {
     font-family: 'Consolas', 'Cascadia Mono';
-    color: #6b7686;
+    color: #7c8799;
     font-size: 9pt;
 }
 
@@ -280,6 +282,16 @@ QToolButton#actionDetailToggle:checked {
     color: #2fe6ff;
     border: 1px solid #2fe6ff;
 }
+/* QPushButton:focus doesn't match tool buttons - without this the
+   per-action "details" toggle showed no keyboard focus at all. */
+QToolButton:focus {
+    outline: 2px solid #2fe6ff;
+    border: 1px solid #2fe6ff;
+}
+/* Dashboard tiles are keyboard-focusable (Tab, then Enter/Space). */
+QFrame#actionCard[tile="true"]:focus {
+    border: 2px solid #2fe6ff;
+}
 QWidget#actionDetailPanel {
     background-color: #0b0e14;
     border: 1px solid #1c2530;
@@ -293,7 +305,7 @@ QLabel#actionDetailLabel {
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 8pt;
     font-weight: bold;
-    color: #6b7686;
+    color: #7c8799;
 }
 QPlainTextEdit#actionDetailCommand {
     background-color: #06080c;
@@ -341,7 +353,7 @@ QLabel#dashboardScoreValue {
 }
 QLabel#dashboardScoreValue[state="none"] {
     font-size: 16pt;
-    color: #6b7686;
+    color: #7c8799;
 }
 QLabel#dashboardScoreValue[state="good"] { color: #39ff88; }
 QLabel#dashboardScoreValue[state="warn"] { color: #ffb020; }
@@ -409,7 +421,9 @@ QLabel#countPill[state="warn"] {
 }
 QLabel#countPill[state="idle"] {
     background-color: rgba(255, 255, 255, 8);
-    color: #4b5568;
+    /* Real content (the "0" before any analysis), not a disabled control -
+       so it needs 4.5:1 like other text; #4b5568 was 2.5:1. */
+    color: #7c8799;
 }
 
 QPushButton#panelBtn {
@@ -443,7 +457,7 @@ QLabel#wingetBanner[state="warn"] {
 QLabel#wingetBanner[state="ok"] {
     background: transparent;
     border: none;
-    color: #6b7686;
+    color: #7c8799;
     font-family: 'Consolas', 'Cascadia Mono';
 }
 

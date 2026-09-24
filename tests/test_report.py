@@ -472,3 +472,122 @@ def test_report_without_job_has_no_job_block(tmp_path):
     html_path, json_path = generate_report(tmp_path, "run_nojob", [], "en", {}, {}, job={"technician": "  "})
     assert 'class="job"' not in html_path.read_text(encoding="utf-8")
     assert json.loads(json_path.read_text(encoding="utf-8"))["job"] == {}
+
+
+def test_report_risk_is_frozen_from_audit_entry_not_current_catalog(tmp_path):
+    # research-reporting.md F11: the catalog now says SAFE, but the action
+    # ran (and was confirmed) as DESTRUCTIVE - the report must keep that.
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_frozen", make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "", False, "run_frozen", risk="DESTRUCTIVE", warned=True,
+    ))
+    data = build_report_data(tmp_path, "run_frozen", modules, "en", {}, {})
+    assert data["actions"][0]["risk"] == "DESTRUCTIVE"
+
+
+def test_report_old_entry_without_new_fields_still_renders(tmp_path):
+    # Backward compat: a JSONL line written before risk/warned/elevated and
+    # the safety fields existed must still render, risk from the catalog.
+    modules = _fixture_modules()
+    path = audit_log_path(tmp_path, "run_old")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "timestamp": "2026-09-01T14:27:15.925813+00:00", "module_id": "m02_cleanup", "action_id": "user_temp",
+        "command": "cmd", "exit_code": 0, "output": "done", "output_hash": "abc", "dry_run": False,
+    }) + "\n", encoding="utf-8")
+    html_path, json_path = generate_report(tmp_path, "run_old", modules, "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["actions"][0]["risk"] == "SAFE"
+    assert data["actions"][0]["warned"] is None
+    assert data["elevated"] is None
+    assert data["restore_points"] == [] and data["events"] == []
+    content = html_path.read_text(encoding="utf-8")
+    assert "Temp files" in content
+    assert "Run as administrator" not in content
+    assert "Confirmed after warning" not in content
+
+
+def test_report_shows_warning_confirmation_with_exact_text(tmp_path):
+    # research-reporting.md F2: proof the technician was warned, in the
+    # document the client actually receives.
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_warn", make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "", False, "run_warn",
+        risk="MODERATE", warned=True, warning_text="[MODERATE] Temp files\n\nAre you <sure>?",
+    ))
+    content = generate_report(tmp_path, "run_warn", modules, "en", {}, {})[0].read_text(encoding="utf-8")
+    assert "Confirmed after warning" in content
+    assert "Are you &lt;sure&gt;?" in content
+
+
+def test_report_lists_declined_confirmation_in_safety_log_not_as_action(tmp_path):
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_decl", make_entry(
+        "_system", "risk_declined", "", None, "Technician declined", False, "run_decl",
+        risk="DESTRUCTIVE", warned=True, warning_text="WARNING: irreversible",
+        subject="m02_cleanup/user_temp", decision="declined",
+    ))
+    html_path, json_path = generate_report(tmp_path, "run_decl", modules, "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    # Not counted as a (failed) action.
+    assert data["actions"] == []
+    assert data["events"][0]["kind"] == "risk_declined"
+    content = html_path.read_text(encoding="utf-8")
+    assert "Safety log" in content
+    assert "Declined after risk warning (not run): <strong>Temp files</strong>" in content
+    assert "WARNING: irreversible" in content
+
+
+def test_report_shows_restore_point_created(tmp_path):
+    # research-reporting.md F1: restore-point outcome visible in the report.
+    append_entry(tmp_path, "run_rp", make_entry(
+        "_system", "restore_point", "Checkpoint-Computer", 0, "System Restore Point created.", False, "run_rp",
+        elevated=True,
+    ))
+    html_path, json_path = generate_report(tmp_path, "run_rp", [], "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["restore_points"][0]["created"] is True
+    assert data["actions"] == []
+    content = html_path.read_text(encoding="utf-8")
+    assert "Restore point: created" in content
+    assert "Run as administrator: yes" in content
+
+
+def test_report_shows_failed_restore_point_and_proceed_decision(tmp_path):
+    # research-reporting.md F3: "continue without a restore point" is an
+    # explicit, visible decision - not inferred from timestamps.
+    append_entry(tmp_path, "run_rpf", make_entry(
+        "_system", "restore_point", "Checkpoint-Computer", 1, "System Restore Point creation failed: disabled",
+        False, "run_rpf",
+    ))
+    append_entry(tmp_path, "run_rpf", make_entry(
+        "_system", "restore_point_decision", "", 0, "proceed", False, "run_rpf", decision="proceed",
+    ))
+    html_path, json_path = generate_report(tmp_path, "run_rpf", [], "sk", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["restore_points"] == [{
+        "timestamp": data["restore_points"][0]["timestamp"], "created": False,
+        "detail": "System Restore Point creation failed: disabled", "decision": "proceed",
+    }]
+    content = html_path.read_text(encoding="utf-8")
+    assert "NEPODARIL SA" in content
+    assert "technik potvrdil pokračovanie bez bodu obnovenia" in content
+
+
+def test_report_shows_storage_fallback_banner(tmp_path):
+    # research-reporting.md F4.
+    html_path, json_path = generate_report(tmp_path, "run_fb", [], "en", {}, {}, storage_fallback=True)
+    assert json.loads(json_path.read_text(encoding="utf-8"))["storage_fallback"] is True
+    assert 'class="banner"' in html_path.read_text(encoding="utf-8")
+    html_path, _ = generate_report(tmp_path, "run_nofb", [], "en", {}, {})
+    assert 'class="banner"' not in html_path.read_text(encoding="utf-8")
+
+
+def test_report_elevation_not_admin(tmp_path):
+    # research-reporting.md F8.
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_el", make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "", False, "run_el", elevated=False,
+    ))
+    content = generate_report(tmp_path, "run_el", modules, "en", {}, {})[0].read_text(encoding="utf-8")
+    assert "Run as administrator: no" in content

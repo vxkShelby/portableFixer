@@ -125,6 +125,64 @@ def _build_comparison(previous: dict | None, actions: list[dict], snapshot_after
     }
 
 
+SYSTEM_MODULE_ID = "_system"
+
+
+def _frozen_risk(entry: dict, action: ActionDef | None) -> str:
+    # The risk tier recorded at execution time is what the technician saw
+    # and confirmed - a later catalog edit must not rewrite history. Logs
+    # written before the field existed (or with it empty) fall back to the
+    # current catalog, as before.
+    risk = entry.get("risk")
+    if isinstance(risk, str) and risk:
+        return risk
+    return action.risk.value if action else "UNKNOWN"
+
+
+def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
+    subject = entry.get("subject") or ""
+    subject_label = ""
+    if "/" in subject:
+        module_id, _, action_id = subject.partition("/")
+        action = _find_action(modules, module_id, action_id)
+        subject_label = action.label(language) if action else action_id
+    return {
+        "timestamp": entry["timestamp"],
+        "kind": entry["action_id"],
+        "exit_code": entry["exit_code"],
+        "dry_run": entry["dry_run"],
+        "output": entry.get("output", ""),
+        "subject": subject,
+        "subject_label": subject_label,
+        "risk": entry.get("risk") or "",
+        "warning_text": entry.get("warning_text", ""),
+        "decision": entry.get("decision", ""),
+    }
+
+
+def _summarize_restore_points(events: list[dict]) -> list[dict]:
+    # One restore point per batch; the technician's "continue anyway?"
+    # answer (only asked when it failed) is the decision event after it.
+    points: list[dict] = []
+    for event in events:
+        if event["kind"] == "restore_point":
+            points.append({
+                "timestamp": event["timestamp"],
+                "created": event["exit_code"] == 0,
+                "detail": event["output"],
+                "decision": None,
+            })
+        elif event["kind"] == "restore_point_decision" and points and points[-1]["decision"] is None:
+            points[-1]["decision"] = event["decision"] or None
+    return points
+
+
+def _summarize_elevation(entries: list[dict]) -> bool | None:
+    values = {e["elevated"] for e in entries if isinstance(e.get("elevated"), bool)}
+    # None when not recorded (older log) or, defensively, inconsistent.
+    return values.pop() if len(values) == 1 else None
+
+
 def build_report_data(
     base_dir: Path,
     run_id: str,
@@ -133,10 +191,18 @@ def build_report_data(
     snapshot_before: dict,
     snapshot_after: dict,
     job: dict | None = None,
+    storage_fallback: bool = False,
 ) -> dict:
     entries = _read_audit_entries(base_dir, run_id)
     actions = []
+    events = []
     for entry in entries:
+        if entry["module_id"] == SYSTEM_MODULE_ID:
+            # Restore points, safety-prompt answers and batch stops are
+            # facts about the run, not actions - keep them out of the action
+            # counts/chips and list them in their own safety section.
+            events.append(_build_event(entry, modules, language))
+            continue
         action = _find_action(modules, entry["module_id"], entry["action_id"])
         actions.append(
             {
@@ -144,11 +210,15 @@ def build_report_data(
                 "module_id": entry["module_id"],
                 "action_id": entry["action_id"],
                 "label": action.label(language) if action else entry["action_id"],
-                "risk": action.risk.value if action else "UNKNOWN",
+                "risk": _frozen_risk(entry, action),
                 "exit_code": entry["exit_code"],
                 "dry_run": entry["dry_run"],
                 "output": entry.get("output", ""),
                 "category": _module_category(modules, entry["module_id"]),
+                # None = not recorded (log written before these fields existed).
+                "warned": entry.get("warned"),
+                "warning_text": entry.get("warning_text", ""),
+                "elevated": entry.get("elevated"),
             }
         )
     hostname = socket.gethostname()
@@ -166,6 +236,10 @@ def build_report_data(
         "previous_comparison": _build_comparison(previous, actions, snapshot_after),
         "module_summary": _build_module_summary(actions),
         "job": _clean_job(job),
+        "events": events,
+        "restore_points": _summarize_restore_points(events),
+        "elevated": _summarize_elevation(entries),
+        "storage_fallback": bool(storage_fallback),
     }
 
 
@@ -284,7 +358,21 @@ input[type="search"]::placeholder { color: #8b93b8; }
 .job strong { color: #c0caf5; }
 .job-note { white-space: pre-wrap; margin-top: 4px; color: #c0caf5; }
 .job-note .lbl { display: block; font-size: 11px; color: #9aa5ce; text-transform: uppercase; }
+.banner { background: #3b2a1a; border-left: 3px solid #e0af68; color: #f5d9a8; border-radius: 8px;
+          padding: 10px 14px; margin: 0 0 14px 0; font-weight: 600; }
+.warned-tag { color: #e0af68; font-size: 11px; font-weight: bold; }
+.warn-text { color: #9aa5ce; font-size: 12px; margin-top: 6px; font-style: italic; white-space: pre-line; }
+.rp-fail { color: #f7768e; font-weight: bold; }
+.events { background: #24283b; border-radius: 8px; padding: 10px 16px 10px 34px; margin: 0; }
+.events li { margin: 4px 0; }
+.events .ts { margin-right: 6px; }
 @media print {
+  .banner { background: #fff; color: #111; border: 1px solid #9a6700; border-left: 4px solid #9a6700; }
+  .warned-tag { color: #9a6700; }
+  .warn-text { color: #444; }
+  .rp-fail { color: #c0392b; }
+  .events { background: #fff; border: 1px solid #bbb; }
+  .events li { color: #111; }
   @page { margin: 14mm; }
   .job { background: #fff; border: 1px solid #bbb; color: #111; }
   .job strong, .job-note { color: #111; }
@@ -400,6 +488,13 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
             f"<details><summary>{t('report_output')}</summary><pre>{html.escape(a['output'])}</pre></details>"
         )
     exit_note = "" if ok else f'<span class="mod">{t("report_exit").format(code=html.escape(str(a["exit_code"])))}</span>'
+    # a.get(): report JSON written before these fields existed has no key.
+    warned_tag = f'<span class="warned-tag">{t("report_warned_tag")}</span>' if a.get("warned") else ""
+    warn_text = ""
+    if a.get("warned") and a.get("warning_text"):
+        # The exact copy the technician accepted - the report is the
+        # document handed to the client, so the proof belongs here too.
+        warn_text = f'<div class="warn-text">&bdquo;{html.escape(a["warning_text"])}&ldquo;</div>'
     search_text = f"{a['label']} {a['module_id']} {a['action_id']}".lower()
     return (
         f'<div class="card {status_cls}" id="action-{index}" data-status="{status_cls}" '
@@ -407,11 +502,11 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         f'<div class="row">'
         f'<span class="status {status_cls}">{status_txt}</span>'
         f'<span class="label">{html.escape(a["label"])}</span>'
-        f"{dry_tag}{exit_note}"
+        f"{dry_tag}{warned_tag}{exit_note}"
         f'<span class="badge" style="background:{badge_color}">{html.escape(a["risk"])}</span>'
         f'<span class="mod">{html.escape(a["module_id"])}</span>'
         f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"]))}</span>'
-        f"</div>{output_block}</div>"
+        f"</div>{warn_text}{output_block}</div>"
     )
 
 
@@ -471,6 +566,61 @@ def _render_failed_list(actions: list[dict], language: str) -> str:
     )
 
 
+def _restore_point_text(point: dict, language: str) -> str:
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    when = html.escape(_format_timestamp(point["timestamp"]))
+    if point["created"]:
+        return f"{t('report_restore_point')}: {t('report_rp_created')} ({when})"
+    text = f"{t('report_restore_point')}: <span class=\"rp-fail\">{t('report_rp_failed')}</span> ({when})"
+    if point.get("decision") == "proceed":
+        text += f" &mdash; {t('report_rp_proceeded')}"
+    elif point.get("decision") == "skip":
+        text += f" &mdash; {t('report_rp_skipped')}"
+    return text
+
+
+def _render_event(event: dict, language: str) -> str:
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    kind = event.get("kind")
+    if kind == "restore_point":
+        point = {"timestamp": event["timestamp"], "created": event["exit_code"] == 0}
+        body = _restore_point_text(point, language)
+        if event["exit_code"] != 0 and event.get("output"):
+            body += f'<div class="warn-text">{html.escape(event["output"])}</div>'
+        # The timestamp is already part of _restore_point_text.
+        return f"<li>{body}</li>"
+    when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"]))}</span>'
+    if kind == "restore_point_decision":
+        key = "report_rp_proceeded" if event.get("decision") == "proceed" else "report_rp_skipped"
+        return f"<li>{when}{t('report_restore_point')}: {t(key)}</li>"
+    if kind == "risk_declined":
+        label = event.get("subject_label") or event.get("subject") or "?"
+        risk = f' <span class="mod">[{html.escape(event["risk"])}]</span>' if event.get("risk") else ""
+        quote = ""
+        if event.get("warning_text"):
+            quote = f'<div class="warn-text">&bdquo;{html.escape(event["warning_text"])}&ldquo;</div>'
+        return f"<li>{when}{t('report_declined')}: <strong>{html.escape(label)}</strong>{risk}{quote}</li>"
+    if kind == "integrity_guard":
+        return f"<li>{when}<span class=\"rp-fail\">{t('report_integrity_guard')}</span></li>"
+    # Unknown/future system event - still show it rather than drop evidence.
+    return f"<li>{when}{html.escape(str(kind))}: {html.escape(event.get('output', ''))}</li>"
+
+
+def _render_safety_section(events: list[dict], language: str) -> str:
+    if not events:
+        return ""
+    items = "".join(_render_event(e, language) for e in events)
+    return (
+        f'<section aria-labelledby="pf-h-safety"><h2 id="pf-h-safety">'
+        f'{html.escape(translate("report_safety_heading", language))}</h2>'
+        f'<ul class="events">{items}</ul></section>'
+    )
+
+
 def _render_toolbar(language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
@@ -524,6 +674,19 @@ def _render_html(data: dict) -> str:
         items = "".join(f"<li>{html.escape(a['label'])}</li>" for a in data["requires_restart"])
         restart_section = f"<section><h2>{t('report_requires_restart')}</h2><ul>{items}</ul></section>"
 
+    extra_meta = ""
+    for point in data.get("restore_points") or []:
+        extra_meta += f"<br>\n{_restore_point_text(point, language)}"
+    elevated = data.get("elevated")
+    if isinstance(elevated, bool):
+        extra_meta += f"<br>\n{t('report_elevated')}: {t('report_yes') if elevated else t('report_no')}"
+    safety_section = _render_safety_section(data.get("events") or [], language)
+    storage_banner = ""
+    if data.get("storage_fallback"):
+        # The report lives on the client's disk, in %TEMP% - say so where
+        # the technician will actually see it, not only in a startup popup.
+        storage_banner = f'<div class="banner" role="note">{t("report_storage_fallback")}</div>'
+
     comparison_section = ""
     comparison = data.get("previous_comparison")
     if comparison:
@@ -544,10 +707,11 @@ def _render_html(data: dict) -> str:
 <style>{_CSS}</style></head>
 <body><main class="wrap">
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
+{storage_banner}
 {_render_job(data.get('job') or dict(), t)}
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
 {t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
-{t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}</div>
+{t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}{extra_meta}</div>
 <div class="chips">
 <div class="chip"><span class="num">{len(actions)}</span><span class="lbl">{t('report_chip_actions')}</span></div>
 <div class="chip ok"><span class="num">{ok_count}</span><span class="lbl">{t('report_chip_ok')}</span></div>
@@ -555,6 +719,7 @@ def _render_html(data: dict) -> str:
 <div class="chip dry"><span class="num">{dry_count}</span><span class="lbl">{t('report_chip_dry_run')}</span></div>
 </div>
 {failed_section}
+{safety_section}
 {module_section}
 {comparison_section}
 <section aria-labelledby="pf-h-actions"><h2 id="pf-h-actions">{t('report_actions_heading')}</h2>
@@ -577,8 +742,12 @@ def generate_report(
     snapshot_before: dict,
     snapshot_after: dict,
     job: dict | None = None,
+    storage_fallback: bool = False,
 ) -> tuple[Path, Path]:
-    data = build_report_data(base_dir, run_id, modules, language, snapshot_before, snapshot_after, job)
+    data = build_report_data(
+        base_dir, run_id, modules, language, snapshot_before, snapshot_after, job,
+        storage_fallback=storage_fallback,
+    )
     reports_dir = base_dir / "Reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     html_path = reports_dir / f"{data['hostname']}_{run_id}.html"

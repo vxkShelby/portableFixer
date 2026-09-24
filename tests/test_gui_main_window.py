@@ -51,6 +51,23 @@ actions:
 """
 
 
+def _audit_entries(log_path: Path) -> list[dict]:
+    if not log_path.exists():
+        return []
+    return [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _executed_action_ids(log_path: Path) -> list[str]:
+    # Real action entries only - "_system" entries (restore point, declined
+    # confirmations) name the action they guard in `subject` and don't
+    # mean it ran.
+    return [e["action_id"] for e in _audit_entries(log_path) if e["module_id"] != "_system"]
+
+
+def _system_events(log_path: Path, kind: str) -> list[dict]:
+    return [e for e in _audit_entries(log_path) if e["module_id"] == "_system" and e["action_id"] == kind]
+
+
 def _make_base_dir(tmp_path: Path, yaml_text: str = ACTIONS_YAML) -> Path:
     module_dir = tmp_path / "Modules" / "m01_diagnostics"
     module_dir.mkdir(parents=True)
@@ -488,7 +505,7 @@ def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
     assert window.language_button.text() == "EN"
 
 
-def test_moderate_risk_action_declined_does_not_run_or_log(qtbot, tmp_path, monkeypatch):
+def test_moderate_risk_action_declined_does_not_run_but_logs_the_decline(qtbot, tmp_path, monkeypatch):
     base_dir = _make_base_dir(tmp_path, MODERATE_ACTIONS_YAML)
     settings = Settings(language="sk", dry_run=False)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="testrun")
@@ -501,7 +518,10 @@ def test_moderate_risk_action_declined_does_not_run_or_log(qtbot, tmp_path, monk
 
     qtbot.wait(300)
     assert "risky-ran" not in window.console.toPlainText()
-    assert not audit_log_path(base_dir, "testrun").exists()
+    # Not run - but the "No" itself is on record (research-reporting.md F2).
+    log_path = audit_log_path(base_dir, "testrun")
+    assert "risky" not in _executed_action_ids(log_path)
+    assert [e["subject"] for e in _system_events(log_path, "risk_declined")] == ["m01_diagnostics/risky"]
 
 
 def test_moderate_risk_action_accepted_runs_and_logs(qtbot, tmp_path, monkeypatch):
@@ -596,9 +616,14 @@ def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path,
         lambda: log_path.exists() and "safe_thing" in log_path.read_text(encoding="utf-8"), timeout=10000
     )
 
-    log_content = log_path.read_text(encoding="utf-8")
-    assert "risky_thing" not in log_content
-    assert "safe_thing" in log_content
+    executed = _executed_action_ids(log_path)
+    assert "risky_thing" not in executed
+    assert "safe_thing" in executed
+    declined = _system_events(log_path, "risk_declined")
+    assert len(declined) == 1 and declined[0]["subject"].endswith("/risky_thing")
+    assert declined[0]["risk"] == "DESTRUCTIVE"
+    assert "confirm" not in declined[0]["warning_text"]  # the real translated copy, not a key
+    assert declined[0]["warning_text"]
 
 
 def test_dry_run_destructive_action_never_creates_restore_point(qtbot, tmp_path, monkeypatch):
@@ -716,7 +741,9 @@ def test_destructive_action_accepted_runs_normally(qtbot, tmp_path, monkeypatch)
 
     from portablefix.audit_log import audit_log_path
     log_path = audit_log_path(base_dir, "run_accept")
-    qtbot.waitUntil(lambda: log_path.exists() and "risky_thing" in log_path.read_text(encoding="utf-8"), timeout=10000)
+    # The restore_point entry names risky_thing as its subject before the
+    # action runs - wait for the action's own entry, not just the string.
+    qtbot.waitUntil(lambda: "risky_thing" in _executed_action_ids(log_path), timeout=10000)
     assert "destructive-ran" in window.console.toPlainText()
 
 
@@ -775,7 +802,8 @@ def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_saf
     from portablefix.audit_log import audit_log_path
     log_path = audit_log_path(base_dir, "run_rpfail")
     qtbot.waitUntil(lambda: log_path.exists() and "safe_thing" in log_path.read_text(encoding="utf-8"), timeout=10000)
-    assert "risky_thing" not in log_path.read_text(encoding="utf-8")
+    assert "risky_thing" not in _executed_action_ids(log_path)
+    assert [e["decision"] for e in _system_events(log_path, "restore_point_decision")] == ["skip"]
 
 
 def test_category_list_deduplicates_same_category_across_modules(qtbot, tmp_path):
@@ -2632,3 +2660,334 @@ def test_batch_finished_notification_is_silent_when_window_is_active(qtbot, tmp_
     window._batch_results = [("one", 0), ("two", 1)]
     window._notify_batch_finished()
     assert len(alerts) == 1
+
+
+class _FakeSignal:
+    def __init__(self):
+        self._slots = []
+
+    def connect(self, slot):
+        self._slots.append(slot)
+
+    def emit(self, *args):
+        for slot in self._slots:
+            slot(*args)
+
+
+class _FakeRunner:
+    """Stands in for ActionRunner so audit-trail wiring can be tested
+    without a real powershell.exe (finishes synchronously with exit 0)."""
+
+    def __init__(self, plan, parent=None, **kwargs):
+        self.output_line = _FakeSignal()
+        self.finished_with_code = _FakeSignal()
+        self.captured_output = ["fake-output"]
+
+    def start(self):
+        self.finished_with_code.emit(0)
+
+    def cancel(self):
+        pass
+
+    def wait(self, *args):
+        return True
+
+
+def _destructive_window(qtbot, tmp_path, monkeypatch, run_id, language="en"):
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language=language, dry_run=False),
+        is_admin=True, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    # Tests below drive a single step directly - keep the batch loop (and
+    # its end-of-batch report/snapshot) out of it.
+    monkeypatch.setattr(window, "_run_next", lambda: None)
+    return window, base_dir
+
+
+def test_declined_destructive_confirmation_is_logged_with_exact_warning_text(qtbot, tmp_path, monkeypatch):
+    # research-reporting.md F2: a "No" to the risk warning is evidence too.
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: shown.append(a[2]) or QMessageBox.No))
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_decl_log")
+    module, action = window._find_action("risky_thing")
+
+    window._dispatch_action(module, action)
+
+    log_path = audit_log_path(base_dir, "run_decl_log")
+    assert _executed_action_ids(log_path) == []
+    [event] = _system_events(log_path, "risk_declined")
+    assert event["subject"] == "m02_cleanup/risky_thing"
+    assert event["decision"] == "declined"
+    assert event["warned"] is True
+    assert event["risk"] == "DESTRUCTIVE"
+    assert event["warning_text"] == shown[0]
+    assert event["exit_code"] is None
+
+
+def test_accepted_confirmation_records_the_warning_shown_in_the_action_entry(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import main_window as mw
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: shown.append(a[2]) or QMessageBox.Yes))
+    monkeypatch.setattr(mw, "ActionRunner", _FakeRunner)
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_warn_ok")
+    module, action = window._find_action("risky_thing")
+
+    window._dispatch_action(module, action)
+
+    [entry] = [e for e in _audit_entries(audit_log_path(base_dir, "run_warn_ok")) if e["action_id"] == "risky_thing"]
+    assert entry["warned"] is True
+    assert entry["warning_text"] == shown[0]
+    assert "Risky thing" in entry["warning_text"]
+    assert entry["risk"] == "DESTRUCTIVE"
+
+
+def test_safe_action_is_logged_as_not_warned(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import main_window as mw
+
+    monkeypatch.setattr(mw, "ActionRunner", _FakeRunner)
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_safe_nowarn")
+    module, action = window._find_action("safe_thing")
+
+    window._dispatch_action(module, action)
+
+    [entry] = _audit_entries(audit_log_path(base_dir, "run_safe_nowarn"))
+    assert entry["warned"] is False and entry["warning_text"] == ""
+
+
+def test_restore_point_failure_and_proceed_decision_are_logged(qtbot, tmp_path, monkeypatch):
+    # research-reporting.md F1 + F3.
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_rp_proceed")
+    dispatched = []
+    monkeypatch.setattr(window, "_dispatch_action", lambda m, a: dispatched.append(a.id))
+    module, action = window._find_action("risky_thing")
+
+    window._on_restore_point_checked(False, "System Restore is disabled", module, action)
+
+    log_path = audit_log_path(base_dir, "run_rp_proceed")
+    [rp] = _system_events(log_path, "restore_point")
+    assert rp["exit_code"] == 1
+    assert "System Restore is disabled" in rp["output"]
+    assert rp["subject"] == "m02_cleanup/risky_thing"
+    assert rp["elevated"] is True
+    [decision] = _system_events(log_path, "restore_point_decision")
+    assert decision["decision"] == "proceed"
+    assert decision["warning_text"]
+    assert dispatched == ["risky_thing"]
+
+
+def test_restore_point_failure_declined_logs_skip_decision(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_rp_skip")
+    dispatched = []
+    monkeypatch.setattr(window, "_dispatch_action", lambda m, a: dispatched.append(a.id))
+    module, action = window._find_action("risky_thing")
+
+    window._on_restore_point_checked(False, "", module, action)
+
+    [decision] = _system_events(audit_log_path(base_dir, "run_rp_skip"), "restore_point_decision")
+    assert decision["decision"] == "skip"
+    assert dispatched == []
+
+
+def test_successful_restore_point_logs_no_decision(qtbot, tmp_path, monkeypatch):
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_rp_ok")
+    monkeypatch.setattr(window, "_dispatch_action", lambda m, a: None)
+    module, action = window._find_action("risky_thing")
+
+    window._on_restore_point_checked(True, "", module, action)
+
+    log_path = audit_log_path(base_dir, "run_rp_ok")
+    assert [e["exit_code"] for e in _system_events(log_path, "restore_point")] == [0]
+    assert _system_events(log_path, "restore_point_decision") == []
+
+
+def test_irreversible_action_is_listed_in_undo_script(qtbot, tmp_path, monkeypatch):
+    # research-reporting.md F9: undo.ps1 must not imply a DESTRUCTIVE change
+    # without an undo_command was reversible.
+    from types import SimpleNamespace
+
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_irrev")
+    runner = SimpleNamespace(captured_output=["done"])
+
+    window._on_action_finished("m02_cleanup", "safe_thing", "cmd", 0, runner)
+    window._on_action_finished("m02_cleanup", "risky_thing", "cmd", 0, runner, "warned")
+
+    content = (base_dir / "Backups" / "run_irrev" / "undo.ps1").read_text(encoding="utf-8")
+    assert "# NOT reversible" in content
+    assert "[DESTRUCTIVE] Risky thing (risky_thing)" in content
+    assert "safe_thing" not in content
+    assert "# full report:" in content
+
+
+def test_dry_run_irreversible_action_writes_no_undo_script(qtbot, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True),
+        is_admin=True, run_id="run_irrev_dry",
+    )
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_run_next", lambda: None)
+
+    window._on_action_finished("m02_cleanup", "risky_thing", "cmd", 0, SimpleNamespace(captured_output=[]))
+
+    assert not (base_dir / "Backups").exists()
+
+
+def test_report_is_flagged_when_state_dir_is_the_temp_fallback(qtbot, tmp_path, monkeypatch):
+    # research-reporting.md F4: main.py passes different assets/state dirs
+    # only when the USB wasn't writable.
+    from portablefix import report
+
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    assets_dir = _make_base_dir(usb)
+    state_dir = tmp_path / "temp_fallback"
+    state_dir.mkdir()
+    window = MainWindow(assets_dir=assets_dir, state_dir=state_dir, settings=Settings(language="en"), is_admin=True, run_id="run_fb")
+    qtbot.addWidget(window)
+    captured = {}
+
+    def fake_generate_report(*args, **kwargs):
+        captured.update(kwargs)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(report, "generate_report", fake_generate_report)
+    monkeypatch.setattr(window, "_take_snapshot", lambda: {})
+    window._batch_active = True
+    window._queue = []
+    window._run_next()
+
+    assert captured["storage_fallback"] is True
+    same = MainWindow(assets_dir=assets_dir, state_dir=assets_dir, settings=Settings(language="en"), is_admin=True, run_id="run_nofb")
+    qtbot.addWidget(same)
+    assert same._storage_fallback is False
+
+
+def test_action_accessible_name_is_translated(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _TWO_SAFE_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="sk"), is_admin=True, run_id="run_a11y_sk")
+    qtbot.addWidget(window)
+
+    name = window._action_checkboxes["first_action"].accessibleName()
+    assert "riziko: SAFE" in name
+    assert "risk:" not in name
+
+
+def test_dashboard_tiles_are_keyboard_reachable_and_named(qtbot, tmp_path):
+    from PySide6.QtCore import Qt
+
+    from portablefix.models import ModuleCategory
+
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(tmp_path, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id="run_tiles")
+    qtbot.addWidget(window)
+
+    tile = window._dashboard_tiles[ModuleCategory.CLEANUP]
+    assert tile.focusPolicy() & Qt.FocusPolicy.TabFocus
+    assert "Cleanup" in tile.accessibleName()
+    assert "1 actions" in tile.accessibleName()
+    assert tile.accessibleDescription()
+
+    qtbot.keyClick(tile, Qt.Key.Key_Space)
+    assert window.category_list.currentRow() == window._categories_order.index(ModuleCategory.CLEANUP)
+    window.category_list.setCurrentRow(0)
+    qtbot.keyClick(tile, Qt.Key.Key_Return)
+    assert window.category_list.currentRow() == window._categories_order.index(ModuleCategory.CLEANUP)
+
+
+def test_dashboard_tile_accessible_name_follows_recommended_count(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
+
+    _write_module(tmp_path, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id="run_tiles2")
+    qtbot.addWidget(window)
+    window._recommended_action_ids = {"clean_action"}
+
+    window._refresh_dashboard()
+
+    assert "1 recommended fixes" in window._dashboard_tiles[ModuleCategory.CLEANUP].accessibleName()
+
+
+def test_batch_summary_dialog_focuses_open_report_button(qtbot, tmp_path):
+    # research-accessibility.md Finding 7.
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_sum_focus")
+    qtbot.addWidget(window)
+    window._batch_results = [("hello", 0)]
+
+    window._show_batch_summary(tmp_path / "report.html")
+
+    dialog = window._summary_dialog
+    focused = dialog.focusWidget()
+    assert focused is not None and focused.text() == window._t("open_report")
+    assert focused.isDefault()
+
+
+def test_batch_progress_is_announced_to_screen_readers(qtbot, tmp_path, monkeypatch):
+    # research-accessibility.md Finding 4.
+    from portablefix.gui import main_window as mw
+
+    announced = []
+    monkeypatch.setattr(mw, "_announce_to_screen_reader", lambda widget, text: announced.append(text))
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_announce")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_dispatch_action", lambda m, a: None)
+    monkeypatch.setattr(window, "_take_snapshot", lambda: {})
+    window._action_checkboxes["hello"].setChecked(True)
+
+    window.run_selected_actions()
+
+    assert announced == ["Running 1/1: Greeting"]
+
+    # End of batch: the outcome is announced too, once the report exists.
+    from portablefix import report
+
+    monkeypatch.setattr(report, "generate_report", lambda *a, **kw: (tmp_path / "r.html", tmp_path / "r.json"))
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    window._batch_results = [("hello", 0)]
+    window._run_next()
+    assert announced[-1] == window._t("batch_done_message").format(ok=1, failed=0)
+    assert window._batch_active is False
+
+
+def test_announce_to_screen_reader_is_safe_to_call(qtbot, tmp_path):
+    from portablefix.gui import main_window as mw
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_announce2")
+    qtbot.addWidget(window)
+    mw._announce_to_screen_reader(window, "text")  # must not raise on any Qt version
+    mw._announce_to_screen_reader(window, "")
+
+
+def test_style_muted_text_meets_wcag_aa_contrast():
+    # research-accessibility.md §3 (contrast): 9pt muted labels and the idle
+    # dashboard count must reach 4.5:1 on the card/button surfaces.
+    import re
+
+    from portablefix.gui import style
+
+    def luminance(hex_color):
+        channels = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    def contrast(a, b):
+        hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+
+    for selector in ("QLabel#selectionScope", 'QLabel#countPill[state="idle"]', "QLabel#actionDetailLabel"):
+        block = style.STYLE.split(selector + " {", 1)[1].split("}", 1)[0]
+        color = re.search(r"\bcolor:\s*(#[0-9a-fA-F]{6})", block).group(1)
+        for surface in ("#10141c", "#141a24", "#0b0e14"):
+            assert contrast(color, surface) >= 4.5, (selector, color, surface)
+    assert "QToolButton:focus" in style.STYLE
+    assert 'QFrame#actionCard[tile="true"]:focus' in style.STYLE
