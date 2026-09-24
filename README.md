@@ -88,6 +88,18 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   opýtajú a každý program, balík aj vymazaný zvyšok v registri (ten sa
   pred vymazaním zálohuje do `Backups/<run-id>/*.reg`) sa zapíše do
   audit logu.
+- **Winget panel nikdy neklame „všetko aktuálne“:** ak winget chýba
+  alebo sa nedá spustiť (nie je Inštalátor aplikácií, nie je
+  zaregistrovaný pre účet, chýbajú mu závislosti), panel to napíše aj
+  s radou, čo robiť. Zlyhaná kontrola ukáže kód chyby winget v hex
+  tvare (napr. `0x8A15004B`) a pri poškodených zdrojoch odporučí akciu
+  „Reset zdrojov balíkov (winget)“. Zoznam sa číta bez ohľadu na jazyk
+  Windows – cez modul Microsoft.WinGet.Client, ak je nainštalovaný,
+  inak z tabuľky `winget upgrade` podľa jej štruktúry, nie podľa
+  (preložených) nadpisov stĺpcov. Ak sa niektorý riadok tabuľky
+  nedá prečítať, panel ukáže zvyšok a upozorní, že zoznam nie je
+  úplný. Winget mimo PATH (napr. v zvýšenej
+  relácii) sa nájde aj v priečinku WindowsApps.
 
 ## Bezpečnostné mechanizmy
 
