@@ -2481,6 +2481,34 @@ def test_focus_qss_rules_present_for_keyboard_accessibility():
     assert "QCheckBox::indicator:focus" in style.STYLE
 
 
+def test_high_contrast_mode_drops_custom_theme_on_window_and_dialogs(qtbot, tmp_path, monkeypatch):
+    # research-accessibility.md Finding 3: every place that used to set
+    # style.STYLE goes through style.stylesheet(), so High Contrast users
+    # get their system colors on the main window *and* its dialogs.
+    from portablefix.gui import style
+
+    monkeypatch.setattr(style, "is_high_contrast", lambda: True)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_hc")
+    qtbot.addWidget(window)
+    assert window.styleSheet() == ""
+
+    window.console_popout_button.click()
+    assert window._console_window is not None
+    assert window._console_window.styleSheet() == ""
+    window._console_window.close()
+
+
+def test_normal_mode_keeps_custom_theme(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import style
+
+    monkeypatch.setattr(style, "is_high_contrast", lambda: False)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_nohc")
+    qtbot.addWidget(window)
+    assert window.styleSheet() == style.STYLE
+
+
 def test_score_state_buckets():
     from portablefix.gui.main_window import _score_state
 
@@ -2805,6 +2833,57 @@ def test_successful_restore_point_logs_no_decision(qtbot, tmp_path, monkeypatch)
     log_path = audit_log_path(base_dir, "run_rp_ok")
     assert [e["exit_code"] for e in _system_events(log_path, "restore_point")] == [0]
     assert _system_events(log_path, "restore_point_decision") == []
+
+
+def test_restore_point_sequence_flows_from_runner_into_audit_log(qtbot, tmp_path, monkeypatch):
+    # research-reporting.md F1: the real RestorePointRunner signal carries the
+    # created point's SequenceNumber through to the "_system" audit entry.
+    from portablefix import restore_point
+
+    monkeypatch.setattr(
+        restore_point, "create_restore_point",
+        lambda description: restore_point.RestorePointResult(
+            True, "", {"sequence_number": 123, "creation_time": "20260924101530.123456-000"},
+        ),
+    )
+    _write_module(tmp_path, "m04_integrity", "REPAIR", "safe_repair_action")
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False),
+        is_admin=True, run_id="run_rp_seq",
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["safe_repair_action"].setChecked(True)
+    dispatched = []
+    monkeypatch.setattr(window, "_dispatch_action", lambda m, a: dispatched.append(a.id))
+    # Only the restore-point step matters here: no real disk snapshot
+    # (SystemDrive doesn't exist off Windows) ...
+    monkeypatch.setattr(window, "_take_snapshot", lambda: {})
+
+    window.run_selected_actions()
+
+    qtbot.waitUntil(lambda: dispatched == ["safe_repair_action"], timeout=10000)
+    # ... and the stubbed dispatch never finishes the batch - end it so
+    # teardown's closeEvent doesn't ask about a running batch.
+    window._batch_active = False
+    [rp] = _system_events(audit_log_path(tmp_path, "run_rp_seq"), "restore_point")
+    assert rp["exit_code"] == 0
+    assert rp["restore_point_sequence"] == 123
+    assert rp["restore_point_created"] == "20260924101530.123456-000"
+    assert "#123" in rp["output"]
+
+
+def test_restore_point_without_info_logs_no_sequence(qtbot, tmp_path, monkeypatch):
+    # Lookup failed (or an older caller passes no info) - still "created".
+    window, base_dir = _destructive_window(qtbot, tmp_path, monkeypatch, "run_rp_noseq")
+    monkeypatch.setattr(window, "_dispatch_action", lambda m, a: None)
+    module, action = window._find_action("risky_thing")
+
+    window._on_restore_point_checked(True, "", module, action, {})
+
+    [rp] = _system_events(audit_log_path(base_dir, "run_rp_noseq"), "restore_point")
+    assert rp["exit_code"] == 0
+    assert rp["restore_point_sequence"] is None
+    assert rp["output"] == "System Restore Point created."
 
 
 def test_irreversible_action_is_listed_in_undo_script(qtbot, tmp_path, monkeypatch):

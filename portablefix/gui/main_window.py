@@ -363,7 +363,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
-        self.setStyleSheet(style.STYLE)
+        self.setStyleSheet(style.stylesheet())
         self.resize(1200, 760)
         central = QWidget(self)
         central.setObjectName("central")
@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
             return
         window = QDialog(self)
         window.setWindowTitle(self._t("console_popout_title"))
-        window.setStyleSheet(style.STYLE)
+        window.setStyleSheet(style.stylesheet())
         window.resize(700, 400)
         window.setModal(False)
         layout = QVBoxLayout(window)
@@ -1028,7 +1028,7 @@ class MainWindow(QMainWindow):
     def _open_job_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(self._t("job_dialog_title"))
-        dialog.setStyleSheet(style.STYLE)
+        dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
         form = QFormLayout(dialog)
         technician_edit = QLineEdit(self.settings.technician_name)
@@ -1247,7 +1247,7 @@ class MainWindow(QMainWindow):
     def _show_batch_summary(self, html_path: Path) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(self._t("batch_results_title"))
-        dialog.setStyleSheet(style.STYLE)
+        dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(18, 14, 18, 14)
@@ -2483,7 +2483,7 @@ class MainWindow(QMainWindow):
             self._write_undo_script()
             rp_runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
-                lambda success, detail, m=module, a=action: self._on_restore_point_checked(success, detail, m, a)
+                lambda success, detail, info, m=module, a=action: self._on_restore_point_checked(success, detail, m, a, info)
             )
             self._pending_restore_point_runner = rp_runner
             rp_runner.start()
@@ -2491,15 +2491,23 @@ class MainWindow(QMainWindow):
 
         self._dispatch_action(module, action)
 
-    def _on_restore_point_checked(self, success: bool, detail: str, module: ModuleDef, action: ActionDef) -> None:
+    def _on_restore_point_checked(
+        self, success: bool, detail: str, module: ModuleDef, action: ActionDef, info: dict | None = None,
+    ) -> None:
+        # info: the created point's identity (restore_point.parse_restore_point_output),
+        # {} / None when it could not be looked up.
+        sequence = (info or {}).get("sequence_number") if success else None
         output = "System Restore Point created." if success else (
             f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
         )
+        if sequence is not None:
+            output = f"System Restore Point created (#{sequence})."
         subject = f"{module.module_id}/{action.id}"
         self._log_system_event(
             "restore_point", 0 if success else 1, output,
             command=f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
-            subject=subject,
+            subject=subject, restore_point_sequence=sequence,
+            restore_point_created=(info or {}).get("creation_time", "") if success else "",
         )
         if self._cancel_requested:
             # Cancel was clicked while the restore point was still being

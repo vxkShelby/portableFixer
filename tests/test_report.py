@@ -553,6 +553,39 @@ def test_report_shows_restore_point_created(tmp_path):
     assert "Run as administrator: yes" in content
 
 
+def test_report_shows_restore_point_sequence_number(tmp_path):
+    # research-reporting.md F1: name *which* restore point was created, in
+    # both the header line and the safety log.
+    append_entry(tmp_path, "run_rpseq", make_entry(
+        "_system", "restore_point", "Checkpoint-Computer", 0, "System Restore Point created (#123).", False,
+        "run_rpseq", restore_point_sequence=123, restore_point_created="20260924101530.123456-000",
+    ))
+    html_path, json_path = generate_report(tmp_path, "run_rpseq", [], "sk", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["restore_points"][0]["sequence"] == 123
+    content = html_path.read_text(encoding="utf-8")
+    assert content.count("Bod obnovenia: vytvorený (#123) (") == 2
+
+
+def test_report_restore_point_without_sequence_renders_as_before(tmp_path):
+    # Logs written before the field existed have no restore_point_sequence key.
+    log = tmp_path / "Logs" / "run_rpold.jsonl"
+    log.parent.mkdir(parents=True)
+    old_entry = {
+        "timestamp": "2026-01-01T10:00:00+00:00", "module_id": "_system", "action_id": "restore_point",
+        "command": "Checkpoint-Computer", "exit_code": 0, "output": "System Restore Point created.",
+        "dry_run": False, "hostname": "pc", "run_id": "run_rpold",
+    }
+    log.write_text(json.dumps(old_entry) + "\n", encoding="utf-8")
+    html_path, json_path = generate_report(tmp_path, "run_rpold", [], "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["restore_points"][0]["created"] is True
+    assert data["restore_points"][0]["sequence"] is None
+    content = html_path.read_text(encoding="utf-8")
+    assert "Restore point: created (" in content
+    assert "(#" not in content
+
+
 def test_report_shows_failed_restore_point_and_proceed_decision(tmp_path):
     # research-reporting.md F3: "continue without a restore point" is an
     # explicit, visible decision - not inferred from timestamps.
@@ -568,6 +601,7 @@ def test_report_shows_failed_restore_point_and_proceed_decision(tmp_path):
     assert data["restore_points"] == [{
         "timestamp": data["restore_points"][0]["timestamp"], "created": False,
         "detail": "System Restore Point creation failed: disabled", "decision": "proceed",
+        "sequence": None,
     }]
     content = html_path.read_text(encoding="utf-8")
     assert "NEPODARIL SA" in content

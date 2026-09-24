@@ -96,7 +96,9 @@ def main() -> int:
             font_path = raw_base_dir / "Vendor" / "Fonts" / font_file
             if font_path.exists():
                 QFontDatabase.addApplicationFont(str(font_path))
-        app.setStyleSheet(style.STYLE)
+        # style.stylesheet(), not style.STYLE: empty under Windows High
+        # Contrast so the user's system colors win (see style.py).
+        app.setStyleSheet(style.stylesheet())
 
         icon_path = raw_base_dir / "portablefix.ico"
         if icon_path.exists():

@@ -52,6 +52,24 @@ def test_make_entry_new_fields_default_empty_for_backward_compat():
     assert (entry.warning_text, entry.subject, entry.decision) == ("", "", "")
 
 
+def test_make_entry_records_restore_point_sequence(tmp_path):
+    # research-reporting.md F1: *which* restore point the run created.
+    entry = make_entry(
+        "_system", "restore_point", "Checkpoint-Computer", 0, "created", False, "run123",
+        restore_point_sequence=123, restore_point_created="20260924101530.123456-000",
+    )
+    append_entry(tmp_path, "run123", entry)
+    parsed = json.loads(audit_log_path(tmp_path, "run123").read_text(encoding="utf-8"))
+    assert parsed["restore_point_sequence"] == 123
+    assert parsed["restore_point_created"] == "20260924101530.123456-000"
+
+
+def test_make_entry_restore_point_sequence_defaults_to_not_recorded():
+    entry = make_entry("_system", "restore_point", "cmd", 0, "output", False, "run123")
+    assert entry.restore_point_sequence is None
+    assert entry.restore_point_created == ""
+
+
 def test_append_entry_writes_jsonl_line(tmp_path):
     entry = make_entry("m01_diagnostics", "os_info", "cmd", 0, "output", False, "run123")
     append_entry(tmp_path, "run123", entry)
