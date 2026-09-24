@@ -96,7 +96,9 @@ PowerShell.
   sources (winget)" action. The list is read independently of the
   Windows display language - through the Microsoft.WinGet.Client module
   when it is installed, otherwise from the `winget upgrade` table by its
-  structure rather than its (translated) column headers. A winget that
+  structure rather than its (translated) column headers. If a row of
+  that table cannot be read, the panel lists the rest and says the list
+  is incomplete. A winget that
   is not on PATH (e.g. in an elevated session) is still found in the
   WindowsApps folder.
 

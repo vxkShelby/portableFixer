@@ -1771,7 +1771,7 @@ class MainWindow(QMainWindow):
             if error.reason == "timeout":
                 return self._t("winget_scan_timeout").format(seconds=winget_updates._SCAN_TIMEOUT_SEC)
             if error.reason == "unparsed":
-                return self._t("winget_scan_unparsed")
+                return self._t("winget_scan_unparsed_rows" if error.packages else "winget_scan_unparsed")
             text = self._t("winget_scan_failed").format(code=code)
             hint = {"sources": "winget_scan_hint_sources", "outdated": "winget_scan_hint_outdated"}.get(error.reason)
             if hint:
@@ -1786,7 +1786,10 @@ class MainWindow(QMainWindow):
             packages = list(error.packages)
             populate(packages)
             text = describe_scan_error(error)
-            if packages:
+            # Only when a list is actually shown - populate hides it when
+            # every partial row is on the ignore list.
+            ignored_ids = set(self.settings.winget_ignored_ids)
+            if any(p.id not in ignored_ids for p in packages):
                 text += " " + self._t("winget_scan_partial")
             set_status(text, "warn", error.detail)
 

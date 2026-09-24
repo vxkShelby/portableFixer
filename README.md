@@ -96,7 +96,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   „Reset zdrojov balíkov (winget)“. Zoznam sa číta bez ohľadu na jazyk
   Windows – cez modul Microsoft.WinGet.Client, ak je nainštalovaný,
   inak z tabuľky `winget upgrade` podľa jej štruktúry, nie podľa
-  (preložených) nadpisov stĺpcov. Winget mimo PATH (napr. v zvýšenej
+  (preložených) nadpisov stĺpcov. Ak sa niektorý riadok tabuľky
+  nedá prečítať, panel ukáže zvyšok a upozorní, že zoznam nie je
+  úplný. Winget mimo PATH (napr. v zvýšenej
   relácii) sa nájde aj v priečinku WindowsApps.
 
 ## Bezpečnostné mechanizmy

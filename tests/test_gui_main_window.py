@@ -3967,7 +3967,7 @@ def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monke
     assert "NOT reversible" in undo_text and "Fake.Editor" in undo_text
 
 
-def _winget_failed_window(qtbot, tmp_path, monkeypatch, run_id, error):
+def _winget_failed_window(qtbot, tmp_path, monkeypatch, run_id, error, ignored_ids=()):
     from PySide6.QtWidgets import QLabel
 
     from portablefix import winget_updates
@@ -3980,7 +3980,8 @@ def _winget_failed_window(qtbot, tmp_path, monkeypatch, run_id, error):
     monkeypatch.setattr(winget_updates, "list_outdated_packages", failing_scan)
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
-        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True),
+        assets_dir=base_dir, state_dir=base_dir,
+        settings=Settings(language="en", dry_run=True, winget_ignored_ids=list(ignored_ids)),
         is_admin=True, run_id=run_id,
     )
     qtbot.addWidget(window)
@@ -4025,6 +4026,31 @@ def test_winget_panel_keeps_rows_listed_before_a_failure(qtbot, tmp_path, monkey
     window, card, banner = _winget_failed_window(qtbot, tmp_path, monkeypatch, "run_winget_partial", error)
     assert any(cb.toolTip() == "Fake.Editor" for cb in card.findChildren(QCheckBox))
     assert "0x8A150001" in banner.text() and window._t("winget_scan_partial") in banner.text()
+
+
+def test_winget_panel_does_not_point_at_a_list_it_hides(qtbot, tmp_path, monkeypatch):
+    # Every partial row is ignored, so no list is shown - the banner must
+    # not refer to "the list below".
+    from portablefix.winget_updates import WingetScanError
+
+    error = WingetScanError("error", "failed", exit_code=0x8A150001, packages=[_fake_outdated_package()])
+    window, card, banner = _winget_failed_window(
+        qtbot, tmp_path, monkeypatch, "run_winget_partial_ignored", error, ignored_ids=["Fake.Editor"],
+    )
+    assert "0x8A150001" in banner.text()
+    assert window._t("winget_scan_partial") not in banner.text()
+
+
+def test_winget_panel_says_which_rows_were_unreadable(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix.winget_updates import WingetScanError
+
+    error = WingetScanError("error", "unparsed", packages=[_fake_outdated_package()])
+    window, card, banner = _winget_failed_window(qtbot, tmp_path, monkeypatch, "run_winget_unreadable_rows", error)
+    assert any(cb.toolTip() == "Fake.Editor" for cb in card.findChildren(QCheckBox))
+    assert banner.text().startswith(window._t("winget_scan_unparsed_rows"))
+    assert window._t("winget_scan_unparsed") not in banner.text()
 
 
 def test_panel_confirmation_list_is_capped(qtbot, tmp_path):

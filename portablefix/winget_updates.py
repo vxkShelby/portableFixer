@@ -128,7 +128,7 @@ def _is_id_cell(cell: str) -> bool:
     return bool(cell) and not _has_space(cell) and any(ch.isalpha() for ch in cell)
 
 
-def _row_cells(line: str, starts: tuple[int, ...]) -> list[str] | None:
+def _split_row(line: str, starts: tuple[int, ...]) -> list[str] | None:
     # Every column is preceded by at least one padding space on a real row;
     # a summary line under the table ("3 upgrades available.", in whatever
     # language) runs text straight across those positions.
@@ -136,14 +136,37 @@ def _row_cells(line: str, starts: tuple[int, ...]) -> list[str] | None:
         if len(line) > start and line[start - 1] != " ":
             return None
     bounds = (0,) + starts
-    cells = [_cell(line, bounds[i], bounds[i + 1] if i + 1 < len(bounds) else None) for i in range(len(bounds))]
+    return [_cell(line, bounds[i], bounds[i + 1] if i + 1 < len(bounds) else None) for i in range(len(bounds))]
+
+
+def _row_cells(line: str, starts: tuple[int, ...]) -> list[str] | None:
+    cells = _split_row(line, starts)
+    if cells is None:
+        return None
     name, pkg_id, version, available = cells[:4]
     source = cells[4] if len(cells) > 4 else ""
     if not name or not _is_id_cell(pkg_id) or not _is_version_cell(version) or not _is_version_cell(available):
         return None
+    # winget always offers a real version, never "Unknown" - without this a
+    # table whose every installed version is "Unknown" (--include-unknown)
+    # also fits one column to the right: Id "Unknown", Available "winget".
+    if not any(ch.isdigit() for ch in available):
+        return None
     if _has_space(source):
         return None
     return cells
+
+
+def _is_unreadable_row(line: str, starts: tuple[int, ...]) -> bool:
+    # A package row the winning split could not read (a version such as
+    # "1.0 beta"): padded like a row, reaching the Available column, with a
+    # real Id - unlike the summary or prose lines around the table. It must
+    # not just vanish, or that package reads as up to date.
+    cells = _split_row(line, starts)
+    return (
+        cells is not None and len(line) > starts[2] and bool(cells[0]) and _is_id_cell(cells[1])
+        and _row_cells(line, starts) is None
+    )
 
 
 def _header_word_starts(header: str) -> list[int]:
@@ -154,6 +177,10 @@ def _header_word_starts(header: str) -> list[int]:
 
 
 def _parse_upgrade_output(text: str) -> tuple[bool, list[OutdatedPackage]]:
+    return _parse_upgrade_table(text)[:2]
+
+
+def _parse_upgrade_table(text: str) -> tuple[bool, list[OutdatedPackage], int]:
     """Parse `winget upgrade` output without reading any of its labels.
 
     Returns (table_found, packages). The header labels, the summary line and
@@ -164,6 +191,9 @@ def _parse_upgrade_output(text: str) -> tuple[bool, list[OutdatedPackage]]:
     words start real columns (a label like "K dispozícii" has a space in it)
     is decided by the data rows: the split under which the most rows have a
     valid Id and version cells wins.
+
+    The third value counts the rows that look like packages but could not
+    be read under that split - the list is then incomplete.
     """
     lines = [_to_columns(_ANSI_RE.sub("", line).rstrip()) for line in text.lstrip("\ufeff").splitlines()]
     sep_idx = None
@@ -175,9 +205,13 @@ def _parse_upgrade_output(text: str) -> tuple[bool, list[OutdatedPackage]]:
             sep_idx = i
             break
     if sep_idx is None:
-        return False, []
+        return False, [], 0
     header = next(lines[j] for j in range(sep_idx - 1, -1, -1) if lines[j].strip())
 
+    # When winget prints only the explicit-targeting (or pinned) table, that
+    # table is the first one and its rows are listed as ordinary updates.
+    # Telling it apart would mean reading its localized intro line; the old
+    # English-only parser behaved the same.
     rows: list[str] = []
     for line in lines[sep_idx + 1:]:
         if not line.strip():
@@ -194,8 +228,8 @@ def _parse_upgrade_output(text: str) -> tuple[bool, list[OutdatedPackage]]:
     if len(word_starts) > _MAX_HEADER_WORDS:
         # Not a winget table header (some prose above a dashed line) - an
         # unreadable table, never "no updates".
-        return True, []
-    best: tuple[tuple[int, float, int], list[list[str]]] | None = None
+        return True, [], 0
+    best: tuple[tuple[int, float, int], list[list[str]], tuple[int, ...]] | None = None
     for column_count in (3, 4):
         for starts in itertools.combinations(word_starts, column_count):
             parsed = [cells for cells in (_row_cells(row, starts) for row in rows) if cells is not None]
@@ -208,9 +242,9 @@ def _parse_upgrade_output(text: str) -> tuple[bool, list[OutdatedPackage]]:
             gap = sum(start - len(header[:start].rstrip()) for start in starts) / column_count
             key = (len(parsed), gap, column_count)
             if best is None or key > best[0]:
-                best = (key, parsed)
+                best = (key, parsed, starts)
     if best is None:
-        return True, []
+        return True, [], 0
     packages = [
         OutdatedPackage(
             name=cells[0], id=cells[1], installed_version=cells[2], available_version=cells[3],
@@ -218,7 +252,8 @@ def _parse_upgrade_output(text: str) -> tuple[bool, list[OutdatedPackage]]:
         )
         for cells in best[1]
     ]
-    return True, packages
+    unreadable = sum(1 for row in rows if _is_unreadable_row(row, best[2]))
+    return True, packages, unreadable
 
 
 def parse_winget_upgrade_table(text: str) -> list[OutdatedPackage]:
@@ -273,10 +308,11 @@ def find_winget_executable() -> str | None:
 # Microsoft.WinGet.Client returns typed objects - nothing in them is
 # localized, so where the module is installed the text table is not needed
 # at all. Exit 3 = module not installed, 4 = it failed: both fall back to
-# the CLI. Output is forced to UTF-8 so program names keep their diacritics.
+# the CLI. Output is forced to UTF-8 so program names keep their diacritics;
+# the encoding has no BOM, and one is still stripped in case a host adds it.
 _MODULE_SCAN_SCRIPT = (
     "$ErrorActionPreference = 'Stop'; "
-    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
     "if (-not (Get-Module -ListAvailable -Name Microsoft.WinGet.Client)) { exit 3 }; "
     "try { Import-Module Microsoft.WinGet.Client; "
     "$rows = @(Get-WinGetPackage | Where-Object { $_.IsUpdateAvailable } | ForEach-Object { "
@@ -302,7 +338,7 @@ def _scan_with_powershell_module(timeout_sec: float) -> list[OutdatedPackage] | 
     if result.returncode != 0:
         return None
     try:
-        data = json.loads((result.stdout or "").strip() or "[]")
+        data = json.loads((result.stdout or "").lstrip("\ufeff").strip() or "[]")
     except ValueError:
         return None
     if isinstance(data, dict):
@@ -351,7 +387,7 @@ def _scan_with_cli(winget_exe: str, timeout_sec: float) -> list[OutdatedPackage]
         raise WingetScanError("unavailable", "cannot_start", detail=str(exc)) from None
     stdout = result.stdout or ""
     code = result.returncode & 0xFFFFFFFF
-    table_found, packages = _parse_upgrade_output(stdout)
+    table_found, packages, unreadable = _parse_upgrade_table(stdout)
     detail = _output_tail(stdout + "\n" + (result.stderr or ""))
     if code in (0, _NO_APPLICATIONS_FOUND, _UPDATE_NOT_APPLICABLE):
         if table_found and not packages:
@@ -359,6 +395,11 @@ def _scan_with_cli(winget_exe: str, timeout_sec: float) -> list[OutdatedPackage]
             # updates" here would be exactly the false all-clear this
             # module exists to avoid.
             raise WingetScanError("error", "unparsed", detail=detail)
+        if unreadable:
+            # The rows that were read are real updates and stay listed; the
+            # panel says the list is incomplete instead of implying the
+            # skipped packages are current.
+            raise WingetScanError("error", "unparsed", detail=detail, packages=packages)
         return packages
     if code in _BROKEN_INSTALL_CODES:
         raise WingetScanError("unavailable", "cannot_start", exit_code=code, detail=detail)

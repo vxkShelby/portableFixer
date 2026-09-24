@@ -596,3 +596,75 @@ def test_parse_treats_prose_above_a_dashed_line_as_an_unreadable_table():
     prose = " ".join(f"slovo{i}" for i in range(40))
     text = prose + "\n" + "-" * 40 + "\nAnyDesk  AnyDesk.AnyDesk  1.0  2.0  winget\n"
     assert winget_updates._parse_upgrade_output(text) == (True, [])
+
+
+def _winget_table(header: list[str], rows: list[list[str]], summary: str) -> str:
+    # The way winget lays a table out: each column padded to its widest
+    # value, one space between columns, a dashed line as wide as the table.
+    widths = [max(len(r[i]) for r in [header] + rows) for i in range(len(header))]
+
+    def line(cells):
+        return " ".join(c.ljust(w) for c, w in zip(cells, widths)).rstrip()
+
+    lines = [line(header), "-" * len(line(header))] + [line(r) for r in rows] + [summary]
+    return "\n".join(lines) + "\n"
+
+
+_HEADERS = {
+    "en": ["Name", "Id", "Version", "Available", "Source"],
+    "de": ["Name", "ID", "Version", "Verfügbar", "Quelle"],
+    "sk": ["Názov", "ID", "Verzia", "K dispozícii", "Zdroj"],
+}
+_UNKNOWN_ROWS = [
+    ["Zoom", "Zoom.Zoom", "Unknown", "6.0.2", "winget"],
+    ["Opera", "Opera.Opera", "Unknown", "113.0", "winget"],
+]
+
+
+@pytest.mark.parametrize("language", ["en", "de", "sk"])
+@pytest.mark.parametrize("row_count", [1, 2])
+def test_parse_reads_a_table_where_every_installed_version_is_unknown(language, row_count):
+    # With --include-unknown the installed version is often "Unknown"; when
+    # no row had a numeric one, the split one column to the right won and
+    # the update would have run `winget upgrade --id Unknown`.
+    rows = _UNKNOWN_ROWS[:row_count]
+    text = _winget_table(_HEADERS[language], rows, "2 upgrades available.")
+    assert parse_winget_upgrade_table(text) == [OutdatedPackage(*row) for row in rows]
+
+
+def test_parse_counts_a_package_row_it_could_not_read():
+    text = _winget_table(
+        _HEADERS["en"],
+        [["Foo", "Foo.Foo", "1.0 beta", "2.0", "winget"], ["Bar", "Bar.Bar", "1.0", "2.0", "winget"]],
+        "2 upgrades available.",
+    )
+    table_found, packages, unreadable = winget_updates._parse_upgrade_table(text)
+    assert (table_found, unreadable) == (True, 1)
+    assert [p.id for p in packages] == ["Bar.Bar"]
+
+
+@pytest.mark.parametrize("fixture", [_FIXTURE_EN, _FIXTURE_DE, _FIXTURE_SK], ids=["en", "de", "sk"])
+def test_parse_does_not_count_the_summary_line_as_an_unreadable_row(fixture):
+    assert winget_updates._parse_upgrade_table(fixture)[2] == 0
+
+
+def test_scan_with_an_unreadable_row_keeps_the_rest_and_says_the_list_is_incomplete(monkeypatch, cli_only):
+    # A package whose version has a space in it used to vanish silently -
+    # for that package a false "up to date".
+    text = _winget_table(
+        _HEADERS["sk"],
+        [["Foo", "Foo.Foo", "1.0 beta", "2.0", "winget"], ["Bar", "Bar.Bar", "1.0", "2.0", "winget"]],
+        "K dispozícii sú 2 inovácie.",
+    )
+    _scan_with(monkeypatch, _completed(0, text))
+    with pytest.raises(WingetScanError) as info:
+        list_outdated_packages()
+    assert (info.value.kind, info.value.reason) == ("error", "unparsed")
+    assert [p.id for p in info.value.packages] == ["Bar.Bar"]
+
+
+def test_module_scan_accepts_json_with_a_utf8_bom(monkeypatch):
+    # Windows PowerShell 5.1 may write the UTF-8 preamble to redirected
+    # stdout; json.loads rejects it, which silently disabled the module path.
+    _scan_with(monkeypatch, _completed(0, '﻿[{"Name":"A","Id":"A.A","InstalledVersion":"1","Available":"2","Source":"winget"}]'))
+    assert winget_updates._scan_with_powershell_module(5) == [OutdatedPackage("A", "A.A", "1", "2", "winget")]
