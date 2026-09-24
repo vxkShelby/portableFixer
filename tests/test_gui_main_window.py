@@ -3278,3 +3278,21 @@ def test_undo_script_is_only_rewritten_when_its_content_changes(qtbot, tmp_path,
     undo_path.unlink()
     window._write_undo_script()
     assert len(writes) == 4 and undo_path.exists()
+
+
+def test_close_event_waits_long_enough_for_a_running_restore_point(qtbot, tmp_path):
+    from portablefix import restore_point
+
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_rp_close")
+    qtbot.addWidget(window)
+    waits = []
+
+    class _FakeRunner:
+        def wait(self, timeout_ms):
+            waits.append(timeout_ms)
+            return True
+
+    window._pending_restore_point_runner = _FakeRunner()
+    window.close()
+    assert waits == [restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000]

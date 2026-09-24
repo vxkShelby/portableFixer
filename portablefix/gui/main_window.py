@@ -325,10 +325,14 @@ class MainWindow(QMainWindow):
             self._vpn_runner,
             self._runner,
             self._update_check_runner,
-            self._pending_restore_point_runner,
         )
         slow_runners = (
             (self._speed_test_runner, 25_000),
+            # Checkpoint-Computer can legitimately run for minutes (VSS on a
+            # slow disk); a 5s wait let closeEvent destroy the still-running
+            # QThread, aborting the process before create_restore_point could
+            # put the 24h throttle registry value back.
+            (self._pending_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
             (self._update_download_runner, updater.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000),
             # Can't be interrupted mid-write, and it re-reads the whole
             # session's audit log - allow for a slow USB stick.
