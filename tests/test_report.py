@@ -301,3 +301,157 @@ def test_html_report_shows_readable_utc_timestamps(tmp_path):
     assert "12:54:03.410593" not in content
     # The machine-readable JSON keeps the full ISO timestamp.
     assert json.loads(json_path.read_text(encoding="utf-8"))["actions"][0]["timestamp"] == entry.timestamp
+
+
+def _two_module_fixture():
+    from portablefix.models import ModuleCategory
+
+    cleanup = ModuleDef(
+        module_id="m02_cleanup",
+        actions=[ActionDef(id="user_temp", label_sk="Dočasné súbory", label_en="Temp files",
+                           risk=RiskLevel.SAFE, command="c")],
+        category=ModuleCategory.CLEANUP,
+    )
+    repair = ModuleDef(
+        module_id="m03_repair",
+        actions=[ActionDef(id="sfc", label_sk="Kontrola systémových súborov", label_en="System file check",
+                           risk=RiskLevel.MODERATE, command="sfc /scannow")],
+        category=ModuleCategory.REPAIR,
+    )
+    return [cleanup, repair]
+
+
+def _mixed_run(tmp_path, run_id):
+    # 1: cleanup ok, 2: cleanup dry-run ok, 3: repair failed, 4: repair ok
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "c", 0, "done", False, run_id))
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "c", 0, "", True, run_id))
+    append_entry(tmp_path, run_id, make_entry("m03_repair", "sfc", "sfc", 5, "boom", False, run_id))
+    append_entry(tmp_path, run_id, make_entry("m03_repair", "sfc", "sfc", 0, "ok", False, run_id))
+
+
+def test_build_report_data_adds_category_and_module_summary(tmp_path):
+    _mixed_run(tmp_path, "run_sum")
+    data = build_report_data(tmp_path, "run_sum", _two_module_fixture(), "en", {}, {})
+
+    assert [a["category"] for a in data["actions"]] == ["CLEANUP", "CLEANUP", "REPAIR", "REPAIR"]
+    assert data["module_summary"] == [
+        {"module_id": "m02_cleanup", "category": "CLEANUP", "total": 2, "ok": 2, "failed": 0, "dry_run": 1},
+        {"module_id": "m03_repair", "category": "REPAIR", "total": 2, "ok": 1, "failed": 1, "dry_run": 0},
+    ]
+    # Existing keys stay in place for JSON consumers.
+    for key in ("actions", "requires_restart", "previous_comparison", "snapshot_before", "snapshot_after"):
+        assert key in data
+
+
+def test_module_summary_marks_unknown_modules(tmp_path):
+    append_entry(tmp_path, "run_unk", make_entry("mXX", "a", "c", 0, "", False, "run_unk"))
+    data = build_report_data(tmp_path, "run_unk", [], "en", {}, {})
+    assert data["actions"][0]["category"] == "UNKNOWN"
+    assert data["module_summary"][0]["category"] == "UNKNOWN"
+
+
+def test_html_report_renders_module_summary_table(tmp_path):
+    _mixed_run(tmp_path, "run_tbl")
+    html_path, _ = generate_report(tmp_path, "run_tbl", _two_module_fixture(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "Summary by category" in content
+    assert '<table class="summary">' in content
+    assert "<td>m02_cleanup</td>" in content
+    assert '<td class="cat">System repair</td>' in content
+    assert '<td class="n fail-n">1</td>' in content
+
+
+def test_html_report_lists_failed_actions_with_anchors(tmp_path):
+    _mixed_run(tmp_path, "run_failed")
+    html_path, _ = generate_report(tmp_path, "run_failed", _two_module_fixture(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "Failed actions (1)" in content
+    assert '<a href="#action-3">System file check</a>' in content
+    assert 'id="action-3"' in content
+    # Cards keep chronological DOM order.
+    assert content.index('id="action-1"') < content.index('id="action-2"') < content.index('id="action-3"')
+    # The failed list sits above the action log.
+    assert content.index('href="#action-3"') < content.index('id="action-1"')
+
+
+def test_html_report_omits_failed_list_without_failures(tmp_path):
+    append_entry(tmp_path, "run_allok", make_entry("m02_cleanup", "user_temp", "c", 0, "", False, "run_allok"))
+    html_path, _ = generate_report(tmp_path, "run_allok", _fixture_modules(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "Failed actions" not in content
+    assert 'href="#action-' not in content
+
+
+def test_html_report_cards_carry_filter_data_attributes(tmp_path):
+    _mixed_run(tmp_path, "run_attr")
+    html_path, _ = generate_report(tmp_path, "run_attr", _two_module_fixture(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert '<div class="card ok" id="action-1" data-status="ok" data-dry="0"' in content
+    assert '<div class="card ok" id="action-2" data-status="ok" data-dry="1"' in content
+    assert '<div class="card fail" id="action-3" data-status="fail" data-dry="0"' in content
+    assert 'data-search="system file check m03_repair sfc"' in content
+
+
+def test_html_report_has_filter_bar_print_css_and_is_self_contained(tmp_path):
+    _mixed_run(tmp_path, "run_bar")
+    html_path, _ = generate_report(tmp_path, "run_bar", _two_module_fixture(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "<main" in content and "</main>" in content
+    # Toolbar is hidden until the inline script reveals it (no-JS = full log).
+    assert 'id="pf-toolbar" hidden' in content
+    assert '<button type="button" data-filter="all" aria-pressed="true">All</button>' in content
+    assert 'data-filter="fail" aria-pressed="false">Failed only</button>' in content
+    assert 'data-filter="changes" aria-pressed="false">Changes only (no dry-run)</button>' in content
+    assert 'type="search" id="pf-search"' in content
+    assert "window.print()" in content
+    assert "Print / save as PDF" in content
+    assert "@media print" in content
+    assert "break-inside: avoid" in content
+    # Offline, single file: no external resources.
+    assert "http://" not in content and "https://" not in content
+    assert "<script src" not in content and "<link" not in content
+
+
+def test_html_report_escapes_labels_in_new_sections(tmp_path):
+    evil = '<img src=x onerror=alert(1)>"'
+    append_entry(tmp_path, "run_xss2", make_entry(evil, evil, "c", 1, "", False, "run_xss2"))
+    html_path, _ = generate_report(tmp_path, "run_xss2", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "<img src=x" not in content
+    assert "&lt;img src=x onerror=alert(1)&gt;" in content
+    # Failed list link, summary table row and data-search attribute are all escaped.
+    assert '<a href="#action-1">&lt;img src=x onerror=alert(1)&gt;&quot;</a>' in content
+    assert "<td>&lt;img src=x onerror=alert(1)&gt;&quot;</td>" in content
+    assert 'data-search="&lt;img src=x onerror=alert(1)&gt;&quot;' in content
+
+
+def test_html_report_new_sections_are_localized_to_slovak(tmp_path):
+    _mixed_run(tmp_path, "run_sk2")
+    html_path, _ = generate_report(tmp_path, "run_sk2", _two_module_fixture(), "sk", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    for text in ("Prehľad podľa kategórií", "Zlyhané akcie (1)", "Všetky", "Len zlyhané",
+                 "Tlačiť / uložiť ako PDF", "Kontrola systémových súborov", "Kategória", "Spolu"):
+        assert text in content
+    for english in ("Failed only", "Summary by category", "Print / save as PDF", "Failed actions"):
+        assert english not in content
+
+
+def test_html_report_without_actions_shows_empty_note_and_no_toolbar(tmp_path):
+    html_path, _ = generate_report(tmp_path, "run_empty", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "No actions were run during this session." in content
+    assert 'id="pf-toolbar"' not in content
+    assert "Summary by category" not in content
+
+
+def test_module_summary_shows_localized_category_names(tmp_path):
+    modules = _fixture_modules()
+    append_entry(tmp_path, "run_cat", make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, "run_cat"))
+    append_entry(tmp_path, "run_cat", make_entry("m99_gone", "ghost", "cmd", 0, "", False, "run_cat"))
+    html_path, _ = generate_report(tmp_path, "run_cat", modules, "sk", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    category = modules[0].category.value
+    from portablefix.i18n import translate
+
+    assert f'<td class="cat">{translate("category_" + category.lower(), "sk")}</td>' in content
+    assert '<td class="cat">UNKNOWN</td>' in content
