@@ -19,6 +19,24 @@ reporting as "skipped locked/in-use items". A root that is itself a link
 (C:\\NVIDIA planted by a user) loses only the link; the takeown/icacls steps
 of the Windows.old / upgrade-leftover actions skip such a root entirely.
 
+Those two actions used to run `takeown /R` and `icacls /reset /T` on the
+root. Microsoft's command reference only says takeown /R "performs a
+recursive operation on all files in the specified directory and
+subdirectories" and icacls /T "performs the operation on all specified
+files in the current directory and its subdirectories"; neither says the
+walk stops at a junction or symlink, and takeown has no switch to act on a
+link itself (icacls has /L: "performs the operation on a symbolic link
+itself versus its target"), so both are treated as following links. Any
+authenticated user can create C:\\$WINDOWS.~BT (or C:\\Windows.old on a
+machine without one) with junctions inside, so the
+actions now (1) refuse - exit 1, nothing changed - unless the root is owned
+by SYSTEM, TrustedInstaller or Administrators, read as a SID from Get-Acl
+(never the localized account name), and (2) walk the tree themselves like
+Remove-PfSafe and run the non-recursive `takeown /F <folder> /A` and
+`icacls <folder> /reset /L /C /Q` once per real folder, never on a link.
+Files keep their ACLs: owning and resetting the parent folder grants
+Administrators "delete child", which lets Remove-PfSafe delete them.
+
 It is still path-based: an attacker who swaps an already-checked folder for
 a junction in the instant before a child is deleted could win a race.
 Closing that needs handle-relative deletes (P/Invoke), which a one-line
@@ -191,15 +209,16 @@ def test_every_copy_of_the_helper_is_the_canonical_one_at_the_start():
 
 
 def test_takeown_and_icacls_never_run_through_a_planted_root_link():
-    # takeown /R and icacls /reset /T on a root that is a junction would
-    # re-own and re-ACL whatever it points at before any delete happens, so
-    # the reparse-point check must come first and guard both.
+    # takeown and icacls on a root that is a junction would re-own and
+    # re-ACL whatever it points at before any delete happens, so the
+    # reparse-point check must come first and guard both (the per-folder
+    # walk they now run in is exercised below).
     for module_id, action_id in (("m02_cleanup", "windows_old_removal"), ("m02_cleanup", "windows_upgrade_leftovers")):
         command = next(a for a in load_module(MODULES_DIR / module_id / "actions.yaml").actions if a.id == action_id).command
-        body = command[len(SAFE_DELETE_HELPER) :]
+        body = command[command.index("$trusted = ") :]
         guard = body.index("[IO.FileAttributes]::ReparsePoint")
-        assert guard < body.index("takeown") < body.index("icacls") < body.index("Remove-PfSafe"), action_id
-        assert "if (-not ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { takeown" in body
+        assert guard < body.index("Get-PfOwnerSid $i.FullName") < body.index("Grant-PfAdminTree $i.FullName"), action_id
+        assert body.count("Grant-PfAdminTree") == 1, action_id
 
 
 # --- pwsh: parse + behaviour ------------------------------------------------
@@ -641,32 +660,77 @@ def test_gpu_leftovers_planted_as_a_root_link_only_lose_the_link(tmp_path):
         assert not os.path.lexists(p), p
 
 
+SYSTEM_SID = "S-1-5-18"
+TRUSTED_INSTALLER_SID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+ADMINISTRATORS_SID = "S-1-5-32-544"
+STANDARD_USER_SID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+
+
+def _owner_stub(log: Path, owners: dict) -> str:
+    """Get-Acl stand-in (pwsh has none off Windows): the owner of a folder
+    is looked up by its last path segment in `owners` (None or missing =
+    Get-Acl fails, as on a folder the admin cannot read). Each call is
+    logged with the identity type asked for, so the tests see the owner is
+    read as a SID - a localized account name is never compared."""
+    table = "; ".join(f"{_ps_quote(k)} = {_ps_quote(v)}" for k, v in owners.items() if v)
+    lg = _ps_quote(str(log))
+    return (
+        f"$global:PfOwners = @{{ {table} }}; "
+        "function Get-Acl { [CmdletBinding()] param([string]$LiteralPath) "
+        f"Add-Content -LiteralPath {lg} -Value ('Get-Acl ' + $LiteralPath); "
+        "$leaf = Split-Path -Leaf $LiteralPath; "
+        "if (-not $global:PfOwners.ContainsKey($leaf)) { throw 'access denied' }; "
+        "$o = New-Object psobject; $o | Add-Member -MemberType NoteProperty -Name PfSid -Value $global:PfOwners[$leaf]; "
+        "$o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value { param($t) "
+        f"Add-Content -LiteralPath {lg} -Value ('GetOwner ' + $t.FullName); "
+        "[pscustomobject]@{ Value = $this.PfSid } }; $o }; "
+    )
+
+
+def _owner_calls(calls: list[str]) -> list[str]:
+    return [c for c in calls if c.split()[0] in ("takeown", "icacls")]
+
+
 @non_windows_only
 def test_windows_old_as_a_root_link_is_unlinked_without_takeown_or_icacls(tmp_path):
     victim = _victim(tmp_path)
     c_drive = tmp_path / "C"
     c_drive.mkdir()
     _link(c_drive / "Windows.old", victim, "symlink")
+    log = tmp_path / "calls.log"
     result, calls = _run(
-        tmp_path, _command("m02_cleanup", "windows_old_removal"), {}, stubs=("takeown", "icacls"), c_drive=c_drive
+        tmp_path,
+        _owner_stub(log, {"Windows.old": TRUSTED_INSTALLER_SID}) + _command("m02_cleanup", "windows_old_removal"),
+        {},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Skipped locked/in-use items: 0" in result.stdout, result.stdout + result.stderr
     _assert_victim_intact(victim)
     assert not os.path.lexists(c_drive / "Windows.old")
+    # A link is not asked for its owner either - Get-Acl would follow it.
     assert calls == []
 
 
+@pytest.mark.parametrize("owner", [SYSTEM_SID, TRUSTED_INSTALLER_SID, ADMINISTRATORS_SID])
 @non_windows_only
-def test_windows_old_with_old_profile_links_inside_keeps_their_targets(tmp_path):
+def test_windows_old_with_old_profile_links_inside_keeps_their_targets(tmp_path, owner):
     # A real Windows.old holds the old profiles' compatibility junctions
     # ("Application Data", "My Documents", ...) - deleting through them is
-    # exactly how PS 5.1's Remove-Item -Recurse would reach live data.
+    # exactly how PS 5.1's Remove-Item -Recurse would reach live data, and
+    # takeown /R / icacls /T could re-own and re-ACL their targets.
     victim = _victim(tmp_path)
     c_drive = tmp_path / "C"
-    planted = _plant(c_drive / "Windows.old", victim, "symlink")
+    old = c_drive / "Windows.old"
+    planted = _plant(old, victim, "symlink")
+    log = tmp_path / "calls.log"
     result, calls = _run(
-        tmp_path, _command("m02_cleanup", "windows_old_removal"), {}, stubs=("takeown", "icacls"), c_drive=c_drive
+        tmp_path,
+        _owner_stub(log, {"Windows.old": owner}) + _command("m02_cleanup", "windows_old_removal"),
+        {},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Skipped locked/in-use items: 0" in result.stdout, result.stdout + result.stderr
@@ -674,7 +738,48 @@ def test_windows_old_with_old_profile_links_inside_keeps_their_targets(tmp_path)
     for p in planted:
         assert not os.path.lexists(p), p
     assert not os.path.lexists(c_drive / "Windows.old")
-    assert [c.split()[0] for c in calls] == ["takeown", "icacls"]
+    assert calls[:2] == [f"Get-Acl {c_drive / 'Windows.old'}", "GetOwner System.Security.Principal.SecurityIdentifier"]
+    owned = _owner_calls(calls)
+    # One non-recursive takeown + icacls per real folder, parents first, and
+    # never on a link (top_link, to_victim) or anything behind one.
+    real_dirs = ["Windows.old", "junk", "nested", "deeper"]
+    assert len(owned) == 2 * len(real_dirs), owned
+    for i, name in enumerate(real_dirs):
+        take, acl = owned[2 * i], owned[2 * i + 1]
+        assert take.startswith("takeown /F ") and take.endswith(f"{name} /A"), take
+        assert acl.startswith("icacls ") and acl.endswith(f"{name} /reset /L /C /Q"), acl
+    assert owned[0] == f"takeown /F {old} /A"
+    for c in owned:
+        assert "victim" not in c and "top_link" not in c, c
+        assert " /R" not in c and " /T" not in c and " /D" not in c, c
+
+
+@pytest.mark.parametrize("owner", [STANDARD_USER_SID, None])
+@non_windows_only
+def test_windows_old_owned_by_a_standard_user_is_refused_untouched(tmp_path, owner):
+    # Any authenticated user can create C:\Windows.old on a machine that
+    # has none. Its owner is then that user (or unreadable): refused, with
+    # no ownership change and no delete, and the action fails visibly.
+    victim = _victim(tmp_path)
+    c_drive = tmp_path / "C"
+    old = c_drive / "Windows.old"
+    planted = _plant(old, victim, "symlink")
+    log = tmp_path / "calls.log"
+    result, calls = _run(
+        tmp_path,
+        _owner_stub(log, {"Windows.old": owner}) + _command("m02_cleanup", "windows_old_removal"),
+        {},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Refused: C:\\Windows.old is owned by " + (owner or "an unreadable owner") in result.stdout, result.stdout
+    assert "not SYSTEM, TrustedInstaller or Administrators" in result.stdout
+    assert "Skipped locked/in-use items" not in result.stdout
+    assert _owner_calls(calls) == []
+    _assert_victim_intact(victim)
+    for p in planted:
+        assert os.path.lexists(p), p
 
 
 @non_windows_only
@@ -686,23 +791,85 @@ def test_windows_upgrade_leftovers_never_take_ownership_through_a_root_link(tmp_
     planted = _plant(c_drive / "$WINDOWS.~WS", victim, "symlink")
     windir = tmp_path / "Windows"
     windir.mkdir()
+    log = tmp_path / "calls.log"
     result, calls = _run(
         tmp_path,
-        _command("m02_cleanup", "windows_upgrade_leftovers"),
+        _owner_stub(log, {"$WINDOWS.~WS": SYSTEM_SID, "$WINDOWS.~BT": SYSTEM_SID})
+        + _command("m02_cleanup", "windows_upgrade_leftovers"),
         {"WINDIR": windir},
         stubs=("takeown", "icacls"),
         c_drive=c_drive,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Processed 2 leftover folder(s), skipped/locked: 0" in result.stdout, result.stdout + result.stderr
+    assert "Refused" not in result.stdout
     _assert_victim_intact(victim)
     assert not os.path.lexists(c_drive / "$WINDOWS.~BT")
     assert not os.path.lexists(c_drive / "$WINDOWS.~WS")
     for p in planted:
         assert not os.path.lexists(p), p
-    # Only the real folder got takeown/icacls, never the link to the victim.
-    assert len(calls) == 2
-    assert all("WINDOWS.~WS" in c for c in calls), calls
+    # Only the real folder and its real subfolders got takeown/icacls, never
+    # the root link to the victim nor the links inside ~WS.
+    owned = _owner_calls(calls)
+    assert len(owned) == 2 * 4, owned
+    assert all("WINDOWS.~WS" in c for c in owned), owned
+    assert all("victim" not in c and "top_link" not in c for c in owned), owned
+    assert [c for c in calls if c.startswith("Get-Acl")] == [f"Get-Acl {c_drive / '$WINDOWS.~WS'}"]
+
+
+@non_windows_only
+def test_windows_upgrade_leftovers_refuse_a_planted_folder_and_still_clean_the_rest(tmp_path):
+    # C:\$WINDOWS.~BT pre-created by a standard user (junctions inside) is
+    # left exactly as it is; the genuine WinREAgent is still cleaned, and
+    # the action exits 1 naming the refused folder.
+    victim = _victim(tmp_path)
+    c_drive = tmp_path / "C"
+    c_drive.mkdir()
+    bt = c_drive / "$WINDOWS.~BT"
+    planted = _plant(bt, victim, "symlink")
+    windir = tmp_path / "Windows"
+    agent = windir / "WinREAgent"
+    (agent / "Scratch").mkdir(parents=True)
+    (agent / "Scratch" / "x.wim").write_text("x", encoding="utf-8")
+    log = tmp_path / "calls.log"
+    result, calls = _run(
+        tmp_path,
+        _owner_stub(log, {"$WINDOWS.~BT": STANDARD_USER_SID, "WinREAgent": TRUSTED_INSTALLER_SID})
+        + _command("m02_cleanup", "windows_upgrade_leftovers"),
+        {"WINDIR": windir},
+        stubs=("takeown", "icacls"),
+        c_drive=c_drive,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Processed 1 leftover folder(s), skipped/locked: 0" in result.stdout, result.stdout + result.stderr
+    assert f"C:\\$WINDOWS.~BT (owner {STANDARD_USER_SID})" in result.stdout, result.stdout
+    assert "Refused, not owned by SYSTEM, TrustedInstaller or Administrators" in result.stdout
+    _assert_victim_intact(victim)
+    for p in planted:
+        assert os.path.lexists(p), p
+    assert not agent.exists()
+    owned = _owner_calls(calls)
+    assert owned and all("WinREAgent" in c for c in owned), owned
+
+
+@pytest.mark.parametrize("action_id", ["windows_old_removal", "windows_upgrade_leftovers"])
+@non_windows_only
+def test_owner_check_really_calls_get_acl_by_sid_type(tmp_path, action_id):
+    # Control for the stub: the command itself (not the stub) must hand
+    # GetOwner the SecurityIdentifier type. Without a Get-Acl at all
+    # (pwsh off Windows) the owner is unreadable and the folder refused.
+    c_drive = tmp_path / "C"
+    target = c_drive / ("Windows.old" if action_id == "windows_old_removal" else "$WINDOWS.~BT")
+    (target / "sub").mkdir(parents=True)
+    windir = tmp_path / "Windows"
+    windir.mkdir()
+    result, calls = _run(
+        tmp_path, _command("m02_cleanup", action_id), {"WINDIR": windir}, stubs=("takeown", "icacls"), c_drive=c_drive
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Refused" in result.stdout, result.stdout
+    assert calls == []
+    assert (target / "sub").is_dir()
 
 
 @non_windows_only

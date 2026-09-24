@@ -109,9 +109,27 @@ def _prepare(tmp_path: Path, *, install_parent: str = "", log_name: str = "temp"
     return install_dir, staged, job
 
 
-def _run(job, tmp_path: Path, *, prepend: str = "", timeout: int = 120) -> subprocess.CompletedProcess:
-    if prepend:
-        job.script_path.write_text(prepend + SWAP_SCRIPT, encoding="utf-8-sig")
+# Where an override of the script's own functions goes: straight after
+# Remove-WithRetry, so it replaces the definition the script just made (a
+# prepended function would be redefined by the script itself).
+_OVERRIDE_POINT = "\n# Puts back any X.old whose live X is missing"
+
+
+def _undeletable(*patterns: str) -> str:
+    """Override making every tree whose path matches one of the -like
+    patterns undeletable (AV holding it), the rest deleted for real."""
+    cond = " -or ".join(f"($Path -like '{p}')" for p in patterns)
+    return (
+        "\n${function:Remove-TreeNoFollowReal} = ${function:Remove-TreeNoFollow}\n"
+        f"function Remove-TreeNoFollow([string]$Path) {{ if ({cond}) {{ return 1 }}; Remove-TreeNoFollowReal $Path }}\n"
+    )
+
+
+def _run(job, tmp_path: Path, *, prepend: str = "", override: str = "", timeout: int = 120) -> subprocess.CompletedProcess:
+    if prepend or override:
+        assert SWAP_SCRIPT.count(_OVERRIDE_POINT) == 1
+        script = SWAP_SCRIPT.replace(_OVERRIDE_POINT, override + _OVERRIDE_POINT)
+        job.script_path.write_text(prepend + script, encoding="utf-8-sig")
     return subprocess.run(_argv(job), capture_output=True, text=True, timeout=timeout, cwd=str(tmp_path), creationflags=_NO_WINDOW)
 
 
@@ -420,13 +438,7 @@ def test_swap_writes_the_status_and_relaunches_before_removing_the_backups(tmp_p
     # production) - after the relaunch, not before it, and never with the
     # status still saying 'in_progress'.
     install_dir, _, job = _prepare(tmp_path)
-    stub = (
-        "function Remove-Item { [CmdletBinding()] param([string]$LiteralPath, [switch]$Recurse, [switch]$Force) "
-        "if ($LiteralPath -like '*App.old') { return } "
-        "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force }\n"
-    )
-
-    _run(job, tmp_path, prepend=stub)
+    _run(job, tmp_path, override=_undeletable("*App.old"))
 
     log = _log(job)
     assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK
@@ -446,13 +458,7 @@ def test_swap_does_not_claim_a_rollback_it_could_not_finish(tmp_path):
     (staged.stage_root / "Vendor").mkdir()
     (install_dir / "App.failed").mkdir()
     (install_dir / "App.failed" / "x").write_bytes(b"x")
-    stub = (
-        "function Remove-Item { [CmdletBinding()] param([string]$LiteralPath, [switch]$Recurse, [switch]$Force) "
-        "if (($LiteralPath -like '*App.failed') -or ($LiteralPath -like '*App')) { return } "
-        "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force }\n"
-    )
-
-    _run(job, tmp_path, prepend=stub)
+    _run(job, tmp_path, override=_undeletable("*App.failed", "*App"))
 
     assert _status(install_dir, job) == update_swap.UPDATE_STATUS_ROLLBACK_FAILED
     # The only good copy of the old exe must survive the cleanup.
@@ -494,13 +500,7 @@ def test_swap_aborts_before_moving_anything_when_a_stale_backup_cannot_be_remove
     install_dir, _, job = _prepare(tmp_path)
     (install_dir / "Vendor.old").mkdir()
     (install_dir / "Vendor.old" / "stale.dll").write_bytes(b"stale")
-    stub = (
-        "function Remove-Item { [CmdletBinding()] param([string]$LiteralPath, [switch]$Recurse, [switch]$Force) "
-        "if ($LiteralPath -like '*Vendor.old') { return } "
-        "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force }\n"
-    )
-
-    _run(job, tmp_path, prepend=stub)
+    _run(job, tmp_path, override=_undeletable("*Vendor.old"))
 
     assert _status(install_dir, job) == update_swap.UPDATE_STATUS_ABORTED
     assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"old-exe"
@@ -531,3 +531,113 @@ def test_swap_puts_back_folders_already_moved_when_a_later_one_is_locked(tmp_pat
 
     assert _status(install_dir, job) == update_swap.UPDATE_STATUS_ABORTED
     _assert_untouched(install_dir)
+
+
+# --- Link-safe cleanup of App.old / *.failed / the stage ---------------------
+#
+# Windows PowerShell 5.1's Remove-Item -Recurse walks into directory
+# junctions and symlinks. The install folder is often user-writable (a USB
+# stick, a folder under the user's profile), so a link planted in App\ or a
+# stale App.old would have the updater delete whatever it points at. The
+# cleanup uses the same no-follow walk as the catalog's Remove-PfSafe; these
+# runs prepend the 5.1-behaving Remove-Item stand-in from test_safe_delete,
+# so a regression back to Remove-Item fails here even on pwsh 7.
+
+from test_safe_delete import PS51_REMOVE_ITEM, STUB_GUARD_EXIT  # noqa: E402
+
+
+def _swap_victim(tmp_path: Path) -> Path:
+    victim = tmp_path / "victim"
+    (victim / "sub").mkdir(parents=True)
+    (victim / "keep.txt").write_bytes(b"precious")
+    (victim / "sub" / "deep.txt").write_bytes(b"precious too")
+    return victim
+
+
+def _assert_swap_victim_intact(victim: Path) -> None:
+    assert (victim / "keep.txt").read_bytes() == b"precious"
+    assert (victim / "sub" / "deep.txt").read_bytes() == b"precious too"
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here (Windows without Developer Mode / privilege)")
+
+
+def test_swap_script_never_uses_remove_item():
+    code = "\n".join(line for line in SWAP_SCRIPT.splitlines() if not line.lstrip().startswith("#"))
+    assert "Remove-Item" not in code
+    assert "Remove-TreeNoFollow $Target" in code
+
+
+def test_swap_cleanup_never_follows_a_link_planted_in_the_old_app_folder(tmp_path):
+    # The realistic attack: a link inside the live App\ becomes App.old at
+    # the swap and is dropped with the backups afterwards.
+    victim = _swap_victim(tmp_path)
+    install_dir, _, job = _prepare(tmp_path)
+    (install_dir / "App" / "nested").mkdir()
+    _symlink_or_skip(install_dir / "App" / "nested" / "to_victim", victim)
+    _symlink_or_skip(install_dir / "App" / "file_link.txt", victim / "keep.txt")
+
+    result = _run(job, tmp_path, prepend=PS51_REMOVE_ITEM + "\n")
+
+    assert result.returncode != STUB_GUARD_EXIT, result.stdout + result.stderr
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK
+    _assert_swap_victim_intact(victim)
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == _relaunch_probe()
+    for gone in ("App.old", "Modules.old", "Vendor.old", "_update_stage"):
+        assert not os.path.lexists(install_dir / gone), gone
+
+
+def test_swap_cleanup_unlinks_stale_backups_that_are_links_or_hold_links(tmp_path):
+    # Leftovers planted before the swap: an App.old holding a link to the
+    # victim, a Modules.old that IS a link to it and a dangling Vendor.old
+    # link (Test-Path says it is not there; it must still go, or it would
+    # block the backup rename).
+    victim = _swap_victim(tmp_path)
+    install_dir, _, job = _prepare(tmp_path)
+    (install_dir / "App.old" / "deep" / "er").mkdir(parents=True)
+    (install_dir / "App.old" / "deep" / "old.txt").write_bytes(b"x")
+    _symlink_or_skip(install_dir / "App.old" / "deep" / "er" / "to_victim", victim)
+    _symlink_or_skip(install_dir / "Modules.old", victim)
+    os.symlink(tmp_path / "nothing_here", install_dir / "Vendor.old", target_is_directory=True)
+
+    result = _run(job, tmp_path, prepend=PS51_REMOVE_ITEM + "\n")
+
+    assert result.returncode != STUB_GUARD_EXIT, result.stdout + result.stderr
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK
+    _assert_swap_victim_intact(victim)
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == _relaunch_probe()
+    assert (install_dir / "Modules" / "m01_diagnostics" / "actions.yaml").read_bytes() == b"new-m"
+    for gone in ("App.old", "Modules.old", "Vendor.old", "_update_stage"):
+        assert not os.path.lexists(install_dir / gone), gone
+
+
+def test_swap_rollback_removes_the_parked_new_folders_without_following_links(tmp_path):
+    # *.failed and the stage go through the same cleanup: a link inside the
+    # staged update (the stage lives in the install folder too) is parked as
+    # part of App.failed by the rollback and then removed as the link only.
+    victim = _swap_victim(tmp_path)
+    install_dir, staged, job = _prepare(tmp_path)
+    shutil.rmtree(staged.stage_root / "Vendor")
+    (staged.stage_root / "Vendor").mkdir()
+    _symlink_or_skip(staged.stage_root / "App" / "to_victim", victim)
+
+    result = _run(job, tmp_path, prepend=PS51_REMOVE_ITEM + "\n")
+
+    assert result.returncode != STUB_GUARD_EXIT, result.stdout + result.stderr
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_ROLLED_BACK
+    _assert_swap_victim_intact(victim)
+    _assert_untouched(install_dir)
+    for parked in ("App.failed", "Modules.failed", "Vendor.failed", "_update_stage"):
+        assert not os.path.lexists(install_dir / parked), parked
+
+
+def test_swap_logs_how_many_items_a_stuck_backup_still_holds(tmp_path):
+    install_dir, _, job = _prepare(tmp_path)
+
+    _run(job, tmp_path, override=_undeletable("*App.old"))
+
+    assert "could not remove " + str(install_dir / "App.old") + " (1 item(s) left)" in _log(job)

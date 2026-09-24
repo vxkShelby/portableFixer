@@ -154,14 +154,92 @@ function Move-WithRetry([string]$Source, [string]$Destination) {
     return $false
 }
 
+# True for anything at $Path, a dangling link included (Test-Path follows
+# the link and says no). GetAttributes reads the entry's own attributes.
+function Test-Entry([string]$Path) {
+    try {
+        $null = [System.IO.File]::GetAttributes($Path)
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Deletes a folder tree without ever following a link. Windows PowerShell
+# 5.1's Remove-Item -Recurse walks INTO directory junctions and symlinks, so
+# a link planted inside App.old (the install folder is often user-writable,
+# e.g. on a USB stick) would have this updater delete whatever it points at.
+# The same walk as Remove-PfSafe in Modules/m02_cleanup/actions.yaml (see
+# tests/test_safe_delete.py): an explicit stack, not recursion (call depth);
+# a reparse point is deleted as the link only (non-recursive Delete removes
+# the link, never the target) and never descended into; read-only is
+# cleared only on real entries. Returns how many entries could not be
+# deleted; a vanished entry is not a failure.
+function Remove-TreeNoFollow([string]$Path) {
+    $n = 0
+    $ro = [System.IO.FileAttributes]::ReadOnly
+    $rp = [System.IO.FileAttributes]::ReparsePoint
+    $dir = [System.IO.FileAttributes]::Directory
+    $dirs = New-Object System.Collections.Generic.List[string]
+    $todo = New-Object System.Collections.Generic.Stack[string]
+    $todo.Push($Path)
+    while ($todo.Count -gt 0) {
+        $p = $todo.Pop()
+        try {
+            $a = [System.IO.File]::GetAttributes($p)
+        } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+            continue
+        } catch {
+            $n++
+            continue
+        }
+        if (($a -band $dir) -and -not ($a -band $rp)) {
+            $dirs.Add($p)
+            try {
+                foreach ($c in [System.IO.Directory]::GetFileSystemEntries($p)) { $todo.Push($c) }
+            } catch {
+                $n++
+            }
+            continue
+        }
+        try {
+            if ($a -band $rp) {
+                if ($a -band $dir) { [System.IO.Directory]::Delete($p) } else { [System.IO.File]::Delete($p) }
+            } else {
+                if ($a -band $ro) { [System.IO.File]::SetAttributes($p, ($a -bxor $ro)) }
+                [System.IO.File]::Delete($p)
+            }
+        } catch {
+            $n++
+        }
+    }
+    # Deepest first: a folder is only empty once its children are gone.
+    for ($k = $dirs.Count - 1; $k -ge 0; $k--) {
+        $d = $dirs[$k]
+        try {
+            $a = [System.IO.File]::GetAttributes($d)
+            if (($a -band $ro) -and -not ($a -band $rp)) { [System.IO.File]::SetAttributes($d, ($a -bxor $ro)) }
+            [System.IO.Directory]::Delete($d)
+        } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+        } catch {
+            # Only "not empty because a child failed" - already counted.
+            $left = 1
+            try { $left = @([System.IO.Directory]::GetFileSystemEntries($d)).Count } catch { }
+            if ($left -eq 0) { $n++ }
+        }
+    }
+    return $n
+}
+
 function Remove-WithRetry([string]$Target) {
+    $left = 0
     for ($i = 0; $i -lt [int]$Cfg.RenameTries; $i++) {
-        if (-not (Test-Path -LiteralPath $Target)) { return $true }
-        Remove-Item -LiteralPath $Target -Recurse -Force
-        if (-not (Test-Path -LiteralPath $Target)) { return $true }
+        if (-not (Test-Entry $Target)) { return $true }
+        $left = Remove-TreeNoFollow $Target
+        if (-not (Test-Entry $Target)) { return $true }
         Start-Sleep -Milliseconds ([int]$Cfg.RenameDelayMs)
     }
-    Log ('could not remove ' + $Target)
+    Log ('could not remove ' + $Target + ' (' + $left + ' item(s) left)')
     return $false
 }
 

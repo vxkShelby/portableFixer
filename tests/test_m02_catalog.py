@@ -1,4 +1,5 @@
 # tests/test_m02_catalog.py
+import re
 from pathlib import Path
 
 from portablefix.models import ModuleCategory, RiskLevel
@@ -114,7 +115,36 @@ def test_shadow_copies_and_windows_old_commands_avoid_interactive_prompts():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
     assert "/quiet" in by_id["shadow_copies_oldest"].command
-    assert "/D Y" in by_id["windows_old_removal"].command
+    # takeown only prompts (Y/N per folder it cannot list) with /R, which
+    # the command no longer uses - see the next test.
+    assert "takeown /F $p /A |" in by_id["windows_old_removal"].command
+
+
+def test_windows_old_and_upgrade_leftovers_never_take_ownership_recursively():
+    # takeown /R and icacls /T walk the tree themselves, and neither tool's
+    # documentation promises to stop at a junction; takeown has no switch
+    # to act on a link itself. A folder a standard user pre-created with
+    # junctions inside would get System32 re-owned and re-ACLed. Ownership
+    # and ACLs are reset one real folder at a time (tests/test_safe_delete.py
+    # runs it), and only under a root owned by SYSTEM, TrustedInstaller or
+    # Administrators - checked by SID, so a localized account name can
+    # never fail or fool it.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("windows_old_removal", "windows_upgrade_leftovers"):
+        command = by_id[action_id].command
+        assert re.search(r"(?i)takeown[^;|]*\s/R\b", command) is None, action_id
+        assert re.search(r"(?i)icacls[^;|]*\s/T\b", command) is None, action_id
+        assert "icacls $p /reset /L /C /Q" in command, action_id
+        assert ".GetOwner([Security.Principal.SecurityIdentifier]).Value" in command, action_id
+        assert ".Owner" not in command, action_id
+        for sid in ("'S-1-5-18'", "'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'", "'S-1-5-32-544'"):
+            assert sid in command, (action_id, sid)
+        assert "exit 1" in command, action_id
+        # The owner check comes before any ownership change or delete of a
+        # real folder (a root that is a link is only unlinked, earlier).
+        body = command[command.index("$trusted = ") :]
+        assert body.index("Get-PfOwnerSid $i.FullName") < body.index("Grant-PfAdminTree $i.FullName") < body.rindex("Remove-PfSafe $p"), action_id
 
 
 def test_stale_user_profiles_excludes_null_lastusetime_and_loaded_profiles():
