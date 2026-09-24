@@ -144,6 +144,36 @@ PowerShell.
   folder has disappeared - if so, it stops the batch immediately
   instead of silently continuing.
 
+## When an update fails
+
+Every update attempt leaves its records in `%TEMP%\PortableFixUpdate`
+(Win+R → `%TEMP%\PortableFixUpdate`); `<pid>` is the process ID of the app
+that started the update:
+
+- `launch_<pid>.txt` - how the app started the updater: the processes it
+  waits for, the route, Job Object facts, the outcome and PowerShell's
+  exit code;
+- `popen_launch_<pid>.log` - whatever PowerShell printed before or instead
+  of running the update script (a policy block, an error);
+- `update_log_<pid>.txt` - the updater's own steps: waiting for the app to
+  close, every folder move, the result and the restart;
+- `swap_<pid>_*.ps1` and `.json` - the script and the job it ran.
+
+The result of the last update also sits in `Data\update_status.txt` next
+to the app until the next start reads it. To report a problem, zip the
+whole `%TEMP%\PortableFixUpdate` folder (plus `Data\update_status.txt` if
+it is still there) and attach it to a
+[GitHub issue](https://github.com/vxkShelby/portableFixer/issues/new). An
+app restarted as administrator under a different account writes to that
+account's `%TEMP%`.
+
+Versions 1.11.4 and older cannot update themselves (the app closes and
+nothing is installed); update those once by hand: close the app and
+extract the contents of the `PortableFix` folder in
+`PortableFix-Portable.zip` into the app's folder (replace the files - the
+zip carries no `Data\settings.json`, so the settings stay), or run
+`PortableFix-Setup.exe` into the same folder.
+
 ## Folder layout
 
 ```
@@ -166,65 +196,86 @@ If the USB stick isn't writable, runtime folders move to
 ## Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+pip install -r requirements-build.txt
+.\scripts\build.ps1                  # development build
+.\scripts\build.ps1 -Tag v1.12.0     # release build
 ```
 
-Output: `App/PortableFix.exe` (PyInstaller onefile, a single
-executable, no `_internal` subfolder). The script also automatically
-regenerates checksums, packages the portable ZIP, and compiles the
-installer (if `ISCC.exe` is found) - no extra manual step needed.
+(From a PowerShell prompt in the repo root; `Set-ExecutionPolicy -Scope
+Process Bypass` first if scripts are blocked.) `scripts/build.ps1` is one
+ordered pipeline that stops at the first failing step:
+
+1. `portablefix/version.py`, `installer/PortableFix.iss` and `-Tag` must
+   name the same version, and the PyInstaller in use must be the one pinned
+   in `requirements-build.txt`;
+2. `App/PortableFix.exe` (PyInstaller onefile, a single executable, no
+   `_internal` subfolder), optionally signed (`-SignCommand`);
+3. `Data/SHA256SUMS`, then `scripts/verify_release.py --tree` (the manifest
+   matches `App/` and `Modules/` exactly);
+4. `Output/PortableFix-Portable.zip` (+ `.sha256`), then
+   `verify_release.py --zip`, which unpacks it with the same code the
+   clients' updater uses and checks that `Data/` holds only the allowlist;
+5. `Output/PortableFix-Setup.exe` via Inno Setup (`ISCC.exe`, required with
+   `-Tag`; without it a development build skips the installer), optionally
+   signed.
+
+`-Python` picks the interpreter if `python` is not the one with
+`requirements-build.txt` installed.
 
 ## Manual steps before distribution
 
 These steps need resources outside the repo and are done by hand:
 
-1. **Code signing** — `App\PortableFix.exe` is signed with a
-   self-signed certificate (`CN=PortableFix Self-Signed`, public part in
-   `Data\PortableFix-SelfSigned.cer`). Trusting a certificate is
-   **exactly the step phishing attacks abuse** - only import it if
-   `Data\PortableFix-SelfSigned.cer` came from a package downloaded off
-   this repo's [official GitHub Releases](https://github.com/vxkShelby/portableFixer/releases)
-   (check `Data/SHA256SUMS` against the downloaded package), never from
-   an email or link sent by someone else. On a target machine the
-   signature can be trusted by importing it (admin PowerShell):
+1. **Code signing** — `App\PortableFix.exe` and `PortableFix-Setup.exe`
+   are **not signed** (the released 1.11.4 was not either), so
+   SmartScreen and Smart App Control may warn on the first start.
+   `Data\PortableFix-SelfSigned.cer` is not the signature of anything
+   shipped - do not import it into any certificate store. Warning-free distribution needs a commercial
+   code-signing certificate (OV/EV); `build.ps1` then signs both files at
+   the right point of the pipeline - the exe before `Data/SHA256SUMS` is
+   generated, because an exe signed afterwards no longer matches its
+   manifest and every copy reports it as tampered:
    ```powershell
-   Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\Root
-   Import-Certificate -FilePath Data\PortableFix-SelfSigned.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
+   .\scripts\build.ps1 -Tag v1.12.0 -SignCommand { param($File) signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 $File }
    ```
-   For warning-free distribution on other machines you need a
-   commercial certificate (OV/EV); then re-sign:
-   ```powershell
-   signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 App\PortableFix.exe
-   ```
-   Regenerate SHA256SUMS after every signing pass
-   (`python scripts/generate_sha256sums.py .`).
 2. **VM test** — test on a clean Windows 10 and 11 install (both
    without and with admin rights): app startup, a DRY-RUN batch, a real
    SAFE batch, and check the generated report and undo.ps1.
 
 ## Release process (a new version with auto-update)
 
-Manual process, none of this is automated:
+In this order - each step assumes the previous one passed:
 
 1. Bump `APP_VERSION` in `portablefix/version.py` **and**
-   `MyAppVersion` in `installer/PortableFix.iss` (they must match).
-2. `powershell -ExecutionPolicy Bypass -File scripts\build.ps1` →
-   `App/PortableFix.exe` (onefile), `Output/PortableFix-Portable.zip`
-   (+ `.sha256`), and if Inno Setup is installed (ISCC.exe,
-   [jrsoftware.org](https://jrsoftware.org/isinfo.php)) also
-   `Output/PortableFix-Setup.exe`.
-3. Sign `App/PortableFix.exe` (`signtool sign ...`, see above) **before**
-   step 2, or re-run `scripts\build_release_zip.ps1` after signing, so
-   the signed exe ends up in the zip too.
-4. `python scripts/generate_sha256sums.py .` — updates
-   `Data/SHA256SUMS` (the zip's contents must have the up-to-date
-   SHA256SUMS, run this before steps 2/3 in the order above).
+   `MyAppVersion` in `installer/PortableFix.iss` - `build.ps1` refuses to
+   build while they differ.
+2. `.\scripts\build.ps1 -Tag v<version>` (with `-SignCommand` if you have
+   a certificate; never sign afterwards - the checksums and the zip would
+   no longer match the exe). If any step fails, publish nothing. Inno
+   Setup ([jrsoftware.org](https://jrsoftware.org/isinfo.php)) must be
+   installed.
+3. Try the real update on the new zip with the developer switch (below),
+   started from a copy of the **previous** version - its code is what
+   swaps the files for users (for 1.12.0, whose predecessors cannot update
+   themselves, from a copy of the new build): Windows 10 and 11, a
+   USB stick started through `PortableFix.cmd`, a per-user install, a
+   Program Files install through "Restart as Administrator", a path with
+   `’` and `[ ]`, and once while a winget update runs (the app must refuse
+   to hand off).
+4. CI must be green for the release commit: the `test` job (including the
+   real PowerShell spawn and hand-off tests) and `frozen-update-e2e` (a
+   PyInstaller-built app updates itself and restarts). Never call an update
+   fix done without both.
 5. Create a GitHub Release tagged `v<version>` (e.g. `v1.1.0`), upload
    **three** files as assets, with exactly these names (auto-update and
    the installer both look them up by a fixed name, not by version):
    - `PortableFix-Portable.zip` — this is what the auto-update mechanism downloads
    - `PortableFix-Portable.zip.sha256`
    - `PortableFix-Setup.exe` — the installer for regular users
+6. After publishing, update one real install of the previous version from
+   inside the app and keep its `%TEMP%\PortableFixUpdate` logs (see "When
+   an update fails"). 1.12.0 has to be installed by hand; the first real
+   self-update is from 1.12.0 to the next release.
 
 **Important:** if a release is created without the `.sha256` asset,
 auto-update refuses the download (fails closed, shows an "Update
@@ -239,7 +290,8 @@ copies also get new/changed modules, not just Python code changes.
 `Data/` only `SHA256SUMS`, `PortableFix-SelfSigned.cer` and `.gitkeep` are
 installed, so `Data/settings.json` (language, dry-run) and the user's other
 files stay untouched. Versions 1.11.4 and older cannot update themselves (a
-bug in how they start the update script) - update those once by hand.
+bug in how they start the update script) - update those once by hand (see
+"When an update fails").
 
 Before publishing a release, the real update can be tried on a local
 zip - through the same steps (verify, unpack, restart question, hand-off
@@ -261,6 +313,14 @@ python -m pytest tests/test_gui_main_window.py
 python -m pytest tests/test_executor.py
 python -m pytest tests/test_updater.py tests/test_update_swap.py tests/test_update_swap_script.py
 ```
+
+`tests/test_update_spawn_windows.py` (Windows only) starts the real
+`powershell.exe` and runs the whole hand-off - stage, handshake, swap and
+restart - including from hostile paths and inside a kill-on-close Job
+Object. `tests/test_frozen_update_e2e.py` runs only in the CI job
+`frozen-update-e2e`, which builds `tests/frozen/probe_app.py` twice with
+PyInstaller. `tests/test_verify_release.py` covers
+`scripts/verify_release.py`.
 
 `tests/test_update_swap_script.py` really runs the static update script -
 through PowerShell 5.1 on Windows, through `pwsh` elsewhere (its path can

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from portablefix import update_swap
 from portablefix import updater as updater_module
 from portablefix.updater import (
     UpdateCheckRunner,
@@ -554,6 +555,39 @@ def test_launcher_cmd_restores_app_folder_stranded_as_app_old():
     restore = 'if not exist "%~dp0App\\" if exist "%~dp0App.old\\PortableFix.exe" move "%~dp0App.old" "%~dp0App"'
     assert restore in cmd
     assert cmd.index(restore) < cmd.rindex('"%~dp0App\\PortableFix.exe"')
+
+
+def test_launcher_cmd_never_rereads_itself_after_the_app_exits():
+    # cmd.exe waits on the app, then reads its next command from the batch
+    # file by byte offset - from the NEW launcher once an update replaced it.
+    # Starting the app and leaving on one line means nothing is read again.
+    root = Path(__file__).resolve().parent.parent
+    lines = [line for line in (root / "PortableFix.cmd").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert lines[-1] == '"%~dp0App\\PortableFix.exe" %* & exit /b'
+    assert "*.cmd text eol=crlf" in (root / ".gitattributes").read_text(encoding="utf-8").splitlines()
+
+
+def test_installer_starts_the_app_in_the_install_root_and_ships_data_by_allowlist():
+    iss = (Path(__file__).resolve().parent.parent / "installer" / "PortableFix.iss").read_text(encoding="utf-8")
+    # A current directory of App\ blocks the update's App -> App.old rename.
+    assert 'WorkingDir: "{app}\\App"' not in iss
+    assert iss.count('WorkingDir: "{app}";') == 3  # both shortcuts and the post-install launch
+    # The build machine's settings.json must never reach a user's install.
+    assert "Data\\*" not in iss
+    for name in update_swap.DATA_ALLOWLIST:
+        assert f'Source: "{{#RepoRoot}}\\Data\\{name}"; DestDir: "{{app}}\\Data"' in iss
+    for section in ("[InstallDelete]", "[UninstallDelete]"):
+        body = iss.split(section, 1)[1].split("\n[", 1)[0]
+        for name in ("_update_stage", "App.old", "Modules.old", "Vendor.old"):
+            assert f'Type: filesandordirs; Name: "{{app}}\\{name}"' in body, (section, name)
+
+
+def test_release_zip_ships_the_icon_and_data_by_allowlist():
+    script = (Path(__file__).resolve().parent.parent / "scripts" / "build_release_zip.ps1").read_text(encoding="utf-8")
+    assert 'Copy-Item "$root\\portablefix.ico" -Destination $stage' in script
+    allowlist = ", ".join(f'"{name}"' for name in update_swap.DATA_ALLOWLIST)
+    assert f"foreach ($name in @({allowlist}))" in script
+    assert 'Copy-Item "$root\\Data"' not in script
 
 
 def test_swap_backups_use_the_names_startup_recovery_restores(tmp_path):
