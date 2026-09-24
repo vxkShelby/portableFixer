@@ -163,6 +163,20 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   o aktualizácii sú v `%TEMP%\PortableFixUpdate` (`update_log_<pid>.txt`,
   `launch_<pid>.txt`) - čistenie temp súborov (`user_temp`) ich
   nemaže; staršie ako 14 dní appka pri štarte odstráni.
+- **Tichý režim (bez siete na pozadí):** prepínač nad panelom
+  systémových informácií, uložený v `Data/settings.json`
+  (`quiet_mode`, predvolene vypnutý). Keď je zapnutý, appka sama od
+  seba nekontaktuje sieť: vypne ping na 8.8.8.8 každé 4 s, kontrolu
+  VPN (powershell.exe každých 60 s), kontrolu aktualizácií na GitHube
+  pri štarte aj automatickú kontrolu winget. Hodí sa na firemnej sieti
+  klienta, kde by opakovaný ping mohol spustiť alarm EDR. Ručné
+  tlačidlá fungujú ďalej a sieť kontaktujú len po kliknutí:
+  „Skontrolovať ping a VPN teraz“, „Skontrolovať aktualizácie“, „Test
+  rýchlosti“ a „Obnoviť“ vo winget paneli. Stav režimu je vpravo
+  v stavovom riadku. Po vypnutí režimu appka dobehne vynechanú kontrolu
+  aktualizácií aj winget. Nezávisle od režimu sa pri minimalizovanom
+  okne zastaví všetok polling panelu (CPU, RAM, senzory, ping, VPN)
+  aj automatická kontrola winget a po obnovení okna sa hneď obnoví.
 - **Ochrana pred zmazaním vlastných súborov:** akcie čistiace `%TEMP%`
   a `%WINDIR%\Temp` (`user_temp`, `system_temp`) rozpoznajú, ak appka
   beží zvnútra tohto priečinka, a jej priečinok vynechajú - ak sa to

@@ -125,3 +125,16 @@ def test_technician_name_round_trip_and_sanitized(tmp_path):
     assert load_settings(tmp_path).technician_name == ""
     _write_raw(tmp_path, json.dumps({"technician_name": "x" * 100}))
     assert len(load_settings(tmp_path).technician_name) == 60
+
+
+def test_quiet_mode_defaults_off_round_trips_and_rejects_non_bool(tmp_path):
+    # Off by default = today's behaviour (G33); only a real JSON bool turns it on.
+    assert Settings().quiet_mode is False
+    assert load_settings(tmp_path).quiet_mode is False
+    save_settings(tmp_path, Settings(quiet_mode=True))
+    assert load_settings(tmp_path).quiet_mode is True
+    for raw in ("true", "false", 1, 0, None, [], {}):
+        _write_raw(tmp_path, json.dumps({"quiet_mode": raw}))
+        assert load_settings(tmp_path).quiet_mode is False, raw
+    _write_raw(tmp_path, json.dumps({"quiet_mode": False}))
+    assert load_settings(tmp_path).quiet_mode is False

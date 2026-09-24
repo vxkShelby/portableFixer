@@ -21,6 +21,12 @@ class Settings:
     # Remembered across runs (it's the same person on every client visit);
     # the client/ticket and note are per-run and deliberately not stored here.
     technician_name: str = ""
+    # Quiet/offline mode (research G33): no network traffic the technician
+    # did not click for - no periodic ping, no VPN polling, no update check
+    # at start and no automatic winget scan. Off by default so an upgrade
+    # keeps today's behaviour; on a client's corporate network a ping to a
+    # public IP every few seconds can trip EDR alerts.
+    quiet_mode: bool = False
 
 
 def settings_path(base_dir: Path) -> Path:
@@ -46,6 +52,7 @@ def load_settings(base_dir: Path) -> Settings:
     minutes = data.get("winget_auto_check_minutes")
     presets = data.get("custom_presets")
     technician = data.get("technician_name")
+    quiet_mode = data.get("quiet_mode")
     return Settings(
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
         dry_run=dry_run if isinstance(dry_run, bool) else True,
@@ -55,6 +62,9 @@ def load_settings(base_dir: Path) -> Settings:
         ),
         custom_presets=_valid_custom_presets(presets),
         technician_name=technician.strip()[:MAX_TECHNICIAN_NAME_LENGTH] if isinstance(technician, str) else "",
+        # Strictly a bool: a hand-edited "quiet_mode": "false" must not be
+        # read as truthy and silently change what the app sends on the wire.
+        quiet_mode=quiet_mode if isinstance(quiet_mode, bool) else False,
     )
 
 

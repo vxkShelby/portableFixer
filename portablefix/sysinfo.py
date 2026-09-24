@@ -76,6 +76,9 @@ def get_static_info() -> StaticInfo:
     cpu_name = " ".join(cpu_name.split())
 
     local_ip = "N/A"
+    # connect() on a UDP socket only asks the routing table which local
+    # address would be used - no packet leaves the PC, so this stays on in
+    # quiet mode (G33), unlike PingRunner and VpnStatusRunner below.
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         probe.connect(("8.8.8.8", 80))

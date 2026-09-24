@@ -250,12 +250,32 @@ class MainWindow(QMainWindow):
         self._hw_sensor_timer = None
         self._ping_timer = None
         self._vpn_timer = None
+        # Quiet mode (G33) and the minimized window both stop polling; see
+        # _apply_polling_state. The status-bar indicator lives on the
+        # QMainWindow's status bar, which survives _build_ui rebuilds, so it
+        # is created once and only retranslated afterwards.
+        self._window_minimized = False
+        self._manual_update_check = False
+        self._quiet_status_label: QLabel | None = None
+        # The winget panel's hooks, rebound on every _build_ui: the first
+        # re-applies its auto-check timer (quiet mode and a minimized window
+        # both stop it), the second runs after a quiet-mode toggle.
+        self._winget_apply_auto_check = None
+        self._winget_on_quiet_mode_changed = None
+        # Set when quiet mode skipped the update check at start, so leaving
+        # quiet mode runs it - loud mode has no button for it.
+        self._startup_update_check_skipped = False
         self._undo_script_path: Path | None = None
         # (len(_undo_steps), len(_irreversible_actions)) last written to
         # undo.ps1 - both lists only ever grow, so the lengths identify it.
         self._undo_written_state: tuple[int, int] | None = None
         self._build_ui()
-        self._start_update_check()
+        # Quiet mode: no GitHub request at start; the sysinfo panel has a
+        # button for an explicit check instead.
+        if self.settings.quiet_mode:
+            self._startup_update_check_skipped = True
+        else:
+            self._start_update_check()
         self._start_sysinfo_polling()
         # Bound to self (the window), not any widget rebuilt by _build_ui -
         # created once here rather than inside _build_ui, which reruns on
@@ -1842,8 +1862,14 @@ class MainWindow(QMainWindow):
             minutes = auto_check_interval.currentData() if auto_check_checkbox.isChecked() else 0
             self.settings.winget_auto_check_minutes = minutes
             auto_check_interval.setEnabled(auto_check_checkbox.isChecked())
-            if minutes:
-                auto_check_timer.start(minutes * 60_000)
+            # Quiet mode keeps the saved interval but never scans on its
+            # own - winget refreshes its sources over the network. A
+            # minimized window doesn't scan either, like the sysinfo polling.
+            if minutes and not self.settings.quiet_mode and not self._window_minimized:
+                # Every window state change re-applies this; restarting an
+                # unchanged running timer would push the next scan back.
+                if not auto_check_timer.isActive() or auto_check_timer.interval() != minutes * 60_000:
+                    auto_check_timer.start(minutes * 60_000)
             else:
                 auto_check_timer.stop()
 
@@ -1877,6 +1903,16 @@ class MainWindow(QMainWindow):
         apply_auto_check_setting()
         auto_check_checkbox.toggled.connect(lambda _checked=False: apply_auto_check_setting())
         auto_check_interval.currentIndexChanged.connect(lambda _index=0: apply_auto_check_setting())
+
+        def on_quiet_mode_changed() -> None:
+            # The timer itself follows _apply_polling_state, which the
+            # toggle already ran. Leaving quiet mode brings back the scan it skipped at start -
+            # otherwise the panel keeps saying "click Refresh" in loud mode.
+            if not self.settings.quiet_mode and status_label.text() == self._t("winget_quiet_mode"):
+                auto_check_tick()
+
+        self._winget_apply_auto_check = apply_auto_check_setting
+        self._winget_on_quiet_mode_changed = on_quiet_mode_changed
 
         refresh_ignored_panel()
 
@@ -2046,7 +2082,11 @@ class MainWindow(QMainWindow):
         import_btn.clicked.connect(lambda _checked=False: import_list())
         manage_ignored_btn.clicked.connect(lambda _checked=False: ignored_panel.setVisible(not ignored_panel.isVisible()))
 
-        start_scan()
+        if self.settings.quiet_mode:
+            # No automatic scan in quiet mode; Refresh still scans on click.
+            set_status(self._t("winget_quiet_mode"), "ok")
+        else:
+            start_scan()
         return panel
 
     def _build_dashboard_card(self, category_i18n_keys: dict) -> QFrame:
@@ -2659,14 +2699,36 @@ class MainWindow(QMainWindow):
             if checkbox is not None:
                 checkbox.setFocus()
 
-    def _start_update_check(self) -> None:
+    def _start_update_check(self, manual: bool = False) -> None:
         if not getattr(sys, "frozen", False):
+            # From source there is no release to compare against - say so
+            # on an explicit click instead of silently doing nothing.
+            if manual:
+                self.statusBar().showMessage(self._t("update_check_dev_build"), 8000)
+            return
+        # Whatever starts a check now (a click, leaving quiet mode) covers
+        # the one skipped at start.
+        self._startup_update_check_skipped = False
+        if manual:
+            self._manual_update_check = True
+            self.statusBar().showMessage(self._t("update_check_running"), 8000)
+        # A click while the start-up check is still out just waits for its
+        # answer (now reported, since the flag is set) instead of asking twice.
+        if _thread_running(self._update_check_runner):
             return
         self._update_check_runner = updater.UpdateCheckRunner(APP_VERSION, parent=self)
         self._update_check_runner.check_finished.connect(self._on_update_check_finished)
         self._update_check_runner.start()
 
     def _on_update_check_finished(self, info) -> None:
+        manual = self._manual_update_check
+        self._manual_update_check = False
+        if self._closed:
+            return
+        # Only an explicit click answers "nothing new": the automatic check
+        # at start has always stayed silent.
+        if info is None and manual:
+            self.statusBar().showMessage(self._t("update_check_none"), 8000)
         # A local update started with the developer switch may already be
         # running when the release check comes back.
         if info is None or self._update_in_progress:
@@ -3436,6 +3498,12 @@ class MainWindow(QMainWindow):
 
         self._sysinfo_labels: dict[str, QLabel] = {}
 
+        self.quiet_mode_checkbox = QCheckBox(self._t("quiet_mode_toggle"))
+        self.quiet_mode_checkbox.setToolTip(self._t("quiet_mode_tooltip"))
+        self.quiet_mode_checkbox.setChecked(self.settings.quiet_mode)
+        self.quiet_mode_checkbox.toggled.connect(self._on_quiet_mode_toggled)
+        layout.addWidget(self.quiet_mode_checkbox)
+
         def add_row(key: str, label_key: str, tooltip: str | None = None, long: bool = False) -> None:
             caption = QLabel(self._t(label_key))
             caption.setObjectName("selectionScope")
@@ -3480,10 +3548,30 @@ class MainWindow(QMainWindow):
         add_row("ping", "sysinfo_ping")
         add_row("vpn", "sysinfo_vpn", long=True)
 
+        # Shown only in quiet mode: the explicit replacements for what the
+        # background timers and the start-up update check would do.
+        self.quiet_mode_hint_label = QLabel(self._t("quiet_mode_manual_hint"))
+        self.quiet_mode_hint_label.setObjectName("selectionScope")
+        self.quiet_mode_hint_label.setWordWrap(True)
+        layout.addWidget(self.quiet_mode_hint_label)
+        self.check_network_button = self._make_selection_button(
+            self._t("quiet_mode_check_network_button"), self._on_check_network_clicked
+        )
+        self.check_network_button.setObjectName("panelBtn")
+        self.check_network_button.setToolTip(self._t("quiet_mode_manual_tooltip"))
+        layout.addWidget(self.check_network_button)
+        self.check_updates_button = self._make_selection_button(
+            self._t("quiet_mode_check_updates_button"), self._on_check_updates_clicked
+        )
+        self.check_updates_button.setObjectName("panelBtn")
+        self.check_updates_button.setToolTip(self._t("quiet_mode_manual_tooltip"))
+        layout.addWidget(self.check_updates_button)
+
         self.speed_test_button = self._make_selection_button(
             self._t("sysinfo_speed_test_button"), self._on_speed_test_clicked
         )
         self.speed_test_button.setObjectName("panelBtn")
+        self.speed_test_button.setToolTip(self._t("quiet_mode_manual_tooltip"))
         layout.addWidget(self.speed_test_button)
         self.speed_test_result_label = QLabel("")
         self.speed_test_result_label.setWordWrap(True)
@@ -3501,7 +3589,85 @@ class MainWindow(QMainWindow):
         report_bug_button.setObjectName("panelBtn")
         layout.addWidget(report_bug_button)
         layout.addStretch(1)
+        self._apply_quiet_mode_ui()
         return panel
+
+    def _apply_quiet_mode_ui(self) -> None:
+        quiet = self.settings.quiet_mode
+        self.quiet_mode_hint_label.setVisible(quiet)
+        self.check_network_button.setVisible(quiet)
+        self.check_updates_button.setVisible(quiet)
+        for key in ("ping", "vpn"):
+            label = self._sysinfo_labels[key]
+            if quiet:
+                label.setText(self._t("quiet_mode_value"))
+            elif label.text() == self._t("quiet_mode_value"):
+                # The next tick fills it in; until then don't claim "off".
+                label.setText(self._t("sysinfo_loading"))
+        if self._quiet_status_label is None:
+            self._quiet_status_label = QLabel()
+            self._quiet_status_label.setObjectName("selectionScope")
+            self.statusBar().addPermanentWidget(self._quiet_status_label)
+        self._quiet_status_label.setText(self._t("quiet_mode_status_on" if quiet else "quiet_mode_status_off"))
+        # Its own text: the panel tooltip points at "the buttons below".
+        self._quiet_status_label.setToolTip(self._t("quiet_mode_status_tooltip"))
+
+    def _on_quiet_mode_toggled(self, checked: bool) -> None:
+        if checked == self.settings.quiet_mode:
+            return
+        self.settings.quiet_mode = checked
+        self._persist_settings()
+        self._apply_quiet_mode_ui()
+        self._apply_polling_state()
+        if self._winget_on_quiet_mode_changed is not None:
+            self._winget_on_quiet_mode_changed()
+        if not checked and self._startup_update_check_skipped:
+            self._start_update_check()
+
+    def _on_check_network_clicked(self) -> None:
+        # One ping and one VPN check on an explicit click; the busy flags
+        # keep a double click from stacking runners.
+        self._on_ping_tick()
+        self._on_vpn_tick()
+
+    def _on_check_updates_clicked(self) -> None:
+        self._start_update_check(manual=True)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        # hasattr: a state change can arrive before __init__ set up polling.
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "_vpn_timer"):
+            self._window_minimized = self.isMinimized()
+            self._apply_polling_state()
+
+    def _apply_polling_state(self) -> None:
+        """Starts or stops each sysinfo timer to match the window and quiet
+        mode: nothing polls while minimized (nobody sees the values, and the
+        sensor and VPN checks spawn processes), and the network ones (ping,
+        VPN) never run on their own in quiet mode. The winget auto-check
+        timer follows the same rules."""
+        if self._closed:
+            return
+        visible = not self._window_minimized
+        network = visible and not self.settings.quiet_mode
+        for timer, tick, active in (
+            (self._sysinfo_timer, self._on_sysinfo_tick, visible),
+            (self._hw_sensor_timer, self._on_hw_sensor_tick, visible),
+            (self._ping_timer, self._on_ping_tick, network),
+            (self._vpn_timer, self._on_vpn_tick, network),
+        ):
+            if timer is None:
+                continue
+            if active and not timer.isActive():
+                timer.start()
+                # Fresh values right away instead of one interval late.
+                tick()
+            elif not active and timer.isActive():
+                timer.stop()
+        # The winget auto-check follows the same two rules; its timer lives
+        # in the panel, so the panel re-applies it.
+        if self._winget_apply_auto_check is not None:
+            self._winget_apply_auto_check()
 
     def _on_export_diagnostics_clicked(self) -> None:
         default_name = f"PortableFix-diagnostics-{self.run_id}.zip"
@@ -3525,20 +3691,20 @@ class MainWindow(QMainWindow):
         self._static_info_runner.static_info_ready.connect(self._on_static_info_ready)
         self._static_info_runner.start()
 
+        # Only created and given their interval here; _apply_polling_state
+        # below starts the ones the current mode allows (quiet mode leaves
+        # ping and VPN stopped) and fires each started one once.
         self._sysinfo_timer = QTimer(self)
         self._sysinfo_timer.timeout.connect(self._on_sysinfo_tick)
-        self._sysinfo_timer.start(2000)
-        self._on_sysinfo_tick()
+        self._sysinfo_timer.setInterval(2000)
 
         self._hw_sensor_timer = QTimer(self)
         self._hw_sensor_timer.timeout.connect(self._on_hw_sensor_tick)
-        self._hw_sensor_timer.start(2500)
-        self._on_hw_sensor_tick()
+        self._hw_sensor_timer.setInterval(2500)
 
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._on_ping_tick)
-        self._ping_timer.start(4000)
-        self._on_ping_tick()
+        self._ping_timer.setInterval(4000)
 
         # VPN state doesn't change on a 4s cadence like ping does, and unlike
         # ping.exe, checking it spawns a full powershell.exe - a much longer
@@ -3546,8 +3712,8 @@ class MainWindow(QMainWindow):
         # every few seconds for the whole session.
         self._vpn_timer = QTimer(self)
         self._vpn_timer.timeout.connect(self._on_vpn_tick)
-        self._vpn_timer.start(60_000)
-        self._on_vpn_tick()
+        self._vpn_timer.setInterval(60_000)
+        self._apply_polling_state()
 
     def _on_static_info_ready(self, info: sysinfo.StaticInfo) -> None:
         if self._closed:
