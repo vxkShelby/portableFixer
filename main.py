@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from portablefix import i18n
+from portablefix import i18n, updater
 from portablefix.audit_log import append_entry, make_entry
-from portablefix.diagnostics import install_excepthook
+from portablefix.diagnostics import install_excepthook, write_crash_log
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
-from portablefix.integrity import IntegrityCheckRunner
+from portablefix.integrity import IntegrityCheckRunner, format_mismatches
 from portablefix.paths import (
     get_base_dir,
     resolve_temp_root,
@@ -43,6 +43,19 @@ def _write_startup_diagnostics(raw_base_dir, base_dir, used_fallback: bool, run_
         pass
 
 
+def _update_status_message(install_dir, language: str) -> str | None:
+    """What to tell the user about an update that ran while no app was open
+    to report on it (the detached swap script), or None. Recovery runs
+    first, and before MainWindow loads Modules/: a swap interrupted by a
+    pulled USB stick can leave Modules/ stranded as Modules.old."""
+    restored = updater.recover_interrupted_swap(install_dir)
+    status = updater.consume_update_status(install_dir)
+    key = updater.update_status_message_key(status, restored)
+    if key is None:
+        return None
+    return i18n.translate(key, language).format(log_dir=updater.update_log_dir() or "%TEMP%\\PortableFixUpdate")
+
+
 _SINGLE_INSTANCE_MUTEX_NAME = "Global\\PortableFix_SingleInstance_Mutex"
 _ERROR_ALREADY_EXISTS = 183
 
@@ -65,6 +78,7 @@ def main() -> int:
             0x40,
         )
         return 0
+    crash_log_dir = None
     try:
         app = QApplication(sys.argv)
         # The native Windows style (windowsvista/windows11) paints its own
@@ -88,6 +102,7 @@ def main() -> int:
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
         base_dir, used_fallback = resolve_writable_base_dir(raw_base_dir)
+        crash_log_dir = base_dir
         install_excepthook(base_dir)
         settings = load_settings(base_dir)
 
@@ -95,8 +110,11 @@ def main() -> int:
             QMessageBox.warning(
                 None,
                 i18n.translate("app_title", settings.language),
-                i18n.translate("fallback_banner", settings.language),
+                # The fallback isn't always %TEMP% any more (see
+                # resolve_writable_base_dir), so name the real folder.
+                i18n.translate("fallback_banner_path", settings.language).format(path=base_dir),
             )
+        update_message = _update_status_message(raw_base_dir, settings.language)
 
         # Timestamp prefix makes Reports/Logs/Backups filenames sort
         # chronologically - a bare random id doesn't, which breaks the
@@ -118,7 +136,9 @@ def main() -> int:
                 QMessageBox.warning(
                     window,
                     i18n.translate("app_title", settings.language),
-                    i18n.translate("integrity_warning", settings.language) + "\n" + "\n".join(mismatches),
+                    i18n.translate("integrity_warning", settings.language)
+                    + "\n"
+                    + format_mismatches(mismatches, i18n.translate("integrity_more", settings.language)),
                 )
 
         # Hashing every shipped file can take a visible moment on slow USB
@@ -127,8 +147,13 @@ def main() -> int:
         integrity_runner = IntegrityCheckRunner(raw_base_dir, parent=window)
         integrity_runner.check_finished.connect(_on_integrity_checked)
         integrity_runner.start()
+        # After the integrity runner is started, so reading this modal
+        # doesn't also hold up the background check.
+        if update_message:
+            QMessageBox.warning(window, i18n.translate("app_title", settings.language), update_message)
 
         exit_code = app.exec()
+        integrity_runner.stop()
         try:
             save_settings(base_dir, settings)
         except OSError:
@@ -139,6 +164,8 @@ def main() -> int:
             pass
         return exit_code
     except Exception as exc:
+        if crash_log_dir is not None:
+            write_crash_log(crash_log_dir, exc)
         QMessageBox.critical(None, "PortableFix", f"Startup failed:\n{exc}")
         return 1
 

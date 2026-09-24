@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -7,11 +8,9 @@ TARGET_DIRS = ("App", "Modules")
 
 
 def compute_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    digest = _sha256_unless_stopped(path, None)
+    assert digest is not None  # only a should_stop callback can cut it short
+    return digest
 
 
 def parse_sha256sums(sums_path: Path) -> dict[str, str]:
@@ -59,7 +58,20 @@ def _iter_real_files(root: Path):
                 yield entry
 
 
-def check_integrity(base_dir: Path) -> list[str]:
+def _sha256_unless_stopped(path: Path, should_stop: Callable[[], bool] | None) -> str | None:
+    """compute_sha256, but gives up (returning None) between chunks once
+    should_stop() is true - a single large file on slow USB media takes
+    seconds, far too long to make an app that is closing wait for it."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            if should_stop is not None and should_stop():
+                return None
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def check_integrity(base_dir: Path, should_stop: Callable[[], bool] | None = None) -> list[str]:
     sums_path = base_dir / "Data" / "SHA256SUMS"
     if not sums_path.exists():
         return []
@@ -82,7 +94,20 @@ def check_integrity(base_dir: Path) -> list[str]:
             rel_path = file_path.relative_to(base_dir).as_posix()
             seen.add(rel_path)
             expected_hash = expected.get(rel_path)
-            if expected_hash is None or compute_sha256(file_path) != expected_hash:
+            if expected_hash is None:
+                mismatches.append(rel_path)
+                continue
+            try:
+                actual_hash = _sha256_unless_stopped(file_path, should_stop)
+            except OSError:
+                # Locked by AV, or the stick dropped out mid-read: this runs
+                # on a background thread where an uncaught error just kills
+                # the check silently - and a file that can't be read can't
+                # be told apart from a tampered one, so don't claim it was.
+                continue
+            if actual_hash is None:
+                return []
+            if actual_hash != expected_hash:
                 mismatches.append(rel_path)
     for rel_path in expected:
         if rel_path not in seen:
@@ -103,4 +128,30 @@ class IntegrityCheckRunner(QThread):
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
-        self.check_finished.emit(check_integrity(self._base_dir))
+        mismatches = check_integrity(self._base_dir, should_stop=self.isInterruptionRequested)
+        if not self.isInterruptionRequested():
+            self.check_finished.emit(mismatches)
+
+    def stop(self, timeout_ms: int = 10000) -> None:
+        """Must run before the app tears down its window (this thread's
+        parent): Qt aborts the whole process - "QThread: Destroyed while
+        thread is still running" - if a running QThread is destroyed, which
+        is exactly what closing the app during a slow first-launch hash did.
+        That crash also kept the old process alive long enough to abort a
+        pending update swap."""
+        try:
+            self.requestInterruption()
+            self.wait(timeout_ms)
+        except RuntimeError:
+            # Already finished and deleted via deleteLater - nothing to stop.
+            pass
+
+
+def format_mismatches(mismatches: list[str], more_template: str, limit: int = 20) -> str:
+    """A garbled or badly outdated manifest can flag hundreds of files; one
+    line each made the warning dialog taller than the screen, pushing its
+    OK button out of reach."""
+    lines = mismatches[:limit]
+    if len(mismatches) > limit:
+        lines.append(more_template.format(count=len(mismatches) - limit))
+    return "\n".join(lines)

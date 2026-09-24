@@ -149,3 +149,115 @@ def test_integrity_check_runner_emits_mismatches_off_the_gui_thread(qtbot, tmp_p
     with qtbot.waitSignal(runner.check_finished, timeout=5000) as blocker:
         runner.start()
     assert blocker.args == [["App/missing.txt"]]
+
+
+# --- docs/research/research-resilience.md 7.2 / research-app-performance.md 1.1 follow-ups ---
+
+
+@pytest.fixture
+def _is_junction_compat(monkeypatch):
+    # Path.is_junction() is Python 3.12+ (the app's target); older test
+    # interpreters get a stand-in so check_integrity's walk can run at all.
+    from pathlib import Path
+
+    if not hasattr(Path, "is_junction"):
+        monkeypatch.setattr(Path, "is_junction", lambda self: False, raising=False)
+
+
+def _manifest_for(base, files: dict[str, bytes]) -> None:
+    lines = []
+    for rel, content in files.items():
+        path = base / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        lines.append(f"{hashlib.sha256(content).hexdigest()}  {rel}")
+    (base / "Data").mkdir(exist_ok=True)
+    (base / "Data" / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_check_integrity_skips_a_file_it_cannot_read_instead_of_raising(tmp_path, monkeypatch, _is_junction_compat):
+    # Runs on a QThread: an OSError (AV lock, stick dropping out) used to
+    # kill the check silently, so a real tamper elsewhere went unreported.
+    import portablefix.integrity as integrity_module
+
+    _manifest_for(tmp_path, {"App/locked.bin": b"a", "App/ok.bin": b"b"})
+    (tmp_path / "App" / "ok.bin").write_bytes(b"tampered")
+    real = integrity_module._sha256_unless_stopped
+
+    def flaky(path, should_stop):
+        if path.name == "locked.bin":
+            raise PermissionError("locked by AV")
+        return real(path, should_stop)
+
+    monkeypatch.setattr(integrity_module, "_sha256_unless_stopped", flaky)
+
+    assert check_integrity(tmp_path) == ["App/ok.bin"]
+
+
+def test_check_integrity_stops_early_when_asked(tmp_path, _is_junction_compat):
+    _manifest_for(tmp_path, {"App/a.bin": b"a", "App/b.bin": b"b"})
+    (tmp_path / "App" / "a.bin").write_bytes(b"tampered")
+
+    assert check_integrity(tmp_path, should_stop=lambda: True) == []
+
+
+def test_format_mismatches_caps_a_huge_list():
+    from portablefix.integrity import format_mismatches
+
+    text = format_mismatches([f"App/f{i}" for i in range(500)], "... and {count} more", limit=20)
+
+    lines = text.splitlines()
+    assert len(lines) == 21
+    assert lines[-1] == "... and 480 more"
+    assert format_mismatches(["App/a"], "... and {count} more") == "App/a"
+
+
+def test_integrity_runner_stop_is_safe_after_the_thread_was_deleted(qtbot, tmp_path):
+    runner = IntegrityCheckRunner(tmp_path)
+    with qtbot.waitSignal(runner.check_finished, timeout=5000):
+        runner.start()
+    qtbot.wait(50)  # let deleteLater run
+
+    runner.stop()  # must not raise RuntimeError on the deleted C++ object
+
+
+_CLOSE_DURING_CHECK_SCRIPT = r"""
+import sys, time
+sys.path.insert(0, {repo!r})
+from PySide6.QtWidgets import QApplication, QWidget
+import portablefix.integrity as integrity
+
+def slow_check(base_dir, should_stop=None):
+    while not (should_stop and should_stop()):
+        time.sleep(0.01)
+    return []
+
+integrity.check_integrity = slow_check
+app = QApplication(sys.argv)
+window = QWidget()
+runner = integrity.IntegrityCheckRunner({base!r}, parent=window)
+runner.start()
+time.sleep(0.2)
+if {stop}:
+    runner.stop()
+del window
+print("clean exit", flush=True)
+"""
+
+
+def test_closing_the_app_during_the_integrity_check_does_not_abort_the_process(tmp_path):
+    # main.py's window owns the runner; destroying a still-running QThread
+    # makes Qt abort() the whole process ("QThread: Destroyed while thread
+    # is still running") - which is what closing the app during a slow
+    # first-launch hash did. Run in a child process so an abort can't take
+    # the test session down with it.
+    import sys
+    from pathlib import Path
+
+    repo = str(Path(__file__).resolve().parent.parent)
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    script = _CLOSE_DURING_CHECK_SCRIPT.format(repo=repo, base=str(tmp_path), stop=True)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "clean exit" in result.stdout
