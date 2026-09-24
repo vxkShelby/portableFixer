@@ -2798,8 +2798,9 @@ class MainWindow(QMainWindow):
             tasks.append(self._t("update_busy_report"))
         if self._speed_test_busy or _thread_running(self._speed_test_runner):
             tasks.append(self._t("update_busy_speed_test"))
-        if _thread_running(self._winget_scan_runner):
-            tasks.append(self._t("update_busy_winget_scan"))
+        # Not the winget scan: it only reads, starts on its own with the
+        # window (so it ran on every early "Update" click), and closeEvent
+        # waits at most 65 s for it - well inside the updater's 600 s.
         if _thread_running(self._winget_update_runner):
             tasks.append(self._t("update_busy_winget_update"))
         if _thread_running(self._pending_restore_point_runner):

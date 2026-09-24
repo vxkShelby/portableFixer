@@ -4236,6 +4236,12 @@ def _update_window(qtbot, tmp_path, run_id, language="en", **settings):
     )
     qtbot.addWidget(window)
     window.show()
+    # The winget panel starts a real scan with the window; where winget
+    # exists (the Windows runner) closing for the update waits for it, so
+    # let it finish first instead of racing the tests' 5 s waits.
+    from portablefix.gui.main_window import _thread_running
+
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=90_000)
     window._on_update_check_finished(UpdateInfo(version="9.9.9", package_url="https://x", sha256_url=None, notes=""))
     return window
 
@@ -4380,8 +4386,26 @@ def test_long_running_tasks_names_an_uninstall_in_progress(qtbot, tmp_path):
 
     window = _update_window(qtbot, tmp_path, "run_update_tasks_uninstall")
     window._uninstall_runner = _Running()
-    assert window._long_running_tasks() == [window._t("update_busy_uninstall")]
-    window._uninstall_runner = None
+    try:
+        assert window._long_running_tasks() == [window._t("update_busy_uninstall")]
+    finally:
+        window._uninstall_runner = None
+
+
+def test_long_running_tasks_ignore_the_automatic_winget_scan(qtbot, tmp_path):
+    # The panel starts a read-only scan with the window; on a PC with winget
+    # it was still running when the technician clicked "Update" right after
+    # start, and the update was refused for no reason.
+    class _Running:
+        def isRunning(self):
+            return True
+
+    window = _update_window(qtbot, tmp_path, "run_update_tasks_scan")
+    window._winget_scan_runner = _Running()
+    try:
+        assert window._long_running_tasks() == []
+    finally:
+        window._winget_scan_runner = None
 
 
 def test_closing_during_an_uninstall_waits_for_the_running_one_and_skips_the_rest(qtbot, tmp_path, monkeypatch):
