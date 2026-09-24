@@ -70,6 +70,14 @@ def _system_events(log_path: Path, kind: str) -> list[dict]:
     return [e for e in _audit_entries(log_path) if e["module_id"] == "_system" and e["action_id"] == kind]
 
 
+def _wait_batch_idle(qtbot, window, timeout=15000):
+    # Wait for the batch AND its (threaded) report to finish before the test
+    # ends: otherwise qtbot's teardown closes a window mid-batch, closeEvent
+    # asks "a batch is running, close anyway?", and headless that dialog
+    # either hangs forever or (with conftest's guard) errors in teardown.
+    qtbot.waitUntil(lambda: not window._batch_active and window._report_runner is None, timeout=timeout)
+
+
 def _make_base_dir(tmp_path: Path, yaml_text: str = ACTIONS_YAML) -> Path:
     module_dir = tmp_path / "Modules" / "m01_diagnostics"
     module_dir.mkdir(parents=True)
@@ -588,6 +596,7 @@ def test_dry_run_with_preview_command_runs_preview_not_real_command(qtbot, tmp_p
 
     qtbot.waitUntil(lambda: "safe-preview" in window.console.toPlainText(), timeout=10000)
     assert "safe-ran" not in window.console.toPlainText()
+    _wait_batch_idle(qtbot, window)
 
 
 def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path, monkeypatch):
@@ -651,6 +660,7 @@ def test_dry_run_destructive_action_never_creates_restore_point(qtbot, tmp_path,
 
     qtbot.waitUntil(lambda: "destructive-preview" in window.console.toPlainText(), timeout=10000)
     assert "destructive-ran" not in window.console.toPlainText()
+    _wait_batch_idle(qtbot, window)
 
 
 def test_take_snapshot_measures_system_drive_not_state_dir(qtbot, tmp_path, monkeypatch):
@@ -1047,6 +1057,7 @@ def test_repair_category_safe_action_triggers_restore_point_and_undo_script(qtbo
 
     qtbot.waitUntil(lambda: captured.get("called") is True, timeout=10000)
     assert (tmp_path / "Backups" / "run_repair" / "undo.ps1").exists()
+    _wait_batch_idle(qtbot, window)
 
 
 def test_dry_run_repair_action_never_creates_restore_point_or_undo_script(qtbot, tmp_path, monkeypatch):
@@ -1079,6 +1090,7 @@ def test_dry_run_repair_action_never_creates_restore_point_or_undo_script(qtbot,
 
     qtbot.waitUntil(lambda: "preview" in window.console.toPlainText(), timeout=10000)
     assert not (tmp_path / "Backups").exists()
+    _wait_batch_idle(qtbot, window)
 
 
 def test_restore_point_failure_declined_skips_remaining_repair_actions_too(qtbot, tmp_path, monkeypatch):
@@ -1225,6 +1237,7 @@ def test_dry_run_action_with_undo_command_never_creates_backups_dir(qtbot, tmp_p
 
     qtbot.waitUntil(lambda: "preview" in window.console.toPlainText(), timeout=10000)
     assert not (tmp_path / "Backups").exists()
+    _wait_batch_idle(qtbot, window)
 
 
 def test_undo_steps_accumulate_across_batches_in_same_run(qtbot, tmp_path, monkeypatch):
@@ -1870,6 +1883,10 @@ def test_language_toggle_mid_batch_restores_run_state_on_the_rebuilt_widgets(qtb
     assert window.progress_bar.isVisibleTo(window) is True
     assert window.progress_bar.maximum() == 2
     assert window.progress_bar.value() == 1
+    # The batch above is only simulated - end it so teardown's close
+    # doesn't ask "a batch is running, close anyway?".
+    window._batch_active = False
+    window._queue = []
 
 
 def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
@@ -1884,6 +1901,10 @@ def test_update_button_click_does_nothing_during_active_batch(qtbot, tmp_path):
     window.update_button.click()
 
     assert window._update_download_runner is None
+    # The batch above is only simulated - end it so teardown's close
+    # doesn't ask "a batch is running, close anyway?".
+    window._batch_active = False
+    window._queue = []
 
 
 def test_quit_app_routes_through_close_event_and_cancels_a_live_batch_runner(qtbot, tmp_path):
