@@ -84,6 +84,10 @@ PowerShell.
   notification shows the OK/failed counts.
 - **Keyboard shortcuts:** F5 run, Ctrl+A select all, Ctrl+F search, Esc
   clear search, Ctrl+S save preset, Ctrl+J job details, F1 overview.
+- **Program uninstaller and winget updates:** these panels respect DRY-RUN
+  (they only print the commands), ask before changing anything, and every
+  program, package and deleted leftover registry entry (backed up to
+  `Backups/<run-id>/*.reg` first) is written to the audit log.
 
 ## Safety mechanisms
 

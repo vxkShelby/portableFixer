@@ -1,8 +1,9 @@
 import os
+import re
 import subprocess
 import winreg
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from PySide6.QtCore import QThread, Signal
 
@@ -15,6 +16,12 @@ _UNINSTALL_REG_PATHS = (
 # real, user-facing "program" (a patch/hotfix has no sensible standalone
 # uninstall flow here) - filtered out alongside SystemComponent=1 entries.
 _NON_PROGRAM_RELEASE_TYPES = {"Update", "Hotfix", "Security Update", "ServicePack"}
+# reg.exe's names for the only hives _UNINSTALL_REG_PATHS reads.
+_HIVE_REG_NAMES = {
+    winreg.HKEY_LOCAL_MACHINE: "HKLM",
+    winreg.HKEY_CURRENT_USER: "HKCU",
+}
+_REG_EXPORT_TIMEOUT_SEC = 30
 
 
 @dataclass
@@ -131,8 +138,14 @@ def launch_program(program: InstalledProgram) -> bool:
         return False
 
 
+def program_command(program: InstalledProgram) -> str | None:
+    # The quiet string wins: it is what uninstall_program runs, and the
+    # confirmation and the audit log must show exactly that command.
+    return program.quiet_uninstall_string or program.uninstall_string or None
+
+
 def uninstall_program(program: InstalledProgram, timeout_sec: int = 300) -> tuple[bool, str]:
-    command = program.quiet_uninstall_string or program.uninstall_string
+    command = program_command(program)
     if not command:
         return False, "No uninstall command found for this program."
     try:
@@ -165,6 +178,45 @@ def remove_registry_key(hive: int, path: str) -> bool:
         return False
 
 
+def registry_key_name(hive: int, path: str) -> str:
+    """The key as reg.exe spells it, e.g. HKLM\\SOFTWARE\\..."""
+    return f"{_HIVE_REG_NAMES.get(hive, str(hive))}\\{path}"
+
+
+def backup_registry_key(hive: int, path: str, dest_file: Path, timeout_sec: int = _REG_EXPORT_TIMEOUT_SEC) -> bool:
+    # A leftover entry is only ever deleted once this .reg copy exists, so
+    # a wrongly flagged program can be put back with "reg import".
+    root = _HIVE_REG_NAMES.get(hive)
+    if root is None:
+        return False
+    dest = Path(dest_file)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Output is left undecoded: reg.exe prints in the OEM code page, and
+        # only the exit code and the written file matter here.
+        result = subprocess.run(
+            ["reg", "export", f"{root}\\{path}", str(dest), "/y"],
+            capture_output=True, timeout=timeout_sec,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and dest.is_file()
+
+
+def orphan_backup_path(backup_dir: Path, program_name: str) -> Path:
+    # The name comes from the registry - keep letters (diacritics too),
+    # digits, "." and "-" and replace the rest. Two leftovers can share a
+    # DisplayName (HKLM + WOW6432Node), so an existing file is never reused.
+    stem = re.sub(r"[^\w.-]+", "_", program_name).strip("._")[:80] or "entry"
+    candidate = Path(backup_dir) / f"uninstall_{stem}.reg"
+    counter = 2
+    while candidate.exists():
+        candidate = Path(backup_dir) / f"uninstall_{stem}_{counter}.reg"
+        counter += 1
+    return candidate
+
+
 class UninstallRunner(QThread):
     # Uninstallers are blocking subprocess calls (some show their own UI
     # and wait for the user) - runs off the GUI thread so the window stays
@@ -184,12 +236,40 @@ class UninstallRunner(QThread):
         self.all_finished.emit()
 
 
+def _clean_location(install_location: str) -> str:
+    # Some installers write InstallLocation wrapped in quotes - as written,
+    # a path that never exists, which alone would flag it as a leftover.
+    return install_location.strip().strip('"').strip()
+
+
+def orphan_location_is_verifiable(install_location: str) -> bool:
+    # A missing folder only means "uninstalled" when the drive (or network
+    # share) it lives on is actually there. A program on an unplugged USB
+    # disk, a BitLocker-locked volume or an unmapped share looks exactly
+    # like a leftover otherwise - and its registry entry would get deleted.
+    # Relative or unexpanded (%ProgramFiles%\...) paths can't be checked.
+    location = PureWindowsPath(_clean_location(install_location))
+    if not location.drive or not location.root:
+        return False
+    try:
+        return Path(location.anchor).exists()
+    except OSError:
+        return False
+
+
 def find_orphaned_uninstall_entries(reg_paths=_UNINSTALL_REG_PATHS) -> list[InstalledProgram]:
     # A classic leftover-junk signal: the uninstaller ran (or the user
     # deleted the install folder by hand) but never cleaned up its own
     # registry entry, so it keeps showing up as "installed" forever.
     orphans = []
     for program in list_installed_programs(reg_paths):
-        if program.install_location and not Path(program.install_location).exists():
+        if not program.install_location or not orphan_location_is_verifiable(program.install_location):
+            continue
+        try:
+            missing = not Path(_clean_location(program.install_location)).exists()
+        except OSError:
+            # Unreadable (e.g. access denied) is not the same as gone.
+            continue
+        if missing:
             orphans.append(program)
     return orphans
