@@ -59,6 +59,13 @@ def _summarize(json_path: Path) -> RunSummary | None:
     )
 
 
+def run_report_paths(reports_dir: Path, hostname: str, run_id: str) -> tuple[Path, Path]:
+    """(html, json) report paths of one run - same naming as
+    report.generate_report."""
+    stem = f"{hostname}_{run_id}"
+    return reports_dir / f"{stem}.html", reports_dir / f"{stem}.json"
+
+
 def recent_runs(reports_dir: Path, hostname: str, limit: int = 5, exclude_run_id: str | None = None) -> list[RunSummary]:
     """Newest-first summaries of this machine's past runs.
 

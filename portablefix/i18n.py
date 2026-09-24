@@ -217,6 +217,11 @@ _STRINGS = {
         "update_status_interrupted": "Posledná aktualizácia bola prerušená (napr. odpojené USB alebo výpadok napájania). Pôvodné priečinky boli obnovené, kde to bolo možné – ak niečo chýba, spusti aktualizáciu znova.",
         "update_status_failed": "Posledná aktualizácia sa nepodarila, zostala pôvodná verzia. Podrobnosti v logu: {log_dir}",
         "update_status_sums_stale": "Aktualizácia prebehla, ale zoznam kontrolných súčtov (Data\\SHA256SUMS) sa nepodarilo obnoviť – varovanie o integrite pre nové súbory je preto očakávané, nejde o zásah zvonku.",
+        "handoff_button": "Uložiť balík pre klienta",
+        "handoff_saved": "Balík pre klienta uložený: {path}",
+        "handoff_open_folder": "Otvoriť priečinok",
+        "handoff_failed": "[PortableFix] Uloženie balíka pre klienta zlyhalo (USB plný alebo odpojený?).",
+        "handoff_no_files": "Pre tento beh sa nenašli žiadne súbory (report ani log) – balík sa nedá vytvoriť.",
     },
     "en": {
         "app_title": "PortableFix",
@@ -436,6 +441,11 @@ _STRINGS = {
         "update_status_interrupted": "The last update was interrupted (e.g. USB unplugged or power lost). The previous folders were restored where possible - if anything is missing, run the update again.",
         "update_status_failed": "The last update did not succeed; the previous version was kept. Details in the log: {log_dir}",
         "update_status_sums_stale": "The update was installed, but the checksum list (Data\\SHA256SUMS) could not be refreshed - an integrity warning about the new files is therefore expected and does not mean tampering.",
+        "handoff_button": "Save client package",
+        "handoff_saved": "Client package saved: {path}",
+        "handoff_open_folder": "Open folder",
+        "handoff_failed": "[PortableFix] Saving the client package failed (USB full or disconnected?).",
+        "handoff_no_files": "No files (report or log) were found for this run - the package cannot be created.",
     },
 }
 

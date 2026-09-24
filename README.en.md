@@ -71,6 +71,12 @@ PowerShell.
   (all / failed only / changes only) and search. **Print / save as PDF**
   gives a clean white printout for the client. The report is a single
   self-contained file that needs no internet.
+- **Client package:** the **Save client package** button (in the batch
+  summary and on every run in the history) saves a single
+  `PortableFix_<PC>_<run-id>.zip` with the HTML/JSON report, the audit log,
+  `undo.ps1` (if any) and a short README (SK+EN) on using the undo script
+  safely - ready to email or archive. It holds only that one run's files
+  (never `Data/settings.json` or other runs).
 - **Job details** (top-bar button, Ctrl+J): technician name (remembered),
   client / job number and a note - shown in the report header.
 - **Batch-finished notice:** when the window is in the background (e.g.

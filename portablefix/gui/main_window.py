@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import diagnostics, elevation, history, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
+from .. import diagnostics, elevation, handoff, history, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -1400,6 +1400,10 @@ class MainWindow(QMainWindow):
                 lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(undo_script_path)))
             )
             button_row.addWidget(open_undo_button)
+        handoff_button = self._make_selection_button(
+            self._t("handoff_button"), lambda: self._save_handoff_package(self.run_id, dialog)
+        )
+        button_row.addWidget(handoff_button)
         layout.addLayout(button_row)
 
         open_button.setDefault(True)
@@ -1982,7 +1986,48 @@ class MainWindow(QMainWindow):
                     lambda path=run.html_path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))),
                 )
                 row_layout.addWidget(open_button)
+            handoff_button = self._make_selection_button(
+                self._t("handoff_button"), lambda rid=run.run_id: self._save_handoff_package(rid)
+            )
+            handoff_button.setProperty("handoffRunId", run.run_id)
+            row_layout.addWidget(handoff_button)
             layout.addWidget(row)
+
+    def _save_handoff_package(self, run_id: str, parent: QWidget | None = None) -> Path | None:
+        """Ask where to save the client handoff zip of one run and write it."""
+        hostname = socket.gethostname()
+        default_path = self.state_dir / "Reports" / handoff.default_package_name(hostname, run_id)
+        dest, _ = QFileDialog.getSaveFileName(
+            parent or self, self._t("handoff_button"), str(default_path), "Zip (*.zip)"
+        )
+        if not dest:
+            return None
+        try:
+            saved = handoff.build_handoff_zip(self.state_dir, hostname, run_id, Path(dest))
+        except ValueError:
+            QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
+            return None
+        except OSError as exc:
+            self.console.appendPlainText(self._t("handoff_failed"))
+            QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{exc}")
+            return None
+        self.statusBar().showMessage(self._t("handoff_saved").format(path=saved), 15000)
+        button = getattr(self, "_handoff_folder_button", None)
+        if button is None:
+            button = QPushButton(self._t("handoff_open_folder"))
+            button.setObjectName("selectionBtn")
+            button.clicked.connect(self._open_handoff_folder)
+            self.statusBar().addPermanentWidget(button)
+            self._handoff_folder_button = button
+        button.setText(self._t("handoff_open_folder"))
+        button.setProperty("folder", str(saved.parent))
+        button.setVisible(True)
+        return saved
+
+    def _open_handoff_folder(self) -> None:
+        button = self._handoff_folder_button
+        QDesktopServices.openUrl(QUrl.fromLocalFile(button.property("folder")))
+        button.setVisible(False)
 
     def _refresh_dashboard(self) -> None:
         self._refresh_history()
