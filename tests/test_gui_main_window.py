@@ -2335,6 +2335,19 @@ def test_presets_only_reference_action_ids_that_exist_in_the_real_catalogs():
         assert not missing, f"preset {preset_name!r} references missing action id(s): {missing}"
 
 
+def test_full_diagnostic_preset_includes_the_safe_crash_triage():
+    from portablefix.gui.main_window import PRESETS
+    from portablefix.models import RiskLevel
+    from portablefix.module_engine import load_module
+
+    m01 = load_module(Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml")
+    risk = {a.id: a.risk for a in m01.actions}
+    for action_id in ("crash_bugcheck_triage", "whea_hardware_errors"):
+        assert action_id in PRESETS["full_diagnostic"], action_id
+        # One-click diagnostics must stay read-only.
+        assert risk[action_id] == RiskLevel.SAFE, action_id
+
+
 DETAILED_ACTION_YAML = """
 module_id: m01_diagnostics
 actions:

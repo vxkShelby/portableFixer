@@ -69,7 +69,8 @@ PRESETS: dict[str, list[str]] = {
     "full_diagnostic": [
         "os_info", "computer_info", "bios_info", "cpu_info", "memory_info",
         "volumes", "physical_disks", "recent_hotfixes", "pending_reboot",
-        "eventlog_critical_7d", "bsod_summary", "disk_reliability_counters",
+        "eventlog_critical_7d", "bsod_summary", "crash_bugcheck_triage",
+        "whea_hardware_errors", "disk_reliability_counters",
         "defender_status", "top_cpu_processes", "sec_defender_status",
         "sec_firewall_status", "sec_uac_status",
     ],

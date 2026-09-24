@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m01_diagnostics" / "actions.yaml"
 
 
-def test_m01_catalog_loads_26_actions_in_diagnostics_category():
+def test_m01_catalog_loads_30_actions_in_diagnostics_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m01_diagnostics"
     assert module.category == ModuleCategory.DIAGNOSTICS
-    assert len(module.actions) == 26
+    assert len(module.actions) == 30
 
 
 def test_m01_catalog_all_actions_safe_readonly():
@@ -45,6 +45,15 @@ def test_m01_catalog_covers_new_system_state_gap_actions():
     assert {
         "activation_status", "restore_points", "uptime_faststartup",
         "os_edition_eol", "bitlocker_status", "tpm_status", "pagefile_info",
+    }.issubset(ids)
+
+
+def test_m01_catalog_covers_crash_triage_actions():
+    # G06 - their behaviour is tested against stubs in tests/test_crash_triage.py.
+    module = load_module(CATALOG_PATH)
+    ids = {a.id for a in module.actions}
+    assert {
+        "crash_bugcheck_triage", "whea_hardware_errors", "reliability_history", "crash_dump_evidence",
     }.issubset(ids)
 
 
