@@ -417,4 +417,89 @@ QLabel#wingetBanner[state="ok"] {
     color: #6b7686;
     font-family: 'Consolas', 'Cascadia Mono';
 }
+
+QComboBox {
+    background-color: #06080c;
+    border: 1px solid #232d3a;
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-family: 'Consolas', 'Cascadia Mono';
+    color: #d6e2f0;
+    min-width: 80px;
+}
+QComboBox:hover, QComboBox:focus {
+    border: 1px solid #2fe6ff;
+}
+QComboBox:disabled {
+    background-color: #0b0e14;
+    border: 1px solid #1a212d;
+    color: #4b5568;
+}
+QComboBox QAbstractItemView {
+    background-color: #10141c;
+    border: 1px solid #232d3a;
+    selection-background-color: rgba(47, 230, 255, 45);
+    selection-color: #8ff2ff;
+    outline: none;
+    padding: 4px;
+}
+
+QCheckBox:disabled {
+    color: #4b5568;
+}
+QCheckBox::indicator:disabled {
+    border-color: #1a212d;
+    background: #0b0e14;
+}
+
+QToolTip {
+    background-color: #10141c;
+    color: #d6e2f0;
+    border: 1px solid #2fe6ff;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+QStatusBar {
+    background-color: #06080c;
+    border-top: 1px solid #1c2530;
+    color: #8a97a8;
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+}
+QStatusBar::item {
+    border: none;
+}
+
+QMessageBox {
+    background-color: #0b0e14;
+}
+QMessageBox QLabel {
+    color: #d6e2f0;
+}
+QMessageBox QPushButton {
+    min-width: 84px;
+}
+
+QScrollBar:horizontal {
+    background: #0b0e14;
+    height: 10px;
+    border-radius: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: #232d3a;
+    border-radius: 2px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #2fe6ff;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+QPushButton:disabled {
+    color: #4b5568;
+    border-color: #1a212d;
+}
 """

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -338,12 +338,18 @@ class MainWindow(QMainWindow):
         # Fixed 190px clipped longer entries (e.g. "Risk: REQUIRES_REBOOT")
         # behind a horizontal scrollbar - size to the longest actual label
         # instead so everything is readable without scrolling sideways.
-        # +56 covers the stylesheet's item padding (12px each side), list
-        # padding (6px each side) and the 3px selected/hover left border.
+        # +64 covers the stylesheet's item padding (12px each side) and
+        # margin (4px each side), list padding (6px each side) and border.
+        # Measured in bold: the selected item is rendered bold (see style.py),
+        # and measuring the regular weight elided the longest labels
+        # ("Odinstalovanie programov", "Riziko: REQUIRES_REBOOT") with "..."
+        # as soon as they were selected.
         self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        metrics = self.category_list.fontMetrics()
+        bold_font = QFont(self.category_list.font())
+        bold_font.setBold(True)
+        metrics = QFontMetrics(bold_font)
         widest_label = max((metrics.horizontalAdvance(label) for label in category_labels), default=0)
-        self.category_list.setFixedWidth(min(max(widest_label + 56, 190), 280))
+        self.category_list.setFixedWidth(min(max(widest_label + 64, 190), 300))
         body_layout.addWidget(self.category_list)
 
         center_layout = QVBoxLayout()

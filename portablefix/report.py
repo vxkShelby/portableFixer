@@ -180,6 +180,15 @@ ul { color: #c0caf5; }
 """
 
 
+def _format_timestamp(value) -> str:
+    # Audit timestamps are ISO-8601 UTC with microseconds - readable for
+    # machines (the JSON keeps them as-is) but noisy on screen.
+    try:
+        return datetime.fromisoformat(str(value)).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return str(value)
+
+
 def _render_action_card(a: dict, language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
@@ -202,7 +211,7 @@ def _render_action_card(a: dict, language: str) -> str:
         f"{dry_tag}{exit_note}"
         f'<span class="badge" style="background:{badge_color}">{html.escape(a["risk"])}</span>'
         f'<span class="mod">{html.escape(a["module_id"])}</span>'
-        f'<span class="ts">{html.escape(str(a["timestamp"]))}</span>'
+        f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"]))}</span>'
         f"</div>{output_block}</div>"
     )
 
@@ -253,7 +262,7 @@ def _render_html(data: dict) -> str:
 <body><div class="wrap">
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
-{t('report_generated')}: {html.escape(data['generated_at'])}<br>
+{t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}</div>
 <div class="chips">
 <div class="chip"><span class="num">{len(actions)}</span><span class="lbl">{t('report_chip_actions')}</span></div>

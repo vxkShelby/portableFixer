@@ -266,8 +266,8 @@ def test_html_report_is_localized_to_slovak(tmp_path):
     content = html_path.read_text(encoding="utf-8")
     assert '<html lang="sk">' in content
     assert "ZLYHALO" in content
-    assert "Volne miesto" in content
-    assert "Vystup" in content
+    assert "Voľné miesto" in content
+    assert "Výstup" in content
     assert "FAILED" not in content
     assert "Free space" not in content
 
@@ -289,3 +289,15 @@ def test_previous_report_with_non_list_actions_does_not_crash(tmp_path):
     (reports_dir / f"{hostname}_old.json").write_text(json.dumps(old), encoding="utf-8")
     data = build_report_data(tmp_path, "run_new", [], "en", {}, {})
     assert data["previous_comparison"]["previous_action_count"] == 0
+
+
+def test_html_report_shows_readable_utc_timestamps(tmp_path):
+    entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, "run_ts")
+    entry.timestamp = "2026-09-24T12:54:03.410593+00:00"
+    append_entry(tmp_path, "run_ts", entry)
+    html_path, json_path = generate_report(tmp_path, "run_ts", _fixture_modules(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "2026-09-24 12:54:03 UTC" in content
+    assert "12:54:03.410593" not in content
+    # The machine-readable JSON keeps the full ISO timestamp.
+    assert json.loads(json_path.read_text(encoding="utf-8"))["actions"][0]["timestamp"] == entry.timestamp
