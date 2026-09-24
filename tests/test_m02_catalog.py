@@ -184,3 +184,39 @@ def test_hidden_large_data_report_never_deletes_anything():
     assert ".vhdx" in action.command
     for verb in ("Remove-Item", "Optimize-VHD -", "wsl --unregister"):
         assert verb not in action.command, verb
+
+
+def test_shadow_copies_oldest_checks_the_oldest_shadow_age_before_vssadmin():
+    # main_window creates one System Restore Point right before the first
+    # DESTRUCTIVE/REPAIR action of a batch - often the only shadow copy on
+    # C:, so a bare "vssadmin delete shadows /oldest" later in the same batch
+    # deleted exactly the safety net just made for it. The command must
+    # query Win32_ShadowCopy, bail out on none, and refuse to delete a
+    # shadow younger than 24 h - all before vssadmin is ever reached - and
+    # must not treat vssadmin's English "No items found" text as success
+    # (it is localized on non-English Windows).
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "shadow_copies_oldest")
+    command = action.command
+    assert "Win32_ShadowCopy" in command
+    assert "AddHours(-24)" in command
+    assert "No items found" not in command
+    vssadmin_at = command.index("vssadmin")
+    before_vssadmin = command[:vssadmin_at]
+    assert "Win32_ShadowCopy" in before_vssadmin
+    assert "$shadows.Count -eq 0" in before_vssadmin
+    assert "AddHours(-24)" in before_vssadmin
+    # A failed CIM query (typically: not elevated) must fail loudly instead of
+    # falling through to an unguarded vssadmin call.
+    assert "catch {" in before_vssadmin and "needs administrator" in before_vssadmin
+    assert "exit $LASTEXITCODE" in command[vssadmin_at:]
+
+
+def test_shadow_copies_oldest_preview_and_descriptions_state_the_24h_protection():
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "shadow_copies_oldest")
+    assert "AddHours(-24)" in action.preview_command
+    assert "vssadmin" not in action.preview_command
+    assert "24 h" in action.description_sk and "24 h" in action.description_en
+    assert "práve vytvoril" in action.description_sk
+    assert "just created" in action.description_en

@@ -178,3 +178,15 @@ def test_m10_catalog_network_adapter_versions_lists_physical_adapters_only():
     assert "Get-NetAdapter -Physical" in command
     for column in ("DriverVersion", "DriverDate", "DriverProvider"):
         assert column in command, column
+
+
+def test_m10_catalog_driver_backup_counts_exported_folders_not_localized_labels():
+    # pnputil's "Total driver packages:" / "Exported driver packages:" labels
+    # are localized, so on non-English Windows the old summary line came out
+    # empty. pnputil /export-driver writes one subfolder per package - count
+    # those instead.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "drv_export_backup")
+    assert "Total driver packages" not in action.command
+    assert "Select-String" not in action.command
+    assert "@(Get-ChildItem $dest -Directory).Count" in action.command
