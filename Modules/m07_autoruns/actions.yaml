@@ -2,7 +2,7 @@ module_id: m07_autoruns
 category: DIAGNOSTICS
 actions:
   - id: autoruns_registry_run
-    label_sk: "Programy spúšťané z registrov (Run)"
+    label_sk: "Programy spúšťané z registra (Run)"
     label_en: "Registry autostart entries (Run)"
     risk: SAFE
     command: "foreach ($path in 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnce','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce') { Write-Output ('=== ' + $path + ' ==='); Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | Select-Object * -ExcludeProperty PS* | Format-List }"
@@ -13,7 +13,7 @@ actions:
     label_en: "Startup folder items"
     risk: SAFE
     command: "Get-ChildItem -Path \"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\",\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\" -ErrorAction SilentlyContinue | Select-Object FullName,LastWriteTime | Format-Table -AutoSize"
-    description_sk: "Vypíše súbory v používateľskom aj spoločnom Startup priečinku, nič nemení."
+    description_sk: "Vypíše súbory v používateľskom aj spoločnom priečinku Startup, nič nemení."
     description_en: "Lists files in both the per-user and common Startup folders, changes nothing."
   - id: autoruns_scheduled_tasks
     label_sk: "Aktívne naplánované úlohy"
@@ -27,26 +27,26 @@ actions:
     label_en: "Automatic-start services"
     risk: SAFE
     command: "Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' } | Select-Object Name,DisplayName,State,StartName,PathName | Format-Table -AutoSize -Wrap"
-    description_sk: "Vypíše služby nastavené na automatické spustenie vrátane cesty k binárke a účtu, nič nemení."
+    description_sk: "Vypíše služby nastavené na automatické spustenie vrátane cesty k spustiteľnému súboru a účtu, nič nemení."
     description_en: "Lists services set to start automatically including their binary path and account, changes nothing."
   - id: autoruns_wmi_event_subscriptions
-    label_sk: "WMI event subscriptions (fileless perzistencia)"
+    label_sk: "WMI event subscriptions (bezsúborová perzistencia)"
     label_en: "WMI event subscriptions (fileless persistence)"
     risk: SAFE
     command: "try { $filters = Get-CimInstance -Namespace root\\subscription -ClassName __EventFilter -EA Stop; $consumers = Get-CimInstance -Namespace root\\subscription -ClassName __EventConsumer -EA Stop; $bindings = Get-CimInstance -Namespace root\\subscription -ClassName __FilterToConsumerBinding -EA Stop; if (-not $filters -and -not $consumers -and -not $bindings) { Write-Output 'No WMI event subscriptions found (clean).' } else { Write-Output '--- Event Filters ---'; $filters | Select-Object Name,Query | Format-List; Write-Output '--- Event Consumers ---'; $consumers | Select-Object Name,@{N='Type';E={$_.CimClass.CimClassName}} | Format-Table -AutoSize; Write-Output '--- Filter-to-Consumer Bindings ---'; $bindings | Select-Object Filter,Consumer | Format-Table -AutoSize -Wrap } } catch { Write-Output ('Could not query WMI subscriptions: ' + $_.Exception.Message) }"
-    description_sk: "Vypíše WMI event subscriptions (__EventFilter/__EventConsumer/__FilterToConsumerBinding) - známy spôsob fileless perzistencie malwaru, ktorý autostart cez registre/úlohy neodhalí. Poznámka: 'SCM Event Log Filter/Consumer' je legitímny vstavaný záznam Windows, nie hrozba. Nič nemení."
+    description_sk: "Vypíše WMI event subscriptions (__EventFilter/__EventConsumer/__FilterToConsumerBinding) - známy spôsob bezsúborovej perzistencie malwaru, ktorý kontroly autostartu v registri/úlohách neodhalia. Poznámka: 'SCM Event Log Filter/Consumer' je legitímny vstavaný záznam Windows, nie hrozba. Nič nemení."
     description_en: "Lists WMI event subscriptions (__EventFilter/__EventConsumer/__FilterToConsumerBinding) - a known fileless malware persistence technique that registry/task-based autostart checks won't reveal. Note: an 'SCM Event Log Filter/Consumer' entry is a legitimate built-in Windows entry, not a threat. Changes nothing."
   - id: autoruns_ifeo_debuggers
     label_sk: "Únos spúšťania cez IFEO Debugger (backdoor)"
     label_en: "IFEO debugger hijacks (backdoor check)"
     risk: SAFE
     command: "$roots = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options'; $access = 'sethc.exe','utilman.exe','osk.exe','magnify.exe','narrator.exe','displayswitch.exe','atbroker.exe'; $hits = @(foreach ($r in $roots) { Get-ChildItem -Path $r -EA SilentlyContinue | ForEach-Object { $p = Get-ItemProperty -Path $_.PSPath -EA SilentlyContinue; if ($p.Debugger) { [PSCustomObject]@{ Executable = $_.PSChildName; Debugger = $p.Debugger; Verdict = $(if ($access -contains $_.PSChildName.ToLower()) { 'SUSPICIOUS - accessibility tool hijack (login-screen backdoor)' } else { 'review' }) } } } }); $spe = @(Get-ChildItem -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit' -EA SilentlyContinue | ForEach-Object { $m = (Get-ItemProperty -Path $_.PSPath -EA SilentlyContinue).MonitorProcess; if ($m) { [PSCustomObject]@{ Executable = $_.PSChildName; MonitorProcess = $m } } }); Write-Output '--- IFEO Debugger values ---'; if ($hits) { $hits | Format-Table -AutoSize -Wrap | Out-String -Width 250 } else { Write-Output 'No IFEO Debugger entries found (clean).' }; Write-Output '--- SilentProcessExit MonitorProcess values ---'; if ($spe) { $spe | Format-Table -AutoSize -Wrap | Out-String -Width 250 } else { Write-Output 'No SilentProcessExit monitors found (clean).' }"
-    description_sk: "Vypíše hodnoty Debugger v kľúči Image File Execution Options (aj WOW6432Node) a monitory SilentProcessExit - miesta, kde malvér presmeruje spustenie programu na iný. Záznam na sethc.exe/utilman.exe/osk.exe a iných nástrojoch zjednodušeného ovládania označí ako SUSPICIOUS (klasický backdoor z prihlasovacej obrazovky, ktorý kontroly Run kľúčov, úloh ani služieb nevidia). Legitímne býva napr. nahradenie taskmgr.exe programom Process Explorer. Nič nemení."
+    description_sk: "Vypíše hodnoty Debugger v kľúči Image File Execution Options (aj WOW6432Node) a monitory SilentProcessExit - miesta, cez ktoré malware presmerováva spustenie programu na iný. Záznam pre sethc.exe/utilman.exe/osk.exe alebo iný nástroj zjednodušenia prístupu označí ako SUSPICIOUS (klasický backdoor z prihlasovacej obrazovky, ktorý kontroly kľúčov Run, úloh ani služieb neodhalia). Legitímne býva napr. nahradenie taskmgr.exe programom Process Explorer. Nič nemení."
     description_en: "Lists Debugger values under Image File Execution Options (including WOW6432Node) and SilentProcessExit monitors - places malware uses to redirect a program launch to something else. An entry on sethc.exe/utilman.exe/osk.exe or another accessibility tool is flagged SUSPICIOUS (the classic login-screen backdoor that the Run key, task and service checks cannot see). A legitimate example is Process Explorer replacing taskmgr.exe. Changes nothing."
   - id: autoruns_unquoted_service_paths
     label_sk: "Služby s cestou bez úvodzoviek (zraniteľnosť)"
     label_en: "Unquoted service paths (vulnerability)"
     risk: SAFE
     command: "$vuln = @(Get-CimInstance Win32_Service -EA SilentlyContinue | Where-Object { $_.PathName -and $_.PathName -notmatch '^\\s*\"' -and ($_.PathName -replace '(?i)(\\.exe).*$','$1') -match '\\s' }); if ($vuln) { $vuln | Select-Object Name,StartMode,StartName,PathName | Format-Table -AutoSize -Wrap | Out-String -Width 250; Write-Output ('Found ' + $vuln.Count + ' service(s) with an unquoted executable path containing spaces. Update the vendor software, or wrap the executable path in quotes in ImagePath under HKLM:\\SYSTEM\\CurrentControlSet\\Services\\<Name>.') } else { Write-Output 'No unquoted service paths with spaces found (clean).' }"
-    description_sk: "Nájde služby, ktorých cesta k spustiteľnému súboru obsahuje medzeru a nie je v úvodzovkách (napr. C:\\Program Files\\Firma\\svc.exe) - známa cesta k eskalácii práv, keď útočník podstrčí C:\\Program.exe. Argumenty za .exe ignoruje, takže nehlási falošné poplachy typu svchost.exe -k. Nič nemení - opravte aktualizáciou softvéru alebo doplnením úvodzoviek do ImagePath služby."
+    description_sk: "Nájde služby, ktorých cesta k spustiteľnému súboru obsahuje medzeru a nie je v úvodzovkách (napr. C:\\Program Files\\Firma\\svc.exe) - známy spôsob eskalácie práv, ak útočník dokáže podstrčiť C:\\Program.exe. Argumenty za .exe ignoruje, takže nehlási falošné poplachy typu svchost.exe -k. Nič nemení - opravte aktualizáciou softvéru alebo doplnením úvodzoviek do hodnoty ImagePath služby."
     description_en: "Finds services whose executable path contains a space and is not quoted (e.g. C:\\Program Files\\Vendor\\svc.exe) - a well-known privilege-escalation path when an attacker can drop C:\\Program.exe. Ignores arguments after the .exe, so it does not flag svchost.exe -k style entries. Changes nothing - fix by updating the software or quoting the service's ImagePath."
