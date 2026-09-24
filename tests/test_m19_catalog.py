@@ -163,3 +163,47 @@ def test_m19_catalog_scripts_parse_without_powershell_7_only_syntax(tmp_path):
     )
     assert "PARSE_DONE" in result.stdout, result.stdout + result.stderr
     assert [line for line in result.stdout.splitlines() if line.startswith("ERR")] == []
+
+
+def test_m19_catalog_powershell_v2_absent_feature_counts_as_nothing_to_do():
+    # Windows 11 24H2+ no longer has the PowerShell 2.0 feature at all:
+    # Get-WindowsOptionalFeature then throws "unknown feature" (0x800f080c),
+    # which must read as "not present - nothing changed", not as a failure
+    # blamed on missing administrator rights.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "feature_disable_powershell_v2")
+    command = action.command
+    assert "-2146498548" in command and "800f080c" in command
+    lookup = command.index("Get-WindowsOptionalFeature")
+    assert command.index("$f = $null", lookup) < command.index("$prior", lookup)
+
+
+@pytest.mark.parametrize("lookup_error, expected_exit, expected_text", [
+    # Unknown feature (24H2+): nothing to disable, nothing changed.
+    ("[System.Runtime.InteropServices.COMException]::new('Feature name is unknown.', -2146498548)", 0,
+     "state: NotPresent"),
+    # Any other failure (e.g. not elevated) still fails the action.
+    ("[System.Runtime.InteropServices.COMException]::new('The requested operation requires elevation.', -2147024156)", 1,
+     "needs administrator"),
+])
+def test_m19_catalog_powershell_v2_lookup_errors_run(tmp_path, lookup_error, expected_exit, expected_text):
+    exe = _powershell_or_skip()
+    module = load_module(CATALOG_PATH)
+    command = next(a for a in module.actions if a.id == "feature_disable_powershell_v2").command
+    log = tmp_path / "calls.log"
+    prelude = (
+        f"$env:ProgramData = '{tmp_path}'; "
+        f"function Get-WindowsOptionalFeature {{ throw ({lookup_error}) }}; "
+        f"function Disable-WindowsOptionalFeature {{ Add-Content -Path '{log}' -Value 'DISABLE' }}; "
+        "function icacls { $global:LASTEXITCODE = 0 }; "
+        "foreach ($n in 'Get-WindowsOptionalFeature', 'Disable-WindowsOptionalFeature', 'icacls') { "
+        "if ((Get-Command $n).CommandType -ne 'Function') { exit 97 } }; "
+    )
+    result = subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-Command", prelude + command],
+        capture_output=True, text=True, timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == expected_exit, result.stdout + result.stderr
+    assert expected_text in result.stdout
+    assert not log.exists()  # never tried to disable anything

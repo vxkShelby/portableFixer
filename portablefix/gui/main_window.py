@@ -1748,10 +1748,17 @@ class MainWindow(QMainWindow):
             else:
                 auto_check_timer.stop()
 
+        # True while the update confirmation is open: its nested event loop
+        # still fires auto_check_timer, and a scan then would rebuild the rows
+        # under the pending answer.
+        confirm_state = {"open": False}
+
         def auto_check_tick() -> None:
             # A scan mid-batch would clear row_checkboxes/row_progress/
             # row_widgets out from under the update in progress (populate()
             # rebuilds them from scratch), visibly resetting the panel.
+            if confirm_state["open"]:
+                return
             runner = self._winget_update_runner
             if runner is None or not runner.isRunning():
                 start_scan()
@@ -1802,9 +1809,14 @@ class MainWindow(QMainWindow):
                     [f"{p.name}  {p.installed_version} → {p.available_version}" for p in selected_packages]
                 ),
             )
-            answer = QMessageBox.question(
-                self, self._t("category_winget"), warning_text, QMessageBox.Yes | QMessageBox.No,
-            )
+            confirm_state["open"] = True
+            try:
+                # Default No, like the uninstaller's: the installers run silently.
+                answer = QMessageBox.question(
+                    self, self._t("category_winget"), warning_text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+            finally:
+                confirm_state["open"] = False
             if answer != QMessageBox.Yes:
                 # Logged like a declined catalog action (_dispatch_action).
                 for package in selected_packages:
@@ -2455,11 +2467,14 @@ class MainWindow(QMainWindow):
                 # An uninstall has no rollback - undo.ps1 lists it under
                 # "NOT reversible" (a failed one too: it may have removed
                 # part of the program before failing).
-                irreversible = f"[{risk}] {self._t('category_uninstaller')}: {name}"
-                if not ok:
-                    irreversible += " - exit 1"
-                self._irreversible_actions.append(irreversible)
-                self._write_undo_script()
+                # Not for a program with no uninstall command at all: nothing
+                # ran, so there is nothing to call irreversible.
+                if command:
+                    irreversible = f"[{risk}] {self._t('category_uninstaller')}: {name}"
+                    if not ok:
+                        irreversible += " - exit 1"
+                    self._irreversible_actions.append(irreversible)
+                    self._write_undo_script()
                 status = self._t("status_ok") if ok else self._t("status_failed")
                 console.appendPlainText(f"[{status}] {name}")
                 if output:

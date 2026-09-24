@@ -189,4 +189,4 @@ def test_m10_catalog_driver_backup_counts_exported_folders_not_localized_labels(
     action = next(a for a in module.actions if a.id == "drv_export_backup")
     assert "Total driver packages" not in action.command
     assert "Select-String" not in action.command
-    assert "@(Get-ChildItem $dest -Directory).Count" in action.command
+    assert "@(Get-ChildItem -LiteralPath $dest -Directory).Count" in action.command

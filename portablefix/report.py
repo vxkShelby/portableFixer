@@ -702,7 +702,7 @@ def _restore_point_text(point: dict, language: str) -> str:
 # The English sentence main_window logs in front of the restore-point failure
 # reason ("... failed: <reason>") - the line it is shown on already says
 # "FAILED" / "NEPODARIL SA" in the report's own language.
-_RP_FAILED_PREFIX = re.compile(r"\s*System Restore Point creation failed[:.\s]*")
+_RP_FAILED_PREFIX = re.compile(r"\s*System Restore Point creation failed(?::\s*|\.\s*$|\s+|$)")
 
 
 def _restore_point_failure_reason(output: str) -> str:

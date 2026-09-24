@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from portablefix.audit_log import append_entry, audit_log_path, make_entry
 from portablefix.models import ActionDef, ModuleDef, RiskLevel
 from portablefix.report import build_report_data, generate_report
@@ -957,3 +959,15 @@ def test_failed_restore_point_without_a_reason_adds_no_detail_line(tmp_path):
     assert 'Restore point: <span class="rp-fail">FAILED</span>' in content
     assert "System Restore Point creation failed" not in content
     assert '<div class="warn-text">' not in content
+
+
+@pytest.mark.parametrize("output, reason", [
+    ("System Restore Point creation failed: disabled", "disabled"),
+    ("System Restore Point creation failed.", ""),
+    ("System Restore Point creation failed: .NET error", ".NET error"),
+    ("Something else entirely", "Something else entirely"),
+])
+def test_restore_point_failure_reason_strips_only_the_english_prefix(output, reason):
+    from portablefix.report import _restore_point_failure_reason
+
+    assert _restore_point_failure_reason(output) == reason

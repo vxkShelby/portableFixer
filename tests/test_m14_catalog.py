@@ -108,3 +108,13 @@ def test_m14_remove_orphaned_drivers_never_treats_every_driver_as_orphaned():
     assert command.index("exit 1") < command.index("Remove-PrinterDriver")
     assert "$failed++" in command
     assert "exit 1" in command[command.rindex("if ($failed -gt 0)"):]
+
+
+def test_print_remove_orphaned_drivers_removes_each_driver_per_environment():
+    # Get-PrinterDriver returns one row per environment (x64, x86), so a
+    # driver installed for both came up twice by name; removing by name alone
+    # made the second removal fail and, since failures exit 1, a clean run
+    # was reported as failed.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "print_remove_orphaned_drivers")
+    assert "Remove-PrinterDriver -Name $name -PrinterEnvironment $envName" in action.command
