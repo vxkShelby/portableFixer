@@ -5840,6 +5840,34 @@ def test_uninstall_creates_a_restore_point_before_running(qtbot, tmp_path, monke
     assert kinds.index(("_system", "restore_point")) < kinds.index(("_uninstaller", "Real App"))
     [event] = _system_events(log_path, "restore_point")
     assert event["exit_code"] == 0 and event["subject"] == "_uninstaller/Real App"
+    assert event["subjects"] == []
+
+
+def test_uninstall_of_several_programs_logs_every_program_its_restore_point_guarded(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    programs = [_fake_installed_program("Real App"), _fake_installed_program("Other App")]
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_uninst_multi", programs, dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_checkbox(card, "Other App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    log_path = audit_log_path(tmp_path, "run_g01_uninst_multi")
+    qtbot.waitUntil(
+        lambda: len([e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]) == 2, timeout=10000,
+    )
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    # One restore point for both - and the log names both, not just the first.
+    assert len(rp_calls) == 1
+    [event] = _system_events(log_path, "restore_point")
+    assert event["subject"] in ("_uninstaller/Real App", "_uninstaller/Other App")
+    assert sorted(event["subjects"]) == ["_uninstaller/Other App", "_uninstaller/Real App"]
+    assert event["subject"] == event["subjects"][0]
 
 
 def test_uninstall_with_failed_restore_point_declined_uninstalls_nothing(qtbot, tmp_path, monkeypatch):

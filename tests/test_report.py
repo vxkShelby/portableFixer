@@ -626,7 +626,7 @@ def test_report_shows_failed_restore_point_and_proceed_decision(tmp_path):
     assert data["restore_points"] == [{
         "timestamp": data["restore_points"][0]["timestamp"], "created": False,
         "detail": "System Restore Point creation failed: disabled", "decision": "proceed",
-        "sequence": None, "subject": "", "subject_label": "", "panel": False,
+        "sequence": None, "subject": "", "subject_label": "", "subjects": [], "panel": False,
     }]
     content = html_path.read_text(encoding="utf-8")
     assert "NEPODARIL SA" in content
@@ -1188,3 +1188,49 @@ def test_render_html_old_report_restore_point_without_panel_keys(tmp_path):
     content = _render_html(data)
     assert "Restore point: <span class=\"rp-fail\">FAILED</span>" in content
     assert "high-risk actions were skipped" in content
+
+
+def test_panel_restore_point_names_every_program_it_guarded(tmp_path):
+    # One restore point before uninstalling three programs at once - the
+    # report must not read as if only the first one had a way back.
+    _system_event(tmp_path, "run_multi", "restore_point", 0, "System Restore Point created.",
+                  subject="_uninstaller/A", subjects=["_uninstaller/A", "_uninstaller/B <x>", "_uninstaller/C"],
+                  restore_point_sequence=9)
+    html_path, json_path = generate_report(tmp_path, "run_multi", [], "en", {}, {})
+    [point] = json.loads(json_path.read_text(encoding="utf-8"))["restore_points"]
+    assert point["subject"] == "_uninstaller/A"
+    assert point["subjects"] == ["_uninstaller/A", "_uninstaller/B <x>", "_uninstaller/C"]
+    assert point["subject_label"] == "Uninstall: A, B <x>, C"
+    content = html_path.read_text(encoding="utf-8")
+    assert content.count("Restore point (Uninstall: A, B &lt;x&gt;, C): created (#9) (") == 2
+
+
+@pytest.mark.parametrize("subject, subjects, language, label", [
+    ("_winget/Mozilla.Firefox", ["_winget/Mozilla.Firefox", "_winget/7zip.7zip"], "sk",
+     "Aktualizácia cez winget: Mozilla.Firefox, 7zip.7zip"),
+    ("_uninstaller/orphan_cleanup:Old", ["_uninstaller/orphan_cleanup:Old", "_uninstaller/orphan_cleanup:Gone"], "en",
+     "Registry leftover cleanup: Old, Gone"),
+    # An uninstall list never swallows a leftover-cleanup subject.
+    ("_uninstaller/A", ["_uninstaller/A", "_uninstaller/orphan_cleanup:X"], "en", "Uninstall: A"),
+    # One subject, a catalog subject, or no list at all.
+    ("_uninstaller/A", ["_uninstaller/A"], "en", "Uninstall: A"),
+    ("m02_cleanup/user_temp", ["m02_cleanup/user_temp", "m02_cleanup/other"], "en", "Temp files"),
+    ("_uninstaller/A", None, "en", "Uninstall: A"),
+])
+def test_restore_point_subjects_label(tmp_path, subject, subjects, language, label):
+    fields = {"subjects": subjects} if subjects is not None else {}
+    _system_event(tmp_path, "run_subj", "restore_point", 0, "ok", subject=subject, **fields)
+    [point] = build_report_data(tmp_path, "run_subj", _fixture_modules(), language, {}, {})["restore_points"]
+    assert point["subject_label"] == label
+
+
+def test_restore_point_subjects_tolerates_a_corrupted_value(tmp_path):
+    from dataclasses import asdict
+
+    path = audit_log_path(tmp_path, "run_badsubj")
+    entry = asdict(make_entry("_system", "restore_point", "", 0, "ok", False, "run_badsubj", subject="_uninstaller/A"))
+    entry["subjects"] = "not a list"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    [point] = build_report_data(tmp_path, "run_badsubj", [], "en", {}, {})["restore_points"]
+    assert point["subject_label"] == "Uninstall: A" and point["subjects"] == []

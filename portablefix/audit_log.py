@@ -1,6 +1,6 @@
 import json
 import socket
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +36,10 @@ class AuditEntry:
     # rstrui's list this run made. None/"" when it could not be looked up.
     restore_point_sequence: int | None = None
     restore_point_created: str = ""
+    # Every subject one panel restore point guarded when the technician
+    # picked several programs/packages at once; `subject` is the first of
+    # them. [] = the point guarded just `subject`.
+    subjects: list[str] = field(default_factory=list)
 
 
 def make_entry(
@@ -54,6 +58,7 @@ def make_entry(
     decision: str = "",
     restore_point_sequence: int | None = None,
     restore_point_created: str = "",
+    subjects: list[str] | None = None,
 ) -> AuditEntry:
     return AuditEntry(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -73,6 +78,7 @@ def make_entry(
         decision=decision,
         restore_point_sequence=restore_point_sequence,
         restore_point_created=restore_point_created,
+        subjects=list(subjects or []),
     )
 
 

@@ -2033,7 +2033,9 @@ class MainWindow(QMainWindow):
             # previous version, a restore point does.
             set_controls_enabled(False)
             confirm_state["open"] = True
-            if not self._start_panel_restore_point(f"_winget/{selected_packages[0].id}", console, after_restore_point):
+            if not self._start_panel_restore_point(
+                [f"_winget/{package.id}" for package in selected_packages], console, after_restore_point,
+            ):
                 confirm_state["open"] = False
                 set_controls_enabled(True)
 
@@ -2603,7 +2605,7 @@ class MainWindow(QMainWindow):
                 # covers what a wrongly flagged entry's program still needed.
                 clean_button.setEnabled(False)
                 if not self._start_panel_restore_point(
-                    f"_uninstaller/orphan_cleanup:{chosen[0].name}", console, after_restore_point,
+                    [f"_uninstaller/orphan_cleanup:{orphan.name}" for orphan in chosen], console, after_restore_point,
                 ):
                     clean_button.setEnabled(True)
 
@@ -2747,7 +2749,9 @@ class MainWindow(QMainWindow):
 
             # An uninstall has no undo - the restore point is the way back.
             set_controls_enabled(False)
-            if not self._start_panel_restore_point(f"_uninstaller/{selected[0].name}", console, after_restore_point):
+            if not self._start_panel_restore_point(
+                [f"_uninstaller/{program.name}" for program in selected], console, after_restore_point,
+            ):
                 set_controls_enabled(True)
 
         def run_uninstall(selected: list, warning_text: str) -> None:
@@ -2823,13 +2827,16 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
 
-    def _start_panel_restore_point(self, subject: str, console: QPlainTextEdit, on_done) -> bool:
+    def _start_panel_restore_point(self, subjects: list[str], console: QPlainTextEdit, on_done) -> bool:
         """The panels' real runs get the batch's safety net (research G01):
         one restore point before the change, through the same runner, logged
         the same way, with the same "continue without it?" question when it
         fails. on_done(proceed) is called once it is settled - never after
         the window started closing. False when it could not be started (a
-        restore point is already being made); the caller then does nothing."""
+        restore point is already being made); the caller then does nothing.
+        subjects: every program/package this one point guards - all of them
+        are logged, so the report does not read as if only the first had
+        a way back."""
         if self.settings.dry_run:
             # Callers never get here in DRY-RUN; a DRY-RUN must never create
             # a restore point even if one did.
@@ -2854,14 +2861,17 @@ class MainWindow(QMainWindow):
         console.appendPlainText(self._t("panel_restore_point_running"))
         runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
         runner.result_ready.connect(
-            lambda success, detail, info, s=subject, cb=on_done: self._on_panel_restore_point_checked(success, detail, info, s, cb)
+            lambda success, detail, info, s=list(subjects), cb=on_done: self._on_panel_restore_point_checked(success, detail, info, s, cb)
         )
         self._pending_panel_restore_point_runner = runner
         runner.start()
         return True
 
-    def _on_panel_restore_point_checked(self, success: bool, detail: str, info: dict | None, subject: str, on_done) -> None:
-        self._log_restore_point_result(success, detail, info, subject)
+    def _on_panel_restore_point_checked(self, success: bool, detail: str, info: dict | None, subjects: list[str], on_done) -> None:
+        # The first subject keys the record (the "continue anyway?" answer
+        # pairs with it); the rest ride along for the report.
+        subject = subjects[0] if subjects else ""
+        self._log_restore_point_result(success, detail, info, subject, subjects if len(subjects) > 1 else None)
         if self._closed or self._close_after_restore_point:
             # The window is closing and only waited for this checkpoint -
             # the uninstall/update it guarded must never start now.
@@ -3694,7 +3704,9 @@ class MainWindow(QMainWindow):
                 return
         self._proceed_to_action(module, action)
 
-    def _log_restore_point_result(self, success: bool, detail: str, info: dict | None, subject: str) -> None:
+    def _log_restore_point_result(
+        self, success: bool, detail: str, info: dict | None, subject: str, subjects: list[str] | None = None,
+    ) -> None:
         # One record for every restore point, the batch's and a panel's (G01).
         # info: the created point's identity (restore_point.parse_restore_point_output),
         # {} / None when it could not be looked up.
@@ -3709,6 +3721,7 @@ class MainWindow(QMainWindow):
             command=f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
             subject=subject, restore_point_sequence=sequence,
             restore_point_created=(info or {}).get("creation_time", "") if success else "",
+            subjects=subjects,
         )
 
     def _log_system_event(self, action_id: str, exit_code: int | None, output: str, **fields) -> None:

@@ -88,3 +88,12 @@ def test_append_entry_accumulates_multiple_lines(tmp_path):
     append_entry(tmp_path, "run123", entry2)
     lines = audit_log_path(tmp_path, "run123").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
+
+
+def test_make_entry_records_every_guarded_subject():
+    entry = make_entry("_system", "restore_point", "", 0, "ok", False, "run_x",
+                       subject="_uninstaller/A", subjects=["_uninstaller/A", "_uninstaller/B"])
+    assert entry.subjects == ["_uninstaller/A", "_uninstaller/B"]
+    # Default: no list (the point guarded just `subject`), never a shared one.
+    first, second = (make_entry("_system", "x", "", 0, "", False, "r") for _ in range(2))
+    assert first.subjects == [] and first.subjects is not second.subjects

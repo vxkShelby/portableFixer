@@ -191,10 +191,31 @@ def _subject_label(subject: str, modules: list[ModuleDef], language: str) -> str
     return ""
 
 
+def _guarded_subjects_label(subject: str, subjects: list[str], language: str) -> str:
+    # One panel restore point guarded several programs/packages picked at
+    # once: name them all ("Uninstall: A, B, C") - naming only the first
+    # read as if the others had no way back. "" when the list does not fit
+    # (not a panel subject, or fewer than two); the caller names `subject`.
+    # The leftover prefix is itself an uninstaller one, so it goes first.
+    prefix = next((p for p in (_LEFTOVER_SUBJECT, _UNINSTALL_SUBJECT, _WINGET_SUBJECT) if subject.startswith(p)), "")
+    if not prefix:
+        return ""
+    names = [
+        item[len(prefix):] for item in subjects
+        if item.startswith(prefix) and (prefix != _UNINSTALL_SUBJECT or not item.startswith(_LEFTOVER_SUBJECT))
+    ]
+    if len(names) < 2:
+        return ""
+    return _subject_label(prefix + ", ".join(names), [], language)
+
+
 def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
     # str(): a corrupted log can hold any JSON value here.
     subject = str(entry.get("subject") or "")
-    subject_label = _subject_label(subject, modules, language)
+    raw_subjects = entry.get("subjects")
+    # Missing in logs written before the field existed.
+    subjects = [str(item) for item in raw_subjects] if isinstance(raw_subjects, list) else []
+    subject_label = _guarded_subjects_label(subject, subjects, language) or _subject_label(subject, modules, language)
     return {
         "timestamp": entry["timestamp"],
         "kind": entry["action_id"],
@@ -203,6 +224,8 @@ def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
         "output": entry.get("output", ""),
         "subject": subject,
         "subject_label": subject_label,
+        # Everything one panel restore point guarded; [] = just `subject`.
+        "subjects": subjects,
         "risk": entry.get("risk") or "",
         "warning_text": entry.get("warning_text", ""),
         "decision": entry.get("decision", ""),
@@ -231,6 +254,7 @@ def _summarize_restore_points(events: list[dict]) -> list[dict]:
                 "sequence": event.get("restore_point_sequence"),
                 "subject": subject,
                 "subject_label": event.get("subject_label") or "",
+                "subjects": event.get("subjects") or [],
                 "panel": _is_panel_subject(subject),
             })
         elif event["kind"] == "restore_point_decision":

@@ -72,8 +72,8 @@ PowerShell.
   gives a clean white printout for the client. The report is a single
   self-contained file that needs no internet. Its **Safety log** lists
   restore points (one made by the uninstall, registry-leftover or winget
-  panel names the program it guarded - it never passes for the batch's
-  restore point), the registry backup, refused protected programs and
+  panel names every program it guarded, all of them when several were
+  selected - it never passes for the batch's restore point), the registry backup, refused protected programs and
   "continued while the program was running" answers.
 - **Client package:** the **Save client package** button (in the batch
   summary and on every run in the history) saves a single
