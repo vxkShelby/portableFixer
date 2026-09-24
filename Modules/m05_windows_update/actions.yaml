@@ -22,21 +22,21 @@ actions:
     risk: MODERATE
     command: "if (Test-Path \"$env:WINDIR\\SoftwareDistribution\") { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution\" -NewName \"SoftwareDistribution.bak\" -Force -ErrorAction SilentlyContinue }; if (Test-Path \"$env:WINDIR\\System32\\catroot2\") { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2\" -NewName \"catroot2.bak\" -Force -ErrorAction SilentlyContinue }; $sdOk = -not (Test-Path \"$env:WINDIR\\SoftwareDistribution\"); $crOk = -not (Test-Path \"$env:WINDIR\\System32\\catroot2\"); if ($sdOk -and $crOk) { Write-Output 'SoftwareDistribution and catroot2 reset.' } else { Write-Output ('WARNING: ' + $(if (-not $sdOk) { 'SoftwareDistribution still in use, not reset. ' } else { '' }) + $(if (-not $crOk) { 'catroot2 still in use, not reset.' } else { '' })) }"
     undo_command: "if ((Test-Path \"$env:WINDIR\\SoftwareDistribution.bak\") -and -not (Test-Path \"$env:WINDIR\\SoftwareDistribution\")) { Rename-Item -Path \"$env:WINDIR\\SoftwareDistribution.bak\" -NewName \"SoftwareDistribution\" -Force }; if ((Test-Path \"$env:WINDIR\\System32\\catroot2.bak\") -and -not (Test-Path \"$env:WINDIR\\System32\\catroot2\")) { Rename-Item -Path \"$env:WINDIR\\System32\\catroot2.bak\" -NewName \"catroot2\" -Force }"
-    description_sk: "Premenuje priečinky SoftwareDistribution a catroot2 na .bak, Windows si vytvorí nové pri ďalšom štarte služieb. Undo funguje spoľahlivo len ak sa medzitým nespustil krok Reštart služieb Windows Update."
+    description_sk: "Premenuje priečinky SoftwareDistribution a catroot2 na .bak; Windows si pri ďalšom spustení služieb vytvorí nové. Undo funguje spoľahlivo, len ak sa medzitým nespustil krok 'Reštart služieb Windows Update'."
     description_en: "Renames the SoftwareDistribution and catroot2 folders to .bak; Windows recreates them fresh when services restart. Undo only works reliably if the Restart Windows Update services step hasn't run yet."
   - id: wu_restart_services
     label_sk: "Reštart služieb Windows Update"
     label_en: "Restart Windows Update services"
     risk: SAFE
     command: "Start-Service -Name wuauserv,bits,cryptsvc,msiserver -ErrorAction SilentlyContinue"
-    description_sk: "Naštartuje služby Windows Update naspäť po resete cache."
+    description_sk: "Po resete cache znovu spustí služby Windows Update."
     description_en: "Starts Windows Update services back up after the cache reset."
   - id: wu_reregister_dlls
-    label_sk: "Znovu-registrácia DLL knižníc Windows Update"
+    label_sk: "Opätovná registrácia DLL knižníc Windows Update"
     label_en: "Re-register Windows Update DLL libraries"
     risk: MODERATE
     command: "$dlls = @('atl.dll','urlmon.dll','mshtml.dll','shdocvw.dll','browseui.dll','jscript.dll','vbscript.dll','scrrun.dll','msxml.dll','msxml3.dll','msxml6.dll','actxprxy.dll','softpub.dll','wintrust.dll','dssenh.dll','rsaenh.dll','gpkcsp.dll','sccbase.dll','slbcsp.dll','cryptdlg.dll','oleaut32.dll','ole32.dll','shell32.dll','initpki.dll','wuapi.dll','wuaueng.dll','wucltui.dll','wups.dll','wups2.dll','wuwebv.dll'); foreach ($dll in $dlls) { regsvr32.exe /s \"$env:WINDIR\\System32\\$dll\" }"
-    description_sk: "Znovu zaregistruje systémové DLL súvisiace s Windows Update. Často nie je potrebné na modernom Windows, pomáha pri starších/poškodených inštaláciách."
+    description_sk: "Znovu zaregistruje systémové DLL knižnice súvisiace s Windows Update. V novších verziách Windows často nie je potrebné, pomáha pri starších/poškodených inštaláciách."
     description_en: "Re-registers system DLLs related to Windows Update. Often unnecessary on modern Windows, helps with older/corrupted installations."
   - id: wu_trigger_detection
     label_sk: "Spustenie detekcie aktualizácií"
@@ -51,7 +51,7 @@ actions:
     risk: SAFE
     command: "try { $session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $result = $searcher.Search(\"IsInstalled=0 and Type='Driver'\"); if ($result.Updates.Count -eq 0) { Write-Output 'No pending driver updates found via Windows Update.' } else { foreach ($u in $result.Updates) { Write-Output $u.Title } } } catch { Write-Output ('Could not check for driver updates: ' + $_.Exception.Message); exit 1 }"
     inactivity_timeout_sec: 600
-    description_sk: "Cez Windows Update Agent (COM API) skontroluje, či sú k dispozícii aktualizácie typu Driver. Vyhľadávanie voči Microsoft Update môže trvať niekoľko minút. Nič nemení."
+    description_sk: "Cez Windows Update Agent (COM API) skontroluje, či sú k dispozícii aktualizácie typu Driver. Vyhľadávanie v Microsoft Update môže trvať niekoľko minút. Nič nemení."
     description_en: "Uses the Windows Update Agent (COM API) to check for pending Driver-type updates. Searching against Microsoft Update can take several minutes. Changes nothing."
   - id: wu_uninstall_last_update
     label_sk: "Odinštalovanie poslednej aktualizácie"
@@ -59,5 +59,5 @@ actions:
     risk: REQUIRES_REBOOT
     command: "try { $session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $count = $searcher.GetTotalHistoryCount(); if ($count -eq 0) { Write-Output 'No Windows Update history found.'; exit 1 }; $latest = $searcher.QueryHistory(0, $count) | Where-Object { $_.Operation -eq 1 -and $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 1; if (-not $latest) { Write-Output 'No successful update installs found in history.'; exit 1 }; if ($latest.Title -notmatch 'KB(\\d+)') { Write-Output ('Most recent update (' + $latest.Title + ') has no KB number - cannot uninstall via wusa.'); exit 1 }; $kb = $matches[1]; $out = & wusa.exe /uninstall /kb:$kb /quiet /norestart 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0 -or $exitCode -eq 3010) { Write-Output ('Uninstall of KB' + $kb + ' started (exit code ' + $exitCode + '). Restart required to finish.') } else { Write-Output ('Failed to uninstall KB' + $kb + ' - exit code ' + $exitCode); exit 1 } } catch { Write-Output ('Could not determine most recent update: ' + $_.Exception.Message); exit 1 }"
     inactivity_timeout_sec: 300
-    description_sk: "Nájde najnovšie nainštalovaný hotfix (KB) a odinštaluje ho cez wusa.exe /uninstall - štandardný krok, ak nedávna aktualizácia niečo pokazila. Vyžaduje reštart na dokončenie. Bez undo (nemožno automaticky znovu nainštalovať konkrétne KB)."
+    description_sk: "Nájde naposledy nainštalovaný hotfix (KB) a odinštaluje ho cez wusa.exe /uninstall - štandardný krok, ak nedávna aktualizácia niečo pokazila. Na dokončenie vyžaduje reštart. Bez undo (konkrétnu aktualizáciu KB nemožno automaticky znovu nainštalovať)."
     description_en: "Finds the most recently installed hotfix (KB) and uninstalls it via wusa.exe /uninstall - a standard troubleshooting step when a recent update broke something. Requires a restart to finish. No undo (can't automatically reinstall a specific KB)."
