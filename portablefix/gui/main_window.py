@@ -1,4 +1,3 @@
-import os
 import shutil
 import socket
 import sys
@@ -40,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import diagnostics, elevation, handoff, history, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
+from .. import diagnostics, elevation, handoff, history, i18n, paths, report, restore_point, snapshot, sysinfo, undo, uninstaller, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -1290,6 +1289,41 @@ class MainWindow(QMainWindow):
                 checked = action.risk.value == mode
             self._action_checkboxes[action_id].setChecked(checked)
 
+    def _build_snapshot_metrics_widget(self) -> QWidget | None:
+        rows = snapshot.compare_snapshots(self._snapshot_before, self._snapshot_after)
+        if not rows:
+            return None
+        box = QWidget()
+        box.setObjectName("summaryMetrics")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(0, 4, 0, 4)
+        box_layout.setSpacing(4)
+        heading = QLabel(self._t("snapshot_heading"))
+        heading.setObjectName("summaryHeader")
+        box_layout.addWidget(heading)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(3)
+        for index, row in enumerate(rows):
+            name = QLabel(self._t(row["label_key"]))
+            name.setObjectName("summaryMetricName")
+            values = QLabel(f"{row['before']} \u2192 {row['after']}")
+            values.setObjectName("selectionScope")
+            delta = QLabel(f"({row['delta']})" if row["delta"] else "")
+            delta.setObjectName("summaryMetricDelta")
+            delta.setProperty("trend", row["trend"] or "same")
+            grid.addWidget(name, index, 0)
+            grid.addWidget(values, index, 1)
+            grid.addWidget(delta, index, 2)
+        grid.setColumnStretch(3, 1)
+        box_layout.addLayout(grid)
+        if any(row["lower_bound"] for row in rows):
+            note = QLabel(self._t("snapshot_lower_bound_note"))
+            note.setObjectName("selectionScope")
+            box_layout.addWidget(note)
+        return box
+
     def _show_batch_summary(self, html_path: Path) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(self._t("batch_results_title"))
@@ -1307,18 +1341,12 @@ class MainWindow(QMainWindow):
         header.setObjectName("summaryHeader")
         layout.addWidget(header)
 
-        # Reuses the exact free-space delta computation report.py already
-        # does for the HTML report - the in-app dialog never showed it,
-        # only ok/fail counts, even though the numbers were already on self.
+        # Before -> after metrics, same rows (snapshot.compare_snapshots) as
+        # the report's "Before / after" table; only metrics known both times.
         if not self.settings.dry_run:
-            free_before = self._snapshot_before.get("free_gb")
-            free_after = self._snapshot_after.get("free_gb")
-            if isinstance(free_before, (int, float)) and isinstance(free_after, (int, float)):
-                diff = round(free_after - free_before, 2)
-                sign = "+" if diff >= 0 else ""
-                space_label = QLabel(self._t("summary_space_freed").format(delta=f"{sign}{diff} GB"))
-                space_label.setObjectName("selectionScope")
-                layout.addWidget(space_label)
+            metrics = self._build_snapshot_metrics_widget()
+            if metrics is not None:
+                layout.addWidget(metrics)
 
         if self.settings.dry_run:
             note = QLabel(self._t("dry_run_batch_note"))
@@ -2397,12 +2425,9 @@ class MainWindow(QMainWindow):
         self._queue = [aid for aid in self._queue if not _is_high_risk(aid)]
 
     def _take_snapshot(self) -> dict:
-        system_drive = os.environ.get("SystemDrive", "C:") + "\\"
-        usage = shutil.disk_usage(system_drive)
-        return {
-            "free_gb": round(usage.free / (1024**3), 2),
-            "total_gb": round(usage.total / (1024**3), 2),
-        }
+        # GUI thread, at batch start and end - snapshot.py keeps it bounded
+        # (time-budgeted folder walks, no process spawns) and never raises.
+        return snapshot.take_snapshot(disk_usage=shutil.disk_usage)
 
     def _on_cancel_clicked(self) -> None:
         self._cancel_requested = True

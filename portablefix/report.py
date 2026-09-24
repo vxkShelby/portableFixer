@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread, Signal
 from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
+from .snapshot import compare_snapshots
 
 
 def _find_action(modules: list[ModuleDef], module_id: str, action_id: str) -> ActionDef | None:
@@ -376,7 +377,18 @@ input[type="search"]::placeholder { color: #8b93b8; }
 .events { background: #24283b; border-radius: 8px; padding: 10px 16px 10px 34px; margin: 0; }
 .events li { margin: 4px 0; }
 .events .ts { margin-right: 6px; }
+table.snapshot tbody th { font-weight: 600; color: #c0caf5; text-transform: none; font-size: 13px;
+                          background: none; }
+table.snapshot td.delta { font-weight: bold; color: #9aa5ce; white-space: nowrap; }
+table.snapshot td.delta.good { color: #9ece6a; }
+table.snapshot td.delta.bad { color: #f7768e; }
+.snap-note { color: #9aa5ce; font-size: 12px; margin: 4px 0 0 0; }
 @media print {
+  table.snapshot tbody th { color: #111; }
+  table.snapshot td.delta { color: #444; }
+  table.snapshot td.delta.good { color: #1e7b34; }
+  table.snapshot td.delta.bad { color: #c0392b; }
+  .snap-note { color: #444; }
   .banner { background: #fff; color: #111; border: 1px solid #9a6700; border-left: 4px solid #9a6700; }
   .warned-tag { color: #9a6700; }
   .warn-text { color: #444; }
@@ -560,6 +572,52 @@ def _render_module_summary(rows: list[dict], language: str) -> str:
     )
 
 
+def _render_snapshot_table(before, after, language: str) -> str:
+    """The "Before / after" table - measurable impact to show the client.
+    Rows come from snapshot.compare_snapshots (metrics known both times).
+    Skipped when free space would be the only row: the meta line above
+    already says that, and old reports (free_gb only) stay as they were."""
+    rows = compare_snapshots(before, after)
+    if not any(r["key"] != "free_gb" for r in rows):
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    def delta_cell(r: dict) -> str:
+        if r["delta"] is None:
+            return '<td class="n delta">?</td>'
+        trend = r["trend"]
+        marker = ""
+        if trend == "good":
+            marker = f'<span aria-hidden="true">&#10003; </span><span class="sr-only">{t("snapshot_improved")}: </span>'
+        elif trend == "bad":
+            marker = f'<span aria-hidden="true">! </span><span class="sr-only">{t("snapshot_worsened")}: </span>'
+        return f'<td class="n delta {trend}">{marker}{html.escape(r["delta"])}</td>'
+
+    body = "".join(
+        "<tr>"
+        f'<th scope="row">{t(r["label_key"])}</th>'
+        f'<td class="n">{html.escape(r["before"])}</td>'
+        f'<td class="n">{html.escape(r["after"])}</td>'
+        f"{delta_cell(r)}"
+        "</tr>"
+        for r in rows
+    )
+    note = ""
+    if any(r["lower_bound"] for r in rows):
+        note = f'<p class="snap-note">{t("snapshot_lower_bound_note")}</p>'
+    return (
+        f'<section aria-labelledby="pf-h-snapshot"><h2 id="pf-h-snapshot">{t("snapshot_heading")}</h2>'
+        '<div class="table-wrap"><table class="summary snapshot"><thead><tr>'
+        f'<th scope="col">{t("snapshot_col_metric")}</th>'
+        f'<th scope="col" class="n">{t("snapshot_col_before")}</th>'
+        f'<th scope="col" class="n">{t("snapshot_col_after")}</th>'
+        f'<th scope="col" class="n">{t("snapshot_col_change")}</th>'
+        f"</tr></thead><tbody>{body}</tbody></table></div>{note}</section>"
+    )
+
+
 def _render_failed_list(actions: list[dict], language: str) -> str:
     failed = [(i, a) for i, a in enumerate(actions, start=1) if a["exit_code"] != 0]
     if not failed:
@@ -675,12 +733,14 @@ def _render_html(data: dict) -> str:
         module_rows = _build_module_summary(actions)
     module_section = _render_module_summary(module_rows, language)
     failed_section = _render_failed_list(actions, language)
+    snapshot_section = _render_snapshot_table(data.get("snapshot_before"), data.get("snapshot_after"), language)
     toolbar = _render_toolbar(language) if actions else ""
 
-    free_before = html.escape(str(data["snapshot_before"].get("free_gb", "?")))
-    free_after = html.escape(str(data["snapshot_after"].get("free_gb", "?")))
     raw_before = data["snapshot_before"].get("free_gb")
     raw_after = data["snapshot_after"].get("free_gb")
+    # None = the snapshot couldn't measure it (snapshot.py never raises).
+    free_before = html.escape(str("?" if raw_before is None else raw_before))
+    free_after = html.escape(str("?" if raw_after is None else raw_after))
     delta = ""
     if isinstance(raw_before, (int, float)) and isinstance(raw_after, (int, float)):
         diff = round(raw_after - raw_before, 2)
@@ -736,6 +796,7 @@ def _render_html(data: dict) -> str:
 <div class="chip fail"><span class="num">{fail_count}</span><span class="lbl">{t('report_chip_failed')}</span></div>
 <div class="chip dry"><span class="num">{dry_count}</span><span class="lbl">{t('report_chip_dry_run')}</span></div>
 </div>
+{snapshot_section}
 {failed_section}
 {safety_section}
 {module_section}

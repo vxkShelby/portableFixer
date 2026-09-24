@@ -368,6 +368,15 @@ QLabel#summaryDryRunNote {
 }
 QLabel#summaryRow[ok="true"] { color: #39ff88; }
 QLabel#summaryRow[ok="false"] { color: #ff2d6f; }
+QLabel#summaryMetricName { color: #d6e2f0; font-size: 9pt; }
+QLabel#summaryMetricDelta {
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+    font-weight: bold;
+    color: #7c8799;
+}
+QLabel#summaryMetricDelta[trend="good"] { color: #39ff88; }
+QLabel#summaryMetricDelta[trend="bad"] { color: #ff2d6f; }
 
 QPlainTextEdit#console {
     background-color: #06080c;
