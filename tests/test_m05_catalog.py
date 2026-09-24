@@ -113,11 +113,12 @@ def test_m05_reset_cache_in_use_warning_fails_and_points_at_stop_services():
 
 def test_m05_reset_cache_removes_stale_bak_before_rename_so_a_rerun_works():
     # Rename-Item fails when <folder>.bak is left over from an earlier reset,
-    # so a second run on the same machine could never succeed.
+    # so a second run on the same machine could never succeed. The stale .bak
+    # goes through the junction-safe helper (tests/test_safe_delete.py).
     module = load_module(CATALOG_PATH)
     command = next(a for a in module.actions if a.id == "wu_reset_cache").command
     for folder in ("SoftwareDistribution", "System32\\catroot2"):
-        bak_removal = f'Remove-Item -Path "$env:WINDIR\\{folder}.bak"'
+        bak_removal = f'$null = Remove-PfSafe "$env:WINDIR\\{folder}.bak"'
         rename = f'Rename-Item -Path "$env:WINDIR\\{folder}"'
         assert bak_removal in command, folder
         assert command.index(bak_removal) < command.index(rename), folder
