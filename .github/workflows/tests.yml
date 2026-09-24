@@ -6,9 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to the same branch/PR makes the older run moot - cancel it
+# instead of letting it hold a runner.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: windows-latest
+    # The GUI step used to hang until GitHub's 6h job limit (every run on
+    # main in Sept 2026 ended "cancelled"), with no hint which test hung.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +29,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run non-GUI test suite
-        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py -q
+        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py -q --timeout=300
 
       # test_gui_main_window.py and test_executor.py spawn real powershell.exe
       # processes through the same QThread mechanism (portablefix/executor.py).
@@ -35,19 +44,25 @@ jobs:
           $ids = python -m pytest tests/test_gui_main_window.py tests/test_executor.py --collect-only -q |
             Select-String "::" | ForEach-Object { $_.Line.Trim() }
 
+          # --timeout: a hung test is killed after 90s and pytest-timeout
+          # dumps every thread's stack, so the log shows where it hung
+          # instead of the whole job silently running into the 6h limit.
           $failed = @()
+          $i = 0
           foreach ($id in $ids) {
+            $i++
             $ok = $false
             $lastOutput = ""
             for ($attempt = 1; $attempt -le 2; $attempt++) {
-              $lastOutput = python -m pytest $id -q 2>&1 | Out-String
+              $lastOutput = python -m pytest $id -q --timeout=90 --timeout-method=thread 2>&1 | Out-String
               if ($lastOutput -match "1 passed") {
                 $ok = $true
                 break
               }
             }
+            $status = if ($ok) { "PASS" } else { "FAIL" }
+            Write-Host "[$i/$($ids.Count)] $status $id"
             if (-not $ok) {
-              Write-Host "FAILED after retry: $id"
               Write-Host $lastOutput
               $failed += $id
             }
