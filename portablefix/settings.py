@@ -5,6 +5,8 @@ from pathlib import Path
 
 DEFAULT_LANGUAGE = "sk"
 SUPPORTED_LANGUAGES = ("sk", "en")
+MAX_CUSTOM_PRESETS = 20
+MAX_PRESET_NAME_LENGTH = 40
 
 
 @dataclass
@@ -13,6 +15,8 @@ class Settings:
     dry_run: bool = True
     winget_ignored_ids: list[str] = field(default_factory=list)
     winget_auto_check_minutes: int = 0
+    # User-saved action selections, name -> action ids (insertion-ordered).
+    custom_presets: dict[str, list[str]] = field(default_factory=dict)
 
 
 def settings_path(base_dir: Path) -> Path:
@@ -36,6 +40,7 @@ def load_settings(base_dir: Path) -> Settings:
     dry_run = data.get("dry_run")
     ignored = data.get("winget_ignored_ids")
     minutes = data.get("winget_auto_check_minutes")
+    presets = data.get("custom_presets")
     return Settings(
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
         dry_run=dry_run if isinstance(dry_run, bool) else True,
@@ -43,7 +48,25 @@ def load_settings(base_dir: Path) -> Settings:
         winget_auto_check_minutes=(
             minutes if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes >= 0 else 0
         ),
+        custom_presets=_valid_custom_presets(presets),
     )
+
+
+def _valid_custom_presets(raw) -> dict[str, list[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    presets: dict[str, list[str]] = {}
+    for name, ids in raw.items():
+        if len(presets) >= MAX_CUSTOM_PRESETS:
+            break
+        if not isinstance(name, str) or not name.strip() or len(name) > MAX_PRESET_NAME_LENGTH:
+            continue
+        if not isinstance(ids, list):
+            continue
+        clean_ids = [i for i in ids if isinstance(i, str)]
+        if clean_ids:
+            presets[name] = clean_ids
+    return presets
 
 
 def save_settings(base_dir: Path, settings: Settings) -> None:

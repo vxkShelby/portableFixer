@@ -55,6 +55,22 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor) |
 | M22 | Čistenie | Hlbšie čistenie: osamotené uninstall položky, duplicitné súbory, nefunkčné odkazy (.lnk), bezpečné prepísanie voľného miesta |
 
+## Funkcie pre technika
+
+- **Predvoľby:** vstavané (Rýchle čistenie, Plná diagnostika, Privacy
+  debloat) aj **vlastné** - vyber akcie, klikni **+ Uložiť výber**, pomenuj.
+  Vlastné predvoľby sa ukladajú do `Data/settings.json` hneď (nie až pri
+  zatvorení), cestujú s USB kľúčom a mažú sa pravým tlačidlom myši.
+- **Prehľad (dashboard):** skóre systému po analýze (zelené/oranžové/červené),
+  počty nálezov podľa kategórií a **história posledných behov na tomto PC**
+  s odkazom na report - pri opakovanej návšteve u toho istého klienta je
+  hneď vidno, čo sa robilo minule.
+- **HTML report:** v jazyku aplikácie, so súhrnom zlyhaných akcií (odkazy
+  priamo na detail), prehľadom podľa modulov/kategórií, filtrom
+  (všetky / len zlyhané / len zmeny) a vyhľadávaním. Tlačidlo **Tlačiť /
+  uložiť ako PDF** dá čistý biely výtlačok pre klienta. Report je jeden
+  samostatný súbor bez internetu.
+
 ## Bezpečnostné mechanizmy
 
 - **Úrovne rizika:** každá akcia je označená SAFE / MODERATE /

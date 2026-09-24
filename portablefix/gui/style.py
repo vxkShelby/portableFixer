@@ -531,4 +531,35 @@ QPushButton:disabled {
     color: #4b5568;
     border-color: #1a212d;
 }
+
+QFrame#historyRow {
+    background-color: #0d1118;
+    border: 1px solid #1c2530;
+    border-left: 3px solid #39ff88;
+    border-radius: 8px;
+}
+QFrame#historyRow[failed="true"] {
+    border-left: 3px solid #ff2d6f;
+}
+QLabel#historyText {
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+    color: #c4d0de;
+}
+QPushButton#presetBtn[custom="true"] {
+    border-style: solid;
+    border-color: #3a2a55;
+    color: #c9a8ff;
+}
+QPushButton#presetBtn[custom="true"]:hover {
+    border-color: #b26bff;
+    color: #d9c2ff;
+}
+QPushButton#presetBtn[custom="true"]:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(178, 107, 255, 50), stop:1 rgba(178, 107, 255, 8));
+    border: 1px solid #b26bff;
+    color: #e6d6ff;
+    font-weight: bold;
+}
 """

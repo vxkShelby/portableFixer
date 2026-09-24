@@ -83,3 +83,37 @@ def test_save_settings_leaves_no_temp_file_behind(tmp_path):
     save_settings(tmp_path, Settings(language="en"))
     files = sorted(p.name for p in settings_path(tmp_path).parent.iterdir())
     assert files == ["settings.json"]
+
+
+def test_custom_presets_round_trip(tmp_path):
+    presets = {"Môj servis": ["user_temp", "recycle_bin"], "Rýchla kontrola": ["os_info"]}
+    save_settings(tmp_path, Settings(custom_presets=presets))
+    loaded = load_settings(tmp_path)
+    assert loaded.custom_presets == presets
+    assert list(loaded.custom_presets) == ["Môj servis", "Rýchla kontrola"]
+
+
+def test_custom_presets_are_sanitized(tmp_path):
+    _write_raw(
+        tmp_path,
+        json.dumps(
+            {
+                "custom_presets": {
+                    "ok": ["a", 1, None, "b"],
+                    "": ["a"],
+                    "   ": ["a"],
+                    "x" * 41: ["a"],
+                    "not_a_list": "a",
+                    "empty": [],
+                }
+            }
+        ),
+    )
+    assert load_settings(tmp_path).custom_presets == {"ok": ["a", "b"]}
+    _write_raw(tmp_path, json.dumps({"custom_presets": ["a"]}))
+    assert load_settings(tmp_path).custom_presets == {}
+
+
+def test_custom_presets_are_capped(tmp_path):
+    _write_raw(tmp_path, json.dumps({"custom_presets": {f"p{i}": ["a"] for i in range(50)}}))
+    assert len(load_settings(tmp_path).custom_presets) == 20

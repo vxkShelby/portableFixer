@@ -2475,3 +2475,91 @@ def test_dashboard_score_is_neutral_until_analysis_then_colored(qtbot, tmp_path)
     assert window._dashboard_score_label.text() == "70"
     assert window._dashboard_score_label.property("state") == "warn"
     assert all(p.property("state") in ("ok", "warn") for p in window._dashboard_tile_count_labels.values())
+
+
+def _two_action_base_dir(tmp_path):
+    module_dir = tmp_path / "Modules" / "m01_diagnostics"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m01_diagnostics\n"
+        "actions:\n"
+        "  - {id: one, label_sk: Jedna, label_en: One, risk: SAFE, command: \"Write-Output 1\"}\n"
+        "  - {id: two, label_sk: Dva, label_en: Two, risk: SAFE, command: \"Write-Output 2\"}\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_custom_preset_save_apply_delete_persists(qtbot, tmp_path):
+    from portablefix.settings import load_settings
+
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_preset")
+    qtbot.addWidget(window)
+    assert not window.save_preset_button.isEnabled()
+
+    window._action_checkboxes["two"].setChecked(True)
+    assert window.save_preset_button.isEnabled()
+    assert window._save_custom_preset("  Môj servis  ", ["two"]) is True
+    assert load_settings(base_dir).custom_presets == {"Môj servis": ["two"]}
+    button = window._preset_buttons["custom:Môj servis"]
+    assert button.text() == "Môj servis"
+
+    window._apply_selection(list(window._action_checkboxes), "none")
+    window._action_checkboxes["one"].setChecked(True)
+    button.click()
+    assert window._action_checkboxes["two"].isChecked()
+    assert not window._action_checkboxes["one"].isChecked()
+
+    window._delete_custom_preset("Môj servis")
+    assert "custom:Môj servis" not in window._preset_buttons
+    assert load_settings(base_dir).custom_presets == {}
+
+
+def test_custom_preset_rejects_empty_name_and_respects_overwrite_answer(qtbot, tmp_path, monkeypatch):
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_preset2")
+    qtbot.addWidget(window)
+    assert window._save_custom_preset("   ", ["one"]) is False
+    assert window._save_custom_preset("A", ["one"]) is True
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
+    assert window._save_custom_preset("A", ["two"]) is False
+    assert window.settings.custom_presets["A"] == ["one"]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    assert window._save_custom_preset("A", ["two"]) is True
+    assert window.settings.custom_presets["A"] == ["two"]
+
+
+def test_custom_presets_survive_language_toggle(qtbot, tmp_path):
+    base_dir = _two_action_base_dir(tmp_path)
+    settings = Settings(custom_presets={"Moje": ["one"]})
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_preset3")
+    qtbot.addWidget(window)
+    assert "custom:Moje" in window._preset_buttons
+    window._on_toggle_language()
+    assert "custom:Moje" in window._preset_buttons
+
+
+def test_console_line_count_is_capped(qtbot, tmp_path):
+    from portablefix.gui.main_window import CONSOLE_MAX_LINES
+
+    base_dir = _two_action_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_console")
+    qtbot.addWidget(window)
+    assert window.console.maximumBlockCount() == CONSOLE_MAX_LINES
+
+
+def test_dashboard_history_lists_past_runs(qtbot, tmp_path):
+    import socket
+
+    base_dir = _two_action_base_dir(tmp_path)
+    reports = base_dir / "Reports"
+    reports.mkdir()
+    data = {"run_id": "20260924T100000-abcd", "generated_at": "2026-09-24T10:00:00+00:00",
+            "actions": [{"exit_code": 1, "dry_run": False}]}
+    (reports / f"{socket.gethostname()}_20260924T100000-abcd.json").write_text(json.dumps(data), encoding="utf-8")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_hist")
+    qtbot.addWidget(window)
+    rows = [window._history_layout.itemAt(i).widget() for i in range(window._history_layout.count())]
+    assert len(rows) == 1
+    assert rows[0].property("failed") is True

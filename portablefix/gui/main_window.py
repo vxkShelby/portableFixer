@@ -1,5 +1,6 @@
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import time
@@ -17,10 +18,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -34,13 +37,19 @@ from PySide6.QtWidgets import (
 )
 
 from . import style
-from .. import diagnostics, elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
+from .. import diagnostics, elevation, history, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
-from ..settings import Settings
+from ..settings import MAX_CUSTOM_PRESETS, MAX_PRESET_NAME_LENGTH, Settings, save_settings
 from ..version import APP_VERSION
+
+# Keys of user-saved presets in _preset_buttons, kept apart from the
+# built-in PRESETS keys so a user can name a preset "quick_clean" safely.
+CUSTOM_PRESET_PREFIX = "custom:"
+CONSOLE_MAX_LINES = 20000
+HISTORY_MAX_ROWS = 5
 
 PRESETS: dict[str, list[str]] = {
     "quick_clean": [
@@ -422,6 +431,26 @@ class MainWindow(QMainWindow):
         preset_row.addWidget(self.search_box)
         center_layout.addLayout(preset_row)
 
+        # User-saved presets get their own row: sharing the built-in preset
+        # row squeezed the search box down to nothing once a couple existed.
+        # The inner sub-layout lets saving/deleting rebuild only these
+        # buttons, not the whole window.
+        custom_preset_row = QHBoxLayout()
+        custom_preset_row.setSpacing(6)
+        custom_preset_label = QLabel(self._t("custom_presets_label"))
+        custom_preset_label.setObjectName("selectionScope")
+        custom_preset_row.addWidget(custom_preset_label)
+        self._custom_preset_layout = QHBoxLayout()
+        self._custom_preset_layout.setSpacing(6)
+        self._custom_preset_layout.setContentsMargins(0, 0, 0, 0)
+        custom_preset_row.addLayout(self._custom_preset_layout)
+        self.save_preset_button = self._make_selection_button(self._t("preset_save_button"), self._on_save_preset_clicked)
+        self.save_preset_button.setEnabled(False)
+        custom_preset_row.addWidget(self.save_preset_button)
+        custom_preset_row.addStretch(1)
+        self._rebuild_custom_preset_buttons()
+        center_layout.addLayout(custom_preset_row)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_content = QWidget()
@@ -622,6 +651,10 @@ class MainWindow(QMainWindow):
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
+        # Unbounded, the console kept every line of every batch for the whole
+        # session (DISM/SFC alone emit thousands) - memory only ever grew.
+        # Full per-action output is still in the audit log and the report.
+        self.console.setMaximumBlockCount(CONSOLE_MAX_LINES)
         self._console_window: QDialog | None = None
         self._console_fullscreen = False
         self._console_splitter_sizes: list[int] | None = None
@@ -750,8 +783,13 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(self._t("search_matches_count").format(count=len(matched_ids)))
 
+    def _preset_action_ids(self, preset_key: str) -> list[str]:
+        if preset_key.startswith(CUSTOM_PRESET_PREFIX):
+            return self.settings.custom_presets.get(preset_key[len(CUSTOM_PRESET_PREFIX):], [])
+        return PRESETS.get(preset_key, [])
+
     def _apply_preset(self, preset_key: str) -> None:
-        wanted = [aid for aid in PRESETS[preset_key] if aid in self._action_checkboxes]
+        wanted = [aid for aid in self._preset_action_ids(preset_key) if aid in self._action_checkboxes]
         self._apply_selection(list(self._action_checkboxes), "none")
         self._apply_selection(wanted, "all")
         # Exclusive QButtonGroup membership already unchecks the other two
@@ -775,6 +813,7 @@ class MainWindow(QMainWindow):
     def _update_status_bar(self) -> None:
         selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self.global_select_none_button.setEnabled(bool(selected))
+        self.save_preset_button.setEnabled(bool(selected))
         if self._batch_active:
             return
         if not selected:
@@ -843,6 +882,78 @@ class MainWindow(QMainWindow):
         self._preset_button_group.addButton(button)
         self._preset_buttons[preset_key] = button
         return button
+
+    def _rebuild_custom_preset_buttons(self) -> None:
+        while self._custom_preset_layout.count():
+            item = self._custom_preset_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                key = next((k for k, b in self._preset_buttons.items() if b is widget), None)
+                if key is not None:
+                    del self._preset_buttons[key]
+                self._preset_button_group.removeButton(widget)
+                widget.deleteLater()
+        for name, action_ids in self.settings.custom_presets.items():
+            button = self._make_preset_button(name, CUSTOM_PRESET_PREFIX + name)
+            button.setProperty("custom", True)
+            button.setToolTip(self._t("preset_custom_tooltip").format(count=len(action_ids)))
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, b=button, n=name: self._show_custom_preset_menu(b, n, pos)
+            )
+            self._custom_preset_layout.addWidget(button)
+
+    def _persist_settings(self) -> None:
+        # Saved right away (not only at exit) so a crash or a yanked USB
+        # stick doesn't lose a preset the technician just created.
+        try:
+            save_settings(self.state_dir, self.settings)
+        except OSError:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+
+    def _on_save_preset_clicked(self) -> None:
+        selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        if not selected:
+            return
+        name, ok = QInputDialog.getText(self, self._t("preset_save_title"), self._t("preset_save_prompt"))
+        self._save_custom_preset(name if ok else "", selected)
+
+    def _save_custom_preset(self, name: str, action_ids: list[str]) -> bool:
+        name = name.strip()[:MAX_PRESET_NAME_LENGTH]
+        if not name or not action_ids:
+            return False
+        presets = self.settings.custom_presets
+        if name in presets:
+            answer = QMessageBox.question(
+                self, self._t("preset_save_title"), self._t("preset_overwrite_confirm").format(name=name)
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        elif len(presets) >= MAX_CUSTOM_PRESETS:
+            QMessageBox.warning(
+                self, self._t("preset_save_title"), self._t("preset_limit_reached").format(max=MAX_CUSTOM_PRESETS)
+            )
+            return False
+        presets[name] = list(action_ids)
+        self._persist_settings()
+        self._rebuild_custom_preset_buttons()
+        button = self._preset_buttons.get(CUSTOM_PRESET_PREFIX + name)
+        if button is not None:
+            button.setChecked(True)
+        self.statusBar().showMessage(self._t("preset_saved").format(name=name, count=len(action_ids)), 5000)
+        return True
+
+    def _show_custom_preset_menu(self, button: QPushButton, name: str, pos) -> None:
+        menu = QMenu(self)
+        delete_action = menu.addAction(self._t("preset_delete").format(name=name))
+        if menu.exec(button.mapToGlobal(pos)) is delete_action:
+            self._delete_custom_preset(name)
+
+    def _delete_custom_preset(self, name: str) -> None:
+        if self.settings.custom_presets.pop(name, None) is None:
+            return
+        self._persist_settings()
+        self._rebuild_custom_preset_buttons()
 
     def _make_action_detail_toggle(self, action: ActionDef) -> tuple[QToolButton, QWidget]:
         # The tooltip only shows the description on hover and disappears on
@@ -1538,6 +1649,16 @@ class MainWindow(QMainWindow):
             grid.addWidget(tile, index // columns, index % columns)
         card_layout.addLayout(grid)
 
+        history_heading = QLabel(self._t("history_heading"))
+        history_heading.setObjectName("cardHeading")
+        card_layout.addWidget(history_heading)
+        history_widget = QWidget()
+        self._history_layout = QVBoxLayout(history_widget)
+        self._history_layout.setContentsMargins(0, 0, 0, 0)
+        self._history_layout.setSpacing(4)
+        card_layout.addWidget(history_widget)
+        self._refresh_history()
+
         winget_heading = QLabel(self._t("category_winget"))
         winget_heading.setObjectName("cardHeading")
         card_layout.addWidget(winget_heading)
@@ -1555,7 +1676,48 @@ class MainWindow(QMainWindow):
             self._apply_preset("full_diagnostic")
             self.run_selected_actions()
 
+    def _refresh_history(self) -> None:
+        layout = getattr(self, "_history_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        runs = history.recent_runs(self.state_dir / "Reports", socket.gethostname(), limit=HISTORY_MAX_ROWS)
+        if not runs:
+            empty = QLabel(self._t("history_empty"))
+            empty.setObjectName("selectionScope")
+            layout.addWidget(empty)
+            return
+        for run in runs:
+            row = QFrame()
+            row.setObjectName("historyRow")
+            row.setProperty("failed", run.failed_count > 0)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 4, 6, 4)
+            row_layout.setSpacing(8)
+            text = QLabel(
+                self._t("history_row").format(
+                    date=run.display_date(), count=run.action_count, failed=run.failed_count
+                )
+            )
+            text.setObjectName("historyText")
+            row_layout.addWidget(text, 1)
+            if run.dry_run:
+                tag = QLabel(self._t("history_dry_run_tag"))
+                tag.setObjectName("summaryDryRunNote")
+                row_layout.addWidget(tag)
+            if run.html_path is not None:
+                open_button = self._make_selection_button(
+                    self._t("history_open"),
+                    lambda path=run.html_path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))),
+                )
+                row_layout.addWidget(open_button)
+            layout.addWidget(row)
+
     def _refresh_dashboard(self) -> None:
+        self._refresh_history()
         if self._dashboard_score_label is not None:
             unique_recommended = len(self._recommended_action_ids)
             score = max(40, 100 - unique_recommended * 10)

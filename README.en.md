@@ -56,6 +56,22 @@ PowerShell.
 | M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor) |
 | M22 | Cleanup | Deep cleanup: orphaned uninstall entries, duplicate files, broken shortcuts (.lnk), secure free-space wipe |
 
+## Technician features
+
+- **Presets:** built-in (Quick clean, Full diagnostic, Privacy debloat) and
+  **custom** ones - select actions, click **+ Save selection**, name it.
+  Custom presets are written to `Data/settings.json` immediately (not only
+  on exit), travel with the USB drive and are deleted via right-click.
+- **Dashboard:** system score after an analysis (green/amber/red),
+  per-category finding counts and **recent runs on this PC** with a link to
+  each report - on a repeat visit to the same client you see right away
+  what was done last time.
+- **HTML report:** in the app's language, with a failed-actions summary
+  (links straight to the details), a per-module/category overview, filters
+  (all / failed only / changes only) and search. **Print / save as PDF**
+  gives a clean white printout for the client. The report is a single
+  self-contained file that needs no internet.
+
 ## Safety mechanisms
 
 - **Risk levels:** every action is tagged SAFE / MODERATE / DESTRUCTIVE /
