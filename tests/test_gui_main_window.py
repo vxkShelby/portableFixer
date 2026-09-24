@@ -577,7 +577,8 @@ def test_moderate_risk_action_declined_does_not_run_but_logs_the_decline(qtbot, 
     qtbot.addWidget(window)
     window._action_checkboxes["risky"].setChecked(True)
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+    # G12: the decline now happens on the batch review screen.
+    _answer_review(monkeypatch, accept=False)
 
     window.run_selected_actions()
 
@@ -596,15 +597,17 @@ def test_moderate_risk_action_accepted_runs_and_logs(qtbot, tmp_path, monkeypatc
     qtbot.addWidget(window)
     window._action_checkboxes["risky"].setChecked(True)
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    # G12: confirmed once on the batch review screen.
+    _answer_review(monkeypatch)
 
     window.run_selected_actions()
 
     log_path = audit_log_path(base_dir, "testrun")
-    qtbot.waitUntil(lambda: log_path.exists() and log_path.read_text(encoding="utf-8").strip() != "", timeout=10000)
+    # The review's own "_system" entry is written first now.
+    qtbot.waitUntil(lambda: "risky" in _executed_action_ids(log_path), timeout=10000)
 
     assert "risky-ran" in window.console.toPlainText()
-    entry = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+    entry = next(e for e in _audit_entries(log_path) if e["module_id"] != "_system")
     assert entry["action_id"] == "risky"
     assert entry["exit_code"] == 0
 
@@ -655,12 +658,12 @@ def test_dry_run_with_preview_command_runs_preview_not_real_command(qtbot, tmp_p
 
 
 def test_destructive_action_declined_at_hard_confirm_is_not_run(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     from portablefix import restore_point
 
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
+    # G12: confirmed on the review screen without ticking "I understand,
+    # irreversible" for the DESTRUCTIVE action - that action is declined.
+    _answer_review(monkeypatch, tick=False)
 
     base_dir = _make_destructive_base_dir(tmp_path)
     settings = Settings(language="en", dry_run=False)
@@ -789,12 +792,10 @@ def test_opening_without_running_anything_generates_no_report(qtbot, tmp_path):
 
 
 def test_destructive_action_accepted_runs_normally(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     from portablefix import restore_point
 
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+    _answer_review(monkeypatch)  # G12: ticked and confirmed on the review screen
 
     base_dir = _make_destructive_base_dir(tmp_path)
     settings = Settings(language="en", dry_run=False)
@@ -828,6 +829,7 @@ def test_cancel_during_restore_point_creation_prevents_the_pending_action_from_r
         return True, ""
 
     monkeypatch.setattr(restore_point, "create_restore_point", slow_create_restore_point)
+    _answer_review(monkeypatch)  # G12: the batch is confirmed on the review screen first
 
     base_dir = _make_destructive_base_dir(tmp_path)
     settings = Settings(language="en", dry_run=False)
@@ -853,7 +855,10 @@ def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_saf
     from portablefix import restore_point
 
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (False, "restore point failed"))
+    # "No" to the restore-point-failed question; the batch itself was
+    # confirmed on the G12 review screen.
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: QMessageBox.No))
+    _answer_review(monkeypatch)
 
     base_dir = _make_destructive_base_dir(tmp_path)
     settings = Settings(language="en", dry_run=False)
@@ -1353,9 +1358,9 @@ def test_undo_order_uses_real_m05_undo_commands_in_reversed_order(qtbot, tmp_pat
     from portablefix.module_engine import load_module
 
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
-    # MODERATE-risk actions trigger a QMessageBox.question confirmation dialog
-    # in _dispatch_action; auto-confirm so the test doesn't hang on a real modal.
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+    # MODERATE-risk actions are confirmed on the batch review screen (G12);
+    # auto-confirm so the test doesn't hang on a real modal.
+    _answer_review(monkeypatch)
 
     real_catalog_path = Path(__file__).resolve().parent.parent / "Modules" / "m05_windows_update" / "actions.yaml"
     real_module = load_module(real_catalog_path)
@@ -4115,6 +4120,7 @@ def test_cancel_then_analyze_during_restore_point_does_not_uncancel(qtbot, tmp_p
     monkeypatch.setitem(PRESETS, "full_diagnostic", ["risky_thing"])
     dispatched = []
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: dispatched.append(a) or QMessageBox.Yes))
+    reviews = _answer_review(monkeypatch)  # G12: the first batch is confirmed on the review screen
     base_dir = _make_destructive_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False), is_admin=True, run_id="run_cancel_analyze_rp")
     qtbot.addWidget(window)
@@ -4135,6 +4141,7 @@ def test_cancel_then_analyze_during_restore_point_does_not_uncancel(qtbot, tmp_p
     assert window._pending_restore_point_runner is rp_runner
     _wait_batch_idle(qtbot, window)
     assert dispatched == []
+    assert len(reviews) == 1  # the blocked re-entries never reached the review
     assert "destructive-ran" not in window.console.toPlainText()
     assert "risky_thing" not in _executed_action_ids(audit_log_path(base_dir, "run_cancel_analyze_rp"))
 
@@ -4626,3 +4633,446 @@ def test_a_late_release_check_does_not_replace_the_update_in_progress(qtbot, tmp
 
     assert window._pending_update_info is local
     window._update_in_progress = False
+
+
+# --- G11/G12: pre-flight check and the one batch review screen -------------
+
+
+def _answer_review(monkeypatch, accept=True, tick=True, override=False):
+    """Stands in for the modal BatchReviewDialog.exec: drives the real
+    dialog's widgets the way a technician would and returns the list of
+    dialogs shown (their .review holds what was on screen)."""
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    shown = []
+
+    def fake_exec(self):
+        shown.append(self)
+        for checkbox in self.destructive_checkboxes.values():
+            checkbox.setChecked(tick)
+        if override and self.override_checkbox is not None:
+            self.override_checkbox.setChecked(True)
+        if accept and self.confirm_button.isEnabled():
+            self.confirm_button.click()
+        else:
+            self.cancel_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", fake_exec)
+    return shown
+
+
+REVIEW_BATCH_YAML = """
+module_id: m02_cleanup
+category: CLEANUP
+actions:
+  - id: wipe_thing
+    label_sk: "Zmazat vec"
+    label_en: "Wipe thing"
+    risk: DESTRUCTIVE
+    command: "Write-Output 'wipe-ran'"
+    preview_command: "Write-Output 'wipe-preview'"
+  - id: tweak_one
+    label_sk: "Uprava 1"
+    label_en: "Tweak one"
+    risk: MODERATE
+    command: "Write-Output 'tweak-one-ran'"
+    undo_command: "Write-Output 'undo-one'"
+  - id: tweak_two
+    label_sk: "Uprava 2"
+    label_en: "Tweak two"
+    risk: MODERATE
+    command: "Write-Output 'tweak-two-ran'"
+  - id: reboot_thing
+    label_sk: "Restart vec"
+    label_en: "Reboot thing"
+    risk: REQUIRES_REBOOT
+    command: "Write-Output 'reboot-ran'"
+  - id: look_thing
+    label_sk: "Pozriet"
+    label_en: "Look thing"
+    risk: SAFE
+    command: "Write-Output 'look-ran'"
+  - id: rescue_thing
+    label_sk: "Zachrana"
+    label_en: "Rescue thing"
+    risk: MODERATE
+    command: "Write-Output 'rescue-ran'"
+    exclude_from_select_all: true
+"""
+
+
+def _review_window(qtbot, tmp_path, monkeypatch, run_id, dry_run=False, is_admin=True, probes=None):
+    from portablefix import preflight, restore_point
+
+    module_dir = tmp_path / "Modules" / "m02_cleanup"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(REVIEW_BATCH_YAML, encoding="utf-8")
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=dry_run),
+        is_admin=is_admin, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    # A healthy PC unless the test says otherwise - never the real machine.
+    healthy = preflight.Probes(
+        power=lambda: preflight.PowerStatus(on_battery=False, percent=100),
+        pending_reboot=lambda: [],
+        system_free_bytes=lambda: 100 * 1024**3,
+        is_admin=lambda: window.is_admin,
+        busy_tasks=lambda: [],
+    )
+    monkeypatch.setattr(window, "_preflight_probes", lambda: probes or healthy)
+    return window
+
+
+def _check(window, *action_ids):
+    for action_id in action_ids:
+        window._action_checkboxes[action_id].setChecked(True)
+
+
+def test_batch_review_is_one_screen_for_all_risky_actions_and_quotes_it_in_the_audit(qtbot, tmp_path, monkeypatch):
+    # conftest turns every QMessageBox into a failure: the old one-box-per-
+    # action flow would fail here four times over.
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_one")
+    reviews = _answer_review(monkeypatch)
+    _check(window, "look_thing", "tweak_one", "wipe_thing", "tweak_two", "reboot_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert len(reviews) == 1
+    review = reviews[0].review
+    # Every selected action, most dangerous first, with its risk tier.
+    assert [(i.action_id, i.risk.value) for i in review.items] == [
+        ("wipe_thing", "DESTRUCTIVE"), ("reboot_thing", "REQUIRES_REBOOT"),
+        ("tweak_one", "MODERATE"), ("tweak_two", "MODERATE"), ("look_thing", "SAFE"),
+    ]
+    assert review.restore_point_planned is True  # DESTRUCTIVE needs one
+    assert {i.action_id for i in review.items if i.irreversible} == {"wipe_thing", "tweak_two", "reboot_thing"}
+    assert [i.action_id for i in review.items if i.needs_reboot] == ["reboot_thing"]
+    shown = {i.action_id: i.warning_text for i in review.items}
+    assert shown["look_thing"] == ""
+    assert "Wipe thing" in shown["wipe_thing"] and "[DESTRUCTIVE]" in shown["wipe_thing"]
+
+    log_path = audit_log_path(tmp_path, "run_review_one")
+    entries = {e["action_id"]: e for e in _audit_entries(log_path) if e["module_id"] != "_system"}
+    assert set(entries) == {"look_thing", "tweak_one", "wipe_thing", "tweak_two", "reboot_thing"}
+    for action_id, entry in entries.items():
+        # warned/warning_text: exactly the row text the technician confirmed.
+        assert entry["warning_text"] == shown[action_id]
+        assert entry["warned"] is bool(shown[action_id])
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "confirmed" and event["warned"] is False
+    assert _system_events(log_path, "risk_declined") == []
+    assert len(_system_events(log_path, "restore_point")) == 1
+
+
+def test_batch_review_lists_restore_point_irreversible_and_reboot_on_screen(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    from portablefix import i18n
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_text")
+    texts = []
+
+    def capture(self):
+        # Unticked, the DESTRUCTIVE action will not run - and it was the
+        # only one that needed a restore point.
+        texts.append(self.restore_point_label.text())
+        self.destructive_checkboxes["wipe_thing"].setChecked(True)
+        texts.extend(label.text() for label in self.findChildren(QLabel))
+        self.cancel_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", capture)
+    _check(window, "wipe_thing", "reboot_thing", "tweak_one")
+    window.run_selected_actions()
+
+    assert texts[0] == i18n.translate("review_restore_point_no", "en")
+    assert i18n.translate("review_restore_point_yes", "en") in texts[1:]
+    assert "Cannot be undone through PortableFix: Wipe thing, Reboot thing" in texts
+    assert "Needs a restart to finish: Reboot thing" in texts
+    assert any("Tweak one" in text and "[MODERATE]" in text for text in texts)
+
+
+def test_batch_review_cancel_runs_nothing_and_logs_every_decline(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_cancel")
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: pytest.fail("no restore point for a cancelled batch"))
+    reviews = _answer_review(monkeypatch, accept=False)
+    _check(window, "tweak_one", "wipe_thing", "look_thing")
+
+    window.run_selected_actions()
+
+    assert window._batch_active is False and window._queue == []
+    assert window.run_button.isEnabled()
+    log_path = audit_log_path(tmp_path, "run_review_cancel")
+    assert _executed_action_ids(log_path) == []
+    shown = {i.subject: i.warning_text for i in reviews[0].review.items if i.warning_text}
+    declined = _system_events(log_path, "risk_declined")
+    assert {e["subject"]: e["warning_text"] for e in declined} == shown
+    assert set(shown) == {"m02_cleanup/tweak_one", "m02_cleanup/wipe_thing"}
+    assert all(e["warned"] is True and e["decision"] == "declined" for e in declined)
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "cancelled"
+    assert "look-ran" not in window.console.toPlainText()
+
+
+def test_batch_review_unticked_destructive_is_declined_rest_runs(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_untick")
+    reviews = _answer_review(monkeypatch, tick=False)
+    _check(window, "wipe_thing", "tweak_one")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_review_untick")
+    assert _executed_action_ids(log_path) == ["tweak_one"]
+    [declined] = _system_events(log_path, "risk_declined")
+    wipe = next(i for i in reviews[0].review.items if i.action_id == "wipe_thing")
+    assert declined["subject"] == "m02_cleanup/wipe_thing" and declined["warning_text"] == wipe.warning_text
+    # The declined DESTRUCTIVE action was the only reason for a restore point.
+    assert _system_events(log_path, "restore_point") == []
+
+
+def test_batch_review_of_only_destructive_actions_needs_a_tick_to_confirm(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+    from portablefix.gui.batch_review import BatchReviewDialog, build_review
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_tick")
+    items = [window._find_action("wipe_thing")]
+    dialog = BatchReviewDialog(build_review(items, preflight.PreflightResult(), "en"), parent=window)
+    # Unticked, "confirm" would mean running nothing - not a confirmation.
+    assert not dialog.confirm_button.isEnabled()
+    # Enter must never confirm by accident.
+    assert dialog.cancel_button.isDefault() and not dialog.confirm_button.autoDefault()
+    dialog.destructive_checkboxes["wipe_thing"].setChecked(True)
+    assert dialog.confirm_button.isEnabled()
+    dialog.confirm_button.click()
+    decision = dialog.decision()
+    assert decision.confirmed and [i.action_id for i in decision.accepted] == ["wipe_thing"]
+
+
+def test_dry_run_shows_no_review_no_confirmation_and_makes_no_restore_point(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_dry", dry_run=True)
+    monkeypatch.setattr(BatchReviewDialog, "exec", lambda self: pytest.fail("no review in DRY-RUN"))
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: pytest.fail("no restore point in DRY-RUN"))
+    monkeypatch.setattr(window, "_preflight_probes", lambda: pytest.fail("no pre-flight in DRY-RUN"))
+    _check(window, "wipe_thing", "tweak_one", "reboot_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert "wipe-preview" in window.console.toPlainText()
+    assert "wipe-ran" not in window.console.toPlainText()
+    log_path = audit_log_path(tmp_path, "run_review_dry")
+    assert sorted(_executed_action_ids(log_path)) == ["reboot_thing", "tweak_one", "wipe_thing"]
+    assert _system_events(log_path, "batch_review") == []
+    assert _system_events(log_path, "restore_point") == []
+
+
+def test_safe_only_batch_starts_without_review_or_preflight(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    # Even a PC every check would flag: a SAFE batch changes nothing.
+    bad = preflight.Probes(
+        power=lambda: preflight.PowerStatus(True, 1), pending_reboot=lambda: ["cbs"],
+        system_free_bytes=lambda: 1, is_admin=lambda: False, busy_tasks=lambda: ["x"],
+    )
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_safe", probes=bad)
+    monkeypatch.setattr(BatchReviewDialog, "exec", lambda self: pytest.fail("nothing to review"))
+    _check(window, "look_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_review_safe")
+    assert _executed_action_ids(log_path) == ["look_thing"]
+    assert _system_events(log_path, "batch_review") == []
+
+
+def test_preflight_blocker_disables_confirm_until_overridden_and_logs_the_override(qtbot, tmp_path, monkeypatch):
+    from portablefix import i18n, preflight
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    low_disk = preflight.Probes(system_free_bytes=lambda: 2 * 1024**3, is_admin=lambda: True)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_override", probes=low_disk)
+    enabled_before = []
+
+    def technician(self):
+        enabled_before.append(self.confirm_button.isEnabled())
+        self.override_checkbox.setChecked(True)
+        self.confirm_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", technician)
+    _check(window, "tweak_one")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert enabled_before == [False]
+    log_path = audit_log_path(tmp_path, "run_review_override")
+    assert _executed_action_ids(log_path) == ["tweak_one"]
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "override" and event["warned"] is True
+    assert "low_disk" in event["output"]
+    assert event["warning_text"] == i18n.translate("preflight_low_disk", "en").format(free_gb="2.0", min_gb=5)
+
+
+def test_preflight_blocker_without_override_cannot_start_the_batch(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+
+    pending = preflight.Probes(pending_reboot=lambda: ["cbs"], is_admin=lambda: True)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_blocked", probes=pending)
+    reviews = _answer_review(monkeypatch)  # tries to confirm, never overrides
+    _check(window, "reboot_thing")
+
+    window.run_selected_actions()
+
+    assert [i.code for i in reviews[0].review.preflight.blockers] == ["pending_reboot"]
+    log_path = audit_log_path(tmp_path, "run_review_blocked")
+    assert _executed_action_ids(log_path) == []
+    assert window._batch_active is False
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "cancelled"
+    assert [e["subject"] for e in _system_events(log_path, "risk_declined")] == ["m02_cleanup/reboot_thing"]
+
+
+def test_busy_job_blocker_cannot_be_overridden(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+
+    busy = preflight.Probes(busy_tasks=lambda: ["winget"], is_admin=lambda: True)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_busy", probes=busy)
+    reviews = _answer_review(monkeypatch, override=True)
+    _check(window, "tweak_one")
+
+    window.run_selected_actions()
+
+    assert reviews[0].override_checkbox is None
+    assert not reviews[0].confirm_button.isEnabled()
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_review_busy")) == []
+
+
+def test_real_preflight_probes_use_the_window_elevation_and_jobs(qtbot, tmp_path):
+    from portablefix import preflight
+
+    base_dir = _make_base_dir(tmp_path, MODERATE_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False), is_admin=False, run_id="run_review_admin")
+    qtbot.addWidget(window)
+
+    probes = window._preflight_probes()
+    assert probes.is_admin() is False
+    assert probes.busy_tasks() == []
+    result = preflight.run_preflight(preflight.profile_for([window._find_action("risky")]), probes)
+    assert "no_admin" in [i.code for i in result.blockers]
+
+
+def test_warning_only_preflight_still_shows_review_for_a_safe_repair_batch(qtbot, tmp_path, monkeypatch):
+    # A SAFE action in a REPAIR module gets a restore point - it changes the
+    # system, so a pre-flight warning (battery) is worth one look.
+    from portablefix import preflight, restore_point
+
+    module_dir = tmp_path / "Modules" / "m03_disk"
+    module_dir.mkdir(parents=True)
+    (module_dir / "actions.yaml").write_text(
+        "module_id: m03_disk\ncategory: REPAIR\nactions:\n"
+        "  - id: scan_disk\n    label_sk: \"Sken\"\n    label_en: \"Scan\"\n    risk: SAFE\n"
+        "    command: \"Write-Output 'scan-ran'\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=False), is_admin=True, run_id="run_review_warn")
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "_preflight_probes", lambda: preflight.Probes(power=lambda: preflight.PowerStatus(True, 80)))
+    reviews = _answer_review(monkeypatch)
+    _check(window, "scan_disk")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert [i.code for i in reviews[0].review.preflight.warnings] == ["on_battery"]
+    log_path = audit_log_path(tmp_path, "run_review_warn")
+    assert _executed_action_ids(log_path) == ["scan_disk"]
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "confirmed" and "on_battery" in event["output"]
+
+
+def test_select_all_keeps_excluded_actions_out_of_the_review(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_exclude")
+    reviews = _answer_review(monkeypatch, accept=False)
+    window._apply_selection(list(window._action_checkboxes), "all")
+
+    window.run_selected_actions()
+
+    ids = [i.action_id for i in reviews[0].review.items]
+    assert "rescue_thing" not in ids
+    assert set(ids) == {"wipe_thing", "tweak_one", "tweak_two", "reboot_thing", "look_thing"}
+
+
+def test_review_confirmation_never_carries_over_to_a_later_dispatch(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_carry")
+    _answer_review(monkeypatch)
+    _check(window, "tweak_one")
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+    assert window._reviewed_warnings == {}
+
+    # A dispatch outside a reviewed batch falls back to its own question.
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda p, t, text, *a, **k: asked.append(text) or QMessageBox.No))
+    module, action = window._find_action("tweak_one")
+    window._dispatch_action(module, action)
+    assert len(asked) == 1 and "Tweak one" in asked[0]
+    declined = _system_events(audit_log_path(tmp_path, "run_review_carry"), "risk_declined")
+    assert declined[-1]["warning_text"] == asked[0]
+
+
+def test_batch_review_never_calls_a_destructive_action_with_undo_irreversible(qtbot, tmp_path, monkeypatch):
+    from portablefix import i18n, preflight
+    from portablefix.gui.batch_review import BatchReviewDialog, build_review
+    from portablefix.models import ActionDef, ModuleDef, RiskLevel
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_undo_destructive")
+    action = ActionDef(
+        id="salvage", label_sk="S", label_en="Salvage", risk=RiskLevel.DESTRUCTIVE,
+        command="x", undo_command="y",
+    )
+    review = build_review([(ModuleDef("m04_integrity", [action]), action)], preflight.PreflightResult(), "en")
+    [item] = review.items
+    assert item.irreversible is False
+    assert i18n.translate("review_note_destructive_undo", "en") in item.warning_text
+    assert i18n.translate("review_note_destructive", "en") not in item.warning_text
+    dialog = BatchReviewDialog(review, parent=window)
+    assert dialog.destructive_checkboxes["salvage"].text() == i18n.translate("review_destructive_undo_tick", "en")
+
+
+def test_batch_review_confirmed_after_the_window_closed_starts_nothing(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui.batch_review import BatchReviewDialog
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_closed")
+
+    def close_then_confirm(self):
+        window._closed = True
+        self.confirm_button.click()
+        return self.result()
+
+    monkeypatch.setattr(BatchReviewDialog, "exec", close_then_confirm)
+    _check(window, "tweak_one")
+
+    window.run_selected_actions()
+    window._closed = False  # let qtbot's teardown close it normally
+
+    assert window._batch_active is False
+    log_path = audit_log_path(tmp_path, "run_review_closed")
+    assert _executed_action_ids(log_path) == []
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "cancelled"
+    assert [e["subject"] for e in _system_events(log_path, "risk_declined")] == ["m02_cleanup/tweak_one"]
