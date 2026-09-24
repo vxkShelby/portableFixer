@@ -144,7 +144,7 @@ def test_frozen_app_updates_itself_and_the_new_version_relaunches(work_dir, star
     )
 
     launch = _read_json(install_dir / "Data" / "probe_launch.json", 5)
-    print(f"probe launch: {launch}")
+    print(f"probe launch: {launch!a}")  # !a: the runner console is cp1252, the paths are not
     assert probe.returncode == 0 and launch and launch["ok"], (launch, _logs(launch))
     assert launch["version"] == "1"
     # The bootloader parent was found, so the swap waited for it too.
@@ -156,7 +156,7 @@ def test_frozen_app_updates_itself_and_the_new_version_relaunches(work_dir, star
     assert (install_dir / "Data" / "settings.json").read_bytes() == b'{"language": "sk"}'
 
     relaunched = _read_json(install_dir / "Data" / "relaunched.json", 60)
-    print(f"relaunched: {relaunched}")
+    print(f"relaunched: {relaunched!a}")
     assert relaunched, ("v2 never started - 'Failed to load Python DLL' if it reused v1's _MEI", _logs(launch))
     assert relaunched["version"] == "2"
     assert relaunched["meipass"] != launch["meipass"]

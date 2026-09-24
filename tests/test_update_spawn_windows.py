@@ -172,7 +172,7 @@ def _hand_off(tmp_path: Path, spawned, install_dir: Path, *, temp_dir: Path | No
     result = json.loads(result_path.read_text(encoding="utf-8"))
     if result.get("child_pid"):
         powershell_pids.append(result["child_pid"])
-    print(f"hand-off: {result}")
+    print(f"hand-off: {result!a}")  # !a: the runner console is cp1252, hostile paths are not
     return helper, result
 
 

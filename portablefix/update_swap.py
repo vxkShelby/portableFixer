@@ -749,7 +749,9 @@ def write_swap_job(
     }
     job_path.write_text(json.dumps(job, ensure_ascii=True, indent=1), encoding="ascii")
     # utf-8-sig like every script the app runs; the text is ASCII anyway.
-    script_path.write_text(SWAP_SCRIPT, encoding="utf-8-sig")
+    # Bytes, not write_text: text mode on Windows turned every \n into \r\n,
+    # so the file differed from SWAP_SCRIPT depending on the platform.
+    script_path.write_bytes(b"\xef\xbb\xbf" + SWAP_SCRIPT.encode("ascii"))
     return SwapJob(
         script_path=script_path, job_path=job_path, marker_path=marker_path,
         log_file=Path(job["LogFile"]), launch_log=log_dir / f"popen_launch_{pid}.log", job=job,

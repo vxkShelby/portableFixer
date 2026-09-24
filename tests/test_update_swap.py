@@ -660,6 +660,9 @@ def test_launch_swap_real_powershell_handshake(tmp_path, staged, monkeypatch):
                 os.kill(result.child_pid, 9)
             except OSError:
                 pass
+            # The kill is asynchronous: until the script is really gone it
+            # still holds the update mutex, which the next test checks.
+            update_swap.wait_for_process_exit(result.child_pid, 30)
     assert (tmp_path / "install" / "App" / "PortableFix.exe").read_bytes() == b"old-exe"
 
 
