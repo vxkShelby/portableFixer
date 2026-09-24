@@ -34,7 +34,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 |---|---|---|
 | M01 | Diagnostika | Systémové informácie (OS, HW, disky, procesy...) |
 | M02 | Čistenie | Temp súbory, cache, kôš, Windows Update cache... |
-| M03 | Oprava | Disk: SMART, NTFS scan/SpotFix, TRIM, chkdsk pri reštarte |
+| M03 | Oprava | Disk: SMART, verdikt zdravia diskov, NTFS scan/SpotFix, TRIM, chkdsk pri reštarte |
 | M04 | Oprava | Integrita systému: DISM, SFC, AppX, WMI |
 | M05 | Oprava | Windows Update: reset služieb a cache, DLL, detekcia |
 | M06 | Oprava | Sieť: DNS, hosts, DHCP, Winsock, TCP/IP |
@@ -140,6 +140,34 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   miesta, čakajúce premenovanie súborov. Blokovanie (okrem inej bežiacej
   úlohy) sa dá vedome obísť zaškrtnutím, obídenie sa zapíše do audit
   logu a reportu.
+- **Najprv image - brána zdravia disku:** akcie, ktoré disk silno
+  zaťažia, majú v `actions.yaml` pole `stresses_disk: true` (M03:
+  plná kontrola `chkdsk /f /r` pri reštarte, optimalizácia
+  TRIM/defragmentácia, online oprava SpotFix). Keď je taká akcia v
+  ostrej dávke, pre-flight raz, pri otvorení kontrolnej obrazovky,
+  spustí rovnaký skript ako SAFE akcia **Zdravie diskov - verdikt**
+  (jedno spustenie PowerShellu s limitom 20 s). Ak systémový disk
+  hlási FAILING alebo WARNING, zobrazí sa blokovanie „najprv
+  zálohujte alebo vytvorte image disku“, ktoré sa dá obísť len
+  vedomým zaškrtnutím a obídenie sa zapíše do audit logu. Keď
+  systémový disk nevieme určiť, rozhoduje najhorší disk. UNKNOWN
+  (VM, USB adaptér, chýbajúce práva) ani zlyhanie sondy nikdy
+  neblokujú. SFC a DISM príznak nemajú: čítajú len súbory Windows
+  (niekoľko GB, podobne ako bežná aktualizácia) a blokovanie by
+  zastavilo väčšinu opráv aj na opotrebovanom, no funkčnom SSD.
+- **Zdravie diskov - verdikt (M03, SAFE):** pre každý fyzický disk
+  vypíše `Get-PhysicalDisk` (HealthStatus, OperationalStatus,
+  MediaType, BusType), `Get-StorageReliabilityCounter` (opotrebovanie,
+  teplota, neopravené chyby čítania, hodiny prevádzky, ak sú
+  čitateľné) a SMART predpoveď zlyhania z `root\wmi`
+  `MSStorageDriver_FailurePredictStatus`. Na konci je pre každý disk
+  jeden riadok `VERDICT:` so stavom OK, WARNING, FAILING alebo UNKNOWN
+  a kódmi pravidiel, ktoré rozhodli. **FAILING:** HealthStatus
+  Unhealthy, OperationalStatus Predictive Failure / Error /
+  Non-Recoverable Error alebo PredictFailure. **WARNING:** HealthStatus
+  Warning, stav Degraded / Stressed, neopravené chyby čítania alebo
+  opotrebovanie od 90 %. Rozhodujú len číselné hodnoty a názvy enumov
+  CIM, nikdy lokalizovaný text.
 - **DRY-RUN:** predvolene zapnutý — akcie sa len vypíšu (alebo spustia
   read-only náhľad), nič sa nemení. Preto sa v DRY-RUN nič nepotvrdzuje
   a pre-flight kontrola ani bod obnovenia sa nerobia.

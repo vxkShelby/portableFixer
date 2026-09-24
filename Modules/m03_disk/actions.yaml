@@ -8,6 +8,28 @@ actions:
     command: "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,OperationalStatus | Format-Table -AutoSize"
     description_sk: "Zobrazí stav a typ fyzických diskov, nič nemení."
     description_en: "Shows physical disk health and type, changes nothing."
+  # G13. One VERDICT line per physical disk, read only from numeric/enum
+  # CIM data - never from localized text: MSFT_PhysicalDisk HealthStatus
+  # (0 Healthy, 1 Warning, 2 Unhealthy, 5 Unknown) and OperationalStatus
+  # (3 Degraded, 4 Stressed, 5 Predictive Failure, 6 Error, 7 Non-Recoverable
+  # Error), root\wmi MSStorageDriver_FailurePredictStatus.PredictFailure
+  # (matched to the disk through Win32_DiskDrive.Index = DeviceId and its
+  # PNPDeviceID as the InstanceName prefix) and Get-StorageReliabilityCounter
+  # (ReadErrorsUncorrected > 0, Wear >= 90 % of rated endurance). PfNum
+  # accepts both the raw numbers and the enum names the Storage module may
+  # hand back - enum identifiers are the same on every Windows language.
+  # FAILING = the disk or its firmware says it is failing; WARNING = early
+  # signs; UNKNOWN = nothing readable (USB/RAID bridges, VMs). Pre-flight
+  # (portablefix/disk_health.py) runs this same command and parses the
+  # VERDICT lines, so the rules live in one place. Exits 1 only when no
+  # physical disk can be read at all.
+  - id: disk_health_verdict
+    label_sk: "Zdravie diskov - verdikt"
+    label_en: "Disk health - verdict"
+    risk: SAFE
+    command: "function PfNum($v, $map) { if ($null -eq $v) { return -1 }; if ($v -is [string]) { if ($map.ContainsKey($v)) { return [int]$map[$v] }; $n = 0; if ([int]::TryParse($v, [ref]$n)) { return $n }; return -1 }; try { return [int]$v } catch { return -1 } }; function PfShow($v) { if ($null -eq $v -or [string]$v -eq '') { '-' } else { [string]$v } }; $hsMap = @{ 'Healthy' = 0; 'Warning' = 1; 'Unhealthy' = 2; 'Unknown' = 5 }; $osMap = @{ 'OK' = 2; 'Degraded' = 3; 'Stressed' = 4; 'Predictive Failure' = 5; 'Error' = 6; 'Non-Recoverable Error' = 7 }; $osBad = @{ 5 = 'predictive_failure'; 6 = 'error'; 7 = 'non_recoverable_error' }; $osWarn = @{ 3 = 'degraded'; 4 = 'stressed' }; try { $disks = @(Get-PhysicalDisk -EA Stop) } catch { $disks = @() }; if ($disks.Count -eq 0) { Write-Output 'VERDICT: disk=? system=no status=UNKNOWN reasons=no_physical_disk_readable name=-'; exit 1 }; $sysDisk = ''; try { $sysDisk = [string](Get-Partition -DriveLetter ([string]$env:SystemDrive).TrimEnd(':') -EA Stop | Select-Object -First 1).DiskNumber } catch { }; $fps = @(); try { $fps = @(Get-CimInstance -Namespace 'root\\wmi' -ClassName MSStorageDriver_FailurePredictStatus -EA Stop) } catch { Write-Output 'PredictFailure (root\\wmi): not readable (needs administrator rights, or the driver does not report it)' }; $drives = @(); try { $drives = @(Get-CimInstance -ClassName Win32_DiskDrive -EA Stop) } catch { }; $used = @{}; foreach ($d in $disks) { $id = [string]$d.DeviceId; $reasons = New-Object System.Collections.Generic.List[string]; $bad = $false; $warn = $false; $h = PfNum $d.HealthStatus $hsMap; if ($h -eq 2) { $bad = $true; $reasons.Add('health_unhealthy') } elseif ($h -eq 1) { $warn = $true; $reasons.Add('health_warning') }; foreach ($o in @($d.OperationalStatus)) { $on = PfNum $o $osMap; if ($osBad.ContainsKey($on)) { $bad = $true; $reasons.Add('opstatus_' + $osBad[$on]) } elseif ($osWarn.ContainsKey($on)) { $warn = $true; $reasons.Add('opstatus_' + $osWarn[$on]) } }; $pred = 'n/a'; $pnp = [string]($drives | Where-Object { [string]$_.Index -eq $id } | Select-Object -First 1).PNPDeviceID; if ($pnp) { foreach ($f in $fps) { if (([string]$f.InstanceName).StartsWith($pnp, [StringComparison]::OrdinalIgnoreCase)) { $used[[string]$f.InstanceName] = $true; $pred = [string][bool]$f.PredictFailure; if ($f.PredictFailure) { $bad = $true; $reasons.Add('predict_failure') } } } }; $rc = $null; try { $rc = $d | Get-StorageReliabilityCounter -EA Stop } catch { }; if ($rc -and $null -ne $rc.ReadErrorsUncorrected -and [long]$rc.ReadErrorsUncorrected -gt 0) { $warn = $true; $reasons.Add('read_errors_uncorrected=' + $rc.ReadErrorsUncorrected) }; if ($rc -and $null -ne $rc.Wear -and [int]$rc.Wear -ge 90) { $warn = $true; $reasons.Add('wear=' + $rc.Wear) }; $isSys = if ($sysDisk -ne '' -and $sysDisk -eq $id) { 'yes' } else { 'no' }; $status = if ($bad) { 'FAILING' } elseif ($warn) { 'WARNING' } elseif ($h -eq 0) { 'OK' } else { 'UNKNOWN' }; if ($status -eq 'UNKNOWN') { $reasons.Add('health_unknown') }; $sizeGb = if ($d.Size) { [math]::Round([double]$d.Size / 1GB) } else { '-' }; Write-Output ('Disk ' + $id + ': ' + (PfShow $d.FriendlyName) + ' | system disk: ' + $isSys + ' | MediaType: ' + (PfShow $d.MediaType) + ' | BusType: ' + (PfShow $d.BusType) + ' | Size: ' + $sizeGb + ' GB'); Write-Output ('  HealthStatus: ' + (PfShow $d.HealthStatus) + ' | OperationalStatus: ' + (PfShow (@($d.OperationalStatus) -join ',')) + ' | PredictFailure: ' + $pred); if ($rc) { Write-Output ('  Wear: ' + (PfShow $rc.Wear) + ' % | Temperature: ' + (PfShow $rc.Temperature) + ' C | ReadErrorsUncorrected: ' + (PfShow $rc.ReadErrorsUncorrected) + ' | PowerOnHours: ' + (PfShow $rc.PowerOnHours)) } else { Write-Output '  Reliability counters: not readable (needs administrator rights, or a USB/RAID bridge hides them)' }; $why = if ($reasons.Count) { $reasons -join ',' } else { '-' }; Write-Output ('VERDICT: disk=' + $id + ' system=' + $isSys + ' status=' + $status + ' reasons=' + $why + ' name=' + (PfShow $d.FriendlyName)) }; foreach ($f in $fps) { if ($f.PredictFailure -and -not $used.ContainsKey([string]$f.InstanceName)) { Write-Output ('VERDICT: disk=? system=no status=FAILING reasons=predict_failure name=' + [string]$f.InstanceName) } }; exit 0"
+    description_sk: "Pre každý fyzický disk zistí stav zdravia, typ (HDD/SSD), zbernicu, predpoveď zlyhania SMART, opotrebovanie, teplotu, neopravené chyby čítania a počet hodín prevádzky. Pre každý disk vypíše verdikt: OK, WARNING (prvé príznaky), FAILING (disk zlyháva - najprv zálohujte alebo vytvorte image) alebo UNKNOWN (údaje nie sú dostupné, napr. za USB adaptérom). Nič nemení."
+    description_en: "For each physical disk reads the health status, type (HDD/SSD), bus, SMART failure prediction, wear, temperature, uncorrected read errors and power-on hours. Prints a verdict per disk: OK, WARNING (early signs), FAILING (the disk is failing - back it up or image it first) or UNKNOWN (no data, e.g. behind a USB adapter). Changes nothing."
   - id: disk_volume_report
     label_sk: "Prehľad diskových oddielov"
     label_en: "Volume report"
@@ -26,6 +48,7 @@ actions:
     label_sk: "Rýchla oprava disku (SpotFix)"
     label_en: "Quick disk repair (SpotFix)"
     risk: MODERATE
+    stresses_disk: true
     command: "$r = Repair-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -SpotFix -EA SilentlyContinue; $status = if ($r) { $r.HealthStatus } else { 'Unknown' }; Write-Output ('HealthStatus after SpotFix: ' + $status); if ($status -ne 'Healthy') { Write-Output 'Some errors could not be fixed online - run \"Full disk check at restart\" for a complete repair.' }"
     description_sk: "Opraví známe chyby NTFS online, bez reštartu. Ak niečo nedokáže opraviť online, odporučí plnú kontrolu pri reštarte."
     description_en: "Repairs known NTFS errors online, without a restart. Points to the full restart-time scan if it can't fix everything online."
@@ -33,6 +56,7 @@ actions:
     label_sk: "Optimalizácia disku (TRIM/defragmentácia)"
     label_en: "Optimize volume (TRIM/defrag)"
     risk: MODERATE
+    stresses_disk: true
     command: "Optimize-Volume -DriveLetter ($env:SystemDrive).TrimEnd(':') -Verbose 4>&1"
     description_sk: "Automaticky zvolí TRIM pre SSD alebo defragmentáciu pre HDD."
     description_en: "Automatically applies TRIM for SSDs or defragmentation for HDDs."
@@ -40,6 +64,7 @@ actions:
     label_sk: "Plná kontrola disku pri reštarte"
     label_en: "Full disk check at restart"
     risk: REQUIRES_REBOOT
+    stresses_disk: true
     command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r; $dirty = fsutil dirty query $env:SystemDrive; Write-Output $dirty"
     description_sk: "Naplánuje plnú kontrolu a opravu systémového disku pri ďalšom reštarte. Môže trvať dlho. Výstup potvrdí, či sa naplánovanie podarilo (dirty bit)."
     description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time. Output confirms whether scheduling succeeded (dirty bit)."

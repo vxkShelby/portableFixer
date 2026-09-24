@@ -1,8 +1,11 @@
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from portablefix import preflight
+from portablefix import disk_health, preflight
+from portablefix.disk_health import DiskVerdict
 from portablefix.models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from portablefix.preflight import (
     BLOCKER,
@@ -230,3 +233,125 @@ def test_healthy_probe_defaults_keep_the_host_state_out_of_tests():
     probes = preflight.system_probes(is_admin=lambda: True, busy_tasks=lambda: [])
     assert probes.pending_reboot() == []
     assert run_preflight(CHANGING, probes).issues == ()
+
+
+# --- G13: disk health gate before disk-stressing actions ---------------------
+
+
+STRESSING = BatchProfile(True, True, True, True, stresses_disk=True)
+
+
+def _disks(*verdicts):
+    calls = []
+
+    def probe():
+        calls.append(1)
+        return list(verdicts)
+
+    return probe, calls
+
+
+@pytest.mark.parametrize("status, code", [(disk_health.FAILING, "disk_failing"), (disk_health.WARNING, "disk_warning")])
+def test_failing_or_warning_system_disk_blocks_a_disk_stressing_batch(status, code):
+    probe, _ = _disks(DiskVerdict("0", status, ("predict_failure",), "WDC X", system=True))
+    result = run_preflight(STRESSING, _healthy(disk_health=probe))
+    [issue] = result.issues
+    assert (issue.code, issue.severity, issue.overridable) == (code, BLOCKER, True)
+    # Overridable: the tick on the review screen, logged as "override".
+    assert not result.hard_blocked
+    assert result.summary() == f"Pre-flight: blockers: {code}; warnings: none."
+    assert "#0 WDC X" in issue.text("en") and "image" in issue.text("en")
+    assert "image disku" in issue.text("sk")
+
+
+@pytest.mark.parametrize("status", [disk_health.OK, disk_health.UNKNOWN])
+def test_ok_or_unknown_disk_never_blocks(status):
+    probe, _ = _disks(DiskVerdict("0", status, system=True))
+    assert run_preflight(STRESSING, _healthy(disk_health=probe)).issues == ()
+
+
+def test_failing_probe_or_no_verdict_never_blocks():
+    def boom():
+        raise subprocess.TimeoutExpired("powershell", 20)
+
+    assert run_preflight(STRESSING, _healthy(disk_health=boom)).issues == ()
+    assert run_preflight(STRESSING, _healthy(disk_health=lambda: None)).issues == ()
+    assert run_preflight(STRESSING, _healthy(disk_health=lambda: [])).issues == ()
+
+
+def test_disk_probe_is_only_asked_for_a_disk_stressing_batch():
+    probe, calls = _disks(DiskVerdict("0", disk_health.FAILING, system=True))
+    assert run_preflight(CHANGING, _healthy(disk_health=probe)).issues == ()
+    assert calls == []
+    run_preflight(STRESSING, _healthy(disk_health=probe))
+    assert calls == [1]
+
+
+def test_only_the_system_disk_counts_when_it_is_known():
+    healthy_c_dying_usb = _disks(
+        DiskVerdict("0", disk_health.OK, system=True), DiskVerdict("1", disk_health.FAILING, name="USB")
+    )[0]
+    assert run_preflight(STRESSING, _healthy(disk_health=healthy_c_dying_usb)).issues == ()
+    # System disk not identified: any failing disk may be it.
+    unknown_system = _disks(DiskVerdict("0", disk_health.OK), DiskVerdict("1", disk_health.WARNING))[0]
+    assert _codes(run_preflight(STRESSING, _healthy(disk_health=unknown_system)), BLOCKER) == ["disk_warning"]
+    # FAILING outranks WARNING and only the failing disks are named.
+    both = _disks(DiskVerdict("0", disk_health.WARNING, system=True, name="SSD"),
+                  DiskVerdict("?", disk_health.FAILING, ("predict_failure",)))[0]
+    [issue] = run_preflight(STRESSING, _healthy(disk_health=both)).issues
+    assert issue.code == "disk_failing" and "SSD" not in issue.text("en")
+
+
+def test_disk_gate_also_guards_a_read_only_stressing_batch():
+    # A SAFE surface scan changes nothing but can still finish off a dying
+    # disk: the disk check runs, the rest of the pre-flight does not.
+    read_only = BatchProfile(stresses_disk=True)
+    probe, _ = _disks(DiskVerdict("0", disk_health.FAILING, system=True))
+    result = run_preflight(read_only, _healthy(disk_health=probe, is_admin=lambda: False, system_free_bytes=lambda: 1))
+    assert _codes(result) == ["disk_failing"]
+
+
+def test_disk_issues_combine_with_the_other_checks():
+    probe, _ = _disks(DiskVerdict("0", disk_health.WARNING, system=True))
+    result = run_preflight(STRESSING, _healthy(disk_health=probe, system_free_bytes=lambda: 8 * GB))
+    assert _codes(result, BLOCKER) == ["disk_warning"] and _codes(result, WARNING) == ["disk_tight"]
+
+
+@pytest.mark.parametrize("language", ["sk", "en"])
+def test_disk_issue_texts_are_translated(language):
+    for status in (disk_health.FAILING, disk_health.WARNING):
+        probe, _ = _disks(DiskVerdict("0", status, system=True))
+        [issue] = run_preflight(STRESSING, _healthy(disk_health=probe)).issues
+        text = issue.text(language)
+        assert "preflight_" not in text and "{" not in text
+
+
+def test_profile_marks_disk_stressing_actions():
+    stressing = (_module(ModuleCategory.REPAIR), _action(stresses_disk=True))
+    assert profile_for([stressing]).stresses_disk
+    assert not profile_for([(_module(ModuleCategory.REPAIR), _action())]).stresses_disk
+    read_only_scan = (_module(ModuleCategory.REPAIR), _action(risk=RiskLevel.SAFE, stresses_disk=True))
+    assert profile_for([read_only_scan]) == BatchProfile(stresses_disk=True)
+
+
+def test_real_catalog_disk_actions_trigger_the_gate():
+    from portablefix.module_engine import load_module
+
+    module = load_module(Path(__file__).resolve().parent.parent / "Modules" / "m03_disk" / "actions.yaml")
+    by_id = {a.id: a for a in module.actions}
+    for action_id in ("disk_full_scan_reboot", "disk_optimize_volume", "disk_spotfix"):
+        assert profile_for([(module, by_id[action_id])]).stresses_disk, action_id
+    assert not profile_for([(module, by_id["disk_health_verdict"])]).stresses_disk
+
+
+def test_system_probes_include_the_disk_probe(monkeypatch):
+    seen = []
+    monkeypatch.setattr(preflight, "_windows_disk_health", lambda: seen.append(1) or [])
+    probes = preflight.system_probes(is_admin=lambda: True, busy_tasks=lambda: [])
+    assert probes.disk_health() == [] and seen == [1]
+
+
+def test_healthy_default_disk_probe_keeps_the_host_disks_out_of_tests():
+    # tests/conftest.py stubs the PowerShell-backed probe with a healthy disk.
+    probes = preflight.system_probes(is_admin=lambda: True, busy_tasks=lambda: [])
+    assert run_preflight(STRESSING, probes).issues == ()
