@@ -257,9 +257,14 @@ class MainWindow(QMainWindow):
         self._window_minimized = False
         self._manual_update_check = False
         self._quiet_status_label: QLabel | None = None
-        # The winget panel's quiet-mode hook, rebound on every
-        # _build_ui - a quiet-mode toggle has to stop that panel's timer too.
+        # The winget panel's hooks, rebound on every _build_ui: the first
+        # re-applies its auto-check timer (quiet mode and a minimized window
+        # both stop it), the second runs after a quiet-mode toggle.
+        self._winget_apply_auto_check = None
         self._winget_on_quiet_mode_changed = None
+        # Set when quiet mode skipped the update check at start, so leaving
+        # quiet mode runs it - loud mode has no button for it.
+        self._startup_update_check_skipped = False
         self._undo_script_path: Path | None = None
         # (len(_undo_steps), len(_irreversible_actions)) last written to
         # undo.ps1 - both lists only ever grow, so the lengths identify it.
@@ -267,7 +272,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         # Quiet mode: no GitHub request at start; the sysinfo panel has a
         # button for an explicit check instead.
-        if not self.settings.quiet_mode:
+        if self.settings.quiet_mode:
+            self._startup_update_check_skipped = True
+        else:
             self._start_update_check()
         self._start_sysinfo_polling()
         # Bound to self (the window), not any widget rebuilt by _build_ui -
@@ -1856,9 +1863,13 @@ class MainWindow(QMainWindow):
             self.settings.winget_auto_check_minutes = minutes
             auto_check_interval.setEnabled(auto_check_checkbox.isChecked())
             # Quiet mode keeps the saved interval but never scans on its
-            # own - winget refreshes its sources over the network.
-            if minutes and not self.settings.quiet_mode:
-                auto_check_timer.start(minutes * 60_000)
+            # own - winget refreshes its sources over the network. A
+            # minimized window doesn't scan either, like the sysinfo polling.
+            if minutes and not self.settings.quiet_mode and not self._window_minimized:
+                # Every window state change re-applies this; restarting an
+                # unchanged running timer would push the next scan back.
+                if not auto_check_timer.isActive() or auto_check_timer.interval() != minutes * 60_000:
+                    auto_check_timer.start(minutes * 60_000)
             else:
                 auto_check_timer.stop()
 
@@ -1894,12 +1905,13 @@ class MainWindow(QMainWindow):
         auto_check_interval.currentIndexChanged.connect(lambda _index=0: apply_auto_check_setting())
 
         def on_quiet_mode_changed() -> None:
-            apply_auto_check_setting()
-            # Leaving quiet mode brings back the scan it skipped at start -
+            # The timer itself follows _apply_polling_state, which the
+            # toggle already ran. Leaving quiet mode brings back the scan it skipped at start -
             # otherwise the panel keeps saying "click Refresh" in loud mode.
             if not self.settings.quiet_mode and status_label.text() == self._t("winget_quiet_mode"):
                 auto_check_tick()
 
+        self._winget_apply_auto_check = apply_auto_check_setting
         self._winget_on_quiet_mode_changed = on_quiet_mode_changed
 
         refresh_ignored_panel()
@@ -2694,6 +2706,9 @@ class MainWindow(QMainWindow):
             if manual:
                 self.statusBar().showMessage(self._t("update_check_dev_build"), 8000)
             return
+        # Whatever starts a check now (a click, leaving quiet mode) covers
+        # the one skipped at start.
+        self._startup_update_check_skipped = False
         if manual:
             self._manual_update_check = True
             self.statusBar().showMessage(self._t("update_check_running"), 8000)
@@ -3594,7 +3609,8 @@ class MainWindow(QMainWindow):
             self._quiet_status_label.setObjectName("selectionScope")
             self.statusBar().addPermanentWidget(self._quiet_status_label)
         self._quiet_status_label.setText(self._t("quiet_mode_status_on" if quiet else "quiet_mode_status_off"))
-        self._quiet_status_label.setToolTip(self._t("quiet_mode_tooltip"))
+        # Its own text: the panel tooltip points at "the buttons below".
+        self._quiet_status_label.setToolTip(self._t("quiet_mode_status_tooltip"))
 
     def _on_quiet_mode_toggled(self, checked: bool) -> None:
         if checked == self.settings.quiet_mode:
@@ -3605,6 +3621,8 @@ class MainWindow(QMainWindow):
         self._apply_polling_state()
         if self._winget_on_quiet_mode_changed is not None:
             self._winget_on_quiet_mode_changed()
+        if not checked and self._startup_update_check_skipped:
+            self._start_update_check()
 
     def _on_check_network_clicked(self) -> None:
         # One ping and one VPN check on an explicit click; the busy flags
@@ -3626,7 +3644,8 @@ class MainWindow(QMainWindow):
         """Starts or stops each sysinfo timer to match the window and quiet
         mode: nothing polls while minimized (nobody sees the values, and the
         sensor and VPN checks spawn processes), and the network ones (ping,
-        VPN) never run on their own in quiet mode."""
+        VPN) never run on their own in quiet mode. The winget auto-check
+        timer follows the same rules."""
         if self._closed:
             return
         visible = not self._window_minimized
@@ -3645,6 +3664,10 @@ class MainWindow(QMainWindow):
                 tick()
             elif not active and timer.isActive():
                 timer.stop()
+        # The winget auto-check follows the same two rules; its timer lives
+        # in the panel, so the panel re-applies it.
+        if self._winget_apply_auto_check is not None:
+            self._winget_apply_auto_check()
 
     def _on_export_diagnostics_clicked(self) -> None:
         default_name = f"PortableFix-diagnostics-{self.run_id}.zip"

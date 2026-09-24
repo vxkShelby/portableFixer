@@ -5258,6 +5258,8 @@ def test_quiet_mode_starts_nothing_network_related_at_window_creation(qtbot, tmp
     assert window._quiet_status_label.text() == translate("quiet_mode_status_on", "en")
     assert not window.check_network_button.isHidden()
     assert not window.check_updates_button.isHidden()
+    # The status bar has nothing "below" it - it gets its own tooltip.
+    assert window._quiet_status_label.toolTip() == translate("quiet_mode_status_tooltip", "en")
 
 
 def test_default_mode_still_polls_and_checks_for_updates_at_start(qtbot, tmp_path, monkeypatch):
@@ -5335,7 +5337,32 @@ def test_leaving_quiet_mode_runs_the_skipped_winget_scan_once(qtbot, tmp_path, m
     assert log == []
 
     window.quiet_mode_checkbox.setChecked(False)
-    assert sorted(_names(log)) == ["ping", "vpn", "winget"]
+    # The update check skipped at start runs too: loud mode has no button.
+    assert sorted(_names(log)) == ["ping", "update", "vpn", "winget"]
+    window._winget_scan_runner = None
+    log.clear()
+
+    # Only once: another quiet on/off round doesn't repeat it.
+    window.quiet_mode_checkbox.setChecked(True)
+    window.quiet_mode_checkbox.setChecked(False)
+    assert "update" not in _names(log)
+
+
+def test_leaving_quiet_mode_after_a_manual_update_check_does_not_repeat_it(qtbot, tmp_path, monkeypatch):
+    log = _patch_network_runners(monkeypatch)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", quiet_mode=True),
+        is_admin=True, run_id="run_quiet_manual_then_leave",
+    )
+    qtbot.addWidget(window)
+    window.check_updates_button.click()
+    assert _names(log) == ["update"]
+    log[0][1].check_finished.emit(None)
+    log.clear()
+
+    window.quiet_mode_checkbox.setChecked(False)
+    assert "update" not in _names(log)
     window._winget_scan_runner = None
 
 
@@ -5419,14 +5446,21 @@ def test_manual_update_check_from_source_says_it_needs_the_packaged_build(qtbot,
 
 
 def test_minimized_window_pauses_all_polling_and_resumes_on_restore(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QTimer
 
     log = _patch_network_runners(monkeypatch)
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
-        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_minimized",
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", winget_auto_check_minutes=15),
+        is_admin=True, run_id="run_minimized",
     )
     qtbot.addWidget(window)
+
+    def auto_check_timers():
+        return [t for t in window.findChildren(QTimer) if t.isActive() and t.interval() == 15 * 60_000]
+
+    assert len(auto_check_timers()) == 1
+    window._winget_scan_runner = None
     for name, runner in log:
         if name == "ping":
             runner.ping_ready.emit(None)
@@ -5438,9 +5472,14 @@ def test_minimized_window_pauses_all_polling_and_resumes_on_restore(qtbot, tmp_p
 
     window.setWindowState(Qt.WindowState.WindowMinimized)
     assert not any(t.isActive() for t in timers)
+    # The winget auto-check (network + winget.exe) pauses too.
+    assert auto_check_timers() == []
+    # The interval is kept for when the window comes back.
+    assert window.settings.winget_auto_check_minutes == 15
 
     window.setWindowState(Qt.WindowState.WindowNoState)
     assert all(t.isActive() for t in timers)
+    assert len(auto_check_timers()) == 1
     assert sorted(_names(log)) == ["ping", "vpn"]
 
     # Restoring a quiet-mode window brings back only the local polling.

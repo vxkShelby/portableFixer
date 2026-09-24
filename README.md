@@ -173,9 +173,10 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   tlačidlá fungujú ďalej a sieť kontaktujú len po kliknutí:
   „Skontrolovať ping a VPN teraz“, „Skontrolovať aktualizácie“, „Test
   rýchlosti“ a „Obnoviť“ vo winget paneli. Stav režimu je vpravo
-  v stavovom riadku. Nezávisle od režimu sa pri minimalizovanom okne
-  zastaví všetok polling panelu (CPU, RAM, senzory, ping, VPN) a po
-  obnovení okna sa hneď obnoví.
+  v stavovom riadku. Po vypnutí režimu appka dobehne vynechanú kontrolu
+  aktualizácií aj winget. Nezávisle od režimu sa pri minimalizovanom
+  okne zastaví všetok polling panelu (CPU, RAM, senzory, ping, VPN)
+  aj automatická kontrola winget a po obnovení okna sa hneď obnoví.
 - **Ochrana pred zmazaním vlastných súborov:** akcie čistiace `%TEMP%`
   a `%WINDIR%\Temp` (`user_temp`, `system_temp`) rozpoznajú, ak appka
   beží zvnútra tohto priečinka, a jej priečinok vynechajú - ak sa to

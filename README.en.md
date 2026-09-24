@@ -175,10 +175,11 @@ PowerShell.
   repeated ping could trigger an EDR alert. The manual buttons keep
   working and reach the network only when clicked: "Check ping and VPN
   now", "Check for updates", "Speed test" and "Refresh" in the winget
-  panel. The mode is shown on the right of the status bar. Regardless
-  of the mode, all panel polling (CPU, RAM, sensors, ping, VPN) stops
-  while the window is minimized and resumes right away when it is
-  restored.
+  panel. The mode is shown on the right of the status bar. Turning the
+  mode off runs the skipped update check and winget scan. Regardless
+  of the mode, all panel polling (CPU, RAM, sensors, ping, VPN) and
+  the automatic winget check stop while the window is minimized and
+  resume right away when it is restored.
 - **Self-delete protection:** the actions that wipe `%TEMP%` and
   `%WINDIR%\Temp` (`user_temp`, `system_temp`) detect if the app is
   running from inside that folder and exclude it - if that can't be
