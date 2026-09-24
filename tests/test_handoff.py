@@ -17,11 +17,13 @@ def _write_run(state_dir, run_id=RUN, host=HOST, undo=True):
     (reports / f"{host}_{run_id}.json").write_text(f'{{"run_id": "{run_id}"}}', encoding="utf-8")
     logs = state_dir / "Logs"
     logs.mkdir(parents=True, exist_ok=True)
-    (logs / f"{run_id}.jsonl").write_text(f'{{"run_id": "{run_id}"}}\n', encoding="utf-8")
+    # write_bytes, not write_text: text mode turns \n into \r\n on Windows
+    # and the tests compare the zipped bytes exactly.
+    (logs / f"{run_id}.jsonl").write_bytes(f'{{"run_id": "{run_id}"}}\n'.encode("utf-8"))
     if undo:
         backups = state_dir / "Backups" / run_id
         backups.mkdir(parents=True, exist_ok=True)
-        (backups / "undo.ps1").write_text("# undo\n", encoding="utf-8-sig")
+        (backups / "undo.ps1").write_bytes("# undo\n".encode("utf-8-sig"))
 
 
 def _names(zip_path):
