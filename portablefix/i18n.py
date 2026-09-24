@@ -236,6 +236,9 @@ _STRINGS = {
         "snapshot_improved": "zlepšenie",
         "snapshot_worsened": "zhoršenie",
         "snapshot_lower_bound_note": "≥ = zastavené časovým limitom, v skutočnosti viac",
+        "report_exit_timeout": "prekročený časový limit – ukončené",
+        "report_exit_cancelled": "zrušené technikom",
+        "report_exit_no_powershell": "PowerShell sa nenašiel",
     },
     "en": {
         "app_title": "PortableFix",
@@ -474,6 +477,9 @@ _STRINGS = {
         "snapshot_improved": "improved",
         "snapshot_worsened": "worse",
         "snapshot_lower_bound_note": "≥ = stopped at the time limit, the real value is higher",
+        "report_exit_timeout": "timed out – terminated",
+        "report_exit_cancelled": "cancelled by the technician",
+        "report_exit_no_powershell": "PowerShell not found",
     },
 }
 
