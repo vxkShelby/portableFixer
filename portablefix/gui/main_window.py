@@ -191,6 +191,11 @@ class MainWindow(QMainWindow):
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
+        # A panel's own restore point (uninstaller, leftover cleanup, winget -
+        # G01) is kept apart from the batch's: overwriting one attribute
+        # with the other lost track of a running Checkpoint-Computer, so
+        # close waited for the wrong thread.
+        self._pending_panel_restore_point_runner: restore_point.RestorePointRunner | None = None
         # Full registry hive backup (research G24): asked for on the review
         # screen, made once per batch right before its first DESTRUCTIVE
         # action; every folder made this session is named in undo.ps1.
@@ -326,6 +331,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         rp_runner = self._pending_restore_point_runner
         waiting_key = "closing_waiting_restore_point"
+        if not _thread_running(rp_runner) and _thread_running(self._pending_panel_restore_point_runner):
+            rp_runner = self._pending_panel_restore_point_runner
         if not _thread_running(rp_runner) and _thread_running(self._pending_hive_backup_runner):
             # `reg save` of two hives can't be interrupted either and can take
             # minutes on a slow stick - same non-blocking close.
@@ -431,6 +438,7 @@ class MainWindow(QMainWindow):
             # QThread, aborting the process before create_restore_point could
             # put the 24h throttle registry value back.
             (self._pending_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
+            (self._pending_panel_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
             (self._pending_hive_backup_runner, hive_backup.HIVE_SAVE_TIMEOUT_SEC * len(hive_backup.HIVES) * 1000 + 5_000),
             # Can't be interrupted mid-write, and it re-reads the whole
             # session's audit log - allow for a slow USB stick.
@@ -2786,7 +2794,18 @@ class MainWindow(QMainWindow):
             # Callers never get here in DRY-RUN; a DRY-RUN must never create
             # a restore point even if one did.
             return False
-        if _thread_running(self._pending_restore_point_runner) or _thread_running(self._pending_hive_backup_runner):
+        if self._batch_active:
+            # The batch may reach its own restore point (or change the same
+            # programs) while this one runs - two Checkpoint-Computer calls
+            # at once each save and restore the 24h throttle value, and the
+            # second one can put back the first one's temporary 0 for good.
+            self.statusBar().showMessage(self._t("panel_blocked_by_batch"))
+            return False
+        if (
+            _thread_running(self._pending_restore_point_runner)
+            or _thread_running(self._pending_panel_restore_point_runner)
+            or _thread_running(self._pending_hive_backup_runner)
+        ):
             # Windows makes one checkpoint at a time - a second one started
             # now would fail and look like "System Restore is broken".
             self.statusBar().showMessage(self._t("panel_restore_point_busy"))
@@ -2797,7 +2816,7 @@ class MainWindow(QMainWindow):
         runner.result_ready.connect(
             lambda success, detail, info, s=subject, cb=on_done: self._on_panel_restore_point_checked(success, detail, info, s, cb)
         )
-        self._pending_restore_point_runner = runner
+        self._pending_panel_restore_point_runner = runner
         runner.start()
         return True
 
@@ -2822,6 +2841,17 @@ class MainWindow(QMainWindow):
                 warned=True, warning_text=self._t("restore_point_failed_confirm"),
                 subject=subject, decision="proceed" if proceed else "skip",
             )
+        if proceed and self.settings.dry_run:
+            self.statusBar().showMessage(self._t("panel_cancelled_dry_run"))
+            # DRY-RUN was switched on during the minutes Checkpoint-Computer
+            # took - the batch re-checks it per action, so must the panel:
+            # the real uninstall/update it was about to start is dropped.
+            self._log_system_event(
+                "risk_declined", None,
+                "DRY-RUN was switched on while the restore point was being made - nothing was changed.",
+                subject=subject, decision="declined",
+            )
+            proceed = False
         try:
             on_done(proceed)
         except RuntimeError:
@@ -2900,7 +2930,7 @@ class MainWindow(QMainWindow):
         self.settings.dry_run = checked
 
     def _on_toggle_language(self) -> None:
-        if _thread_running(self._pending_restore_point_runner):
+        if _thread_running(self._pending_panel_restore_point_runner):
             # A panel's restore point (G01) finishes into that panel's
             # widgets - a rebuild now would delete them under it.
             self.statusBar().showMessage(self._t("panel_restore_point_busy"))
@@ -3113,7 +3143,7 @@ class MainWindow(QMainWindow):
         # waits at most 65 s for it - well inside the updater's 600 s.
         if _thread_running(self._winget_update_runner):
             tasks.append(self._t("update_busy_winget_update"))
-        if _thread_running(self._pending_restore_point_runner):
+        if _thread_running(self._pending_restore_point_runner) or _thread_running(self._pending_panel_restore_point_runner):
             tasks.append(self._t("update_busy_restore_point"))
         if _thread_running(self._uninstall_runner):
             tasks.append(self._t("update_busy_uninstall"))
@@ -3301,7 +3331,7 @@ class MainWindow(QMainWindow):
             tasks.append(self._t("update_busy_winget_update"))
         if _thread_running(self._uninstall_runner):
             tasks.append(self._t("update_busy_uninstall"))
-        if _thread_running(self._pending_restore_point_runner):
+        if _thread_running(self._pending_panel_restore_point_runner):
             # A panel's restore point (G01): the batch's own would collide
             # with it - Windows makes one checkpoint at a time.
             tasks.append(self._t("update_busy_restore_point"))
@@ -3479,6 +3509,16 @@ class MainWindow(QMainWindow):
 
         needs_restore_point = preflight.needs_restore_point(module, action)
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
+            panel_runner = self._pending_panel_restore_point_runner
+            if _thread_running(panel_runner):
+                # Pre-flight refuses a batch while a panel's restore point
+                # runs, and panels refuse one during a batch - this is the
+                # last line: never two checkpoints at once. Wait for it -
+                # polled, since its finished signal may already have fired
+                # between the check and a connect.
+                self._queue.insert(0, action_id)
+                QTimer.singleShot(500, self._run_next)
+                return
             self._restore_point_attempted = True
             self._write_undo_script()
             rp_runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)

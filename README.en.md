@@ -89,7 +89,11 @@ PowerShell.
   program, package and deleted leftover registry entry (backed up to
   `Backups/<run-id>/*.reg` first) is written to the audit log. A real
   uninstall, update or leftover cleanup first creates a restore point
-  (just like a batch, including the question when it fails). When a
+  (just like a batch, including the question when it fails). While a
+  batch of actions runs, the panels start no real uninstall or update
+  (two restore points at once would overwrite each other's throttle
+  setting), and when DRY-RUN is switched on while the restore point is
+  being made, the change is no longer made. When a
   program to uninstall or update is running right now (matched by the
   path of its executable), the panel names it and asks to close it:
   Retry checks again, Ignore continues (logged), Cancel changes nothing.
@@ -156,7 +160,10 @@ PowerShell.
   `changes_system: true` (a catalog test enforces it). Windows' 24-hour
   restore point throttle is lifted for that one checkpoint and the
   original setting is put back right after - previously Windows silently
-  skipped the checkpoint and the batch ran without one.
+  skipped the checkpoint and the batch ran without one. A batch of only
+  SAFE actions that change nothing gets neither a restore point nor a
+  pre-flight check, so it can also run alongside an uninstall or a
+  winget update.
 - **Full registry backup (optional):** for a batch with a DESTRUCTIVE
   action the review screen also offers (unticked) a `reg save` of
   HKLM\SOFTWARE and HKLM\SYSTEM with an estimated size. It is written to
@@ -165,7 +172,9 @@ PowerShell.
   folder with the manual offline (WinRE) restore steps. PortableFix never
   restores it by itself - it would roll back every registry change since
   the backup, not just its own. If the backup fails, the app asks whether
-  to run the DESTRUCTIVE actions without it.
+  to run the DESTRUCTIVE actions without it. The folder holds the
+  client's whole machine registry, stored passwords (e.g. autologon)
+  and the boot key included - delete it or hand it over after the job.
 - **undo.ps1:** actions with a reversible effect (e.g. resetting the
   hosts file, stopping services, changing the power plan) append their
   undo command to `Backups/<run-id>/undo.ps1` as they run - in reverse

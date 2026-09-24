@@ -5736,6 +5736,7 @@ def test_winget_dry_run_never_creates_a_restore_point(qtbot, tmp_path, monkeypat
     _panel_button(card, window._t("winget_update_selected_button")).click()
 
     assert window._pending_restore_point_runner is None
+    assert window._pending_panel_restore_point_runner is None
     assert _system_events(audit_log_path(tmp_path, "run_g01_winget_dry"), "restore_point") == []
 
 
@@ -5752,15 +5753,153 @@ def test_panel_restore_point_is_refused_while_another_one_is_being_made(qtbot, t
         def isRunning(self):
             return True
 
-    window._pending_restore_point_runner = _Busy()
+    window._pending_panel_restore_point_runner = _Busy()
     _panel_checkbox(card, "Real App").setChecked(True)
     button = _panel_button(card, window._t("uninstaller_uninstall_button"))
     button.click()
-    window._pending_restore_point_runner = None
+    window._pending_panel_restore_point_runner = None
 
     assert rp_calls == []
     assert button.isEnabled()
     assert window.statusBar().currentMessage() == window._t("panel_restore_point_busy")
+
+
+def test_panel_refuses_a_restore_point_and_uninstall_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
+    # A batch that started with a long SAFE scan reaches its own restore
+    # point later - a panel's Checkpoint-Computer running then would
+    # overlap it and could leave the 24h throttle disabled for good.
+    from portablefix import uninstaller
+
+    rp_calls = _stub_restore_point(monkeypatch)
+    program = _fake_installed_program("Real App")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_batch_busy", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+
+    window._batch_active = True
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+    window._batch_active = False
+
+    assert rp_calls == []
+    assert window._pending_panel_restore_point_runner is None
+    assert button.isEnabled()
+    assert window.statusBar().currentMessage() == window._t("panel_blocked_by_batch")
+
+
+def test_batch_restore_point_waits_for_a_running_panel_restore_point(qtbot, tmp_path, monkeypatch):
+    # The last line behind pre-flight and the panel refusal: the batch never
+    # starts a second checkpoint while a panel's is still being made, and
+    # the panel's runner stays tracked (close waits for it).
+    import threading
+
+    from portablefix import restore_point, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    gate = threading.Event()
+    in_flight = []
+    overlaps = []
+
+    def fake_create(description):
+        in_flight.append(description)
+        if len(in_flight) > 1:
+            overlaps.append(len(in_flight))
+        if len(in_flight) == 1 and not gate.is_set():
+            gate.wait(10)
+        in_flight.pop()
+        return True, ""
+
+    monkeypatch.setattr(restore_point, "create_restore_point", fake_create)
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: (True, "ok"))
+    program = _fake_installed_program("Real App")
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_rp_overlap", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    # The batch's action itself is not the point here - only its restore point.
+    monkeypatch.setattr(window, "_dispatch_action", lambda module, action: window._run_next())
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    panel_runner = window._pending_panel_restore_point_runner
+    assert _thread_running(panel_runner)
+
+    # A batch already in progress (its SAFE scans done) reaches its first
+    # MODERATE action now.
+    from portablefix.models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
+
+    action = ActionDef(id="mod_x", label_sk="x", label_en="x", risk=RiskLevel.MODERATE, command="Write-Output 'x'")
+    window.modules.append(ModuleDef(module_id="m99", actions=[action], category=ModuleCategory.CLEANUP))
+    window._queue = [action.id]
+    window._queue_total = 1
+    window._batch_active = True
+    window._run_next()
+
+    assert window._pending_restore_point_runner is None
+    assert window._queue == [action.id]
+    gate.set()
+    qtbot.waitUntil(lambda: window._restore_point_attempted, timeout=10000)
+    assert window._pending_panel_restore_point_runner is panel_runner
+    qtbot.waitUntil(lambda: not _thread_running(window._pending_restore_point_runner), timeout=10000)
+    _wait_batch_idle(qtbot, window)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    assert overlaps == []
+
+
+def test_panel_uninstall_is_dropped_when_dry_run_is_switched_on_during_the_restore_point(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    gate = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: gate.wait(10) and (True, ""))
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    program = _fake_installed_program("Real App")
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_rp_dry", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    _panel_checkbox(card, "Real App").setChecked(True)
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+    button.click()
+    runner = window._pending_panel_restore_point_runner
+    assert _thread_running(runner)
+
+    window._on_dry_run_toggled(True)
+    gate.set()
+
+    log_path = audit_log_path(tmp_path, "run_g01_rp_dry")
+    qtbot.waitUntil(lambda: bool(_system_events(log_path, "risk_declined")), timeout=10000)
+    [declined] = _system_events(log_path, "risk_declined")
+    assert declined["subject"] == "_uninstaller/Real App" and declined["decision"] == "declined"
+    assert not [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+    assert button.isEnabled()
+    qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10000)
+
+
+def test_close_waits_for_a_running_panel_restore_point(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point, uninstaller
+    from portablefix.gui.main_window import _thread_running
+
+    gate = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda d: gate.wait(10) and (True, ""))
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    program = _fake_installed_program("Real App")
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g01_rp_close", [program], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    runner = window._pending_panel_restore_point_runner
+    assert _thread_running(runner)
+
+    window.close()
+    assert window._close_after_restore_point is True
+    assert window._closed is False
+    assert window.statusBar().currentMessage() == window._t("closing_waiting_restore_point")
+    gate.set()
+    qtbot.waitUntil(lambda: window._closed, timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10000)
+    # The uninstall it guarded never started once the window was closing.
+    assert not [e for e in _audit_entries(audit_log_path(tmp_path, "run_g01_rp_close")) if e["module_id"] == "_uninstaller"]
 
 
 def test_review_restore_point_label_follows_the_only_destructive_tick(qtbot, tmp_path, monkeypatch):

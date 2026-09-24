@@ -89,7 +89,10 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   pred vymazaním zálohuje do `Backups/<run-id>/*.reg`) sa zapíše do
   audit logu. Pred ostrým odinštalovaním, aktualizáciou aj čistením
   zvyškov sa vytvorí bod obnovenia (rovnako ako pri dávke, vrátane
-  otázky pri jeho zlyhaní). Ak odinštalovaný alebo aktualizovaný program
+  otázky pri jeho zlyhaní). Kým beží dávka akcií, panely ostré
+  odinštalovanie ani aktualizáciu nespustia (dva body obnovenia naraz
+  by si prepísali nastavenie limitu), a ak sa počas vytvárania bodu
+  zapne DRY-RUN, zmena sa už nevykoná. Ak odinštalovaný alebo aktualizovaný program
   práve beží (podľa cesty k spustenému súboru), panel ho vymenuje a
   požiada o zatvorenie: Retry skontroluje znova, Ignore pokračuje
   (zapíše sa), Cancel nič nezmení.
@@ -155,7 +158,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   test katalógu). Windowsový 24-hodinový limit na vytváranie bodov
   obnovenia sa na tento jeden bod dočasne zruší a pôvodné nastavenie
   sa hneď obnoví - predtým Windows bod potichu preskočil a dávka
-  bežala bez neho.
+  bežala bez neho. Dávka len zo SAFE akcií, ktoré systém nemenia,
+  nemá bod obnovenia ani pre-flight kontrolu, a preto môže bežať aj
+  popri odinštalovaní či winget aktualizácii.
 - **Úplná záloha registra (voliteľná):** pri dávke s DESTRUCTIVE
   akciou ponúkne kontrolná obrazovka (nezaškrtnuté) aj `reg save`
   HKLM\SOFTWARE a HKLM\SYSTEM s odhadom veľkosti. Záloha sa uloží
@@ -164,7 +169,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   priečinok s postupom ručnej obnovy offline (WinRE). PortableFix ju
   nikdy neobnoví sám - vrátila by všetky zmeny registra od zálohy, nielen
   tie jeho. Ak sa záloha nepodarí, aplikácia sa opýta, či DESTRUCTIVE
-  akcie spustiť aj bez nej.
+  akcie spustiť aj bez nej. Priečinok obsahuje celý register klienta
+  vrátane uložených hesiel (napr. automatického prihlásenia) a boot
+  kľúča - po zákazke ho zmažte alebo odovzdajte klientovi.
 - **undo.ps1:** akcie s vratným účinkom (napr. reset hosts súboru,
   zastavenie služieb, zmena plánu napájania) priebežne zapisujú svoje
   undo príkazy do `Backups/<run-id>/undo.ps1` — v opačnom (LIFO)
