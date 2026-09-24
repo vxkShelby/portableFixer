@@ -1538,10 +1538,16 @@ class MainWindow(QMainWindow):
         status_label = QLabel(self._t("winget_scanning"))
         status_label.setObjectName("wingetBanner")
         status_label.setProperty("state", "ok")
+        # The unavailable/failed messages carry a hint and run to a few
+        # lines; unwrapped they would stretch the whole dashboard card.
+        status_label.setWordWrap(True)
         panel_layout.addWidget(status_label)
 
-        def set_status(text: str, state: str) -> None:
+        def set_status(text: str, state: str, detail: str = "") -> None:
             status_label.setText(text)
+            # winget's own (localized) words on a failed scan - shown as-is,
+            # never parsed; cleared by every other status.
+            status_label.setToolTip(detail)
             status_label.setProperty("state", state)
             status_label.style().unpolish(status_label)
             status_label.style().polish(status_label)
@@ -1755,6 +1761,35 @@ class MainWindow(QMainWindow):
             select_row_widget.setVisible(True)
             update_button_state()
 
+        def describe_scan_error(error) -> str:
+            code = ""
+            if error.exit_code is not None:
+                code = self._t("winget_exit_code_suffix").format(code=error.exit_code_hex)
+            if error.kind == "unavailable":
+                key = "winget_unavailable_not_found" if error.reason == "not_found" else "winget_unavailable_cannot_start"
+                return self._t(key).format(code=code)
+            if error.reason == "timeout":
+                return self._t("winget_scan_timeout").format(seconds=winget_updates._SCAN_TIMEOUT_SEC)
+            if error.reason == "unparsed":
+                return self._t("winget_scan_unparsed")
+            text = self._t("winget_scan_failed").format(code=code)
+            hint = {"sources": "winget_scan_hint_sources", "outdated": "winget_scan_hint_outdated"}.get(error.reason)
+            if hint:
+                text += " " + self._t(hint)
+            return text
+
+        def on_scan_failed(error) -> None:
+            # An empty list here used to read as "no updates" - a false
+            # all-clear on a PC where winget is missing or the scan broke.
+            # Rows winget still listed before failing are real updates, so
+            # they stay; the banner says the list may be incomplete.
+            packages = list(error.packages)
+            populate(packages)
+            text = describe_scan_error(error)
+            if packages:
+                text += " " + self._t("winget_scan_partial")
+            set_status(text, "warn", error.detail)
+
         def start_scan() -> None:
             set_status(self._t("winget_scanning"), "ok")
             list_scroll.setVisible(False)
@@ -1762,6 +1797,7 @@ class MainWindow(QMainWindow):
             runner = winget_updates.WingetScanRunner(parent=panel)
             self._winget_scan_runner = runner
             runner.scan_finished.connect(populate)
+            runner.scan_failed.connect(on_scan_failed)
             runner.start()
 
         def export_list() -> None:

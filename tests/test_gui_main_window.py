@@ -941,10 +941,14 @@ def test_winget_category_builds_dynamic_update_panel_without_crashing(qtbot, tmp
 
     def scan_settled() -> bool:
         texts = [label.text() for label in card.findChildren(QLabel)]
-        return any("No winget updates" in t or "Updates found" in t for t in texts)
+        return any(
+            "No winget updates" in t or "Updates found" in t or t.startswith("winget ") or "winget update check" in t
+            for t in texts
+        )
 
     # The background winget scan (real subprocess call) must finish and
-    # settle on either outcome without the window ever crashing.
+    # settle on any outcome - updates, none, or winget unavailable/failed
+    # (a machine without winget) - without the window ever crashing.
     qtbot.waitUntil(scan_settled, timeout=20000)
 
 
@@ -3963,6 +3967,66 @@ def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monke
     assert "NOT reversible" in undo_text and "Fake.Editor" in undo_text
 
 
+def _winget_failed_window(qtbot, tmp_path, monkeypatch, run_id, error):
+    from PySide6.QtWidgets import QLabel
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+    from portablefix.models import ModuleCategory
+
+    def failing_scan():
+        raise error
+
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", failing_scan)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True),
+        is_admin=True, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    card = window._category_groups[ModuleCategory.DASHBOARD]
+    banner = next(label for label in card.findChildren(QLabel) if label.objectName() == "wingetBanner")
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    qtbot.waitUntil(lambda: banner.text() != window._t("winget_scanning"), timeout=10000)
+    return window, card, banner
+
+
+def test_winget_panel_says_winget_is_missing_instead_of_no_updates(qtbot, tmp_path, monkeypatch):
+    # A PC without App Installer used to show "No winget updates found." -
+    # a false all-clear that ended up in the technician's handover.
+    from portablefix.winget_updates import WingetScanError
+
+    window, card, banner = _winget_failed_window(
+        qtbot, tmp_path, monkeypatch, "run_winget_missing", WingetScanError("unavailable", "not_found"),
+    )
+    assert banner.text() == window._t("winget_unavailable_not_found")
+    assert banner.property("state") == "warn"
+    assert window._t("winget_no_updates") not in banner.text()
+    # Refresh stays reachable to re-check once App Installer is fixed.
+    assert _panel_button(card, window._t("winget_refresh_button")).isVisibleTo(card)
+
+
+def test_winget_panel_shows_a_failed_scan_with_its_hex_exit_code(qtbot, tmp_path, monkeypatch):
+    from portablefix.winget_updates import WingetScanError
+
+    error = WingetScanError("error", "sources", exit_code=0x8A15004B, detail="Zlyhanie pri otváraní zdrojov.")
+    window, card, banner = _winget_failed_window(qtbot, tmp_path, monkeypatch, "run_winget_failed", error)
+    assert "0x8A15004B" in banner.text()
+    assert window._t("winget_scan_hint_sources") in banner.text()
+    assert banner.toolTip() == "Zlyhanie pri otváraní zdrojov."
+
+
+def test_winget_panel_keeps_rows_listed_before_a_failure(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix.winget_updates import WingetScanError
+
+    error = WingetScanError("error", "failed", exit_code=0x8A150001, packages=[_fake_outdated_package()])
+    window, card, banner = _winget_failed_window(qtbot, tmp_path, monkeypatch, "run_winget_partial", error)
+    assert any(cb.toolTip() == "Fake.Editor" for cb in card.findChildren(QCheckBox))
+    assert "0x8A150001" in banner.text() and window._t("winget_scan_partial") in banner.text()
+
+
 def test_panel_confirmation_list_is_capped(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_confirm_cap")
@@ -4560,6 +4624,7 @@ def test_winget_auto_check_skips_while_the_app_updates(qtbot, tmp_path, monkeypa
         def __init__(self, parent=None):
             started.append(True)
             self.scan_finished = self
+            self.scan_failed = self
 
         def connect(self, slot):
             pass

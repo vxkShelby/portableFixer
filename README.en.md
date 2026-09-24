@@ -88,6 +88,17 @@ PowerShell.
   (they only print the commands), ask before changing anything, and every
   program, package and deleted leftover registry entry (backed up to
   `Backups/<run-id>/*.reg` first) is written to the audit log.
+- **The winget panel never fakes "all up to date":** when winget is
+  missing or cannot start (no App Installer, not registered for this
+  account, missing dependencies) the panel says so, with a hint on what
+  to do. A failed check shows winget's exit code in hex (e.g.
+  `0x8A15004B`) and, for broken sources, points to the "Reset package
+  sources (winget)" action. The list is read independently of the
+  Windows display language - through the Microsoft.WinGet.Client module
+  when it is installed, otherwise from the `winget upgrade` table by its
+  structure rather than its (translated) column headers. A winget that
+  is not on PATH (e.g. in an elevated session) is still found in the
+  WindowsApps folder.
 
 ## Safety mechanisms
 
