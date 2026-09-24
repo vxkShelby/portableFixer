@@ -38,10 +38,10 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M04 | Oprava | Integrita systému: DISM, SFC, AppX, WMI |
 | M05 | Oprava | Windows Update: reset služieb a cache, DLL, detekcia |
 | M06 | Oprava | Sieť: DNS, hosts, DHCP, Winsock, TCP/IP |
-| M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby |
+| M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby, WMI, IFEO backdoor, služby bez úvodzoviek |
 | M08 | Zabezpečenie | Defender, firewall, UAC audit + rýchly sken, WPBT disable |
 | M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu |
-| M10 | Diagnostika | Drivery: problémové zariadenia, ovládače tretích strán |
+| M10 | Diagnostika | Drivery: problémové zariadenia (+ reštart), ovládače tretích strán, sieť/GPU, záloha/obnova |
 | M11 | — | Reporting (HTML report po každej dávke, nie katalóg) |
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
 | M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri, Recall/Click to Do |

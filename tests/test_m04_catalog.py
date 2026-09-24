@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m04_integrity" / "actions.yaml"
 
 
-def test_m04_catalog_loads_12_actions_in_repair_category():
+def test_m04_catalog_loads_13_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m04_integrity"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 12
+    assert len(module.actions) == 13
 
 
 def test_m04_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m04_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 5
+    assert len(by_risk[RiskLevel.SAFE]) == 6
     assert len(by_risk[RiskLevel.MODERATE]) == 5
     assert len(by_risk[RiskLevel.DESTRUCTIVE]) == 1
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
@@ -40,6 +40,7 @@ def test_m04_catalog_covers_expected_ids():
         "search_index_rebuild",
         "store_cache_reset",
         "perf_counters_rebuild",
+        "profile_list_report",
     }
 
 
@@ -74,3 +75,19 @@ def test_m04_catalog_no_preview_command_set():
     module = load_module(CATALOG_PATH)
     for action in module.actions:
         assert action.preview_command is None
+
+
+def test_m04_catalog_profile_list_report_is_read_only_and_flags_temp_profile_causes():
+    # Deliberately report-only: picking the wrong SID to "repair" on a
+    # shared PC breaks another user's profile (research-repair-additions.md).
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    action = by_id["profile_list_report"]
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None
+    command = action.command
+    assert "ProfileList" in command
+    for flag in ("BAK DUPLICATE", "TEMP PROFILE", "FOLDER MISSING"):
+        assert flag in command, flag
+    for verb in ("Set-ItemProperty", "Remove-Item", "Rename-Item", "New-ItemProperty"):
+        assert verb not in command, verb

@@ -8,6 +8,10 @@ actions:
     command: "Get-PnpDevice -PresentOnly | Where-Object { $_.Status -ne 'OK' } | ForEach-Object { $_ | Add-Member -NotePropertyName ProblemCode -NotePropertyValue (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -EA SilentlyContinue).Data -PassThru } | Select-Object Status,Class,FriendlyName,ProblemCode,InstanceId | Format-Table -AutoSize -Wrap"
     description_sk: "Vypíše pripojené zariadenia, ktoré nehlásia stav OK, vrátane kódu problému (napr. 28=chýbajú ovládače, 43=zlyhanie zariadenia), nič nemení."
     description_en: "Lists currently connected devices not reporting OK status, including the problem code (e.g. 28=drivers missing, 43=device failure), changes nothing."
+    problem_keywords:
+      - "Error"
+    recommended_action_ids:
+      - drv_restart_problem_devices
   - id: drv_third_party_list
     label_sk: "Ovládače tretích strán"
     label_en: "Third-party drivers"
@@ -58,3 +62,29 @@ actions:
     command: "$unsigned = Get-CimInstance Win32_PnpSignedDriver | Where-Object { $_.IsSigned -eq $false -and $_.DeviceName }; if ($unsigned) { $unsigned | Select-Object DeviceName, DriverVersion, Manufacturer | Format-Table -AutoSize -Wrap } else { Write-Output 'No unsigned drivers found.' }"
     description_sk: "Vypíše nainštalované ovládače, ktoré nie sú digitálne podpísané. Nič nemení."
     description_en: "Lists installed drivers that are not digitally signed. Changes nothing."
+  - id: drv_restart_problem_devices
+    label_sk: "Reštart zariadení s chybou"
+    label_en: "Restart failed devices"
+    risk: MODERATE
+    command: "if ([Environment]::OSVersion.Version.Build -lt 19041) { Write-Output 'pnputil /restart-device needs Windows 10 2004 or newer - restart the device from Device Manager instead.'; exit 1 }; $skip = 'System','Processor','Computer','DiskDrive','HDC','SCSIAdapter','Volume','VolumeSnapshot'; $devs = @(Get-PnpDevice -PresentOnly -Status ERROR -EA SilentlyContinue | Where-Object { $skip -notcontains $_.Class } | ForEach-Object { $code = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -EA SilentlyContinue).Data; if ($code -ne 22 -and $code -ne 29) { $_ | Add-Member -NotePropertyName ProblemCode -NotePropertyValue $code -PassThru -Force } }); if (-not $devs) { Write-Output 'No failed devices to restart (devices disabled on purpose - code 22/29 - and storage/system devices are skipped).'; exit 0 }; $fail = 0; foreach ($d in $devs) { $out = & pnputil /restart-device $d.InstanceId 2>&1; if ($LASTEXITCODE -eq 0) { Write-Output ('Restarted: ' + $d.FriendlyName + ' (problem code was ' + $d.ProblemCode + ')') } elseif ($LASTEXITCODE -eq 3010) { Write-Output ('Restart scheduled, reboot required: ' + $d.FriendlyName) } else { $fail++; Write-Output ('Could not restart: ' + $d.FriendlyName + ' - ' + (($out | Select-Object -Last 1) -join ' ') + ' (needs administrator)') } }; & pnputil /scan-devices 2>&1 | Out-Null; Write-Output 'Hardware rescan done (pnputil /scan-devices). Run \"Problem devices\" again to check the result.'; if ($fail -gt 0) { exit 1 }"
+    description_sk: "Reštartuje (pnputil /restart-device) pripojené zariadenia v stave chyby - napr. kód 10 alebo 43 - a potom znova prehľadá hardvér (pnputil /scan-devices), čo často pomôže aj pri kóde 28. Zariadenia zakázané zámerne (kód 22/29), disky, radiče úložiska a systémové zariadenia preskočí. Vyžaduje administrátora a Windows 10 2004 alebo novší. Bez undo (reštart zariadenia nemení žiadne nastavenia)."
+    description_en: "Restarts (pnputil /restart-device) connected devices in an error state - e.g. code 10 or 43 - then rescans hardware (pnputil /scan-devices), which often also helps with code 28. Skips devices disabled on purpose (code 22/29), disks, storage controllers and system devices. Needs administrator and Windows 10 2004 or newer. No undo (restarting a device changes no settings)."
+    inactivity_timeout_sec: 180
+  - id: drv_network_adapter_versions
+    label_sk: "Verzie ovládačov sieťových adaptérov"
+    label_en: "Network adapter driver versions"
+    risk: SAFE
+    command: "$a = @(Get-NetAdapter -Physical -EA SilentlyContinue); if ($a) { $a | Sort-Object Name | Select-Object Name,InterfaceDescription,Status,LinkSpeed,DriverVersion,DriverDate,DriverProvider | Format-Table -AutoSize -Wrap | Out-String -Width 250 } else { Write-Output 'No physical network adapters found (or the NetAdapter module is unavailable).' }"
+    description_sk: "Vypíše fyzické sieťové adaptéry (Wi-Fi, Ethernet) so stavom, rýchlosťou linky, verziou, dátumom a poskytovateľom ovládača - na porovnanie s najnovšou verziou od výrobcu, keď Wi-Fi/LAN vypadáva. Nič nemení."
+    description_en: "Lists physical network adapters (Wi-Fi, Ethernet) with status, link speed, driver version, date and provider - to compare against the vendor's latest release when Wi-Fi/LAN keeps dropping. Changes nothing."
+  - id: drv_gpu_info
+    label_sk: "Grafická karta a jej ovládač"
+    label_en: "Graphics card and driver"
+    risk: SAFE
+    command: "$gpus = @(Get-CimInstance Win32_VideoController -EA SilentlyContinue); if (-not $gpus) { Write-Output 'No display adapters found.'; exit 0 }; $vram = @{}; Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' -EA SilentlyContinue | ForEach-Object { $q = $_.'HardwareInformation.qwMemorySize'; if ($q -is [byte[]]) { $q = [BitConverter]::ToUInt64($q, 0) }; if ($q -and $_.DriverDesc) { $vram[$_.DriverDesc] = [math]::Round([double]$q / 1GB, 1) } }; $gpus | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; Status = $_.Status; ErrorCode = $_.ConfigManagerErrorCode; DriverVersion = $_.DriverVersion; DriverDate = $(if ($_.DriverDate) { $_.DriverDate.ToString('yyyy-MM-dd') } else { 'n/a' }); VRAM_GB = $(if ($vram.ContainsKey($_.Name)) { $vram[$_.Name] } elseif ($_.AdapterRAM) { [math]::Round($_.AdapterRAM / 1GB, 1) } else { 'n/a' }); Resolution = $(if ($_.CurrentHorizontalResolution) { '' + $_.CurrentHorizontalResolution + 'x' + $_.CurrentVerticalResolution + ' @ ' + $_.CurrentRefreshRate + ' Hz' } else { 'inactive' }) } } | Format-List | Out-String -Width 250; if ($gpus | Where-Object { $_.Name -like '*Basic Display*' }) { Write-Output 'WARNING: Microsoft Basic Display Adapter is active - no proper GPU driver is installed (low resolution, no acceleration).' }"
+    description_sk: "Vypíše grafické adaptéry s verziou a dátumom ovládača, pamäťou VRAM (z registra, lebo WMI končí na 4 GB), aktuálnym rozlíšením a kódom chyby - obdoba karty Obrazovka v dxdiag. Upozorní, ak beží len Microsoft Basic Display Adapter (chýba ovládač). Nič nemení."
+    description_en: "Lists display adapters with driver version and date, VRAM (read from the registry, since WMI caps at 4 GB), current resolution and error code - like dxdiag's Display tab. Warns when only the Microsoft Basic Display Adapter is running (driver missing). Changes nothing."
+    problem_keywords:
+      - "Microsoft Basic Display Adapter is active"
+    recommended_action_ids:
+      - drv_install_updates

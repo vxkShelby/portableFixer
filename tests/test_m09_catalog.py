@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m09_tuning" / "actions.yaml"
 
 
-def test_m09_catalog_loads_17_actions_in_repair_category():
+def test_m09_catalog_loads_18_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m09_tuning"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 17
+    assert len(module.actions) == 18
 
 
 def test_m09_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m09_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 4
+    assert len(by_risk[RiskLevel.SAFE]) == 5
     assert len(by_risk[RiskLevel.MODERATE]) == 12
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -45,6 +45,7 @@ def test_m09_catalog_covers_expected_ids():
         "tune_camera_service_restart",
         "tune_memory_usage_report",
         "tune_clear_working_sets",
+        "tune_path_sanity_report",
     }
 
 
@@ -127,3 +128,17 @@ def test_m09_catalog_pause_services_verifies_the_stop_actually_worked():
     assert "exit 1" in action.command
     assert "$svc.Refresh()" in action.undo_command
     assert "exit 1" in action.undo_command
+
+
+def test_m09_catalog_path_sanity_report_is_read_only():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    action = by_id["tune_path_sanity_report"]
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None
+    command = action.command
+    assert "GetEnvironmentVariable('Path','Machine')" in command
+    assert "GetEnvironmentVariable('Path','User')" in command
+    assert "2047" in command
+    assert "MISSING: " in command and "DUPLICATE: " in command
+    assert "SetEnvironmentVariable" not in command

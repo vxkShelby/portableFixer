@@ -39,10 +39,10 @@ PowerShell.
 | M04 | Repair | System integrity: DISM, SFC, AppX, WMI |
 | M05 | Repair | Windows Update: service/cache reset, DLL re-registration, detection |
 | M06 | Repair | Network: DNS, hosts, DHCP, Winsock, TCP/IP |
-| M07 | Diagnostics | Autostart: Run registry keys, Startup, tasks, services |
+| M07 | Diagnostics | Autostart: Run registry keys, Startup, tasks, services, WMI, IFEO backdoors, unquoted service paths |
 | M08 | Security | Defender, firewall, UAC audit + quick scan, WPBT disable |
 | M09 | Repair | Tuning: power plan, visual effects, End Task, Sticky Keys, classic context menu |
-| M10 | Diagnostics | Drivers: problem devices, third-party drivers |
+| M10 | Diagnostics | Drivers: problem devices (+ restart), third-party drivers, network/GPU, backup/restore |
 | M11 | — | Reporting (HTML report after every batch, not a catalog) |
 | M12 | Diagnostics | Online: layered connectivity test, DNS, proxy |
 | M13 | Cleanup | Debloat: telemetry, scheduled tasks, Fast Startup, Explorer ads, Recall/Click to Do |

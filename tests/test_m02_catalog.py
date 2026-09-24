@@ -7,10 +7,10 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m02_cleanup" / "actions.yaml"
 
 
-def test_m02_catalog_loads_22_actions_all_with_preview():
+def test_m02_catalog_loads_24_actions_all_with_preview():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m02_cleanup"
-    assert len(module.actions) == 22
+    assert len(module.actions) == 24
     assert all(a.preview_command for a in module.actions)
 
 
@@ -19,8 +19,8 @@ def test_m02_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 10
-    assert len(by_risk[RiskLevel.MODERATE]) == 7
+    assert len(by_risk[RiskLevel.SAFE]) == 11
+    assert len(by_risk[RiskLevel.MODERATE]) == 8
     assert len(by_risk[RiskLevel.DESTRUCTIVE]) == 5
 
 
@@ -150,8 +150,37 @@ def test_deletion_actions_report_skipped_locked_items_and_exit_zero():
         "windows_update_cache",
         "windows_old_removal",
         "stale_user_profiles",
+        "crash_dumps",
     ):
         command = by_id[action_id].command
         assert "-ErrorVariable errs" in command, action_id
         assert command.rstrip().endswith(")"), action_id
         assert "Write-Output" in command.split("-ErrorVariable errs", 1)[1], action_id
+
+
+def test_crash_dumps_is_opt_in_because_it_destroys_bsod_evidence():
+    # bsod_summary (m01) reads the same Minidump folder - wiping it as part
+    # of a blanket "select all" cleanup would destroy the crash evidence.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    action = by_id["crash_dumps"]
+    assert action.risk == RiskLevel.MODERATE
+    assert action.exclude_from_select_all is True
+    for path in ("Minidump", "MEMORY.DMP", "LiveKernelReports"):
+        assert path in action.command, path
+        assert path in action.preview_command, path
+    assert "Remove-Item" not in action.preview_command
+
+
+def test_hidden_large_data_report_never_deletes_anything():
+    # An iOS backup may be the only copy of a phone; WSL/Docker disks hold
+    # whole Linux installs - report only, in both command and preview.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    action = by_id["hidden_large_data_report"]
+    assert action.risk == RiskLevel.SAFE
+    assert action.preview_command == action.command
+    assert "MobileSync" in action.command
+    assert ".vhdx" in action.command
+    for verb in ("Remove-Item", "Optimize-VHD -", "wsl --unregister"):
+        assert verb not in action.command, verb

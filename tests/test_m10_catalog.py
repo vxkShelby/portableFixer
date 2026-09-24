@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m10_drivers" / "actions.yaml"
 
 
-def test_m10_catalog_loads_8_actions_in_driver_updates_category():
+def test_m10_catalog_loads_11_actions_in_driver_updates_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m10_drivers"
     assert module.category == ModuleCategory.DRIVER_UPDATES
-    assert len(module.actions) == 8
+    assert len(module.actions) == 11
 
 
 def test_m10_catalog_risk_distribution():
@@ -25,8 +25,10 @@ def test_m10_catalog_risk_distribution():
         "drv_stale_report",
         "drv_duplicate_packages_report",
         "drv_unsigned_report",
+        "drv_network_adapter_versions",
+        "drv_gpu_info",
     }
-    assert set(by_risk[RiskLevel.MODERATE]) == {"drv_restore_backup"}
+    assert set(by_risk[RiskLevel.MODERATE]) == {"drv_restore_backup", "drv_restart_problem_devices"}
     assert set(by_risk[RiskLevel.REQUIRES_REBOOT]) == {"drv_install_updates"}
     assert RiskLevel.DESTRUCTIVE not in by_risk
 
@@ -49,6 +51,9 @@ def test_m10_catalog_covers_expected_ids():
         "drv_duplicate_packages_report",
         "drv_unsigned_report",
         "drv_install_updates",
+        "drv_restart_problem_devices",
+        "drv_network_adapter_versions",
+        "drv_gpu_info",
     }
 
 
@@ -123,3 +128,53 @@ def test_m10_catalog_only_restore_backup_excludes_from_select_all():
     for action in module.actions:
         expected = action.id == "drv_restore_backup"
         assert action.exclude_from_select_all is expected, action.id
+
+
+def test_m10_catalog_restart_problem_devices_skips_intentionally_disabled_and_storage():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    action = by_id["drv_restart_problem_devices"]
+    assert action.risk == RiskLevel.MODERATE
+    command = action.command
+    # Restart via pnputil, never a Disable/Enable cycle that could leave a
+    # device disabled if re-enabling fails.
+    assert "pnputil /restart-device" in command
+    assert "Disable-PnpDevice" not in command
+    assert "pnputil /scan-devices" in command
+    assert "-Status ERROR" in command
+    # Code 22/29 = disabled on purpose (user/firmware) - must stay disabled.
+    assert "$code -ne 22" in command and "$code -ne 29" in command
+    for cls in ("'DiskDrive'", "'HDC'", "'SCSIAdapter'", "'System'"):
+        assert cls in command, cls
+    # /restart-device only exists from Windows 10 2004 (build 19041).
+    assert "19041" in command
+    assert "exit 1" in command
+
+
+def test_m10_catalog_problem_devices_recommends_restart_action():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    assert by_id["drv_problem_devices"].recommended_action_ids == ["drv_restart_problem_devices"]
+    assert by_id["drv_problem_devices"].problem_keywords == ["Error"]
+
+
+def test_m10_catalog_gpu_info_reads_real_vram_and_flags_basic_display_adapter():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    action = by_id["drv_gpu_info"]
+    assert "Win32_VideoController" in action.command
+    # AdapterRAM is a uint32 capped at 4 GB - real VRAM comes from the registry.
+    assert "HardwareInformation.qwMemorySize" in action.command
+    keyword = "Microsoft Basic Display Adapter is active"
+    assert keyword in action.command
+    assert action.problem_keywords == [keyword]
+    assert action.recommended_action_ids == ["drv_install_updates"]
+
+
+def test_m10_catalog_network_adapter_versions_lists_physical_adapters_only():
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    command = by_id["drv_network_adapter_versions"].command
+    assert "Get-NetAdapter -Physical" in command
+    for column in ("DriverVersion", "DriverDate", "DriverProvider"):
+        assert column in command, column
