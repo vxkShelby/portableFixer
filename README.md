@@ -100,12 +100,15 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 - **Redigovať pre klienta** (prepínač v okne Zákazka, predvolene vypnutý,
   pamätá sa): report (HTML aj JSON) a textové súbory balíka pre klienta
   (`report.html`, `report.json`, kópia `audit_log.jsonl`, README) nahradia
-  mená používateľov v cestách (`C:\Users\<user>\`), IPv4/IPv6 a MAC
+  mená používateľov v cestách (`C:\Users\<user>\`) aj mená profilov
+  tohto PC kdekoľvek inde (napr. `PC\Jan Novák`), IPv4/IPv6 a MAC
   adresy, sériové čísla (BIOS, disky), časti licenčných kľúčov
   (`XXXXX-XXXXX-…`, `PartialProductKey`) a názvy Wi-Fi sietí (SSID)
   značkami ako `<ip>` či `<serial>`. Názov počítača a údaje zo Zákazky
-  zostanú. Verzie (`10.0.26100.1`), hashe a GUID sa nemenia; loopback,
-  masky a verejné DNS (8.8.8.8, 1.1.1.1) tiež nie. Report to na začiatku
+  zostanú. Verzie s číslom nad 255 (`10.0.26100.1`) alebo s označením
+  (`Version : 2.0.0.0`, stĺpec `DriverVersion` v tabuľke), hashe a GUID
+  sa nemenia; loopback, masky a verejné DNS (8.8.8.8, 1.1.1.1) tiež nie.
+  Neoznačené krátke štvorčíslie (`ovládač 10.1.18.2`) sa zamení za `<ip>`. Report to na začiatku
   viditeľne uvedie („Redigované pre klienta“) a JSON má `"redacted": true`.
   Redaguje sa až pri zápise reportu a pri ukladaní balíka - auditný log
   na USB sa nikdy nemení a v balíku ostáva `undo.ps1` bez zmeny (musí

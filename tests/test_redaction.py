@@ -1,10 +1,13 @@
 """redaction.py - masking personal data for the client (research G20)."""
 
 import json
+import time
 
 import pytest
 
-from portablefix.redaction import IP, KEY, MAC, SERIAL, SSID, USER, redact_data, redact_text
+from portablefix.redaction import (
+    IP, KEY, MAC, SERIAL, SSID, USER, local_profile_names, redact_data, redact_text,
+)
 
 
 @pytest.mark.parametrize(("text", "expected"), [
@@ -216,3 +219,93 @@ def test_redact_data_keeps_the_hostname_inside_command_output():
     data = {"hostname": "PC-AB123-CD456", "output": "Computer PC-AB123-CD456 at 192.168.0.5"}
     out = redact_data(data, keep=["PC-AB123-CD456"])
     assert out["output"] == f"Computer PC-AB123-CD456 at {IP}"
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # Format-List (m02 stale-profile preview): a full name ends the line.
+    (r"LocalPath : C:\Users\Jan Novak", rf"LocalPath : C:\Users\{USER}"),
+    ("LocalPath : C:\\Users\\Ján Novák Starší\r\nLastUseTime : 1.9.2024", f"LocalPath : C:\\Users\\{USER}\r\nLastUseTime : 1.9.2024"),
+    # Format-Table row: the column gap ends it.
+    ("C:\\Users\\Jan Novak     9/1/2024 10:00:00", f"C:\\Users\\{USER}     9/1/2024 10:00:00"),
+    ('"C:\\Users\\Jan Novak"', f'"C:\\Users\\{USER}"'),
+])
+def test_a_profile_name_with_a_space_at_the_end_of_a_value_is_masked_whole(text, expected):
+    assert redact_text(text) == expected
+
+
+def test_profile_names_from_paths_are_masked_everywhere_in_the_document():
+    # m04 ProfileList check: the User column prints COMPUTER\name.
+    text = ("User                 Path\r\n"
+            "----                 ----\r\n"
+            "DESKTOP-X\\Jan Novak  C:\\Users\\Jan Novak\\\r\n"
+            "Owner jan novak signed in")
+    out = redact_text(text, keep=["DESKTOP-X"])
+    assert "Novak" not in out and "novak" not in out
+    assert f"DESKTOP-X\\{USER}  C:\\Users\\{USER}\\" in out
+    assert out.endswith(f"Owner {USER} signed in")
+
+
+def test_profile_names_passed_in_are_masked_everywhere():
+    assert redact_text(r"User : DESKTOP-X\Jan Novak", mask=["Jan Novak"]) == rf"User : DESKTOP-X\{USER}"
+    # Across a whole report / audit log too, the path in another entry.
+    out = redact_data([{"output": r"DESKTOP-X\eva"}, {"output": r"C:\Users\eva\Desktop"}])
+    assert out == [{"output": rf"DESKTOP-X\{USER}"}, {"output": rf"C:\Users\{USER}\Desktop"}]
+
+
+def test_generic_account_names_are_not_masked_outside_paths():
+    text = r"C:\Users\Administrator\Desktop - Administrator, user and Public stay"
+    assert redact_text(text, mask=["Administrator", "user", "Public", "ab"]) == (
+        rf"C:\Users\{USER}\Desktop - Administrator, user and Public stay")
+
+
+def test_local_profile_names_lists_the_folders_but_not_the_shared_ones(tmp_path):
+    for name in ("Jan Novak", "eva", "Public", "Default", "All Users"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "desktop.ini").write_text("x", encoding="utf-8")
+    assert local_profile_names(tmp_path) == ["Jan Novak", "eva"]
+    assert local_profile_names(tmp_path / "missing") == []
+
+
+def test_versions_in_a_driver_version_table_column_stay():
+    # m10 drv_stale_report / drv_unsigned_report: Format-Table with DriverVersion.
+    text = ("\r\nDeviceName             DriverVersion Manufacturer\r\n"
+            "----------             ------------- ------------\r\n"
+            "Intel Chipset          10.1.18.2     Intel\r\n"
+            "Wi-Fi at 192.168.1.5   1.33.0.0      Realtek\r\n"
+            "\r\n"
+            "Gateway 10.1.18.2")
+    out = redact_text(text)
+    assert "Intel Chipset          10.1.18.2     Intel" in out
+    assert f"Wi-Fi at {IP}   1.33.0.0      Realtek" in out
+    # Outside the table the same number is an address again.
+    assert out.endswith(f"Gateway {IP}")
+
+
+def test_a_common_word_as_ssid_or_serial_is_masked_only_on_its_own_line():
+    text = ("SSID : Home\nOS : Windows 11 Home\n"
+            "SerialNumber : Default string\nBaseBoard : Default string")
+    assert redact_text(text) == (
+        f"SSID : {SSID}\nOS : Windows 11 Home\nSerialNumber : {SERIAL}\nBaseBoard : Default string")
+    out = redact_data([{"output": "SSID : Home"}, {"output": "OS : Windows 11 Home"}])
+    assert out[1]["output"] == "OS : Windows 11 Home"
+
+
+def test_pathological_inputs_stay_fast():
+    started = time.monotonic()
+    assert redact_text("SerialNumber : a" + " " * 40000 + "b") == f"SerialNumber : {SERIAL}"
+    assert redact_text("SSID : a" + " " * 40000 + "b") == f"SSID : {SSID}"
+    # Many collected values over a large log: one regex per value per
+    # string used to take minutes.
+    entries = [{"output": f"SSID : net{i:05d}\nSerialNumber : SN{i:06d}\n" + "data C:\\Users\\jan\\x " * 50}
+               for i in range(1000)]
+    entries.append({"output": "joined net00007 and net00999"})
+    out = redact_data(entries)
+    assert out[-1]["output"] == f"joined {SSID} and {SSID}"
+    assert time.monotonic() - started < 20
+
+
+def test_job_tooltip_says_undo_ps1_is_not_redacted():
+    from portablefix.i18n import translate
+
+    assert "undo.ps1 sa kopíruje bez zmeny" in translate("job_redact_tooltip", "sk")
+    assert "undo.ps1 is copied unchanged" in translate("job_redact_tooltip", "en")

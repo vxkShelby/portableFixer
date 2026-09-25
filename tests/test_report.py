@@ -1450,6 +1450,20 @@ def test_redacted_events_keep_their_translated_rendering(tmp_path):
     assert "Saved to continue after the restart: File check, Disk check" in items
 
 
+def test_redacted_report_masks_this_pcs_profile_names_without_a_path(tmp_path, monkeypatch):
+    # m04 ProfileList check prints the account as COMPUTER\name; the name
+    # is known from the profile folders of the PC the report is made on.
+    from portablefix import redaction
+
+    monkeypatch.setattr(redaction, "local_profile_names", lambda users_dir=None: ["Jan Novak"])
+    output = "User : DESKTOP-X\\Jan Novak\nLocalPath : C:\\Users\\Jan Novak"
+    append_entry(tmp_path, "run_prof", make_entry("m04_integrity", "profile_list", "cmd", 0, output, False, "run_prof"))
+    html_path, json_path = generate_report(tmp_path, "run_prof", _fixture_modules(), "en", {}, {}, redact=True)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["actions"][0]["output"] == "User : DESKTOP-X\\<user>\nLocalPath : C:\\Users\\<user>"
+    assert "Novak" not in html_path.read_text(encoding="utf-8")
+
+
 def test_report_runner_passes_redact_through(tmp_path, monkeypatch):
     from portablefix import report
 

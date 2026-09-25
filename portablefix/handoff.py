@@ -577,7 +577,7 @@ def _load_report_json(path: Path | None) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _redacted_audit_log(source: Path, keep: list[str]) -> bytes:
+def _redacted_audit_log(source: Path, keep: list[str], mask: list[str]) -> bytes:
     """The audit log copy with every entry redacted, one JSON object per
     line as audit_log.append_entry writes them. Parsed first so a path is
     matched as the text it is, not as JSON-escaped backslashes; a line that
@@ -593,19 +593,20 @@ def _redacted_audit_log(source: Path, keep: list[str]) -> bytes:
     # One call for the whole log: an SSID or serial number named by key in
     # one entry is masked in every other entry too.
     redacted = redaction.redact_data(
-        [e for e in entries if not isinstance(e, str)], keep=keep,
+        [e for e in entries if not isinstance(e, str)], keep=keep, mask=mask,
     )
     out = []
     parsed = iter(redacted)
     for entry in entries:
         if isinstance(entry, str):
-            out.append(redaction.redact_text(entry, keep))
+            out.append(redaction.redact_text(entry, keep, mask))
         else:
             out.append(json.dumps(next(parsed)))
     return ("\n".join(out) + ("\n" if out else "")).encode("utf-8")
 
 
-def _redacted_report_html(redacted_report: dict | None, html_source: Path, keep: list[str]) -> bytes:
+def _redacted_report_html(redacted_report: dict | None, html_source: Path, keep: list[str],
+                          mask: list[str]) -> bytes:
     # Re-rendered from the redacted JSON when there is one: the page then
     # carries the "Redacted for the client" banner, and every masked value
     # is escaped the way the report escapes everything else.
@@ -614,7 +615,7 @@ def _redacted_report_html(redacted_report: dict | None, html_source: Path, keep:
             return report.render_report_html(redacted_report).encode("utf-8")
         except (KeyError, TypeError, AttributeError, ValueError):
             pass  # Hand-edited or foreign JSON - fall back to the page itself.
-    text = redaction.redact_text(html_source.read_text(encoding="utf-8", errors="replace"), keep)
+    text = redaction.redact_text(html_source.read_text(encoding="utf-8", errors="replace"), keep, mask)
     for placeholder, escaped in _HTML_PLACEHOLDERS.items():
         text = text.replace(placeholder, escaped)
     return text.encode("utf-8")
@@ -626,17 +627,20 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     job = report_data.get("job") if report_data is not None and isinstance(report_data.get("job"), dict) else {}
     # The computer name and what the technician typed in stay readable.
     keep = [hostname, *(str(value) for value in job.values())]
-    redacted_report = report.redact_report_data(report_data) if report_data is not None else None
+    # The package is saved on the client PC: its profile folders name the
+    # people to hide even where a name is printed without its path.
+    mask = redaction.local_profile_names()
+    redacted_report = report.redact_report_data(report_data, mask) if report_data is not None else None
     for arcname, source in sources:
         if arcname == ARC_REPORT_JSON and redacted_report is not None:
             _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2).encode("utf-8"))
         elif arcname == ARC_REPORT_JSON:
             text = source.read_text(encoding="utf-8", errors="replace")
-            _write_bytes(zf, arcname, redaction.redact_text(text, keep).encode("utf-8"))
+            _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask).encode("utf-8"))
         elif arcname == ARC_REPORT_HTML:
-            _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep))
+            _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep, mask))
         elif arcname == ARC_AUDIT_LOG:
-            _write_bytes(zf, arcname, _redacted_audit_log(source, keep))
+            _write_bytes(zf, arcname, _redacted_audit_log(source, keep, mask))
         else:
             zf.write(source, arcname=arcname)
 

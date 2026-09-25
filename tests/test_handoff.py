@@ -635,6 +635,25 @@ def test_redacted_package_masks_report_and_audit_log_but_not_the_originals(tmp_p
     assert {p: p.read_bytes() for p in originals} == originals
 
 
+def test_redacted_package_masks_this_pcs_profile_names_everywhere(tmp_path, monkeypatch):
+    monkeypatch.setattr(handoff.redaction, "local_profile_names", lambda users_dir=None: ["Jan Novak"])
+    state = tmp_path / "state"
+    _write_run(state)
+    reports = state / "Reports"
+    (reports / f"{HOST}_{RUN}.json").unlink()
+    (reports / f"{HOST}_{RUN}.html").write_text("<pre>PC\\Jan Novak</pre>", encoding="utf-8")
+    (state / "Logs" / f"{RUN}.jsonl").write_bytes((
+        json.dumps({"run_id": "r", "output": "User : DESKTOP-X\\Jan Novak\nLocalPath : C:\\Users\\Jan Novak"}) + "\n"
+        + "torn Jan Novak\n").encode("utf-8"))
+
+    files = _zip_texts(handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", redact=True))
+
+    assert files["report.html"].decode("utf-8") == "<pre>PC\\&lt;user&gt;</pre>"
+    lines = files["audit_log.jsonl"].decode("utf-8").splitlines()
+    assert json.loads(lines[0])["output"] == "User : DESKTOP-X\\<user>\nLocalPath : C:\\Users\\<user>"
+    assert lines[1] == "torn <user>"
+
+
 def test_package_without_redaction_is_byte_for_byte_the_run(tmp_path):
     state = tmp_path / "state"
     host, _ = _write_real_run(state)

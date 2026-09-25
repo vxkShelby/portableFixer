@@ -102,13 +102,16 @@ PowerShell.
 - **Redact for the client** (toggle in the Job details window, off by
   default, remembered): the report (HTML and JSON) and the client
   package's text files (`report.html`, `report.json`, the `audit_log.jsonl`
-  copy, README) replace user names in paths (`C:\Users\<user>\`),
+  copy, README) replace user names in paths (`C:\Users\<user>\`) and
+  this PC's profile names anywhere else (e.g. `PC\Jan Novak`),
   IPv4/IPv6 and MAC addresses, serial numbers (BIOS, disks), product-key
   fragments (`XXXXX-XXXXX-…`, `PartialProductKey`) and Wi-Fi network
   names (SSID) with markers such as `<ip>` or `<serial>`. The computer
-  name and the Job details stay. Versions (`10.0.26100.1`), hashes and
-  GUIDs are left alone, and so are loopback, masks and public DNS
-  (8.8.8.8, 1.1.1.1). The report says so visibly at the top ("Redacted
+  name and the Job details stay. Versions with a part above 255
+  (`10.0.26100.1`) or with a label (`Version : 2.0.0.0`, a `DriverVersion`
+  table column), hashes and GUIDs are left alone, and so are loopback,
+  masks and public DNS (8.8.8.8, 1.1.1.1). An unlabelled short four-part
+  number (`driver 10.1.18.2`) becomes `<ip>`. The report says so visibly at the top ("Redacted
   for the client") and its JSON has `"redacted": true`. Masking happens
   only when the report is written and the package is saved - the audit
   log on the stick is never changed, and `undo.ps1` goes into the package

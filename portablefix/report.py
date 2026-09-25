@@ -1140,16 +1140,22 @@ def generate_report(
     return html_path, json_path
 
 
-def redact_report_data(data: dict) -> dict:
+def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
     """The report with personal data masked for the client (research G20):
     user names in paths, IP/MAC addresses, serial numbers, product-key
     fragments and Wi-Fi names. The computer name and the technician /
     client / note entered on purpose stay - they are also never masked
     where the command output happens to repeat them. Only the rendered copy
-    changes; the audit log keeps everything."""
+    changes; the audit log keeps everything.
+
+    `mask`: profile names masked wherever they appear - by default the
+    profile folders of this PC, which the report was made on, so a name
+    printed without a path after it ("PC\\Jan Novak") is caught too."""
     job = data.get("job") if isinstance(data.get("job"), dict) else {}
     keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
-    redacted = redaction.redact_data(data, keep=keep)
+    if mask is None:
+        mask = redaction.local_profile_names()
+    redacted = redaction.redact_data(data, keep=keep, mask=mask)
     redacted["redacted"] = True
     return redacted
 
