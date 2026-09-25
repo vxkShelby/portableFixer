@@ -49,7 +49,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, verdikt pre Secure Boot certifikáty 2023 (termín 19. 10. 2026), pripravenosť WinRE a Quick Machine Recovery, BitLocker, Bezpečný režim, F8 recovery |
 | M16 | Oprava | Office: verzia/kanál, doplnky Outlooku, OST/PST, rýchla/úplná oprava |
 | M17 | Oprava | Prehliadače: rozšírenia, policy, únos domovskej stránky, reset profilu |
-| M18 | Oprava | Záloha používateľských priečinkov (Desktop/Documents/Pictures/Favorites) |
+| M18 | Oprava | Záloha používateľských priečinkov (Desktop/Documents/Pictures/Favorites), záloha na iný disk so SHA-256 manifestom a overením |
 | M19 | Oprava | Voliteľné funkcie Windows: prehľad, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Oprava | Aktualizácia softvéru cez winget: zoznam, zastaraný softvér, update all |
 | M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor) |
@@ -171,6 +171,28 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   PUA odmietnu bežať s nenulovým kódom a vysvetlením, história hrozieb
   vypíše verdikt NOT ACTIVE - alebo ATTENTION, ak Defender aj tak
   zaznamenal neodstránené či stále aktívne hrozby.
+- **Záloha dát klienta na iný disk (M18):** *Záloha dát používateľa na
+  iný disk* (MODERATE, nie je vo „Vybrať všetko“) kopíruje Desktop,
+  Documents, Pictures, Downloads a Favorites aktuálneho používateľa
+  (aj presmerované do OneDrive) a záložky Chrome, Edge, Brave a Firefox
+  na disk, z ktorého beží PortableFix, do
+  `PortableFix_Backups\<POČÍTAČ>_<čas>\Files`. Cieľ sa neberie
+  z dialógu: je to disk aktuálneho priečinka procesu, ktorý zabalená appka pri
+  štarte nastaví na svoj koreň - preto PortableFix spúšťajte z externého
+  disku. Akcia odmietne systémový disk, inú partíciu toho istého
+  fyzického disku, cestu bez písmena disku a disk bez dostatku voľného
+  miesta (odhad + 256 MB). Kopíruje `robocopy /E /COPY:DAT /R:1 /W:1
+  /XJ /XA:O` (nikdy nevojde do junction, nesťahuje súbory OneDrive,
+  ktoré sú len online), exit kód 0 - 7 berie ako úspech, 8+ ako chybu.
+  Potom zapíše `manifest-sha256.csv` (relatívna cesta, veľkosť,
+  SHA-256), SHA-256 manifestu vypíše do reportu a výsledok behu uloží
+  do `backup-status.txt`. Na zdroji nič nemaže. Zálohuje sa profil
+  účtu, pod ktorým appka beží. *Overenie zálohy na inom disku* (SAFE)
+  znova zahashuje najnovšiu zálohu tohto PC a vypíše chýbajúce,
+  zmenené a nečitateľné súbory s verdiktom OK / FAIL. *Zoznam
+  existujúcich záloh* ukáže aj zálohy na disku PortableFix. Záloha nie
+  je šifrovaná a súbor nad 4 GB sa na FAT32 nezmestí (záloha skončí
+  ako INCOMPLETE).
 
 ## Bezpečnostné mechanizmy
 
