@@ -41,9 +41,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import style
+from . import job_forms, style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
+from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, intake, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -237,6 +237,12 @@ class MainWindow(QMainWindow):
         self._disk_health_runners: list[_DiskHealthProbeRunner] = []
         self._hive_backups: list[Path] = []
         self._report_runner: report.ReportRunner | None = None
+        # A batch-end report of this run was written by this window - the
+        # forms and the timer, changed afterwards, rewrite it (G20).
+        self._report_written = False
+        # Such a change came while a report was being written: that report
+        # may have read the audit log before it, so one more rewrite follows.
+        self._report_refresh_pending = False
         self._batch_active = False
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
@@ -260,6 +266,10 @@ class MainWindow(QMainWindow):
         # the technician name lives in settings since it rarely changes.
         self._job_client = ""
         self._job_note = ""
+        # When the running batch (or its part since a restart report)
+        # started - its duration is logged at the end for the report's work
+        # time (research G20).
+        self._batch_started_at: float | None = None
         self._tray_icon: QSystemTrayIcon | None = None
         self._cancel_requested = False
         self._close_after_restore_point = False
@@ -1318,6 +1328,20 @@ class MainWindow(QMainWindow):
         redact_checkbox.setToolTip(self._t("job_redact_tooltip"))
         redact_checkbox.setAccessibleDescription(self._t("job_redact_tooltip"))
         form.addRow("", redact_checkbox)
+        # Research G20: the manual work timer acts at once (it is a clock,
+        # not a field), the forms and the branding have dialogs of their own.
+        self._work_timer_widget = job_forms.WorkTimerWidget(
+            self.settings.language, self._run_audit_entries, self._log_work_timer, parent=dialog,
+        )
+        form.addRow(self._t("work_timer_label"), self._work_timer_widget)
+        extras = QHBoxLayout()
+        # Opened over the Job details window, not beside it.
+        forms_button = self._make_selection_button(self._t("job_forms_button"), lambda: self._open_forms_dialog(dialog))
+        forms_button.setToolTip(self._t("job_forms_tooltip"))
+        extras.addWidget(forms_button)
+        extras.addWidget(self._make_selection_button(self._t("job_branding_button"), lambda: self._open_branding_dialog(dialog)))
+        extras.addStretch(1)
+        form.addRow(extras)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         # Qt ships no Slovak translations for standard buttons - label it ourselves.
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self._t("dialog_cancel"))
@@ -1333,6 +1357,131 @@ class MainWindow(QMainWindow):
             )
         )
         dialog.open()
+
+    def _run_audit_entries(self) -> list[dict]:
+        return report.read_audit_entries(self.state_dir, self.run_id)
+
+    def _log_work_timer(self, decision: str) -> None:
+        self._log_system_event(
+            intake.WORK_TIMER_EVENT, 0,
+            "Manual work timer started." if decision == intake.TIMER_START else "Manual work timer stopped.",
+            decision=decision,
+        )
+        self._refresh_report()
+
+    def _refresh_report(self) -> None:
+        """Rewrites the run's report after the forms or the timer changed
+        (G20). The hand-over is usually filled in after the last batch, when
+        the PC is tested and handed over - without this the report (and the
+        handoff zip that packs it) would stay as of the last batch end."""
+        if self._closed or self._batch_active or self._restarting:
+            # A running batch writes its own report at the end, from the
+            # same audit log; a restarting PC keeps the report written
+            # before it (see _run_next).
+            return
+        if self._report_runner is not None:
+            self._report_refresh_pending = True
+            return
+        if not self._report_written:
+            # No report yet - the first batch end writes one with the forms.
+            return
+        # The snapshots of the last batch, not a new one: the report
+        # describes the repair, and only the forms and the timer changed.
+        runner = report.ReportRunner(
+            self.state_dir, self.run_id, self.modules, self.settings.language,
+            self._snapshot_before, self._snapshot_after,
+            job=self._job_info(), storage_fallback=self._storage_fallback,
+            redact=self.settings.redact_for_client, branding=self.settings.branding_info(), parent=self,
+        )
+        runner.result_ready.connect(self._on_report_refreshed)
+        self._report_runner = runner
+        runner.start()
+
+    def _on_report_refreshed(self, html_path: Path | None, write_failed: bool) -> None:
+        self._report_runner = None
+        if self._closed:
+            return
+        if write_failed:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+        elif html_path is not None:
+            self.console.appendPlainText(self._t("report_refreshed"))
+        self._run_pending_report_refresh()
+
+    def _run_pending_report_refresh(self) -> None:
+        if self._report_refresh_pending:
+            self._report_refresh_pending = False
+            self._refresh_report()
+
+    def _open_forms_dialog(self, parent: QWidget | None = None) -> None:
+        entries = self._run_audit_entries()
+        saved_intake = intake.latest_intake(entries)
+        saved_outtake = intake.latest_outtake(entries)
+        dialog = job_forms.FormsDialog(
+            self.settings.language,
+            saved_intake[0] if saved_intake else None,
+            saved_outtake[0] if saved_outtake else None,
+            parent=parent or self,
+        )
+        self._forms_dialog = dialog
+        dialog.accepted.connect(lambda: self._save_forms(dialog.intake_form(), dialog.outtake_form()))
+        dialog.open()
+
+    def _save_forms(self, intake_form: intake.IntakeForm, outtake_form: intake.OuttakeForm) -> None:
+        # Logged only when changed: every save is kept in the audit log, and
+        # OK on an untouched dialog must not add a copy. A cleared form is
+        # logged too, so the report stops showing the old one.
+        entries = self._run_audit_entries()
+        changed = False
+        for kind, form, saved in (
+            (intake.INTAKE_EVENT, intake_form, intake.latest_intake(entries)),
+            (intake.OUTTAKE_EVENT, outtake_form, intake.latest_outtake(entries)),
+        ):
+            previous = saved[0] if saved else None
+            if form.is_empty() and previous is None:
+                continue
+            if previous is not None and form.to_dict() == previous.to_dict():
+                continue
+            self._log_system_event(kind, 0, intake.form_to_output(form))
+            changed = True
+        if changed:
+            self._refresh_report()
+
+    def _open_branding_dialog(self, parent: QWidget | None = None) -> None:
+        values = {
+            "company": self.settings.branding_company,
+            "company_id": self.settings.branding_company_id,
+            "contact": self.settings.branding_contact,
+            "logo": self.settings.branding_logo,
+        }
+        dialog = job_forms.BrandingDialog(self.settings.language, values, parent=parent or self)
+        self._branding_dialog = dialog
+        dialog.accepted.connect(lambda: self._set_branding(dialog.values()))
+        dialog.open()
+
+    def _set_branding(self, values: dict) -> None:
+        self.settings.branding_company = values.get("company", "")
+        self.settings.branding_company_id = values.get("company_id", "")
+        self.settings.branding_contact = values.get("contact", "")
+        self.settings.branding_logo = values.get("logo", "")
+        self._persist_settings()
+
+    def _log_batch_duration(self) -> None:
+        # The report sums these into the run's work time (G20). Reset, so a
+        # batch split by a restart report is counted once in two parts.
+        if self._batch_started_at is None:
+            return
+        seconds = time.monotonic() - self._batch_started_at
+        self._batch_started_at = time.monotonic()
+        entry = make_entry(
+            "_system", intake.BATCH_DURATION_EVENT, "", 0, intake.batch_duration_output(seconds),
+            self.settings.dry_run, self.run_id, elevated=self.is_admin,
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            # Bookkeeping only: the batch's own entries already said the
+            # disk write failed - one more "failed" line would be noise.
+            pass
 
     def _notify_batch_finished(self) -> None:
         # Long batches (DISM, SFC, chkdsk) run for many minutes - a technician
@@ -3665,6 +3814,7 @@ class MainWindow(QMainWindow):
             self._set_action_status(action_id, "", "")
         if self._queue:
             self._batch_active = True
+            self._batch_started_at = time.monotonic()
             self._keep_awake.acquire()
             # A continued batch compares against the PC as it was before its
             # first half - one report for the whole job.
@@ -3901,6 +4051,8 @@ class MainWindow(QMainWindow):
 
     def _on_report_ready(self, html_path: Path | None, write_failed: bool) -> None:
         self._report_runner = None
+        if html_path is not None:
+            self._report_written = True
         # The batch is over (report written or not): sleep is allowed again.
         self._keep_awake.release()
         if not self._closed:
@@ -3922,6 +4074,7 @@ class MainWindow(QMainWindow):
             self._show_batch_summary(html_path)
         if self._restart_needed_after and not self._closed:
             self._notify_restart_needed()
+        self._run_pending_report_refresh()
 
     def _notify_restart_needed(self) -> None:
         # Own method so a test can see it without a real modal box.
@@ -3945,6 +4098,8 @@ class MainWindow(QMainWindow):
         if not self._queue:
             if self._batch_active:
                 self._batch_active = False
+                self._log_batch_duration()
+                self._batch_started_at = None
                 # A confirmation covers this batch only, never a later run.
                 self._reviewed_warnings = {}
                 if not self._closed:
@@ -3979,6 +4134,7 @@ class MainWindow(QMainWindow):
                 report_kwargs = {
                     "job": self._job_info(), "storage_fallback": self._storage_fallback,
                     "redact": self.settings.redact_for_client,
+                    "branding": self.settings.branding_info(),
                 }
                 if self._closed:
                     # closeEvent has already waited on every runner, so a
@@ -4243,6 +4399,9 @@ class MainWindow(QMainWindow):
         self._pre_restart_prepared.add(action.id)
         saved = self._save_resume(action.id) if self._queue else False
         self._log_restart_pending(module, action, saved, immediate=True)
+        # The PC may not come back to this process: the time so far goes in
+        # the report written now.
+        self._log_batch_duration()
         self._write_undo_script()
         self.console.appendPlainText(self._t("restart_writing_report").format(action=action.label(self.settings.language)))
         # Everything up to this point, snapshot included - the PC may not
@@ -4252,7 +4411,7 @@ class MainWindow(QMainWindow):
             self.state_dir, self.run_id, self.modules, self.settings.language,
             self._snapshot_before, self._snapshot_after,
             job=self._job_info(), storage_fallback=self._storage_fallback,
-            redact=self.settings.redact_for_client, parent=self,
+            redact=self.settings.redact_for_client, branding=self.settings.branding_info(), parent=self,
         )
         runner.result_ready.connect(
             lambda html_path, write_failed, m=module, a=action: self._on_pre_restart_report_ready(html_path, write_failed, m, a)
