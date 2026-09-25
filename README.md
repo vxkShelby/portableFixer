@@ -36,11 +36,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M02 | Čistenie | Temp súbory, cache, kôš, Windows Update cache... |
 | M03 | Oprava | Disk: SMART, verdikt zdravia diskov, NTFS scan/SpotFix, TRIM, chkdsk pri reštarte |
 | M04 | Oprava | Integrita systému: DISM, SFC, AppX, WMI |
-| M05 | Oprava | Windows Update: reset služieb a cache, DLL, detekcia |
+| M05 | Oprava | Windows Update: reset služieb a cache, DLL, detekcia, stav Windows 10 ESU (koniec Consumer ESU 13. 10. 2026) |
 | M06 | Oprava | Sieť: DNS, hosts, DHCP, Winsock, TCP/IP |
 | M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby, WMI, IFEO backdoor, služby bez úvodzoviek |
 | M08 | Zabezpečenie | Defender, firewall, UAC audit + rýchly sken, WPBT disable |
-| M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu |
+| M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu, Storage Sense (prehľad a mesačné čistenie s presným undo) |
 | M10 | Diagnostika | Drivery: problémové zariadenia (+ reštart), ovládače tretích strán, sieť/GPU, záloha/obnova |
 | M11 | — | Reporting (HTML report po každej dávke, nie katalóg) |
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
@@ -172,6 +172,29 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   PUA odmietnu bežať s nenulovým kódom a vysvetlením, história hrozieb
   vypíše verdikt NOT ACTIVE - alebo ATTENTION, ak Defender aj tak
   zaznamenal neodstránené či stále aktívne hrozby.
+- **Windows 10 ESU (M05):** *Windows 10 ESU - stav a verdikt* (SAFE)
+  prečíta stav zápisu do Consumer ESU (`ESUEligibility` a
+  `ESUEligibilityResult` v HKCU aj HKLM; čísla mimo verejne známeho
+  dekódovania vypíše ako Unknown), vek poslednej kumulatívnej
+  aktualizácie zo servisného zásobníka (balíky RollupFix, záloha cez
+  históriu Windows Update; viac ako 45 dní = nezáplatované), prítomnosť
+  agenta 0patch a build s UBR. Riadok `VERDICT:` (OK / ACTION NEEDED /
+  PATCHED / UNPATCHED / UNKNOWN / NOT APPLICABLE) nasledujú možnosti:
+  upgrade na Windows 11, ESU (Consumer ESU podľa Microsoftu končí
+  13. 10. 2026) alebo nové PC. Na Windows 11 oznámi, že ESU sa ho netýka.
+- **Storage Sense (M09):** *Storage Sense - prehľad nastavení* (SAFE)
+  dekóduje hodnoty `StoragePolicy` v HKCU (zapnuté, kadencia, dočasné
+  súbory, kôš, Stiahnuté a počty dní; nezdokumentované hodnoty vypíše ako
+  neznáme) aj politiky, ktoré ich prebíjajú. *Storage Sense - zapnúť
+  mesačné čistenie* (MODERATE) nastaví mesačný beh, mazanie dočasných
+  súborov a súborov v koši starších ako 30 dní, Stiahnuté nechá vypnuté.
+  PC tak zostane čisté aj po odchode technika bez akéhokoľvek agenta.
+  Presné predošlé hodnoty (typ, hodnotu aj to, či existovali) uloží do
+  `%ProgramData%\PortableFix\storage_sense_backup.json` a undo ich presne
+  obnoví, hodnoty, ktoré predtým neexistovali, zmaže; bez zálohy undo
+  odmietne bežať. **HKCU je hive používateľa, pod ktorým PortableFix
+  beží** - obe akcie (aj ESU) vypíšu jeho meno a SID a upozornia, ak je
+  prihlásený iný používateľ (technik zvýšil práva vlastným účtom).
 - **Tlač (M14):** *Triedy ovládačov tlačiarní a pripravenosť na WPP*
   (SAFE) vypíše pri každom ovládači typ (Type 3 / Type 4), verziu,
   výrobcu, izoláciu a tlačiarne, ktoré ho používajú. Pri každej tlačiarni
