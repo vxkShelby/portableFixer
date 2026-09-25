@@ -7076,3 +7076,40 @@ def test_uninstaller_msi_busy_keeps_the_row_and_reboot_required_is_shown(qtbot, 
     # 1618: still installed - the row stays for a retry; 3010: removed.
     qtbot.waitUntil(lambda: not any(cb.text().startswith("Reboot App") for cb in card.findChildren(QCheckBox)))
     assert any(cb.text().startswith("Busy App") for cb in card.findChildren(QCheckBox))
+
+
+def test_uninstaller_unsafe_batch_command_is_named_and_never_runs(qtbot, tmp_path, monkeypatch):
+    # A .bat whose registry arguments carry "&": cmd.exe would act on it, so
+    # DRY-RUN and the confirmation say it will not run, and the runner
+    # reports it without starting anything.
+    from portablefix import uninstaller
+
+    unsafe = _fake_installed_program("Bat App", plain=r'"C:\App\remove.bat" & calc')
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g15_unsafe_dry", [unsafe], dry_run=True)
+    _panel_checkbox(card, "Bat App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    assert f"[DRY-RUN] Bat App: {window._t('uninstaller_unsafe_command')}" in _panel_console_text(card)
+
+
+def test_uninstaller_unsafe_batch_command_is_refused_in_the_confirmation_and_the_run(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point, uninstall_plan, uninstaller
+
+    unsafe = _fake_installed_program("Bat App", plain=r'"C:\App\remove.bat" & calc')
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
+    started = []
+
+    def uninstall_without_starting(program, timeout_sec=None, plan=None):
+        # The real execute_plan, with a process launcher that only records.
+        return uninstall_plan.execute_plan(plan, timeout_sec, run=lambda *a, **k: started.append(a))
+
+    monkeypatch.setattr(uninstaller, "uninstall_program", uninstall_without_starting)
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g15_unsafe", [unsafe], dry_run=False)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: shown.append(text) or QMessageBox.Yes)
+    _panel_checkbox(card, "Bat App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    [entry] = _g15_wait_for_uninstall(qtbot, window, card, audit_log_path(tmp_path, "run_g15_unsafe"), 1)
+    assert any("Bat App" in line and window._t("uninstaller_unsafe_command") in line for line in shown[0].splitlines())
+    assert entry["exit_code"] == 1 and entry["command"] == "" and started == []
+    assert window._t("uninstaller_outcome_unsafe_command") in _panel_console_text(card)

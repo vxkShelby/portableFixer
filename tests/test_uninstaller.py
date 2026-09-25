@@ -340,8 +340,8 @@ def test_list_installed_programs_reads_installer_type_hints():
 
 
 def test_uninstall_program_never_goes_through_a_shell(monkeypatch):
-    # Registry text reaches CreateProcess as argv - no "cmd /c" wrapper that
-    # would give "&" a meaning.
+    # Registry text reaches CreateProcess as written - no "cmd /c" wrapper
+    # that would give "&" a meaning.
     calls = []
 
     def fake_run(args, **kwargs):
@@ -353,7 +353,7 @@ def test_uninstall_program_never_goes_through_a_shell(monkeypatch):
     result = uninstaller.uninstall_program(program)
     assert result.ok is True
     args, kwargs = calls[0]
-    assert args == [r"C:\App\remove.exe", "&", "calc"] and kwargs["shell"] is False
+    assert args == r"C:\App\remove.exe & calc" and kwargs["shell"] is False
 
 
 def test_program_command_is_the_planned_silent_command():

@@ -2578,12 +2578,18 @@ class MainWindow(QMainWindow):
         return self.state_dir / "Logs" / f"{self.run_id}_msi"
 
     def _uninstall_queue_line(self, program: "uninstaller.InstalledProgram", plan: "uninstall_plan.UninstallPlan") -> str:
-        if plan.kind == uninstall_plan.KIND_NONE:
-            return f"{program.name}  [{self._t('uninstaller_no_command')}]"
+        if plan.kind in (uninstall_plan.KIND_NONE, uninstall_plan.KIND_UNSAFE):
+            return f"{program.name}  [{self._uninstall_no_run_text(plan)}]"
         if plan.kind == uninstall_plan.KIND_INTERACTIVE:
             return f"{program.name}  [{self._t('uninstaller_confirm_interactive_marker')}]"
         kind = self._t(f"uninstaller_kind_{plan.kind}")
         return f"{program.name}  [{self._t('uninstaller_confirm_silent_marker')}, {kind}]"
+
+    def _uninstall_no_run_text(self, plan: "uninstall_plan.UninstallPlan") -> str:
+        # Why a plan runs nothing: no command at all, or refused as unsafe.
+        if plan.kind == uninstall_plan.KIND_UNSAFE:
+            return self._t("uninstaller_unsafe_command")
+        return self._t("uninstaller_no_command")
 
     def _uninstall_queue_summary(self, interactive: list, silent: list) -> list[str]:
         # Which queue each program is in, shown before anything starts.
@@ -2893,7 +2899,9 @@ class MainWindow(QMainWindow):
                     console.appendPlainText(line)
                 for program in selected:
                     command = plans[program.name].command
-                    console.appendPlainText(f"[DRY-RUN] {program.name}: {command or self._t('uninstaller_no_command')}")
+                    console.appendPlainText(
+                        f"[DRY-RUN] {program.name}: {command or self._uninstall_no_run_text(plans[program.name])}"
+                    )
                     self._log_panel_action(
                         "_uninstaller", program.name, command, 0,
                         f"[DRY-RUN] {command}" if command else "[DRY-RUN] No uninstall command found for this program.",

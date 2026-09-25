@@ -20,8 +20,11 @@ def _entry(plain=None, quiet=None, key=None, **hints):
     )
 
 
-def _plan(entry, log_dir=None, nsis_files=()):
-    return up.build_plan(entry, log_dir, environ=ENV, has_nsis_marker=lambda path: path in nsis_files)
+def _plan(entry, log_dir=None, nsis_files=(), system_files=()):
+    return up.build_plan(
+        entry, log_dir, environ=ENV, has_nsis_marker=lambda path: path in nsis_files,
+        file_exists=lambda path: path.lower() in {f.lower() for f in system_files},
+    )
 
 
 # --- command-line parsing -----------------------------------------------------
@@ -49,6 +52,73 @@ def test_shell_metacharacters_stay_plain_argument_text():
     # No cmd.exe in between: "&" and "|" are just characters of an argument.
     argv = up.split_command_line(r'"C:\App\u.exe" /S & del C:\x | calc', environ=ENV)
     assert argv == [r"C:\App\u.exe", "/S", "&", "del", r"C:\x", "|", "calc"]
+
+
+@pytest.mark.parametrize("registry, expected", [
+    # InstallShield: a quote that starts inside the token.
+    (r'C:\WINDOWS\IsUninst.exe -f"C:\Program Files\X\Uninst.isu" -c"C:\Program Files\X\a.dll"',
+     r'C:\WINDOWS\IsUninst.exe -f"C:\Program Files\X\Uninst.isu" -c"C:\Program Files\X\a.dll"'),
+    # rundll32 reads "<dll>",Entry from its raw command line.
+    (r'"C:\Program Files\X\run.exe" "C:\Program Files\X\u.dll",Uninstall arg',
+     r'"C:\Program Files\X\run.exe" "C:\Program Files\X\u.dll",Uninstall arg'),
+    # MSI-style PROP="value" in a vendor string.
+    (r'"C:\x\setup.exe" /uninstall /quiet INSTALLDIR="C:\Program Files\X"',
+     r'C:\x\setup.exe /uninstall /quiet INSTALLDIR="C:\Program Files\X"'),
+    # %VAR% is still expanded (cmd.exe used to), nothing else changes.
+    (r'"%ProgramFiles%\App\u.exe"   a\"b  "c  d"', r'"C:\Program Files\App\u.exe" a\"b  "c  d"'),
+])
+def test_registry_arguments_reach_the_process_verbatim(registry, expected):
+    plan = _plan(_entry(plain=registry))
+    assert plan.kind == up.KIND_INTERACTIVE and plan.command == expected
+    calls = []
+    up.execute_plan(plan, None, run=_fake_run(0, calls=calls))
+    # A string with shell=False: CreateProcess gets exactly this line.
+    assert calls[0][0] == expected and calls[0][1]["shell"] is False
+
+
+def test_silent_switches_are_appended_behind_the_verbatim_tail():
+    plan = _plan(_entry(plain=r'"C:\P F\unins000.exe" /LOG="C:\a b\x.log"'))
+    assert plan.kind == up.KIND_INNO
+    assert plan.command == r'"C:\P F\unins000.exe" /LOG="C:\a b\x.log" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+
+
+def test_a_bare_system_program_is_pinned_to_system32_not_the_app_folder():
+    system = {r"C:\Windows\System32\rundll32.exe", r"C:\Windows\System32\cmd.exe"}
+    rundll = _plan(_entry(plain=r'RunDll32 "C:\Program Files\X\u.dll",Uninstall arg'), system_files=system)
+    assert rundll.command == r'C:\Windows\System32\RunDll32.exe "C:\Program Files\X\u.dll",Uninstall arg'
+    cmd = _plan(_entry(plain="cmd /c echo QUIET"), system_files=system)
+    assert cmd.argv[0] == r"C:\Windows\System32\cmd.exe"
+    # Not in System32 (or already a path): left to the normal search as before.
+    assert _plan(_entry(plain="loud.exe"), system_files=system).command == "loud.exe"
+    assert _plan(_entry(plain=r"D:\cmd.exe /c x"), system_files=system).argv[0] == r"D:\cmd.exe"
+
+
+@pytest.mark.parametrize("registry", [
+    r'"C:\x\u.bat" & calc',
+    r"C:\x\remove.cmd /q | calc",
+    r"cmd /c del x & calc",
+    r'"C:\x\u.bat" ^& calc',
+    r'"C:\x\u.bat" %COMSPEC%',
+    r"C:\x\u.bat > C:\out.txt",
+])
+def test_cmd_interpreted_commands_with_metacharacters_never_run(registry):
+    # CreateProcess runs a .bat/.cmd through cmd.exe, which would act on
+    # "&" etc. - refused, in both the plain and the quiet string.
+    for entry in (_entry(plain=registry), _entry(plain=r"C:\x\u.exe", quiet=registry)):
+        plan = _plan(entry)
+        assert plan.kind == up.KIND_UNSAFE and plan.argv == () and plan.command == "" and not plan.silent
+        result = up.execute_plan(plan, 300, run=pytest.fail)
+        assert not result.ok and result.outcome == up.OUTCOME_UNSAFE_COMMAND
+
+
+def test_exe_and_plain_batch_commands_still_run():
+    assert _plan(_entry(plain=r'"C:\x\u.exe" /S & calc')).command == r"C:\x\u.exe /S & calc"
+    assert _plan(_entry(plain=r'"C:\x\u.bat" /q')).kind == up.KIND_INTERACTIVE
+    assert _plan(_entry(plain="cmd /c echo QUIET")).kind == up.KIND_INTERACTIVE
+
+
+def test_a_quote_inside_the_program_runs_nothing():
+    assert up.parse_command(r'C:\a"b\u.exe /x', environ=ENV) is None
 
 
 # --- installer type detection ------------------------------------------------
@@ -144,10 +214,13 @@ def test_vendor_quiet_string_then_interactive_plain_string():
     assert _plan(_entry()).kind == up.KIND_NONE
 
 
-def test_command_is_the_exact_cmdline_subprocess_would_build():
+def test_command_quotes_the_program_only_when_needed():
     plan = _plan(_entry(plain=r'"C:\Program Files\App\remove.exe" "a b"'))
     assert plan.command == r'"C:\Program Files\App\remove.exe" "a b"'
-    assert plan.command == subprocess.list2cmdline(list(plan.argv))
+    assert _plan(_entry(plain=r'"C:\App\remove.exe"')).command == r"C:\App\remove.exe"
+    # Plans we build ourselves (MSI) join their own argv.
+    msi = _plan(_entry(plain=f"MsiExec.exe /I{GUID}", windows_installer=True))
+    assert msi.command == subprocess.list2cmdline(list(msi.argv))
 
 
 def test_file_has_nsis_marker_reads_the_header(tmp_path):
@@ -201,8 +274,19 @@ def test_interpret_msiexec_exit_codes(code, expected):
 def test_msi_codes_apply_to_a_vendor_string_that_is_msiexec_but_not_to_other_exes():
     vendor_msiexec = up.UninstallPlan(up.KIND_VENDOR_QUIET, ("MsiExec.exe", "/X", GUID, "/qn"), True)
     assert up.interpret_exit_code(vendor_msiexec, 3010) == (True, up.OUTCOME_REBOOT_REQUIRED)
-    assert up.interpret_exit_code(_EXE, 3010) == (False, up.OUTCOME_FAILED)
+    assert up.interpret_exit_code(vendor_msiexec, 1605) == (True, up.OUTCOME_ALREADY_GONE)
+    # msiexec-only codes mean nothing from another exe.
+    assert up.interpret_exit_code(_EXE, 1605) == (False, up.OUTCOME_FAILED)
+    assert up.interpret_exit_code(_EXE, 1618) == (False, up.OUTCOME_FAILED)
     assert up.interpret_exit_code(_EXE, 0) == (True, up.OUTCOME_OK)
+
+
+def test_reboot_codes_count_for_any_silent_plan_but_not_an_interactive_one():
+    # WiX Burn / bootstrappers as QuietUninstallString relay 3010 and 1641.
+    assert up.interpret_exit_code(_EXE, 3010) == (True, up.OUTCOME_REBOOT_REQUIRED)
+    assert up.interpret_exit_code(_EXE, 1641) == (True, up.OUTCOME_REBOOT_INITIATED)
+    interactive = up.UninstallPlan(up.KIND_INTERACTIVE, (r"C:\App\u.exe",), False)
+    assert up.interpret_exit_code(interactive, 3010) == (False, up.OUTCOME_FAILED)
 
 
 def _fake_run(returncode=0, stdout="", calls=None, exc=None):
@@ -220,7 +304,7 @@ def test_execute_plan_runs_the_argv_without_a_shell_and_passes_the_timeout():
     calls = []
     result = up.execute_plan(_EXE, 300, run=_fake_run(0, "bye", calls))
     args, kwargs = calls[0]
-    assert args == [r"C:\App\u.exe", "/S"] and kwargs["shell"] is False and kwargs["timeout"] == 300
+    assert args == r"C:\App\u.exe /S" and kwargs["shell"] is False and kwargs["timeout"] == 300
     assert result == up.UninstallResult(True, "bye", 0, up.OUTCOME_OK)
 
 

@@ -148,14 +148,20 @@ PowerShell.
   /NORESTART`, NSIS (`Uninstall.exe` with the NSIS header, or NSIS
   named in the entry) gets `/S`. Otherwise the vendor's
   `QuietUninstallString` is used, and only then the interactive
-  `UninstallString`. The command is split into arguments and started
-  without `cmd.exe`, so characters like `&` from the registry run
-  nothing. The confirmation and DRY-RUN show which queue each program
+  `UninstallString`. The command is started without `cmd.exe`, and the
+  uninstaller gets the registry's arguments exactly as written (e.g.
+  `-f"…"`, `"…dll",Entry`, `PROP="…"`); a system program named without
+  a path (`rundll32`, `cmd`) is taken from `System32`, not from the USB
+  stick. For an `.exe`, characters like `&` from the registry therefore
+  run nothing. A `.bat`/`.cmd` or `cmd` command whose arguments contain
+  `& | < > ^ %` is not run at all (cmd.exe would act on them) - such a
+  program has to be uninstalled by hand. The confirmation and DRY-RUN show which queue each program
   is in: interactive ones run first, one at a time and with no time
   limit (the technician clicks through them), the silent ones then one
   at a time with a 5-minute limit. msiexec exit codes are read
   correctly: 1605 (product no longer installed), 1641 and 3010
-  (uninstalled, restart needed) are successes with a note, and 1618
+  (uninstalled, restart needed) are successes with a note (1641 and
+  3010 also from a vendor's quiet command, e.g. WiX Burn), and 1618
   (another installation is running) tells you to retry and keeps the
   program in the list. The NSIS uninstaller deliberately runs without
   `_?=`: it copies itself to %TEMP% and finishes in the background, so

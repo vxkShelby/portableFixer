@@ -144,14 +144,21 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   „Inno Setup: …“) dostane `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`,
   NSIS (`Uninstall.exe` s hlavičkou NSIS alebo zmienka o NSIS v zázname)
   `/S`. Inak sa použije `QuietUninstallString` od výrobcu a až potom
-  interaktívny `UninstallString`. Príkaz sa rozloží na argumenty a
-  spustí bez `cmd.exe`, takže znaky ako `&` z registra nič nespustia.
+  interaktívny `UninstallString`. Príkaz sa spustí bez `cmd.exe` a
+  argumenty z registra dostane odinštalátor presne tak, ako sú zapísané
+  (napr. `-f"…"`, `"…dll",Entry`, `PROP="…"`); systémový program bez
+  cesty (`rundll32`, `cmd`) sa vezme zo `System32`, nie z USB kľúča.
+  Pre `.exe` teda znaky ako `&` z registra nič nespustia. Príkaz pre
+  `.bat`/`.cmd` alebo `cmd`, ktorého argumenty obsahujú `& | < > ^ %`,
+  sa nespustí vôbec (cmd.exe by ich vykonal) – taký program treba
+  odinštalovať ručne.
   Potvrdenie aj DRY-RUN ukážu, v ktorej fronte je každý program:
   interaktívne bežia najprv, po jednom a bez časového limitu (technik
   ich preklikáva), tiché potom po jednom s limitom 5 minút. Kódy
   msiexec sa vyhodnotia správne: 1605 (produkt už nie je
   nainštalovaný), 1641 a 3010 (odinštalované, treba reštart) sú
-  úspech s hlásením, pri 1618 (beží iná inštalácia) panel poradí
+  úspech s hlásením (1641 a 3010 aj pri tichom príkaze od výrobcu,
+  napr. WiX Burn), pri 1618 (beží iná inštalácia) panel poradí
   skúsiť znova a program nechá v zozname. NSIS odinštalátor sa
   zámerne spúšťa bez `_?=`: skopíruje sa do %TEMP% a dokončí v
   pozadí, preto môže program zo zoznamu zmiznúť až o chvíľu (s `_?=`

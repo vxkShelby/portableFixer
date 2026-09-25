@@ -6,17 +6,23 @@ registry_path and the optional windows_installer / inno_setup / nsis_marker
 hints), so tests feed it plain objects on any OS.
 
 Three questions:
-- build_plan(): which installer made this entry, and which exact argv
-  removes it - silently when the installer type is known, else the
+- build_plan(): which installer made this entry, and which exact command
+  line removes it - silently when the installer type is known, else the
   vendor's QuietUninstallString, else the interactive UninstallString.
-- execute_plan(): run that argv (never through a shell) and interpret the
-  exit code - msiexec's 1605/1641/3010/1618 are not plain "failed".
+- execute_plan(): run that command line (never through a shell) and
+  interpret the exit code - msiexec's 1605/1641/3010/1618 are not plain
+  "failed".
 - interpret_exit_code(): the exit-code mapping on its own.
 
-Registry text is untrusted (any installer writes it). It is parsed into an
-argv list with the Windows CRT rules and handed to CreateProcess directly,
-so "&", "|" or ">" in it are just characters of an argument - there is no
-cmd.exe in between to give them a meaning.
+Registry text is untrusted (any installer writes it). Only the program is
+parsed out of it; the arguments stay exactly as the registry has them and
+the line goes to CreateProcess directly. Many uninstallers read their raw
+command line themselves (IsUninst -f"...", rundll32 "<dll>",Entry,
+PROP="value"), so re-quoting the arguments would change what they see.
+For an .exe, "&", "|" or ">" are then just characters of its command line -
+no cmd.exe gives them a meaning. A .bat/.cmd (CreateProcess runs it through
+cmd.exe) or cmd.exe itself would interpret them, so such a line is refused
+(KIND_UNSAFE).
 """
 
 import ntpath
@@ -33,6 +39,9 @@ KIND_NSIS = "nsis"
 KIND_VENDOR_QUIET = "vendor_quiet"
 KIND_INTERACTIVE = "interactive"
 KIND_NONE = "none"
+# A cmd.exe-interpreted command (.bat/.cmd or cmd.exe) whose arguments carry
+# cmd metacharacters - never run.
+KIND_UNSAFE = "unsafe"
 
 # Strict: exactly one braced product code, nothing before or after - the
 # only registry-derived text that ever reaches the msiexec argv.
@@ -43,6 +52,12 @@ _INNO_EXE_RE = re.compile(r"unins\d{3}\.exe", re.IGNORECASE)
 # would try for .exe; cmd.exe used to do the same for .bat/.cmd).
 _UNQUOTED_EXE_RE = re.compile(r"(.*?\.(?:exe|com|bat|cmd))(?=[ \t]|$)", re.IGNORECASE)
 _ENV_VAR_RE = re.compile(r"%([A-Za-z0-9_()]+)%")
+# Programs whose arguments cmd.exe parses; and what cmd.exe gives a meaning
+# ("%" still expands whatever variable we could not, "^" escapes, newlines
+# end a command).
+_CMD_INTERPRETED_EXTS = (".bat", ".cmd")
+_CMD_NAMES = ("cmd", "cmd.exe")
+_CMD_METACHARS = frozenset("&|<>^%\r\n")
 # NSIS's first header ("\xEF\xBE\xAD\xDE" + "NullsoftInst") sits in the
 # overlay behind the small PE stub; uninstallers are well under this size.
 _NSIS_SIGNATURE = b"NullsoftInst"
@@ -50,7 +65,8 @@ _NSIS_SCAN_LIMIT = 8 * 1024 * 1024
 
 _INNO_SILENT_FLAGS = ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
 
-# msiexec / Windows Installer exit codes (documented, locale-free):
+# msiexec / Windows Installer exit codes (documented, locale-free; 1641 and
+# 3010 are also what WiX Burn and most bootstrappers pass through):
 # 1605 ERROR_UNKNOWN_PRODUCT - the product is not installed (any more),
 # 1641 ERROR_SUCCESS_REBOOT_INITIATED, 3010 ERROR_SUCCESS_REBOOT_REQUIRED,
 # 1618 ERROR_INSTALL_ALREADY_RUNNING, 1602 ERROR_INSTALL_USEREXIT.
@@ -64,6 +80,7 @@ OUTCOME_FAILED = "failed"
 OUTCOME_TIMEOUT = "timeout"
 OUTCOME_LAUNCH_ERROR = "launch_error"
 OUTCOME_NO_COMMAND = "no_command"
+OUTCOME_UNSAFE_COMMAND = "unsafe_command"
 
 _MSI_EXIT_CODES = {
     0: (True, OUTCOME_OK),
@@ -79,15 +96,22 @@ _MSI_EXIT_CODES = {
 OUTCOME_MESSAGES = {
     OUTCOME_OK: "Uninstalled.",
     OUTCOME_ALREADY_GONE: "msiexec 1605: the product is not installed - already removed.",
-    OUTCOME_REBOOT_INITIATED: "msiexec 1641: uninstalled, the installer started a restart.",
-    OUTCOME_REBOOT_REQUIRED: "msiexec 3010: uninstalled, a restart is required to finish.",
+    OUTCOME_REBOOT_INITIATED: "Exit code 1641: uninstalled, the installer started a restart.",
+    OUTCOME_REBOOT_REQUIRED: "Exit code 3010: uninstalled, a restart is required to finish.",
     OUTCOME_BUSY_RETRY: "msiexec 1618: another installation is in progress - wait for it to finish and try again.",
     OUTCOME_CANCELLED: "msiexec 1602: the uninstall was cancelled.",
     OUTCOME_FAILED: "The uninstaller reported a failure.",
     OUTCOME_TIMEOUT: "Uninstaller timed out.",
     OUTCOME_LAUNCH_ERROR: "The uninstaller could not be started.",
     OUTCOME_NO_COMMAND: "No uninstall command found for this program.",
+    OUTCOME_UNSAFE_COMMAND: (
+        "Not run: the uninstall command goes through cmd.exe (.bat/.cmd or cmd) and its "
+        "arguments contain cmd metacharacters (& | < > ^ %) - uninstall this program by hand."
+    ),
 }
+# The reboot codes any silent uninstaller may relay (not 1605/1618/1602,
+# which only msiexec defines).
+_REBOOT_EXIT_CODES = {code: _MSI_EXIT_CODES[code] for code in (1641, 3010)}
 
 # Why the NSIS argv carries no "_?=<dir>": an NSIS uninstaller copies itself
 # to %TEMP% and relaunches from there so it can delete its own folder - the
@@ -103,18 +127,25 @@ NSIS_BACKGROUND_NOTE = (
 @dataclass(frozen=True)
 class UninstallPlan:
     kind: str
+    # Parsed for detection and display; for a registry-derived plan it is
+    # NOT what runs - command_line is (see the module docstring).
     argv: tuple[str, ...]
     # Silent plans run with the timeout; interactive ones wait for the
     # technician to click through the uninstaller's own window.
     silent: bool
     product_code: str | None = None
     log_path: str | None = None
+    # The registry's arguments verbatim behind the (resolved) program, plus
+    # any switches we append. Empty for plans we build ourselves (MSI).
+    command_line: str = ""
 
     @property
     def command(self) -> str:
-        # Exactly the command line CreateProcess receives (subprocess builds
-        # it with the same function) - what DRY-RUN and the audit show.
-        return subprocess.list2cmdline(list(self.argv)) if self.argv else ""
+        # Exactly the command line CreateProcess receives - what runs, and
+        # what DRY-RUN and the audit show.
+        if not self.argv:
+            return ""
+        return self.command_line or subprocess.list2cmdline(list(self.argv))
 
 
 class UninstallResult(NamedTuple):
@@ -184,8 +215,38 @@ def _expand_env(text: str, environ) -> str:
     return _ENV_VAR_RE.sub(repl, text)
 
 
-def split_command_line(text: str | None, environ=None) -> list[str] | None:
-    """Parse a registry uninstall command into argv, or None when empty."""
+def _resolve_system_program(program: str, environ, file_exists: Callable[[str], bool]) -> str:
+    # A bare "rundll32.exe" / "cmd" would be searched in the application's
+    # own folder first - for a portable tool a USB stick anyone could write
+    # to. Pin it to System32 (then the Windows folder) when it exists there;
+    # otherwise leave it to the normal search as before.
+    if not program or any(sep in program for sep in ("\\", "/", ":")):
+        return program
+    root = environ.get("SystemRoot") or environ.get("SYSTEMROOT") or r"C:\Windows"
+    names = [program] if ntpath.splitext(program)[1] else [program + ".exe", program]
+    for folder in (ntpath.join(root, "System32"), root):
+        for name in names:
+            candidate = ntpath.join(folder, name)
+            if file_exists(candidate):
+                return candidate
+    return program
+
+
+class ParsedCommand(NamedTuple):
+    argv: list[str]
+    # The registry's arguments exactly as written (only %VAR% expanded, as
+    # cmd.exe used to), without the leading blanks.
+    tail: str
+
+
+def parse_command(
+    text: str | None, environ=None, file_exists: Callable[[str], bool] | None = None,
+) -> ParsedCommand | None:
+    """Split a registry uninstall command into program + verbatim tail.
+
+    None when empty, or when the program itself holds a quote (no quoting
+    of it would reach CreateProcess unchanged).
+    """
     if not text or not text.strip():
         return None
     environ = os.environ if environ is None else environ
@@ -200,9 +261,34 @@ def split_command_line(text: str | None, environ=None) -> list[str] | None:
         else:
             program, _, rest = text.replace("\t", " ").partition(" ")
     program = _expand_env(program.strip(), environ)
-    if not program:
+    if not program or '"' in program:
         return None
-    return [program] + [_expand_env(arg, environ) for arg in _split_arguments(rest)]
+    if file_exists is not None:
+        program = _resolve_system_program(program, environ, file_exists)
+    tail = _expand_env(rest.lstrip(" \t"), environ)
+    return ParsedCommand([program] + _split_arguments(tail), tail)
+
+
+def split_command_line(text: str | None, environ=None) -> list[str] | None:
+    """Parse a registry uninstall command into argv, or None when empty."""
+    parsed = parse_command(text, environ)
+    return parsed.argv if parsed else None
+
+
+def _join_command_line(program: str, tail: str, extra: tuple[str, ...] = ()) -> str:
+    # The program quoted when it has blanks (it never holds a quote - see
+    # parse_command), then the registry tail untouched, then our switches.
+    head = f'"{program}"' if (" " in program or "\t" in program) else program
+    return " ".join(part for part in (head, tail, *extra) if part)
+
+
+def _cmd_interpreted_with_metachars(parsed: ParsedCommand) -> bool:
+    # CreateProcess runs a .bat/.cmd as "cmd.exe /c <line>", and cmd.exe
+    # parses its own tail - either way "&" etc. would start commands.
+    name = _basename(parsed.argv[0])
+    if not (name.endswith(_CMD_INTERPRETED_EXTS) or name in _CMD_NAMES):
+        return False
+    return any(ch in _CMD_METACHARS for ch in parsed.tail)
 
 
 def _basename(program: str) -> str:
@@ -264,12 +350,19 @@ def msi_log_name(product_code: str) -> str:
     return f"msi_uninstall_{product_code.strip('{}')}.log"
 
 
-def _with_flags(argv: list[str], flags: tuple[str, ...], case_sensitive: bool = False) -> tuple[str, ...]:
+def _registry_plan(kind: str, parsed: ParsedCommand, silent: bool, flags: tuple[str, ...] = (),
+                   case_sensitive: bool = False) -> UninstallPlan:
+    # Only the switches the registry line lacks are appended; the line
+    # itself is kept verbatim.
     def norm(value: str) -> str:
         return value if case_sensitive else value.upper()
 
-    present = {norm(arg) for arg in argv[1:]}
-    return tuple(argv) + tuple(flag for flag in flags if norm(flag) not in present)
+    present = {norm(arg) for arg in parsed.argv[1:]}
+    extra = tuple(flag for flag in flags if norm(flag) not in present)
+    return UninstallPlan(
+        kind, tuple(parsed.argv) + extra, silent,
+        command_line=_join_command_line(parsed.argv[0], parsed.tail, extra),
+    )
 
 
 def build_plan(
@@ -277,11 +370,14 @@ def build_plan(
     log_dir: str | Path | None = None,
     environ=None,
     has_nsis_marker: Callable[[str], bool] = file_has_nsis_marker,
+    file_exists: Callable[[str], bool] = os.path.isfile,
 ) -> UninstallPlan:
-    """Pick the installer type and the argv that removes `program`."""
+    """Pick the installer type and the command line that removes `program`."""
     environ = os.environ if environ is None else environ
-    plain = split_command_line(getattr(program, "uninstall_string", None), environ)
-    quiet = split_command_line(getattr(program, "quiet_uninstall_string", None), environ)
+    plain_cmd = parse_command(getattr(program, "uninstall_string", None), environ, file_exists)
+    quiet_cmd = parse_command(getattr(program, "quiet_uninstall_string", None), environ, file_exists)
+    plain = plain_cmd.argv if plain_cmd else None
+    quiet = quiet_cmd.argv if quiet_cmd else None
 
     # 1. Windows Installer: always our own "/x {GUID} /qn". The entry's own
     # string is usually "MsiExec.exe /I{GUID}", which opens the maintenance
@@ -303,18 +399,18 @@ def build_plan(
         # run (it may well be an /I), unless the vendor gave a quiet string
         # that is not msiexec itself.
         if quiet and not _is_msiexec(quiet):
-            return UninstallPlan(KIND_VENDOR_QUIET, tuple(quiet), True)
+            return _checked(_registry_plan(KIND_VENDOR_QUIET, quiet_cmd, True), quiet_cmd)
         if _is_msiexec(plain) or not plain:
             return UninstallPlan(KIND_NONE, (), False)
     if _is_msiexec(quiet):
         # Only reachable without a product code: never run it (see above).
-        quiet = None
+        quiet = quiet_cmd = None
 
     if plain:
         name = _basename(plain[0])
         # 2. Inno Setup: unins000.exe, or the "Inno Setup: ..." values it writes.
         if getattr(program, "inno_setup", False) or _INNO_EXE_RE.fullmatch(name):
-            return UninstallPlan(KIND_INNO, _with_flags(plain, _INNO_SILENT_FLAGS), True)
+            return _checked(_registry_plan(KIND_INNO, plain_cmd, True, _INNO_SILENT_FLAGS), plain_cmd)
         # 3. NSIS: an uninst*.exe that carries the NSIS header, or an entry
         # that names NSIS. "/S" is case-sensitive for NSIS. No "_?=" - see
         # NSIS_BACKGROUND_NOTE.
@@ -322,28 +418,41 @@ def build_plan(
             getattr(program, "nsis_marker", False)
             or (name.startswith("uninst") and has_nsis_marker(plain[0]))
         ):
-            return UninstallPlan(KIND_NSIS, _with_flags(plain, ("/S",), case_sensitive=True), True)
+            return _checked(_registry_plan(KIND_NSIS, plain_cmd, True, ("/S",), case_sensitive=True), plain_cmd)
 
     # 4. The vendor's own silent command, 5. the interactive one.
     if quiet:
-        return UninstallPlan(KIND_VENDOR_QUIET, tuple(quiet), True)
+        return _checked(_registry_plan(KIND_VENDOR_QUIET, quiet_cmd, True), quiet_cmd)
     if plain:
-        return UninstallPlan(KIND_INTERACTIVE, tuple(plain), False)
+        return _checked(_registry_plan(KIND_INTERACTIVE, plain_cmd, False), plain_cmd)
     return UninstallPlan(KIND_NONE, (), False)
+
+
+def _checked(plan: UninstallPlan, parsed: ParsedCommand) -> UninstallPlan:
+    # Checked on the registry tail as run (our appended switches are plain).
+    if _cmd_interpreted_with_metachars(parsed):
+        return UninstallPlan(KIND_UNSAFE, (), False)
+    return plan
 
 
 def interpret_exit_code(plan: UninstallPlan, returncode: int) -> tuple[bool, str]:
     if plan.kind == KIND_MSI or _is_msiexec(list(plan.argv)):
         if returncode in _MSI_EXIT_CODES:
             return _MSI_EXIT_CODES[returncode]
+    elif plan.silent and returncode in _REBOOT_EXIT_CODES:
+        # WiX Burn and other bootstrappers relay msiexec's reboot codes -
+        # a finished uninstall that wants a restart, not a failure.
+        return _REBOOT_EXIT_CODES[returncode]
     if returncode == 0:
         return True, OUTCOME_OK
     return False, OUTCOME_FAILED
 
 
 def execute_plan(plan: UninstallPlan, timeout_sec: int | None, run=None) -> UninstallResult:
-    """Run the plan's argv without a shell; timeout_sec None waits forever."""
+    """Run the plan's command line without a shell; None waits forever."""
     run = run or subprocess.run
+    if plan.kind == KIND_UNSAFE:
+        return UninstallResult(False, OUTCOME_MESSAGES[OUTCOME_UNSAFE_COMMAND], None, OUTCOME_UNSAFE_COMMAND)
     if not plan.argv:
         return UninstallResult(False, OUTCOME_MESSAGES[OUTCOME_NO_COMMAND], None, OUTCOME_NO_COMMAND)
     if plan.log_path:
@@ -353,8 +462,10 @@ def execute_plan(plan: UninstallPlan, timeout_sec: int | None, run=None) -> Unin
             # msiexec then just can't write its log - no reason not to uninstall.
             pass
     try:
+        # A string with shell=False goes to CreateProcess unchanged on
+        # Windows - the registry tail reaches the uninstaller as written.
         result = run(
-            list(plan.argv), shell=False,
+            plan.command, shell=False,
             capture_output=True, text=True, errors="replace", timeout=timeout_sec,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -381,7 +492,8 @@ def split_queues(programs: list, plans: dict) -> tuple[list, list]:
     The interactive queue runs first: the technician has just confirmed and
     is at the PC to click through those windows; the silent queue then runs
     on its own and needs nobody. An entry with no command at all sits in the
-    silent queue - it only reports "no uninstall command".
+    silent queue - it only reports "no uninstall command" (or, refused,
+    "unsafe command").
     """
     interactive = [p for p in programs if plans[p.name].kind == KIND_INTERACTIVE]
     silent = [p for p in programs if plans[p.name].kind != KIND_INTERACTIVE]
