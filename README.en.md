@@ -191,13 +191,18 @@ PowerShell.
   codes 0-7 as success, 8+ as failure. It then writes
   `manifest-sha256.csv` (relative path, size, SHA-256), prints the
   manifest's own SHA-256 into the report and stores the run result in
-  `backup-status.txt`. Nothing at the source is deleted. The profile
+  `backup-status.txt`; when the manifest holds fewer files than the
+  estimate it prints a WARN (robocopy may have left out a folder
+  silently). Nothing at the source is deleted. The profile
   backed up is that of the account the app runs under. *Verify backup
   on another drive* (SAFE) re-hashes this PC's newest backup and lists
-  missing, changed and unreadable files with an OK / FAIL verdict. *List
+  missing, changed and unreadable files with an OK / FAIL verdict; with
+  no backup to check (NO BACKUP) it also exits with an error. *List
   existing backups* also shows the backups on the PortableFix drive.
   The backup is not encrypted, and a file over 4 GB does not fit on
-  FAT32 (the backup ends INCOMPLETE).
+  FAT32 (the backup ends INCOMPLETE). The same-disk check cannot see
+  through a SUBST drive letter or a mounted VHD(X) stored on the system
+  drive.
 
 ## Safety mechanisms
 

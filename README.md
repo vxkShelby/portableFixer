@@ -186,13 +186,17 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   ktoré sú len online), exit kód 0 - 7 berie ako úspech, 8+ ako chybu.
   Potom zapíše `manifest-sha256.csv` (relatívna cesta, veľkosť,
   SHA-256), SHA-256 manifestu vypíše do reportu a výsledok behu uloží
-  do `backup-status.txt`. Na zdroji nič nemaže. Zálohuje sa profil
+  do `backup-status.txt`; ak je v manifeste menej súborov ako v odhade,
+  vypíše WARN (robocopy mohol potichu vynechať priečinok). Na zdroji nič
+  nemaže. Zálohuje sa profil
   účtu, pod ktorým appka beží. *Overenie zálohy na inom disku* (SAFE)
   znova zahashuje najnovšiu zálohu tohto PC a vypíše chýbajúce,
-  zmenené a nečitateľné súbory s verdiktom OK / FAIL. *Zoznam
+  zmenené a nečitateľné súbory s verdiktom OK / FAIL; bez zálohy
+  (NO BACKUP) tiež skončí chybou. *Zoznam
   existujúcich záloh* ukáže aj zálohy na disku PortableFix. Záloha nie
   je šifrovaná a súbor nad 4 GB sa na FAT32 nezmestí (záloha skončí
-  ako INCOMPLETE).
+  ako INCOMPLETE). Kontrola toho istého fyzického disku nerozpozná
+  písmeno SUBST ani pripojený VHD(X) uložený na systémovom disku.
 
 ## Bezpečnostné mechanizmy
 

@@ -205,6 +205,9 @@ class Box:
             "New-Item -ItemType Directory -Force -Path $a[1] | Out-Null; "
             "if ($a[2] -notlike '/*') { Copy-Item -LiteralPath (Join-Path $a[0] $a[2]) -Destination $a[1] } "
             "else { Get-ChildItem -LiteralPath $a[0] -Force | Copy-Item -Destination $a[1] -Recurse -Force }; "
+            # A file robocopy leaves out without raising its exit code (as /XJ
+            # does with a reparse-point folder).
+            "Get-ChildItem -LiteralPath $a[1] -Recurse -File -Force -Filter '*robocopy-skips*' | Remove-Item -Force; "
             "'  Nový súbor    dokument.txt'; '100%'; "
             f"$m = {rc_map}; $n = Split-Path -Leaf $a[1]; "
             "if ($m.ContainsKey($n)) { $global:LASTEXITCODE = $m[$n] } else { $global:LASTEXITCODE = 1 } }",
@@ -214,9 +217,17 @@ class Box:
             "Microsoft.PowerShell.Utility\\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm }",
         ]
         names = ["Get-ItemProperty", "Get-Partition", "Get-CimInstance", "robocopy", "Get-FileHash"]
+        # In Windows PowerShell 5.1 Get-FileHash is a function exported by the
+        # autoloading Utility module: the first Utility cmdlet the script calls
+        # would import it and overwrite a stub defined earlier. Loading the
+        # module first makes the stub the later definition. The guard also
+        # demands an empty Source, so a module-exported function (the real
+        # 5.1 Get-FileHash, the CDXML Get-Partition) never passes as a stub.
+        preload = ["Import-Module Microsoft.PowerShell.Utility"]
         guard = (
             "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
-            "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+            "$c = Get-Command $n -EA SilentlyContinue | Select-Object -First 1; "
+            "if (-not $c -or $c.CommandType -ne 'Function' -or $c.Source -or $c.Module) "
             f"{{ exit {STUB_GUARD_EXIT} }} }}"
         )
         # Redirected inside the script, not in the child environment: Windows
@@ -232,7 +243,7 @@ class Box:
             f"Set-Location {_ps_quote(location)}",
         ]
         script = "; ".join(
-            ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + env_lines + stubs + [guard] + setup + [command]
+            ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + env_lines + preload + stubs + [guard] + setup + [command]
         )
         result = subprocess.run(
             [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -310,6 +321,21 @@ def test_g14_backup_copies_every_source_and_writes_a_matching_manifest(tmp_path)
     manifest_hash = _sha((backup / "manifest-sha256.csv").read_bytes())
     assert f"manifest SHA-256 {manifest_hash}" in result.stdout
     assert _status(backup) == ["RESULT=COMPLETE"]
+    assert f"Estimated {len(expected)} file(s), manifest {len(expected)} file(s)" in result.stdout
+    assert "WARN:" not in result.stdout
+
+
+def test_g14_backup_warns_when_robocopy_silently_copied_fewer_files_than_estimated(tmp_path):
+    box = Box(tmp_path)
+    expected = _populate(box)
+    _write(box.profile / "Desktop" / "robocopy-skips.txt", b"left out")
+    result = box.run(_action(BACKUP_ID).command, usf=_usf(box))
+    # robocopy reported success, so the run stays COMPLETE, but the gap is
+    # visible in the report instead of hiding behind a green status.
+    assert result.returncode == 0, result.stdout + result.stderr
+    total = len(expected) + 1
+    assert f"Estimated {total} file(s), manifest {len(expected)} file(s)" in result.stdout
+    assert "WARN: 1 file(s) fewer in the backup than estimated" in result.stdout
 
 
 def test_g14_backup_robocopy_never_follows_junctions_and_copies_only_the_bookmarks_file(tmp_path):
@@ -473,8 +499,12 @@ def test_g14_verify_reports_missing_changed_and_unreadable_files(tmp_path):
     note.write_bytes(note.read_bytes()[::-1])
     (files / "Downloads" / "setup.exe").write_bytes(b"MZ")
     _write(files / "Favorites" / "locked.url", b"x")
+    _write(files / "Favorites" / "hand" / "edited.url", b"y")
+    # Rows written by hand or on another OS use either separator; both
+    # must match the file on disk, or it counts as "not in manifest".
     with (backup / "manifest-sha256.csv").open("a", encoding="utf-8", newline="") as fh:
         fh.write('"Favorites/locked.url","1","' + _sha(b"x") + '"\r\n')
+        fh.write('"Favorites\\hand/edited.url","1","' + _sha(b"y") + '"\r\n')
     _write(files / "Desktop" / "extra.txt", b"new")
     result = box.run(_action(VERIFY_ID).command)
     assert result.returncode == 1, result.stdout + result.stderr
@@ -484,7 +514,7 @@ def test_g14_verify_reports_missing_changed_and_unreadable_files(tmp_path):
     assert "Changed: Downloads" in out
     assert "Unreadable: Favorites" in out
     assert "Not in manifest (ignored): 1 file(s)" in out
-    assert "VERDICT: FAIL - 1 missing, 2 changed, 1 unreadable of 9 file(s)" in out
+    assert "VERDICT: FAIL - 1 missing, 2 changed, 1 unreadable of 10 file(s)" in out
 
 
 def test_g14_verify_a_row_whose_hash_failed_at_backup_time_is_unreadable(tmp_path):
@@ -498,17 +528,18 @@ def test_g14_verify_a_row_whose_hash_failed_at_backup_time_is_unreadable(tmp_pat
     assert "VERDICT: FAIL - 0 missing, 0 changed, 1 unreadable" in result.stdout
 
 
-def test_g14_verify_without_a_backup_says_so_and_passes(tmp_path):
+def test_g14_verify_without_a_backup_says_so_and_fails(tmp_path):
+    # Nothing was verified: a zero exit would show green in the report.
     box = Box(tmp_path)
     result = box.run(_action(VERIFY_ID).command)
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
     assert "VERDICT: NO BACKUP - no PC1_* backup in E:" in result.stdout
 
 
 def test_g14_verify_off_a_drive_letter_says_no_backup(tmp_path):
     box = Box(tmp_path)
     result = box.run(_action(VERIFY_ID).command, location="Env:\\")
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
     assert "VERDICT: NO BACKUP - PortableFix is not running from a drive letter" in result.stdout
 
 
