@@ -7,9 +7,10 @@ itself writes in fixed English tokens (never Windows' localized text).
 
 The probe is meant to be cheap: one PowerShell launch with a short
 timeout, made only when a real batch contains an action flagged
-`stresses_disk: true`, once per review screen. Anything that goes wrong
-(no PowerShell, timeout, not Windows, no VERDICT line) answers None =
-"unknown", and pre-flight never blocks on an unknown. Tests inject the
+`stresses_disk: true`, once per review screen. It blocks, so the GUI
+runs it on a worker thread (main_window._probe_disk_health). Anything
+that goes wrong (no PowerShell, timeout, not Windows, no VERDICT line)
+answers None = "unknown", and pre-flight never blocks on an unknown. Tests inject the
 runner (`probe(run=...)`) or replace `preflight.Probes.disk_health`.
 """
 
@@ -31,6 +32,9 @@ ACTION_ID = "disk_health_verdict"
 # the probe, so a storage stack that hangs (a dying disk often does) must
 # not freeze it for long - a timeout is just "unknown".
 PROBE_TIMEOUT_SEC = 20
+# After kill(), how long the pipes may take to close before the probe
+# gives up on them (see _run_powershell).
+KILL_DRAIN_TIMEOUT_SEC = 5
 # "?" = a failure prediction the script could not tie to a physical disk.
 UNMAPPED_DISK = "?"
 
@@ -107,16 +111,33 @@ def catalog_command(modules_dir: Path | None = None) -> str | None:
 def _run_powershell(command: str, timeout: float) -> str | None:
     from .paths import powershell_executable
 
+    # Popen + communicate instead of subprocess.run: on a timeout, run()
+    # kills PowerShell and then (on Windows) waits for the pipes with no
+    # limit at all - a WMI/storage child that inherited them and hangs on
+    # the same dying disk would then hold the probe (and the review screen
+    # waiting for it) forever. Here the drain after kill() is capped too.
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [powershell_executable(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + command],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except (OSError, ValueError):
         return None
-    return result.stdout
+    try:
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.communicate(timeout=KILL_DRAIN_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            # Pipes still held by an orphaned grandchild: give up on them;
+            # the verdict is "unknown" either way.
+            pass
+        return None
+    return stdout
 
 
 def probe(

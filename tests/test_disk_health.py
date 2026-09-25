@@ -295,13 +295,68 @@ def test_probe_without_catalog_is_unknown(tmp_path):
     assert disk_health.catalog_command(CATALOG_PATH.parent.parent) == _command()
 
 
-def test_real_powershell_runner_times_out_to_none(monkeypatch):
-    def slow(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="powershell", timeout=kwargs.get("timeout"))
+class _FakePopen:
+    """Stands in for subprocess.Popen: `hang` = how many communicate() calls
+    time out before one returns."""
 
-    monkeypatch.setattr(disk_health.subprocess, "run", slow)
-    assert disk_health._run_powershell("x", 1) is None
-    monkeypatch.setattr(disk_health.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("missing")))
+    instances = []
+
+    def __init__(self, args, hang=0, output="VERDICT: x", **kwargs):
+        self.args, self.kwargs = args, kwargs
+        self.hang, self.output = hang, output
+        self.timeouts, self.killed = [], False
+        _FakePopen.instances.append(self)
+
+    def communicate(self, timeout=None):
+        self.timeouts.append(timeout)
+        if self.hang:
+            self.hang -= 1
+            raise subprocess.TimeoutExpired(cmd="powershell", timeout=timeout)
+        return self.output, ""
+
+    def kill(self):
+        self.killed = True
+
+
+@pytest.fixture
+def fake_popen(monkeypatch):
+    _FakePopen.instances = []
+    monkeypatch.setattr("portablefix.paths.powershell_executable", lambda: "powershell.exe")
+
+    def install(**behaviour):
+        monkeypatch.setattr(disk_health.subprocess, "Popen", lambda args, **kw: _FakePopen(args, **behaviour, **kw))
+        return _FakePopen.instances
+
+    return install
+
+
+def test_real_powershell_runner_returns_stdout_within_the_timeout(fake_popen):
+    procs = fake_popen(output="VERDICT: ok")
+    assert disk_health._run_powershell("Get-X", 7) == "VERDICT: ok"
+    [proc] = procs
+    assert proc.timeouts == [7] and not proc.killed
+    assert proc.args[-1].endswith("Get-X") and proc.kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_real_powershell_runner_kills_on_timeout_and_bounds_the_drain(fake_popen):
+    # subprocess.run's own timeout path waits for the pipes after kill()
+    # with no limit - a grandchild holding them would hang the probe forever.
+    procs = fake_popen(hang=2)
+    assert disk_health._run_powershell("x", 3) is None
+    [proc] = procs
+    assert proc.killed
+    assert proc.timeouts == [3, disk_health.KILL_DRAIN_TIMEOUT_SEC]
+
+
+def test_real_powershell_runner_timeout_with_a_quick_drain_is_still_unknown(fake_popen):
+    procs = fake_popen(hang=1, output="VERDICT: partial")
+    assert disk_health._run_powershell("x", 3) is None
+    assert procs[0].killed and procs[0].timeouts == [3, disk_health.KILL_DRAIN_TIMEOUT_SEC]
+
+
+def test_real_powershell_runner_without_powershell_is_none(monkeypatch):
+    monkeypatch.setattr("portablefix.paths.powershell_executable", lambda: "powershell.exe")
+    monkeypatch.setattr(disk_health.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("missing")))
     assert disk_health._run_powershell("x", 1) is None
 
 

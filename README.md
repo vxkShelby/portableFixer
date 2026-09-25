@@ -139,13 +139,16 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   pred akýmkoľvek čistením. *Triáž pádov* prejde log System za 90 dní
   (BugCheck 1001, Kernel-Power 41, EventLog 6008) a ku každému pádu
   vypíše stop kód s parametrami, cestu k dumpu a zo vstavanej tabuľky
-  ~35 najčastejších kódov aj názov a pravdepodobnú príčinu. *Hardvérové
+  ~35 najčastejších kódov aj názov a pravdepodobnú príčinu. Súhrn podľa
+  stop kódu počíta pády, nie udalosti: udalosti do 10 minút od seba
+  (najviac jedna z každého druhu) sú jeden pád. *Hardvérové
   chyby WHEA* zhrnú chyby PCI Express, procesora a pamäte za 30 dní podľa
   súčasti a počtu. *História spoľahlivosti* ukáže index stability 1–10
   s trendom a najčastejšie padajúce programy. *Výpisy pádov ako dôkaz*
-  vypíšu Minidump, MEMORY.DMP a LiveKernelReports s veľkosťou a dátumom -
-  čistenie „Výpisy pádov systému“ ich maže, preto si ich najprv
-  skopírujte. Údaje sa čítajú z event ID, názvov providerov, XML udalostí
+  vypíšu Minidump, MEMORY.DMP a LiveKernelReports s veľkosťou a dátumom
+  a pri každom súbore povedia, či ho čistenie „Výpisy pádov systému“
+  zmaže (maže len predvolené umiestnenia Windows, nie vlastný priečinok
+  z CrashControl, a prehľadajú ich vždy) - preto si ich najprv skopírujte. Údaje sa čítajú z event ID, názvov providerov, XML udalostí
   a tried CIM, nikdy z preloženého textu správ, takže fungujú v každom
   jazyku Windows. Triáž pádov a hardvérové chyby WHEA sú aj v predvoľbe
   Plná diagnostika.
@@ -199,7 +202,8 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   voľného miesta `cipher /w`). Keď je taká akcia v ostrej dávke,
   pre-flight raz, pri otvorení kontrolnej obrazovky, spustí rovnaký
   skript ako SAFE akcia **Zdravie diskov - verdikt** (jedno spustenie
-  PowerShellu s limitom 20 s). Ak systémový disk hlási FAILING alebo
+  PowerShellu s limitom 20 s, na pozadí - okno počas neho reaguje a
+  tlačidlo „Zrušiť dávku“ dávku zruší a zapíše to do audit logu). Ak systémový disk hlási FAILING alebo
   WARNING, zobrazí sa blokovanie „najprv zálohujte alebo vytvorte image
   disku“, ktoré sa dá obísť len vedomým zaškrtnutím a obídenie sa zapíše
   do audit logu. Keď systémový disk nevieme určiť, rozhoduje najhorší
