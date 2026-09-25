@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from . import style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
+from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -313,6 +313,24 @@ class MainWindow(QMainWindow):
         # last written to undo.ps1 - the lists only ever grow, so the lengths
         # identify it.
         self._undo_written_state: tuple[int, int, int] | None = None
+        # Batches across a restart (research G03). The PC stays awake while a
+        # batch runs; tests swap in a recording KeepAwake.
+        self._keep_awake = batch_resume.KeepAwake()
+        # restarts_pc actions of this batch whose report + undo.ps1 were
+        # already written before they run.
+        self._pre_restart_prepared: set[str] = set()
+        # The action the resume file was saved for in this batch ("" = none).
+        self._resume_saved_for = ""
+        # The batch stopped for a restart_before_next action: after the
+        # report, tell the technician to restart and start PortableFix again.
+        self._restart_needed_after = ""
+        # A restarts_pc action succeeded - Windows is going down, so the
+        # report written just before it is the final one (a rewrite now could
+        # be cut off half-way and leave no report at all).
+        self._restart_report_path: Path | None = None
+        self._restarting = False
+        # The saved batch being continued (resume_batch), until it starts.
+        self._resuming: batch_resume.PendingBatch | None = None
         self._build_ui()
         # Quiet mode: no GitHub request at start; the sysinfo panel has a
         # button for an explicit check instead.
@@ -539,6 +557,9 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
         self._discard_update_download()
+        # Normally released with the batch's report; a close mid-batch must
+        # not leave this process holding the PC awake while it winds down.
+        self._keep_awake.release()
         super().closeEvent(event)
 
     def _t(self, key: str) -> str:
@@ -3482,17 +3503,37 @@ class MainWindow(QMainWindow):
         # a second ActionRunner alongside the running one.
         if self._batch_start_blocked():
             return
+        resuming, self._resuming = self._resuming, None
         queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        # Research G03: an action that restarts Windows at once runs last, so
+        # it cuts nothing off - and only after the report and undo.ps1 exist.
+        queue = batch_resume.order_restarting_last(queue, lambda aid: self._find_action(aid)[1].restarts_pc)
         self._reviewed_warnings = {}
         # Per batch, like the restore point: set only by this batch's review.
         self._hive_backup_requested = False
         self._hive_backup_attempted = False
-        if queue and not self.settings.dry_run:
+        if queue and (not self.settings.dry_run or resuming is not None):
             # A DRY-RUN changes nothing, so it gets neither the pre-flight
-            # nor a confirmation - only a real batch is reviewed, once.
-            queue = self._review_batch(queue)
+            # nor a confirmation - only a real batch is reviewed, once. A
+            # continued batch is always confirmed again: nothing runs by
+            # itself after a restart.
+            queue = self._review_batch(queue, resuming=resuming)
             if queue is None:
                 return
+        self._pre_restart_prepared = set()
+        self._resume_saved_for = ""
+        self._restart_needed_after = ""
+        self._restart_report_path = None
+        self._restarting = False
+        if resuming is not None and queue:
+            # Consumed once the continued batch starts; declining it on the
+            # review screen leaves it for another try until it goes stale.
+            batch_resume.discard_pending(self.state_dir)
+            self._log_system_event(
+                "resumed_after_reboot", 0,
+                f"Continuing the batch after a restart ({len(queue)} action(s): {', '.join(queue)}).",
+                subject=self._restart_subject(resuming.restart_after),
+            )
         self._queue = queue
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
@@ -3504,7 +3545,13 @@ class MainWindow(QMainWindow):
             self._set_action_status(action_id, "", "")
         if self._queue:
             self._batch_active = True
-            self._snapshot_before = self._take_snapshot()
+            self._keep_awake.acquire()
+            # A continued batch compares against the PC as it was before its
+            # first half - one report for the whole job.
+            if resuming is not None and resuming.snapshot_before:
+                self._snapshot_before = resuming.snapshot_before
+            else:
+                self._snapshot_before = self._take_snapshot()
             self.run_button.setEnabled(False)
             self.dashboard_analyze_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
@@ -3513,6 +3560,41 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
         self._run_next()
+
+    def resume_batch(self, pending: batch_resume.PendingBatch) -> None:
+        """Continues a batch saved before a restart (research G03). main.py
+        asked the technician first; this selects what was left and opens the
+        review screen - the batch starts only when it is confirmed there."""
+        if self._batch_start_blocked():
+            return
+        known = [aid for aid in pending.action_ids if aid in self._action_checkboxes]
+        missing = [aid for aid in pending.action_ids if aid not in self._action_checkboxes]
+        if missing:
+            # An update between the halves dropped or renamed an action.
+            self._log_system_event(
+                "resume_skipped", None,
+                f"Not in this version's catalog, not continued: {', '.join(missing)}.",
+            )
+        if not known:
+            batch_resume.discard_pending(self.state_dir)
+            return
+        job = pending.job
+        self._set_job(job.get("technician") or self.settings.technician_name, job.get("client", ""), job.get("note", ""))
+        # Same run_id: undo.ps1 is rewritten for it, so it must keep the
+        # first half's steps (and the hive backups it points to).
+        self._undo_steps = list(pending.undo_steps) + self._undo_steps
+        self._irreversible_actions = list(pending.irreversible) + self._irreversible_actions
+        self._hive_backups = [Path(p) for p in pending.hive_backups] + self._hive_backups
+        if self.settings.dry_run != pending.dry_run:
+            self.dry_run_checkbox.setChecked(pending.dry_run)
+        self._apply_selection(list(self._action_checkboxes), "none")
+        for action_id in known:
+            self._action_checkboxes[action_id].setChecked(True)
+        self._resuming = pending
+        self.run_selected_actions()
+        # A review that was cancelled (or never shown) leaves the selection
+        # in place for the technician, but never a stale "resuming" flag.
+        self._resuming = None
 
     def _preflight_busy_tasks(self) -> list[str]:
         # System-changing jobs of this window that would run side by side
@@ -3579,7 +3661,40 @@ class MainWindow(QMainWindow):
             return None, True
         return (results[0] if results else None), False
 
-    def _review_batch(self, queue: list[str]) -> list[str] | None:
+    def _restart_subject(self, action_id: str) -> str:
+        try:
+            module, _ = self._find_action(action_id)
+        except KeyError:
+            return action_id
+        return f"{module.module_id}/{action_id}"
+
+    def _action_label(self, action_id: str) -> str:
+        return self._find_action(action_id)[1].label(self.settings.language)
+
+    def _restart_notes(self, queue: list[str], resuming: batch_resume.PendingBatch | None) -> tuple[str, ...]:
+        """What the review screen says about restarts in this batch (G03)."""
+        notes = []
+        if resuming is not None:
+            notes.append(self._t("review_note_resumed").format(count=len(queue)))
+        restarting = [aid for aid in queue if self._find_action(aid)[1].restarts_pc]
+        if restarting:
+            notes.append(self._t("review_note_restarts_last").format(
+                actions=", ".join(self._action_label(aid) for aid in restarting),
+            ))
+        split = batch_resume.plan_restart_split(
+            queue,
+            lambda aid: self._find_action(aid)[1].restarts_pc,
+            lambda aid: self._find_action(aid)[1].restart_before_next,
+        )
+        if split.waiting_ids:
+            notes.append(self._t("review_note_waits_for_restart").format(
+                action=self._action_label(split.restart_action_id),
+                actions=", ".join(self._action_label(aid) for aid in split.waiting_ids),
+                hours=int(batch_resume.MAX_RESUME_AGE.total_seconds() // 3600),
+            ))
+        return tuple(notes)
+
+    def _review_batch(self, queue: list[str], resuming: batch_resume.PendingBatch | None = None) -> list[str] | None:
         """Pre-flight + the one review screen (research G11/G12). Returns
         the queue to run - without the declined actions - or None when the
         technician cancelled the batch."""
@@ -3604,6 +3719,7 @@ class MainWindow(QMainWindow):
         review = build_review(
             items, result, self.settings.language,
             hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,
+            notes=self._restart_notes(queue, resuming),
         )
         if not review.needs_confirmation:
             return queue
@@ -3646,6 +3762,8 @@ class MainWindow(QMainWindow):
 
     def _on_report_ready(self, html_path: Path | None, write_failed: bool) -> None:
         self._report_runner = None
+        # The batch is over (report written or not): sleep is allowed again.
+        self._keep_awake.release()
         if not self._closed:
             self.run_button.setEnabled(True)
             self.dashboard_analyze_button.setEnabled(True)
@@ -3663,6 +3781,18 @@ class MainWindow(QMainWindow):
                 ok=ok_count, failed=len(self._batch_results) - ok_count,
             ))
             self._show_batch_summary(html_path)
+        if self._restart_needed_after and not self._closed:
+            self._notify_restart_needed()
+
+    def _notify_restart_needed(self) -> None:
+        # Own method so a test can see it without a real modal box.
+        pending = batch_resume.load_pending(self.state_dir)
+        count = len(pending.action_ids) if pending is not None else 0
+        text = self._t("restart_needed_to_continue").format(
+            action=self._action_label(self._restart_needed_after), count=count,
+        )
+        self.console.appendPlainText(text)
+        QMessageBox.information(self, self._t("app_title"), text)
 
     def _app_dir_intact(self) -> bool:
         # Cheap existence check, not a deep scan - Modules/ is the canary
@@ -3688,6 +3818,15 @@ class MainWindow(QMainWindow):
                     self.progress_bar.setVisible(False)
                     self._apply_selection(list(self._action_checkboxes), "none")
                     self._update_status_bar()
+                if self._restarting and self._restart_report_path is not None:
+                    # Windows is restarting (a restarts_pc action succeeded):
+                    # the report written right before it stays the final one
+                    # - rewriting it now could be cut off half-way. The
+                    # action's own result is in the audit log, and a
+                    # continued batch writes the full report under the same
+                    # run_id.
+                    self._on_report_ready(self._restart_report_path, False)
+                    return
                 snapshot_after = self._take_snapshot()
                 self._snapshot_after = snapshot_after
                 report_args = (
@@ -3914,10 +4053,91 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
 
+    def _save_resume(self, restart_action_id: str) -> bool:
+        """Saves what is still queued to the resume file (G03). False when
+        it could not be written - the technician is told the rest must be
+        started by hand."""
+        pending = batch_resume.PendingBatch(
+            run_id=self.run_id,
+            action_ids=list(self._queue),
+            dry_run=self.settings.dry_run,
+            restart_after=restart_action_id,
+            job=self._job_info(),
+            undo_steps=list(self._undo_steps),
+            irreversible=list(self._irreversible_actions),
+            hive_backups=[str(path) for path in self._hive_backups],
+            snapshot_before=self._snapshot_before,
+        )
+        try:
+            batch_resume.save_pending(self.state_dir, pending)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("resume_save_failed"))
+            return False
+        self._resume_saved_for = restart_action_id
+        return True
+
+    def _log_restart_pending(self, module: ModuleDef, action: ActionDef, saved: bool, immediate: bool) -> None:
+        waiting = ", ".join(self._queue)
+        if immediate:
+            output = f"{action.id} restarts Windows immediately - report and undo.ps1 written before it runs."
+        else:
+            output = f"{action.id} succeeded and needs a restart before the rest of the batch - batch stopped."
+        if self._queue:
+            output += (
+                f" Saved to continue after the restart: {waiting}." if saved
+                else f" Could not save the rest of the batch ({waiting}) - start it again by hand after the restart."
+            )
+        self._log_system_event(
+            "restart_pending", 0, output, risk=action.risk.value, subject=f"{module.module_id}/{action.id}",
+        )
+
+    def _prepare_for_restart(self, module: ModuleDef, action: ActionDef) -> None:
+        """Before an action that restarts Windows at once (G03): what is still
+        queued goes to the resume file, then undo.ps1, the audit record and
+        the report are written - the action runs only once they exist."""
+        self._pre_restart_prepared.add(action.id)
+        saved = self._save_resume(action.id) if self._queue else False
+        self._log_restart_pending(module, action, saved, immediate=True)
+        self._write_undo_script()
+        self.console.appendPlainText(self._t("restart_writing_report").format(action=action.label(self.settings.language)))
+        # Everything up to this point, snapshot included - the PC may not
+        # come back to this process.
+        self._snapshot_after = self._take_snapshot()
+        runner = report.ReportRunner(
+            self.state_dir, self.run_id, self.modules, self.settings.language,
+            self._snapshot_before, self._snapshot_after,
+            job=self._job_info(), storage_fallback=self._storage_fallback, parent=self,
+        )
+        runner.result_ready.connect(
+            lambda html_path, write_failed, m=module, a=action: self._on_pre_restart_report_ready(html_path, write_failed, m, a)
+        )
+        self._report_runner = runner
+        runner.start()
+
+    def _on_pre_restart_report_ready(self, html_path, write_failed: bool, module: ModuleDef, action: ActionDef) -> None:
+        self._report_runner = None
+        if write_failed and not self._closed:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+        if self._cancel_requested or self._closed:
+            # Cancelled while the report was written: the restart never
+            # comes, so there is nothing to continue after it.
+            if self._resume_saved_for == action.id:
+                batch_resume.discard_pending(self.state_dir)
+                self._resume_saved_for = ""
+            self._run_next()
+            return
+        self._restart_report_path = html_path
+        self._dispatch_action(module, action)
+
     def _dispatch_action(self, module: ModuleDef, action: ActionDef) -> None:
         if self._closed:
             # Never start an action (or pop its confirmation) after the
             # window is gone - it would run unlogged and outlive the app.
+            return
+        if action.restarts_pc and not self.settings.dry_run and action.id not in self._pre_restart_prepared:
+            # A DRY-RUN only previews - nothing restarts, nothing to prepare.
+            self._prepare_for_restart(module, action)
             return
         warning_text = ""
         confirmed = QMessageBox.Yes
@@ -4043,7 +4263,30 @@ class MainWindow(QMainWindow):
                     entry_text += f" - exit {exit_code}"
                 self._irreversible_actions.append(entry_text)
                 self._write_undo_script()
+            self._after_restart_action(action, exit_code)
         self._run_next()
+
+    def _after_restart_action(self, action: ActionDef, exit_code: int) -> None:
+        """Research G03, after a real run of an action: stop the batch where
+        a restart has to come first; the rest waits in the resume file."""
+        if action.restarts_pc:
+            if exit_code == 0:
+                # Windows is restarting right now - never start the next
+                # action; what was left is already in the resume file.
+                self._restarting = True
+                self._queue = []
+            elif self._resume_saved_for == action.id:
+                # It failed, so no restart comes - carry on with the rest here.
+                batch_resume.discard_pending(self.state_dir)
+                self._resume_saved_for = ""
+            return
+        if action.restart_before_next and exit_code == 0 and self._queue and not self._cancel_requested:
+            module, _ = self._find_action(action.id)
+            saved = self._save_resume(action.id)
+            self._log_restart_pending(module, action, saved, immediate=False)
+            if saved:
+                self._restart_needed_after = action.id
+            self._queue = []
 
     def _write_undo_script(self) -> None:
         # LIFO order puts the newest step at the top, so each change is a

@@ -162,8 +162,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   vypíše priebeh; trvá zvyčajne 1 - 3 hodiny a limit akcie je 8 hodín.
   *Offline sken* (REQUIRES_REBOOT, nie je vo „Vybrať všetko“) najprv
   aktualizuje definície, ukáže ID kľúča BitLocker a potom **okamžite
-  reštartuje** PC do Microsoft Defender Offline - spúšťa sa ako posledný
-  a až po uložení práce. *Zapnutie ochrany pred PUA* uloží predošlú
+  reštartuje** PC do Microsoft Defender Offline. V dávke beží vždy ako
+  posledný, až po zapísaní reportu a `undo.ps1` (pozri *Dávka cez
+  reštart*); pred ostrým spustením ulož rozrobenú prácu. *Zapnutie ochrany pred PUA* uloží predošlú
   hodnotu do `%ProgramData%\PortableFix` (priečinok len pre
   administrátorov) a undo ju obnoví. Ak Defender nahradil iný antivírus,
   akcie to zistia z `Get-MpComputerStatus` (AMRunningMode, príznaky
@@ -185,6 +186,29 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   nevratné“), inak sa nespustí. Jedno potvrdenie pokryje celú dávku a
   audit log pri každej akcii zapíše presný text, ktorý technik potvrdil
   (alebo odmietol).
+- **Dávka cez reštart:** akcia, ktorá PC reštartuje okamžite
+  (`restarts_pc: true` v `actions.yaml`, dnes *Offline sken* Defendera),
+  beží v dávke vždy posledná. Pred ňou sa zapíše audit log (udalosť
+  `restart_pending`), `undo.ps1` aj HTML report, takže záznam ostane,
+  aj keď sa PC hneď reštartuje. Akcia, ktorej zmenu dokončí až reštart
+  a ďalšie akcie by bežali proti rozpracovanému stavu
+  (`restart_before_next: true`: *Plná kontrola disku pri reštarte* a
+  *Odinštalovanie poslednej aktualizácie*), po úspechu dávku zastaví.
+  Zvyšok dávky (id akcií, run_id, DRY-RUN, údaje o zákazke, kroky
+  `undo.ps1`) sa uloží do `Data/pending_batch.json` a PortableFix
+  povie, že treba reštartovať. Pri ďalšom spustení PortableFix ponúkne
+  pokračovanie: súhlas označí zvyšné akcie a znova otvorí kontrolnú
+  obrazovku (aj pri dávke len zo SAFE akcií), odmietnutie uloženú dávku
+  zahodí. Pokračovanie používa rovnaký run_id, takže audit log, report
+  aj `undo.ps1` sú pre celú zákazku jedny. Súbor starší ako 24 hodín
+  alebo z iného počítača sa zmaže bez otázky. PortableFix nič
+  neregistruje na automatické spustenie s Windows - po reštarte ho
+  technik spustí sám. Kontrolná obrazovka vopred vypíše, ktorá akcia
+  pobeží posledná a ktoré akcie počkajú na reštart.
+- **PC neuspí počas dávky:** kým beží dávka (vrátane zápisu reportu),
+  PortableFix cez `SetThreadExecutionState` bráni uspaniu systému
+  (obrazovka sa môže vypnúť). Po dávke alebo pri zatvorení okna sa
+  nastavenie hneď vráti.
 - **Pre-flight kontrola:** pred ostrou dávkou, ktorá mení systém, sa
   overí stav PC. **Blokuje:** iná úloha PortableFix práve mení systém
   (winget, odinštalovanie, aktualizácia), chýbajúce admin práva pre
@@ -366,7 +390,7 @@ PortableFix/
   portablefix/           aplikačný kód
   Modules/<id>/actions.yaml   deklaratívne katalógy akcií
   Vendor/                 LibreHardwareMonitorLib (voliteľné HW senzory)
-  Data/                  settings.json, SHA256SUMS (runtime)
+  Data/                  settings.json, SHA256SUMS, pending_batch.json (runtime)
   Logs/                  audit logy (runtime)
   Reports/               HTML reporty (runtime)
   Backups/               undo.ps1 skripty (runtime)

@@ -60,6 +60,10 @@ class BatchReview:
     # Size of the live SOFTWARE + SYSTEM hives (hive_backup.estimate_bytes),
     # None when unknown - shown next to the hive backup offer.
     hive_backup_bytes: int | None = None
+    # Batch-level facts in the review's language that are not about a single
+    # action: a restart that ends the batch, the actions waiting for it, a
+    # batch continued after a restart (research G03).
+    notes: tuple[str, ...] = ()
 
     @property
     def restore_point_planned(self) -> bool:
@@ -77,7 +81,9 @@ class BatchReview:
         # directly (a restore point alone is nothing to decide) - a dialog
         # with no decision in it is what trains people to click without
         # reading.
-        return bool(self.preflight.issues) or any(item.warning_text for item in self.items)
+        # A note is always something to decide on (a batch that stops for a
+        # restart, or one continued after it - never started unasked).
+        return bool(self.preflight.issues) or any(item.warning_text for item in self.items) or bool(self.notes)
 
 
 @dataclass
@@ -112,7 +118,7 @@ def warning_text_for(action: ActionDef, language: str) -> str:
 
 def build_review(
     items: list[tuple[ModuleDef, ActionDef]], result: preflight.PreflightResult, language: str,
-    hive_backup_bytes: int | None = None,
+    hive_backup_bytes: int | None = None, notes: tuple[str, ...] = (),
 ) -> BatchReview:
     review_items = []
     for module, action in items:
@@ -128,7 +134,7 @@ def build_review(
         ))
     # Stable sort: within a tier the batch's own order is kept.
     review_items.sort(key=lambda item: _RISK_ORDER.get(item.risk, 9))
-    return BatchReview(tuple(review_items), result, language, hive_backup_bytes)
+    return BatchReview(tuple(review_items), result, language, hive_backup_bytes, tuple(notes))
 
 
 class BatchReviewDialog(QDialog):
@@ -197,6 +203,13 @@ class BatchReviewDialog(QDialog):
             label = QLabel(self._t("review_reboot_list").format(actions=", ".join(reboot)))
             label.setWordWrap(True)
             layout.addWidget(label)
+        self.note_labels: list[QLabel] = []
+        for note in review.notes:
+            label = QLabel(note)
+            label.setObjectName("summaryDryRunNote")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            self.note_labels.append(label)
 
         if review.offers_hive_backup:
             # Unticked by default: it costs disk space and time, and the

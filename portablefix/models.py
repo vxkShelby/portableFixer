@@ -46,6 +46,14 @@ class ActionDef:
     # scan, defrag, online NTFS repair)? Pre-flight then asks the disk
     # health probe first and blocks on a failing disk (research G13).
     stresses_disk: bool = False
+    # Restarts Windows the moment it succeeds (Defender Offline): the batch
+    # runs it last, after the report and undo.ps1 are written (research G03).
+    restarts_pc: bool = False
+    # Leaves a change that only a restart completes (a pending uninstall, a
+    # chkdsk scheduled for boot) which the rest of the batch must not run
+    # against: when it succeeds, the batch stops and what is left is offered
+    # again on the next start of PortableFix (research G03).
+    restart_before_next: bool = False
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

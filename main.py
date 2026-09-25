@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from portablefix import i18n, update_swap, updater
+from portablefix import batch_resume, i18n, update_swap, updater
 from portablefix.audit_log import append_entry, make_entry
 from portablefix.diagnostics import install_excepthook, write_crash_log
 from portablefix.elevation import is_admin
@@ -58,6 +58,39 @@ def _update_status_message(install_dir, language: str) -> str | None:
     if key is None:
         return None
     return i18n.translate(key, language).format(log_dir=updater.update_log_dir() or "%TEMP%\\PortableFixUpdate")
+
+
+def _offer_resume(base_dir: Path, language: str) -> "batch_resume.PendingBatch | None":
+    """A batch that stopped for a restart (research G03): offered, never
+    run by itself - "Yes" only opens the review screen for what was left,
+    "No" discards it. Stale files and files from another PC are dropped by
+    load_pending without asking."""
+    pending = batch_resume.load_pending(base_dir)
+    if pending is None:
+        return None
+    created = pending.created_at()
+    text = i18n.translate("resume_offer", language).format(
+        created=created.astimezone().strftime("%d.%m.%Y %H:%M") if created else "?",
+        count=len(pending.action_ids),
+        actions=", ".join(pending.action_ids),
+    )
+    answer = QMessageBox.question(
+        None, i18n.translate("app_title", language), text, QMessageBox.Yes | QMessageBox.No,
+    )
+    if answer == QMessageBox.Yes:
+        return pending
+    batch_resume.discard_pending(base_dir)
+    # On the first half's record: the batch was deliberately not continued.
+    entry = make_entry(
+        "_system", "resume_declined", "", None,
+        f"Technician declined to continue the batch after the restart: {', '.join(pending.action_ids)}.",
+        pending.dry_run, pending.run_id, decision="declined",
+    )
+    try:
+        append_entry(base_dir, pending.run_id, entry)
+    except OSError:
+        pass
+    return None
 
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Global\\PortableFix_SingleInstance_Mutex"
@@ -257,6 +290,11 @@ def main() -> int:
         # chronologically - a bare random id doesn't, which breaks the
         # "same technician, same machine, multiple visits" use case.
         run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+        # A continued batch keeps its run_id: one audit log, one report and
+        # one undo.ps1 for the whole job across the restart.
+        resume = _offer_resume(base_dir, settings.language)
+        if resume is not None:
+            run_id = resume.run_id
         _write_startup_diagnostics(raw_base_dir, base_dir, used_fallback, run_id, settings.dry_run)
 
         window = MainWindow(
@@ -289,6 +327,8 @@ def main() -> int:
         if update_message:
             QMessageBox.warning(window, i18n.translate("app_title", settings.language), update_message)
         _start_dev_update(window, args, raw_base_dir)
+        if resume is not None:
+            window.resume_batch(resume)
 
         exit_code = app.exec()
         integrity_runner.stop()

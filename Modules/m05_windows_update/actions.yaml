@@ -57,6 +57,9 @@ actions:
     label_sk: "Odinštalovanie poslednej aktualizácie"
     label_en: "Uninstall last update"
     risk: REQUIRES_REBOOT
+    # The uninstall is pending until a restart - DISM/SFC/WU work after it
+    # would run against a half-removed update (CBS "pending" errors).
+    restart_before_next: true
     command: "try { $session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $count = $searcher.GetTotalHistoryCount(); if ($count -eq 0) { Write-Output 'No Windows Update history found.'; exit 1 }; $latest = $searcher.QueryHistory(0, $count) | Where-Object { $_.Operation -eq 1 -and $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 1; if (-not $latest) { Write-Output 'No successful update installs found in history.'; exit 1 }; if ($latest.Title -notmatch 'KB(\\d+)') { Write-Output ('Most recent update (' + $latest.Title + ') has no KB number - cannot uninstall via wusa.'); exit 1 }; $kb = $matches[1]; $out = & wusa.exe /uninstall /kb:$kb /quiet /norestart 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0 -or $exitCode -eq 3010) { Write-Output ('Uninstall of KB' + $kb + ' started (exit code ' + $exitCode + '). Restart required to finish.') } else { Write-Output ('Failed to uninstall KB' + $kb + ' - exit code ' + $exitCode); exit 1 } } catch { Write-Output ('Could not determine most recent update: ' + $_.Exception.Message); exit 1 }"
     inactivity_timeout_sec: 300
     description_sk: "Nájde naposledy nainštalovaný hotfix (KB) a odinštaluje ho cez wusa.exe /uninstall - štandardný krok, ak nedávna aktualizácia niečo pokazila. Na dokončenie vyžaduje reštart. Bez undo (konkrétnu aktualizáciu KB nemožno automaticky znovu nainštalovať)."

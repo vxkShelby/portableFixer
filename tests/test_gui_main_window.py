@@ -6505,3 +6505,325 @@ def test_close_waits_long_enough_for_a_killed_disk_health_probe():
     assert "self._disk_health_runners" in source
     assert "disk_health.PROBE_TIMEOUT_SEC + disk_health.KILL_DRAIN_TIMEOUT_SEC" in source
     assert disk_health.KILL_DRAIN_TIMEOUT_SEC > 0
+
+
+# --- G03: restart-aware batches ------------------------------------------------
+
+RESTART_YAML = """
+module_id: m02_cleanup
+category: CLEANUP
+actions:
+  - id: offline_thing
+    label_sk: "Offline sken"
+    label_en: "Offline scan"
+    risk: REQUIRES_REBOOT
+    restarts_pc: true
+    changes_system: false
+    command: "Write-Output 'offline-ran'"
+    preview_command: "Write-Output 'offline-preview'"
+  - id: look_thing
+    label_sk: "Pozriet"
+    label_en: "Look thing"
+    risk: SAFE
+    command: "Write-Output 'look-ran'"
+  - id: sched_thing
+    label_sk: "Naplanovat"
+    label_en: "Schedule thing"
+    risk: REQUIRES_REBOOT
+    restart_before_next: true
+    changes_system: false
+    command: "Write-Output 'sched-ran'"
+  - id: tweak_thing
+    label_sk: "Uprava"
+    label_en: "Tweak thing"
+    risk: MODERATE
+    changes_system: false
+    command: "Write-Output 'tweak-ran'"
+    undo_command: "Write-Output 'undo-tweak'"
+  - id: late_thing
+    label_sk: "Neskor"
+    label_en: "Late thing"
+    risk: SAFE
+    command: "Write-Output 'late-ran'"
+"""
+
+
+class _RecordingKeepAwake:
+    def __init__(self):
+        self.calls = []
+        self.active = False
+
+    def acquire(self):
+        if not self.active:
+            self.calls.append("acquire")
+        self.active = True
+
+    def release(self):
+        if self.active:
+            self.calls.append("release")
+        self.active = False
+
+
+def _restart_window(qtbot, tmp_path, monkeypatch, run_id, yaml=RESTART_YAML, dry_run=False):
+    window = _review_window(qtbot, tmp_path, monkeypatch, run_id, dry_run=dry_run, yaml=yaml)
+    window._keep_awake = _RecordingKeepAwake()
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    return window
+
+
+def test_restarting_action_runs_last_after_the_report_and_undo_are_written(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_restart_last")
+    reviews = _answer_review(monkeypatch)
+    seen_at_dispatch = {}
+    real_dispatch = window._dispatch_action
+
+    def spy(module, action):
+        if action.id == "offline_thing" and "offline_thing" in window._pre_restart_prepared:
+            seen_at_dispatch["reports"] = sorted(p.name for p in (tmp_path / "Reports").glob("*.html"))
+            seen_at_dispatch["undo"] = window._undo_script_path.read_text(encoding="utf-8")
+        real_dispatch(module, action)
+
+    monkeypatch.setattr(window, "_dispatch_action", spy)
+    # Ticked first in the list, but it must run after everything else.
+    _check(window, "offline_thing", "look_thing", "tweak_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_restart_last")
+    assert _executed_action_ids(log_path) == ["look_thing", "tweak_thing", "offline_thing"]
+    # Report and undo.ps1 existed before the restarting action was started.
+    assert len(seen_at_dispatch["reports"]) == 1
+    assert "undo-tweak" in seen_at_dispatch["undo"]
+    kinds = [(e["module_id"], e["action_id"]) for e in _audit_entries(log_path)]
+    assert kinds.index(("_system", "restart_pending")) < kinds.index(("m02_cleanup", "offline_thing"))
+    [pending] = _system_events(log_path, "restart_pending")
+    assert pending["subject"] == "m02_cleanup/offline_thing"
+    # The review screen said so.
+    notes = reviews[0].review.notes
+    assert any("Offline scan" in n and "last" in n for n in notes), notes
+    assert [label.text() for label in reviews[0].note_labels] == list(notes)
+    # Nothing was queued behind it, so there is nothing to continue.
+    assert not batch_resume.resume_path(tmp_path).exists()
+    assert window._keep_awake.calls == ["acquire", "release"]
+
+
+def test_restarting_action_in_dry_run_only_moves_last(qtbot, tmp_path, monkeypatch):
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_restart_dry", dry_run=True)
+    monkeypatch.setattr(window, "_prepare_for_restart", lambda m, a: pytest.fail("a preview restarts nothing"))
+    _check(window, "offline_thing", "look_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_restart_dry")
+    assert _executed_action_ids(log_path) == ["look_thing", "offline_thing"]
+    assert "offline-preview" in window.console.toPlainText()
+    assert _system_events(log_path, "restart_pending") == []
+
+
+def test_batch_keeps_the_pc_awake_until_its_report_is_written(qtbot, tmp_path, monkeypatch):
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_keep_awake")
+    _answer_review(monkeypatch)
+    states = []
+    real_finished = window._on_action_finished
+
+    def spy(*args, **kwargs):
+        states.append(window._keep_awake.active)
+        real_finished(*args, **kwargs)
+
+    monkeypatch.setattr(window, "_on_action_finished", spy)
+    _check(window, "look_thing", "late_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert states == [True, True]
+    assert window._keep_awake.calls == ["acquire", "release"]
+
+
+def test_close_releases_the_keep_awake(qtbot, tmp_path, monkeypatch):
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_keep_awake_close")
+    window._keep_awake.acquire()
+    window.close()
+    assert window._keep_awake.calls == ["acquire", "release"]
+
+
+def test_keep_awake_default_calls_set_thread_execution_state(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    calls = []
+    monkeypatch.setattr(batch_resume, "_default_execution_state_setter", lambda: calls.append)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_keep_awake_default")
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    _check(window, "look_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert calls == [batch_resume.ES_CONTINUOUS | batch_resume.ES_SYSTEM_REQUIRED, batch_resume.ES_CONTINUOUS]
+
+
+def test_batch_stops_after_a_restart_first_action_and_saves_the_rest(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_restart_split")
+    window._job_client = "Klient s.r.o."
+    reviews = _answer_review(monkeypatch)
+    notified = []
+    monkeypatch.setattr(window, "_notify_restart_needed", lambda: notified.append(window._restart_needed_after))
+    _check(window, "look_thing", "sched_thing", "tweak_thing", "late_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    log_path = audit_log_path(tmp_path, "run_restart_split")
+    assert _executed_action_ids(log_path) == ["look_thing", "sched_thing"]
+    pending = batch_resume.load_pending(tmp_path)
+    assert pending.run_id == "run_restart_split" and pending.action_ids == ["tweak_thing", "late_thing"]
+    assert pending.restart_after == "sched_thing" and pending.dry_run is False
+    assert pending.job["client"] == "Klient s.r.o."
+    [event] = _system_events(log_path, "restart_pending")
+    assert "tweak_thing, late_thing" in event["output"]
+    assert notified == ["sched_thing"]
+    # The review listed what waits for the restart.
+    waits = [n for n in reviews[0].review.notes if "wait for the restart" in n]
+    assert len(waits) == 1 and "Tweak thing, Late thing" in waits[0]
+    # The report of the first half is written as usual.
+    assert list((tmp_path / "Reports").glob("*run_restart_split.html"))
+    assert window._keep_awake.calls == ["acquire", "release"]
+
+
+def test_restart_needed_notice_names_the_action_and_the_saved_count(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume, i18n
+
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_restart_notice")
+    batch_resume.save_pending(tmp_path, batch_resume.PendingBatch(run_id="run_restart_notice", action_ids=["a", "b"]))
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text: shown.append(text))
+    window._restart_needed_after = "sched_thing"
+
+    window._notify_restart_needed()
+
+    expected = i18n.translate("restart_needed_to_continue", "en").format(action="Schedule thing", count=2)
+    assert shown == [expected] and expected in window.console.toPlainText()
+
+
+def test_failed_restart_first_action_needs_no_restart_and_the_batch_goes_on(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    yaml = RESTART_YAML.replace("\"Write-Output 'sched-ran'\"", "\"Write-Output 'sched-failed'; exit 1\"")
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_restart_split_fail", yaml=yaml)
+    _answer_review(monkeypatch)
+    monkeypatch.setattr(window, "_notify_restart_needed", lambda: pytest.fail("no restart needed"))
+    _check(window, "sched_thing", "late_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_restart_split_fail")) == ["sched_thing", "late_thing"]
+    assert not batch_resume.resume_path(tmp_path).exists()
+
+
+TWO_RESTARTS_YAML = RESTART_YAML + """
+  - id: offline_two
+    label_sk: "Offline 2"
+    label_en: "Offline two"
+    risk: REQUIRES_REBOOT
+    restarts_pc: true
+    changes_system: false
+    command: "Write-Output 'offline-two-ran'"
+"""
+
+
+def test_second_restarting_action_waits_in_the_resume_file(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_two_restarts", yaml=TWO_RESTARTS_YAML)
+    _answer_review(monkeypatch)
+    _check(window, "offline_two", "offline_thing", "look_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    # Windows went down with the first one: the second never starts here.
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_two_restarts")) == ["look_thing", "offline_thing"]
+    assert batch_resume.load_pending(tmp_path).action_ids == ["offline_two"]
+
+
+def test_failed_restarting_action_discards_the_resume_file_and_goes_on(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    yaml = TWO_RESTARTS_YAML.replace("\"Write-Output 'offline-ran'\"", "\"Write-Output 'no-restart'; exit 3\"")
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_two_restarts_fail", yaml=yaml)
+    _answer_review(monkeypatch)
+    files_at_second = []
+    real_prepare = window._prepare_for_restart
+
+    def spy(module, action):
+        if action.id == "offline_two":
+            files_at_second.append(batch_resume.resume_path(tmp_path).exists())
+        real_prepare(module, action)
+
+    monkeypatch.setattr(window, "_prepare_for_restart", spy)
+    _check(window, "offline_thing", "offline_two")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window, timeout=30000)
+
+    log_path = audit_log_path(tmp_path, "run_two_restarts_fail")
+    assert _executed_action_ids(log_path) == ["offline_thing", "offline_two"]
+    # The first one failed, so no restart came: its resume file was gone
+    # before the second one started, and nothing is left behind.
+    assert files_at_second == [False]
+    assert not batch_resume.resume_path(tmp_path).exists()
+    assert len(_system_events(log_path, "restart_pending")) == 2
+
+
+def test_resumed_batch_is_reviewed_again_and_keeps_run_id_and_undo(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    batch_resume.save_pending(tmp_path, batch_resume.PendingBatch(
+        run_id="run_resumed", action_ids=["look_thing", "tweak_thing", "gone_thing"], restart_after="sched_thing",
+        job={"technician": "Jana", "client": "Novák", "note": ""}, undo_steps=["Write-Output 'undo-first-half'"],
+        snapshot_before={"marker": 1},
+    ))
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_resumed")
+    reviews = _answer_review(monkeypatch)
+
+    window.resume_batch(batch_resume.load_pending(tmp_path))
+    _wait_batch_idle(qtbot, window)
+
+    assert len(reviews) == 1
+    assert any("interrupted by a restart" in n for n in reviews[0].review.notes)
+    log_path = audit_log_path(tmp_path, "run_resumed")
+    assert _executed_action_ids(log_path) == ["look_thing", "tweak_thing"]
+    [resumed] = _system_events(log_path, "resumed_after_reboot")
+    assert resumed["subject"] == "m02_cleanup/sched_thing"
+    [skipped] = _system_events(log_path, "resume_skipped")
+    assert "gone_thing" in skipped["output"]
+    assert not batch_resume.resume_path(tmp_path).exists()
+    undo_text = window._undo_script_path.read_text(encoding="utf-8")
+    assert "undo-first-half" in undo_text and "undo-tweak" in undo_text
+    assert window._job_client == "Novák" and window._snapshot_before == {"marker": 1}
+
+
+def test_resumed_safe_only_batch_still_shows_the_review(qtbot, tmp_path, monkeypatch):
+    # A SAFE-only batch normally starts without a review screen - after a
+    # restart it never starts unasked.
+    from portablefix import batch_resume
+
+    batch_resume.save_pending(tmp_path, batch_resume.PendingBatch(run_id="run_resume_safe", action_ids=["look_thing"]))
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_resume_safe")
+    reviews = _answer_review(monkeypatch, accept=False)
+
+    window.resume_batch(batch_resume.load_pending(tmp_path))
+
+    assert len(reviews) == 1 and not window._batch_active
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_resume_safe")) == []
+    # Cancelled on review: kept for another try (until it goes stale).
+    assert batch_resume.resume_path(tmp_path).exists()
+    assert window._action_checkboxes["look_thing"].isChecked()
+    assert window._resuming is None and window._keep_awake.calls == []

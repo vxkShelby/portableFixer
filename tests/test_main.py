@@ -533,3 +533,80 @@ def test_cleanup_update_leftovers_keeps_only_a_fresh_newer_stage(tmp_path, versi
     updater.cleanup_update_leftovers(install, temp_dir=tmp_path / "TEMP", log_dir=tmp_path / "none", current_version="1.12.0")
 
     assert stage.exists() is kept
+
+
+# --- G03: continue a batch after a restart -------------------------------------
+
+def _save_resume(base_dir, **overrides):
+    from portablefix import batch_resume
+
+    values = dict(run_id="20260925T090000-first", action_ids=["sfc_scannow"], restart_after="disk_full_scan_reboot")
+    values.update(overrides)
+    batch_resume.save_pending(base_dir, batch_resume.PendingBatch(**values))
+
+
+def _answer_resume(main_module, answer):
+    asked = []
+
+    def question(parent, title, text, buttons):
+        asked.append(text)
+        return getattr(main_module.QMessageBox, answer)
+
+    main_module.QMessageBox.question.side_effect = question
+    return asked
+
+
+def test_main_offers_a_saved_batch_and_continues_it_under_its_run_id(tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    events = []
+    main_module = _fake_main_env(monkeypatch, tmp_path, events)
+    _save_resume(tmp_path)
+    asked = _answer_resume(main_module, "Yes")
+
+    main_module.main()
+
+    assert len(asked) == 1 and "sfc_scannow" in asked[0]
+    window_kwargs = main_module.MainWindow.call_args.kwargs
+    assert window_kwargs["run_id"] == "20260925T090000-first"
+    # Only the review screen is opened - the window decides nothing alone.
+    [call] = main_module.MainWindow.return_value.resume_batch.call_args_list
+    assert call.args[0].action_ids == ["sfc_scannow"]
+    # Consumed by the window when the batch starts, not here.
+    assert batch_resume.resume_path(tmp_path).exists()
+
+
+def test_main_discards_a_declined_batch_and_logs_the_answer(tmp_path, monkeypatch):
+    from portablefix import batch_resume
+    from portablefix.audit_log import audit_log_path
+
+    events = []
+    main_module = _fake_main_env(monkeypatch, tmp_path, events)
+    _save_resume(tmp_path)
+    _answer_resume(main_module, "No")
+
+    main_module.main()
+
+    assert not batch_resume.resume_path(tmp_path).exists()
+    assert main_module.MainWindow.call_args.kwargs["run_id"] != "20260925T090000-first"
+    main_module.MainWindow.return_value.resume_batch.assert_not_called()
+    lines = audit_log_path(tmp_path, "20260925T090000-first").read_text(encoding="utf-8").splitlines()
+    [entry] = [json.loads(line) for line in lines]
+    assert entry["action_id"] == "resume_declined" and entry["decision"] == "declined"
+
+
+def test_main_never_offers_a_batch_saved_on_another_computer(tmp_path, monkeypatch):
+    from portablefix import batch_resume
+
+    events = []
+    main_module = _fake_main_env(monkeypatch, tmp_path, events)
+    batch_resume.save_pending(
+        tmp_path, batch_resume.PendingBatch(run_id="r", action_ids=["a"]), computer="SOME-OTHER-PC",
+    )
+    asked = _answer_resume(main_module, "Yes")
+
+    main_module.main()
+
+    assert asked == []
+    assert not batch_resume.resume_path(tmp_path).exists()
+    main_module.MainWindow.return_value.resume_batch.assert_not_called()

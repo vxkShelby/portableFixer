@@ -165,8 +165,9 @@ PowerShell.
   every minute; it usually takes 1-3 hours and the action limit is 8
   hours. *Offline scan* (REQUIRES_REBOOT, not in "Select all") updates
   signatures, shows the BitLocker recovery key ID and then **restarts
-  the PC immediately** into Microsoft Defender Offline - run it last,
-  after saving all work. *Enable PUA protection* saves the previous
+  the PC immediately** into Microsoft Defender Offline. In a batch it
+  always runs last, after the report and `undo.ps1` are written (see
+  *Batches across a restart*); save all open work before a real run. *Enable PUA protection* saves the previous
   value to `%ProgramData%\PortableFix` (an administrators-only folder)
   and undo restores it. When another antivirus has replaced Defender,
   the actions detect it from `Get-MpComputerStatus` (AMRunningMode,
@@ -189,6 +190,30 @@ PowerShell.
   understand this is irreversible"), otherwise it does not run. One
   confirmation covers the batch, and the audit log records for every
   action the exact text the technician confirmed (or declined).
+- **Batches across a restart:** an action that restarts the PC at once
+  (`restarts_pc: true` in `actions.yaml`, today Defender's *Offline
+  scan*) always runs last in a batch. Before it the audit log
+  (`restart_pending` event), `undo.ps1` and the HTML report are
+  written, so the record survives the immediate restart. An action
+  whose change only a restart completes, and which later actions would
+  otherwise run against half-way (`restart_before_next: true`: *Full
+  disk check at restart* and *Uninstall last update*), stops the batch
+  when it succeeds. The rest of the batch (action ids, run_id, DRY-RUN,
+  job details, `undo.ps1` steps) is saved to `Data/pending_batch.json`
+  and PortableFix says a restart is needed. On the next start
+  PortableFix offers to continue: "Yes" selects the remaining actions
+  and opens the review screen again (even for a SAFE-only batch), "No"
+  discards the saved batch. The continued batch keeps the run_id, so
+  the job has one audit log, one report and one `undo.ps1`. A file
+  older than 24 hours or from another computer is deleted without
+  asking. PortableFix registers nothing to start with Windows - the
+  technician starts it after the restart. The review screen says in
+  advance which action runs last and which actions wait for the
+  restart.
+- **The PC stays awake during a batch:** while a batch runs (report
+  writing included), PortableFix holds off system sleep via
+  `SetThreadExecutionState` (the display may still turn off). It is
+  restored right after the batch or when the window closes.
 - **Pre-flight check:** before a real batch that changes the system, the
   PC's state is checked. **Blockers:** another PortableFix job is
   changing the system (winget, uninstall, an update), no admin rights
@@ -374,7 +399,7 @@ PortableFix/
   portablefix/           application code
   Modules/<id>/actions.yaml   declarative action catalogs
   Vendor/                 LibreHardwareMonitorLib (optional HW sensors)
-  Data/                  settings.json, SHA256SUMS (runtime)
+  Data/                  settings.json, SHA256SUMS, pending_batch.json (runtime)
   Logs/                  audit logs (runtime)
   Reports/               HTML reports (runtime)
   Backups/               undo.ps1 scripts (runtime)

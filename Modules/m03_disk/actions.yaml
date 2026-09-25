@@ -65,6 +65,9 @@ actions:
     label_en: "Full disk check at restart"
     risk: REQUIRES_REBOOT
     stresses_disk: true
+    # The repair runs at boot - integrity/cleanup work after it in the same
+    # batch waits for that restart (offered again on the next start).
+    restart_before_next: true
     command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r; $dirty = fsutil dirty query $env:SystemDrive; Write-Output $dirty"
     description_sk: "Naplánuje plnú kontrolu a opravu systémového disku pri ďalšom reštarte. Môže trvať dlho. Výstup potvrdí, či sa naplánovanie podarilo (dirty bit)."
     description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time. Output confirms whether scheduling succeeded (dirty bit)."

@@ -83,6 +83,14 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
             raise ModuleLoadError(
                 f"{actions_yaml_path}: action '{action_id}' is DESTRUCTIVE and cannot set changes_system: false"
             )
+        restarts_pc = _optional_bool(actions_yaml_path, action_id, raw, "restarts_pc") is True
+        restart_before_next = _optional_bool(actions_yaml_path, action_id, raw, "restart_before_next") is True
+        if (restarts_pc or restart_before_next) and risk != RiskLevel.REQUIRES_REBOOT:
+            # The review screen and the report explain restarts by the risk
+            # tier - a restart hidden behind SAFE/MODERATE would surprise.
+            raise ModuleLoadError(
+                f"{actions_yaml_path}: action '{action_id}' restarts the PC but its risk is not REQUIRES_REBOOT"
+            )
         actions.append(
             ActionDef(
                 id=action_id,
@@ -103,6 +111,8 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 exclude_from_select_all=raw.get("exclude_from_select_all", False) is True,
                 changes_system=changes_system,
                 stresses_disk=_optional_bool(actions_yaml_path, action_id, raw, "stresses_disk") is True,
+                restarts_pc=restarts_pc,
+                restart_before_next=restart_before_next,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)
