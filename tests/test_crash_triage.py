@@ -323,15 +323,18 @@ def test_triage_summary_counts_crashes_not_events(tmp_path):
     assert re.search(r"^\s*1\s+0x00000000\s+NO_BUGCHECK", summary, re.M), summary
     assert "UNEXPECTED_SHUTDOWN" not in summary
     assert "Counted 4 crash(es) or unexpected shutdown(s) from 8 event(s)." in summary
-    assert "Events logged within 5 minutes of each other - at most one of each kind - count as one crash" in summary
+    assert "Events logged within 10 minutes of each other - at most one of each kind - count as one crash" in summary
 
 
 def test_triage_summary_keeps_crashes_apart_beyond_the_window_or_of_the_same_kind(tmp_path):
     minute = 1 / 60
     events = [
-        # 6 minutes apart - two crashes (a boot loop), not one.
+        # 11 minutes apart - two crashes (a boot loop), not one.
         _bugcheck(10, "0x000000ef (0x1, 0x2, 0x3, 0x4)"),
-        _bugcheck(10 + 6 * minute, "0x000000ef (0x1, 0x2, 0x3, 0x4)"),
+        _bugcheck(10 + 11 * minute, "0x000000ef (0x1, 0x2, 0x3, 0x4)"),
+        # Same kind within the window: still two crashes, a quick boot loop.
+        _bugcheck(50, "0x000000ef (0x1, 0x2, 0x3, 0x4)"),
+        _bugcheck(50 + 3 * minute, "0x000000ef (0x1, 0x2, 0x3, 0x4)"),
         # Two Kernel-Power 41 two minutes apart: one kind twice = two shutdowns.
         _kp41(30, 0),
         _kp41(30 + 2 * minute, 0),
@@ -339,9 +342,26 @@ def test_triage_summary_keeps_crashes_apart_beyond_the_window_or_of_the_same_kin
     result, _ = _run(tmp_path, "crash_bugcheck_triage", events=events)
     assert result.returncode == 0, result.stdout + result.stderr
     summary = result.stdout.split("=== Summary by stop code (crashes, not events) ===", 1)[1]
-    assert re.search(r"^\s*2\s+0x000000EF\s+CRITICAL_PROCESS_DIED", summary, re.M), summary
+    assert re.search(r"^\s*4\s+0x000000EF\s+CRITICAL_PROCESS_DIED", summary, re.M), summary
     assert re.search(r"^\s*2\s+0x00000000\s+NO_BUGCHECK", summary, re.M), summary
-    assert "Counted 4 crash(es)" in summary
+    assert "Counted 6 crash(es)" in summary
+
+
+def test_triage_summary_joins_a_bugcheck_logged_late_after_a_slow_dump_write(tmp_path):
+    # BugCheck 1001 is logged only once the dump is saved at the next boot;
+    # a kernel/complete MEMORY.DMP on a slow HDD can take several minutes.
+    # Counting that as a second crash would fake a repeating stop code.
+    minute = 1 / 60
+    events = [
+        _kp41(5 + 7 * minute, 278, params=("0x1", "0x2", "0x3", "0x4")),
+        _unexpected_shutdown(5 + 7 * minute),
+        _bugcheck(5, "0x00000116 (0x1, 0x2, 0x3, 0x4)"),
+    ]
+    result, _ = _run(tmp_path, "crash_bugcheck_triage", events=events)
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = result.stdout.split("=== Summary by stop code (crashes, not events) ===", 1)[1]
+    assert re.search(r"^\s*1\s+0x00000116\s+VIDEO_TDR_FAILURE", summary, re.M), summary
+    assert "Counted 1 crash(es) or unexpected shutdown(s) from 3 event(s)." in summary
 
 
 def test_triage_without_events_reports_clean_and_exits_zero(tmp_path):
@@ -615,6 +635,44 @@ def test_dump_evidence_never_claims_crash_dumps_deletes_custom_dumps(tmp_path):
     assert "deletes 0 of these file(s), 0 MB" in result.stdout
     assert "It does not touch the other 2 file(s)." in result.stdout
     assert "deletes these files" not in result.stdout
+
+
+def test_dump_evidence_also_lists_default_dumps_when_a_custom_folder_is_set(tmp_path):
+    # crash_dumps deletes the fixed %SystemRoot% paths whatever CrashControl
+    # says, so older dumps left there must be listed and counted as deleted.
+    custom = tmp_path / "Dumps"
+    custom.mkdir()
+    (custom / "mini.dmp").write_bytes(b"\0" * 10)
+    win = tmp_path / "Windows"
+    (win / "Minidump").mkdir(parents=True)
+    (win / "Minidump" / "old.dmp").write_bytes(b"\0" * 1024 * 1024)
+    (win / "MEMORY.DMP").write_bytes(b"\0" * 1024 * 1024)
+    cim = {"CrashControl": {"CrashDumpEnabled": 1, "MinidumpDir": str(custom), "DumpFile": str(custom / "FULL.DMP")}}
+    before = (_tree(custom), _tree(win))
+    result, _ = _run(tmp_path, "crash_dump_evidence", cim=cim)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _cleanup_column(result.stdout) == {"mini.dmp": "no", "old.dmp": "yes", "MEMORY.DMP": "yes"}
+    assert "Total: 3 file(s)" in result.stdout
+    assert "crash_dumps) deletes 2 of these file(s), 2 MB (CleanupDeletes = yes)" in result.stdout
+    assert "It does not touch the other 1 file(s)." in result.stdout
+    header = next(line for line in result.stdout.splitlines() if line.startswith("=== Crash dump files ("))
+    for path in (custom, win / "Minidump", custom / "FULL.DMP", win / "MEMORY.DMP", win / "LiveKernelReports"):
+        assert str(path) in header, header
+    assert (_tree(custom), _tree(win)) == before
+
+
+def test_dump_evidence_lists_a_default_dump_once_when_the_default_is_configured(tmp_path):
+    win = tmp_path / "Windows"
+    (win / "Minidump").mkdir(parents=True)
+    (win / "Minidump" / "a.dmp").write_bytes(b"\0" * 10)
+    (win / "MEMORY.DMP").write_bytes(b"\0" * 10)
+    cim = {"CrashControl": {"CrashDumpEnabled": 7, "MinidumpDir": str(win / "Minidump"),
+                            "DumpFile": str(win / "MEMORY.DMP")}}
+    result, _ = _run(tmp_path, "crash_dump_evidence", cim=cim)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Total: 2 file(s)" in result.stdout
+    header = next(line for line in result.stdout.splitlines() if line.startswith("=== Crash dump files ("))
+    assert header.count(str(win / "Minidump")) == 1 and header.count(str(win / "MEMORY.DMP")) == 1, header
 
 
 def test_dump_evidence_all_default_dumps_are_marked_deleted(tmp_path):

@@ -127,7 +127,7 @@ PowerShell.
   1001, Kernel-Power 41, EventLog 6008) and lists every crash with its
   stop code and parameters, the dump path, and the name and probable
   cause from a built-in table of the ~35 most common codes. The summary
-  per stop code counts crashes, not events: events within 5 minutes of
+  per stop code counts crashes, not events: events within 10 minutes of
   each other (at most one of each kind) are one crash. *WHEA
   hardware errors* summarizes 30 days of PCI Express, processor and
   memory errors by component and count. *Reliability history* shows the
@@ -135,7 +135,7 @@ PowerShell.
   *Crash dump evidence* lists Minidump, MEMORY.DMP and LiveKernelReports
   with size and date and says for each file whether the "System crash
   dumps" cleanup deletes it (it cleans only the default Windows
-  locations, not a custom CrashControl folder) - copy them off first. Everything is read from event IDs, provider
+  locations, not a custom CrashControl folder, and those are always scanned) - copy them off first. Everything is read from event IDs, provider
   names, event XML and CIM classes, never from translated message text,
   so it works in any Windows display language. Crash triage and WHEA
   hardware errors are also part of the Full diagnostic preset.

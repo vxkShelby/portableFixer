@@ -6392,7 +6392,7 @@ STRESSING_REVIEW_YAML = REVIEW_BATCH_YAML + """
 """
 
 
-def _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, how):
+def _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, how, release_on_close=False):
     # A hung storage stack: the probe blocks until released. The GUI event
     # loop keeps running (the busy dialog's Cancel is clickable), Cancel
     # aborts the batch before the review screen and says so in the audit
@@ -6442,8 +6442,23 @@ def _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, how):
     assert "disk health check cancelled" in event["output"]
     [runner] = window._disk_health_runners
     assert runner.isRunning()
-    release.set()
-    qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10_000)
+    if release_on_close:
+        # closeEvent blocks the GUI thread in QThread.wait(), so the probe
+        # is released from a plain thread while close() is already waiting.
+        # Let the background info runners (sysinfo, VPN) finish first - their
+        # own waits in closeEvent would otherwise outlast the release and
+        # hide a missing wait for the probe.
+        qtbot.waitUntil(lambda: not any(
+            _thread_running(v) for k, v in vars(window).items() if k.endswith("_runner")), timeout=10_000)
+        threading.Timer(0.3, release.set).start()
+        window.close()
+        # Had close() returned without waiting, the runner would still be
+        # alive here and Qt would abort on destroying it.
+        assert release.is_set()
+        assert not _thread_running(runner)
+    else:
+        release.set()
+        qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10_000)
 
 
 def test_disk_health_probe_keeps_the_gui_responsive_and_cancel_stops_the_batch(qtbot, tmp_path, monkeypatch):
@@ -6473,10 +6488,15 @@ def test_disk_health_probe_that_raises_is_unknown_and_the_batch_runs(qtbot, tmp_
     assert _executed_action_ids(audit_log_path(tmp_path, "run_review_disk_raise")) == ["defrag_thing"]
 
 
-def test_close_waits_for_an_abandoned_disk_health_probe():
+def test_close_waits_for_an_abandoned_disk_health_probe(qtbot, tmp_path, monkeypatch):
     # closeEvent must wait for every disk probe thread it may leave behind
-    # (Qt aborts the process on a destroyed running QThread) - long enough
-    # for PowerShell's timeout plus the pipe drain after kill().
+    # (Qt aborts the process on a destroyed running QThread).
+    _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, "button", release_on_close=True)
+
+
+def test_close_waits_long_enough_for_a_killed_disk_health_probe():
+    # The wait must cover PowerShell's timeout plus the pipe drain after
+    # kill() - too long to exercise for real, so check the budget.
     import inspect
 
     from portablefix import disk_health
