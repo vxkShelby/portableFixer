@@ -219,17 +219,13 @@ def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_prope
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
     env_lines = [f"$env:{name} = {_ps_quote(value)}" for name, value in env.items()]
-    # Windows PowerShell 5.1 (.NET Framework) cannot load an assembly or
-    # read its configuration once SystemRoot points elsewhere ("The given
-    # assembly name or codebase ... mscorlib.dll was invalid"). Everything
-    # the command initialises lazily - the error-message resources, the
-    # autoloaded Utility module and the hashing behind Get-FileHash - is
-    # used once before the redirect.
+    # Windows PowerShell 5.1 (.NET Framework) cannot load an assembly once
+    # SystemRoot points elsewhere ("The given assembly name or codebase ...
+    # mscorlib.dll was invalid"). What the command loads lazily - the
+    # error-message resources, the autoloaded modules, the hashing classes -
+    # is loaded before the redirect.
     warm_up = [
         "Import-Module Microsoft.PowerShell.Utility, Microsoft.PowerShell.Management, Microsoft.PowerShell.Security",
-        # A real call: 5.1's Get-FileHash builds its hasher through
-        # CryptoConfig, which is initialised on first use.
-        "$null = Get-FileHash -LiteralPath ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -Algorithm SHA256",
         "$null = [Security.Cryptography.SHA256]::Create()",
         "try { throw [System.UnauthorizedAccessException]::new('x') } catch { $null = $_ | Out-String; $null = $_.Exception.GetType().Name }",
         "try { Get-Item -LiteralPath (Join-Path $PSHOME 'pf-missing') -EA Stop } catch { $null = $_ | Out-String }",
