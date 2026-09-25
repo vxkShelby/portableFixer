@@ -55,6 +55,7 @@ PowerShell.
 | M20 | Repair | Software updates via winget: list, outdated software, update all |
 | M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor) |
 | M22 | Cleanup | Deep cleanup: orphaned uninstall entries, duplicate files, broken shortcuts (.lnk), secure free-space wipe |
+| M23 | Antivirus | Microsoft Defender: status, threat history with a verdict, signature update, quick/full/offline scan, exclusions, PUA protection |
 
 ## Technician features
 
@@ -136,6 +137,23 @@ PowerShell.
   names, event XML and CIM classes, never from translated message text,
   so it works in any Windows display language. Crash triage and WHEA
   hardware errors are also part of the Full diagnostic preset.
+- **Microsoft Defender (M23):** *Defender threat history* (SAFE) lists
+  the detections of the last 90 days (with a 30-day count) - threat
+  name, severity, status, action taken, affected files, time - and the
+  current protection state (real-time protection, tamper protection,
+  signature age, engine and product versions, last quick and full scan)
+  with one `VERDICT:` line (OK / WARNING / ATTENTION / NOT ACTIVE / NOT
+  AVAILABLE). *Full scan* runs as a background job and prints progress
+  every minute; it usually takes 1-3 hours and the action limit is 8
+  hours. *Offline scan* (REQUIRES_REBOOT, not in "Select all") updates
+  signatures, shows the BitLocker recovery key ID and then **restarts
+  the PC immediately** into Microsoft Defender Offline - run it last,
+  after saving all work. *Enable PUA protection* saves the previous
+  value to `%ProgramData%\PortableFix` (an administrators-only folder)
+  and undo restores it. When another antivirus has replaced Defender,
+  the actions detect it from `Get-MpComputerStatus` (AMRunningMode,
+  service flags, error HRESULTs) and exit non-zero with an explanation,
+  never from translated text.
 
 ## Safety mechanisms
 

@@ -54,6 +54,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M20 | Oprava | Aktualizácia softvéru cez winget: zoznam, zastaraný softvér, update all |
 | M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor) |
 | M22 | Čistenie | Hlbšie čistenie: osamotené uninstall položky, duplicitné súbory, nefunkčné odkazy (.lnk), bezpečné prepísanie voľného miesta |
+| M23 | Antivírus | Microsoft Defender: stav, história hrozieb s verdiktom, aktualizácia definícií, rýchly/úplný/offline sken, výnimky, ochrana pred PUA |
 
 ## Funkcie pre technika
 
@@ -134,6 +135,23 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   a tried CIM, nikdy z preloženého textu správ, takže fungujú v každom
   jazyku Windows. Triáž pádov a hardvérové chyby WHEA sú aj v predvoľbe
   Plná diagnostika.
+- **Microsoft Defender (M23):** *História hrozieb Defenderu* (SAFE)
+  vypíše detekcie za 90 dní (počet aj za 30 dní) - názov hrozby,
+  závažnosť, stav, vykonaný zásah, dotknuté súbory, čas - a aktuálny stav
+  ochrany (ochrana v reálnom čase, ochrana pred zmenami, vek definícií,
+  verzie enginu a produktu, posledný rýchly a úplný sken) s jedným
+  riadkom `VERDICT:` (OK / WARNING / ATTENTION / NOT ACTIVE / NOT
+  AVAILABLE). *Úplný sken* beží ako úloha na pozadí a každú minútu
+  vypíše priebeh; trvá zvyčajne 1 - 3 hodiny a limit akcie je 8 hodín.
+  *Offline sken* (REQUIRES_REBOOT, nie je vo „Vybrať všetko“) najprv
+  aktualizuje definície, ukáže ID kľúča BitLocker a potom **okamžite
+  reštartuje** PC do Microsoft Defender Offline - spúšťa sa ako posledný
+  a až po uložení práce. *Zapnutie ochrany pred PUA* uloží predošlú
+  hodnotu do `%ProgramData%\PortableFix` (priečinok len pre
+  administrátorov) a undo ju obnoví. Ak Defender nahradil iný antivírus,
+  akcie to zistia z `Get-MpComputerStatus` (AMRunningMode, príznaky
+  služby, HRESULT chyby) a skončia s nenulovým kódom a vysvetlením,
+  nikdy podľa preloženého textu.
 
 ## Bezpečnostné mechanizmy
 
