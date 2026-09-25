@@ -176,6 +176,24 @@ PowerShell.
   names, event XML and CIM classes, never from translated message text,
   so it works in any Windows display language. Crash triage and WHEA
   hardware errors are also part of the Full diagnostic preset.
+- **Browsers, every profile (M02, M17):** *Browser caches* cleans every
+  profile (Default, Profile N, Guest Profile... - every folder in
+  `User Data` holding a `Preferences` file) of Chrome, Edge, Brave,
+  Vivaldi, Opera and Opera GX (Opera keeps its profile directly in
+  `%APPDATA%\Opera Software\Opera Stable`, extra profiles in
+  `_side_profiles` and the HTTP cache under the same path in
+  `%LOCALAPPDATA%`) plus every Firefox profile. It empties only `Cache`,
+  `Code Cache`, `GPUCache`, `Service Worker\CacheStorage` and
+  `ScriptCache` - never cookies, passwords, history, bookmarks or
+  extensions. A running browser is skipped and named (never closed), no
+  junction or symlink is followed, and the MB freed is reported per
+  profile; DRY-RUN lists what would be cleaned. *Browser extensions
+  report* and *Homepage/search hijack check* (now also showing the search
+  URL and startup pages) use the same profile list, so a hijack in
+  "Profile 2" or in Brave is no longer missed. *Reset Chrome/Edge profile*
+  no longer closes the browser: while it runs the action refuses and
+  changes nothing - closing it would lose the client's open tabs and
+  unsaved forms.
 - **Microsoft Defender (M23):** *Defender threat history* (SAFE) lists
   the detections of the last 90 days (with a 30-day count) - threat
   name, severity, status, action taken, affected files, time - and the
