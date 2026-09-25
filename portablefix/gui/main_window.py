@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from . import style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstaller, update_swap, updater, winget_updates
+from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -488,6 +488,11 @@ class MainWindow(QMainWindow):
             runner for runner in (
                 self._update_download_runner, self._update_stage_runner, self._update_launch_runner,
                 self._handoff_runner,
+                # Stops between programs once interrupted, but the uninstaller
+                # already running cannot be cut short - and an interactive one
+                # has no timeout (research G15): it waits for the technician's
+                # clicks, so a capped wait could destroy the live QThread.
+                self._uninstall_runner,
             )
             if runner is not None
         ]
@@ -539,9 +544,6 @@ class MainWindow(QMainWindow):
             # exit, gives up, and relaunches the still-old exe.
             (self._winget_scan_runner, 65_000),
             (self._winget_update_runner, winget_updates._UPDATE_TIMEOUT_SEC * 1000 + 10_000),
-            # Stops between programs once interrupted, but the uninstaller
-            # already running cannot be cut short.
-            (self._uninstall_runner, uninstaller.UNINSTALL_TIMEOUT_SEC * 1000 + 10_000),
         )
         for runner in quick_runners:
             if runner is None:
@@ -2611,6 +2613,39 @@ class MainWindow(QMainWindow):
             parts.append(program.install_date)
         return "  |  ".join(parts)
 
+    def _msi_log_dir(self) -> Path:
+        # msiexec's verbose log (/l*v) per product, next to the audit log -
+        # the first thing to read when an MSI uninstall fails.
+        return self.state_dir / "Logs" / f"{self.run_id}_msi"
+
+    def _uninstall_queue_line(self, program: "uninstaller.InstalledProgram", plan: "uninstall_plan.UninstallPlan") -> str:
+        if plan.kind in (uninstall_plan.KIND_NONE, uninstall_plan.KIND_UNSAFE):
+            return f"{program.name}  [{self._uninstall_no_run_text(plan)}]"
+        if plan.kind == uninstall_plan.KIND_INTERACTIVE:
+            return f"{program.name}  [{self._t('uninstaller_confirm_interactive_marker')}]"
+        kind = self._t(f"uninstaller_kind_{plan.kind}")
+        return f"{program.name}  [{self._t('uninstaller_confirm_silent_marker')}, {kind}]"
+
+    def _uninstall_no_run_text(self, plan: "uninstall_plan.UninstallPlan") -> str:
+        # Why a plan runs nothing: no command at all, or refused as unsafe.
+        if plan.kind == uninstall_plan.KIND_UNSAFE:
+            return self._t("uninstaller_unsafe_command")
+        return self._t("uninstaller_no_command")
+
+    def _uninstall_queue_summary(self, interactive: list, silent: list) -> list[str]:
+        # Which queue each program is in, shown before anything starts.
+        lines = []
+        if interactive:
+            lines.append(self._t("uninstaller_queue_interactive_heading").format(
+                count=len(interactive), programs=", ".join(p.name for p in interactive),
+            ))
+        if silent:
+            lines.append(self._t("uninstaller_queue_silent_heading").format(
+                count=len(silent), programs=", ".join(p.name for p in silent),
+                minutes=uninstaller.UNINSTALL_TIMEOUT_SEC // 60,
+            ))
+        return lines
+
     def _build_uninstaller_card(self) -> QFrame:
         card = QFrame()
         card.setObjectName("actionCard")
@@ -2890,14 +2925,24 @@ class MainWindow(QMainWindow):
                     )
                 if not selected:
                     return
+            # Built once (research G15): the installer type decides the
+            # silent switches and the queue, and the same plan is what the
+            # dialog shows, the runner runs and the audit log records.
+            plans = {p.name: uninstaller.program_plan(p, self._msi_log_dir()) for p in selected}
+            interactive_queue, silent_queue = uninstall_plan.split_queues(selected, plans)
+            selected = interactive_queue + silent_queue
             if self.settings.dry_run:
                 # DRY-RUN never starts an uninstaller - it shows and logs the
                 # exact command each one would run, and the rows stay put.
                 console.setVisible(True)
                 console.appendPlainText(self._t("uninstaller_dry_run_notice"))
+                for line in self._uninstall_queue_summary(interactive_queue, silent_queue):
+                    console.appendPlainText(line)
                 for program in selected:
-                    command = uninstaller.program_command(program) or ""
-                    console.appendPlainText(f"[DRY-RUN] {program.name}: {command or self._t('uninstaller_no_command')}")
+                    command = plans[program.name].command
+                    console.appendPlainText(
+                        f"[DRY-RUN] {program.name}: {command or self._uninstall_no_run_text(plans[program.name])}"
+                    )
                     self._log_panel_action(
                         "_uninstaller", program.name, command, 0,
                         f"[DRY-RUN] {command}" if command else "[DRY-RUN] No uninstall command found for this program.",
@@ -2907,14 +2952,14 @@ class MainWindow(QMainWindow):
                 # the registry, and cleaning honours DRY-RUN as well.
                 show_orphan_cleanup()
                 return
-            # A quiet uninstall string runs with no uninstaller window at
-            # all - the only chance to stop it is this dialog, so say so.
-            silent_marker = self._t("uninstaller_confirm_silent_marker")
+            # A silent uninstall runs with no uninstaller window at all -
+            # the only chance to stop it is this dialog, so say so; and say
+            # which queue each program is in (research G15).
             warning_text = self._t("uninstaller_confirm_text").format(
                 count=len(selected),
-                programs=self._panel_confirm_list([
-                    f"{p.name}  [{silent_marker}]" if p.quiet_uninstall_string else p.name for p in selected
-                ]),
+                programs=self._panel_confirm_list([self._uninstall_queue_line(p, plans[p.name]) for p in selected]),
+            ) + "\n\n" + self._t("uninstaller_confirm_queues_note").format(
+                minutes=uninstaller.UNINSTALL_TIMEOUT_SEC // 60,
             )
             answer = QMessageBox.warning(
                 self, self._t("uninstaller_confirm_title"), warning_text,
@@ -2949,7 +2994,7 @@ class MainWindow(QMainWindow):
                     set_controls_enabled(True)
                     console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
                     return
-                run_uninstall(selected, warning_text)
+                run_uninstall(selected, plans, warning_text)
 
             # An uninstall has no undo - the restore point is the way back.
             set_controls_enabled(False)
@@ -2958,24 +3003,27 @@ class MainWindow(QMainWindow):
             ):
                 set_controls_enabled(True)
 
-        def run_uninstall(selected: list, warning_text: str) -> None:
+        def run_uninstall(selected: list, plans: dict, warning_text: str) -> None:
             risk = RiskLevel.DESTRUCTIVE.value
-            selected_by_name = {program.name: program for program in selected}
+            # Still installed after msiexec 1618 - the row stays for a retry.
+            keep_rows: set[str] = set()
             uninstall_button.setEnabled(False)
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("uninstaller_running"))
+            for line in self._uninstall_queue_summary(*uninstall_plan.split_queues(selected, plans)):
+                console.appendPlainText(line)
             # On self, not the card: closeEvent and the app update's hand-off
             # guard must both know an uninstall is still running.
-            runner = uninstaller.UninstallRunner(selected, parent=card)
+            runner = uninstaller.UninstallRunner(selected, parent=card, plans=plans)
             self._uninstall_runner = runner
 
-            def on_program_finished(name: str, ok: bool, output: str) -> None:
+            def on_program_finished(name: str, ok: bool, output: str, outcome: str) -> None:
                 # Recorded before any widget is touched, so a console error
                 # can never leave a real uninstall out of the log.
-                program = selected_by_name.get(name)
-                command = (uninstaller.program_command(program) or "") if program is not None else ""
+                plan = plans.get(name)
+                command = plan.command if plan is not None else ""
                 self._log_panel_action(
                     "_uninstaller", name, command, 0 if ok else 1, output, False, risk, True, warning_text,
                 )
@@ -2990,8 +3038,14 @@ class MainWindow(QMainWindow):
                         irreversible += " - exit 1"
                     self._irreversible_actions.append(irreversible)
                     self._write_undo_script()
+                if outcome == uninstall_plan.OUTCOME_BUSY_RETRY:
+                    keep_rows.add(name)
                 status = self._t("status_ok") if ok else self._t("status_failed")
                 console.appendPlainText(f"[{status}] {name}")
+                # msiexec's 1605/1641/3010/1618 etc. in the technician's
+                # language; the English text for the audit stays in the output.
+                if outcome and outcome != uninstall_plan.OUTCOME_OK:
+                    console.appendPlainText(self._t(f"uninstaller_outcome_{outcome}"))
                 if output:
                     console.appendPlainText(output)
 
@@ -3000,6 +3054,8 @@ class MainWindow(QMainWindow):
                 select_all_btn.setEnabled(True)
                 select_none_btn.setEnabled(True)
                 for program in selected:
+                    if program.name in keep_rows:
+                        continue
                     row_checkboxes.pop(program.name, None)
                     row_widget = row_widgets.pop(program.name, None)
                     if row_widget is not None:

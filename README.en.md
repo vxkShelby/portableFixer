@@ -139,6 +139,35 @@ PowerShell.
   program to uninstall or update is running right now (matched by the
   path of its executable), the panel names it and asks to close it:
   Retry checks again, Ignore continues (logged), Cancel changes nothing.
+- **Silent uninstall and two queues:** the uninstaller detects the
+  installer type from the registry Uninstall entry. MSI
+  (`WindowsInstaller=1` or `MsiExec` in the command) is removed with
+  `msiexec.exe /x {GUID} /qn /norestart /l*v <log>` (the product code
+  must match a strict GUID pattern, `MsiExec /I` never runs, the log
+  goes to `Logs/<run-id>_msi/`). Inno Setup (`unins000.exe` or its
+  "Inno Setup: …" values) gets `/VERYSILENT /SUPPRESSMSGBOXES
+  /NORESTART`, NSIS (`Uninstall.exe` with the NSIS header, or NSIS
+  named in the entry) gets `/S`. Otherwise the vendor's
+  `QuietUninstallString` is used, and only then the interactive
+  `UninstallString`. The command is started without `cmd.exe`, and the
+  uninstaller gets the registry's arguments exactly as written (e.g.
+  `-f"…"`, `"…dll",Entry`, `PROP="…"`); a system program named without
+  a path (`rundll32`, `cmd`) is taken from `System32`, not from the USB
+  stick. For an `.exe`, characters like `&` from the registry therefore
+  run nothing. A `.bat`/`.cmd` or `cmd` command whose arguments contain
+  `& | < > ^ %` is not run at all (cmd.exe would act on them) - such a
+  program has to be uninstalled by hand. The confirmation and DRY-RUN show which queue each program
+  is in: interactive ones run first, one at a time and with no time
+  limit (the technician clicks through them), the silent ones then one
+  at a time with a 5-minute limit. msiexec exit codes are read
+  correctly: 1605 (product no longer installed), 1641 and 3010
+  (uninstalled, restart needed) are successes with a note (1641 and
+  3010 also from a vendor's quiet command, e.g. WiX Burn), and 1618
+  (another installation is running) tells you to retry and keeps the
+  program in the list. The NSIS uninstaller deliberately runs without
+  `_?=`: it copies itself to %TEMP% and finishes in the background, so
+  the program may leave the list a little later (with `_?=` it would
+  wait, but leave its folder and `Uninstall.exe` behind).
 - **Protected programs:** the uninstaller refuses to remove graphics,
   audio and chipset drivers (NVIDIA, AMD, Intel, Realtek), the WebView2
   runtime, Windows components (Store, winget, Windows Security) and the
