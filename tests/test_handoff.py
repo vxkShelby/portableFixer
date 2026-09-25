@@ -1,3 +1,4 @@
+import json
 import os
 import zipfile
 
@@ -561,3 +562,160 @@ def test_diagnostics_stderr_never_lands_in_report_files(tmp_path, fake_reports):
     handoff.collect_diagnostics(tmp_path / "work")
     assert fake_reports.stderrs
     assert all(err == subprocess.DEVNULL for err in fake_reports.stderrs)
+
+
+# --- Redact for the client (research G20) ----------------------------------
+
+_SECRET_OUTPUT = (
+    "SerialNumber : 5CD1234XYZ\n"
+    "Cleaned C:\\Users\\jnovak\\AppData\\Local\\Temp\n"
+    "IPv4 192.168.1.23 MAC 00-1A-2B-3C-4D-5E\n"
+    "SSID : Novakovci"
+)
+_SECRETS = ("5CD1234XYZ", "jnovak", "192.168.1.23", "00-1A-2B-3C-4D-5E", "Novakovci")
+
+
+def _write_real_run(state_dir, run_id=RUN):
+    """A run with a real audit log and report (generate_report), the way
+    main_window leaves it on the stick - not redacted."""
+    import socket
+
+    from portablefix.audit_log import append_entry, make_entry
+    from portablefix.report import generate_report
+
+    append_entry(state_dir, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, _SECRET_OUTPUT, False, run_id))
+    # A later entry repeating the network name without the "SSID :" key.
+    append_entry(state_dir, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, "Joined Novakovci", False, run_id))
+    job = {"technician": "Ján", "client": "Klient s.r.o.", "note": ""}
+    generate_report(state_dir, run_id, [], "sk", {}, {}, job=job)
+    backups = state_dir / "Backups" / run_id
+    backups.mkdir(parents=True, exist_ok=True)
+    undo = "Copy-Item 'C:\\Users\\jnovak\\x.bak' 'C:\\Users\\jnovak\\x'\n".encode("utf-8-sig")
+    (backups / "undo.ps1").write_bytes(undo)
+    host = socket.gethostname()
+    return host, undo
+
+
+def test_redacted_package_masks_report_and_audit_log_but_not_the_originals(tmp_path):
+    state = tmp_path / "state"
+    host, undo = _write_real_run(state)
+    originals = {p: p.read_bytes() for p in state.rglob("*") if p.is_file()}
+
+    dest = handoff.build_handoff_zip(state, host, RUN, tmp_path / "out.zip", redact=True)
+
+    files = _zip_texts(dest)
+    for arcname in ("report.html", "report.json", "audit_log.jsonl"):
+        text = files[arcname].decode("utf-8")
+        for secret in _SECRETS:
+            assert secret not in text, (arcname, secret)
+    report_data = json.loads(files["report.json"])
+    assert report_data["redacted"] is True
+    assert report_data["hostname"] == host
+    assert report_data["job"]["client"] == "Klient s.r.o."
+    # Re-rendered from the redacted JSON: the page says so, masked values
+    # are escaped text.
+    html_text = files["report.html"].decode("utf-8")
+    assert "Redigované pre klienta" in html_text
+    assert "C:\\Users\\&lt;user&gt;\\AppData" in html_text and "Klient s.r.o." in html_text
+    # Still one JSON object per line, the SSID masked in the entry that
+    # does not name it by key too.
+    entries = [json.loads(line) for line in files["audit_log.jsonl"].decode("utf-8").splitlines()]
+    assert [e["output"] for e in entries] == [
+        "SerialNumber : <serial>\nCleaned C:\\Users\\<user>\\AppData\\Local\\Temp\n"
+        "IPv4 <ip> MAC <mac>\nSSID : <ssid>",
+        "Joined <ssid>",
+    ]
+    assert entries[0]["run_id"] == RUN and entries[0]["hostname"] == host
+    # undo.ps1 must keep working: it is copied as it is.
+    assert files["undo.ps1"] == undo
+    readme = files["README.txt"].decode("utf-8-sig")
+    assert "REDIGOVANÉ PRE KLIENTA" in readme and "REDACTED FOR THE CLIENT" in readme
+    assert "undo.ps1 je nezmenený" in readme and "undo.ps1 is unchanged" in readme
+    # The files on the stick are exactly as they were.
+    assert {p: p.read_bytes() for p in originals} == originals
+
+
+def test_redacted_package_masks_this_pcs_profile_names_everywhere(tmp_path, monkeypatch):
+    monkeypatch.setattr(handoff.redaction, "local_profile_names", lambda users_dir=None: ["Jan Novak"])
+    state = tmp_path / "state"
+    _write_run(state)
+    reports = state / "Reports"
+    (reports / f"{HOST}_{RUN}.json").unlink()
+    (reports / f"{HOST}_{RUN}.html").write_text("<pre>PC\\Jan Novak</pre>", encoding="utf-8")
+    (state / "Logs" / f"{RUN}.jsonl").write_bytes((
+        json.dumps({"run_id": "r", "output": "User : DESKTOP-X\\Jan Novak\nLocalPath : C:\\Users\\Jan Novak"}) + "\n"
+        + "torn Jan Novak\n").encode("utf-8"))
+
+    files = _zip_texts(handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", redact=True))
+
+    assert files["report.html"].decode("utf-8") == "<pre>PC\\&lt;user&gt;</pre>"
+    lines = files["audit_log.jsonl"].decode("utf-8").splitlines()
+    assert json.loads(lines[0])["output"] == "User : DESKTOP-X\\<user>\nLocalPath : C:\\Users\\<user>"
+    assert lines[1] == "torn <user>"
+
+
+def test_package_without_redaction_is_byte_for_byte_the_run(tmp_path):
+    state = tmp_path / "state"
+    host, _ = _write_real_run(state)
+    dest = handoff.build_handoff_zip(state, host, RUN, tmp_path / "out.zip")
+    files = _zip_texts(dest)
+    html_path, json_path = handoff.history.run_report_paths(state / "Reports", host, RUN)
+    assert files["report.html"] == html_path.read_bytes()
+    assert files["report.json"] == json_path.read_bytes()
+    assert files["audit_log.jsonl"] == handoff.audit_log_path(state, RUN).read_bytes()
+    assert b"5CD1234XYZ" in files["audit_log.jsonl"]
+    assert "REDACTED" not in files["README.txt"].decode("utf-8-sig")
+
+
+def test_redacted_package_falls_back_to_text_for_foreign_report_files(tmp_path):
+    # A report JSON that is not what generate_report writes (older, hand
+    # edited, broken) and a torn audit line are still redacted as text.
+    state = tmp_path / "state"
+    _write_run(state)
+    reports = state / "Reports"
+    (reports / f"{HOST}_{RUN}.html").write_text(
+        "<html><pre>Path C:\\Users\\jnovak\\Desktop &amp; 192.168.1.23</pre></html>", encoding="utf-8")
+    (reports / f"{HOST}_{RUN}.json").write_text("not json 192.168.1.23", encoding="utf-8")
+    log = state / "Logs" / f"{RUN}.jsonl"
+    log.write_bytes(b'{"run_id": "r", "output": "at 192.168.1.23"}\n{"torn": "C:\\\\Users\\\\jnovak\\\\x\n\xff\n')
+
+    files = _zip_texts(handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", redact=True))
+
+    html_text = files["report.html"].decode("utf-8")
+    assert html_text == "<html><pre>Path C:\\Users\\&lt;user&gt;\\Desktop &amp; &lt;ip&gt;</pre></html>"
+    assert files["report.json"].decode("utf-8") == "not json <ip>"
+    lines = files["audit_log.jsonl"].decode("utf-8").splitlines()
+    assert lines[0] == '{"run_id": "r", "output": "at <ip>"}'
+    assert lines[1] == '{"torn": "C:\\\\Users\\\\<user>\\\\x'
+    assert len(lines) == 3
+
+
+def test_hostname_that_looks_like_a_key_is_kept_in_the_package(tmp_path):
+    state = tmp_path / "state"
+    host = "ABCD1-EFGH2"
+    _write_run(state, host=host)
+    (state / "Logs" / f"{RUN}.jsonl").write_bytes(
+        b'{"run_id": "r", "hostname": "ABCD1-EFGH2", "output": "on ABCD1-EFGH2, key VK7JG-NPHTM-C97JM"}\n')
+    files = _zip_texts(handoff.build_handoff_zip(state, host, RUN, tmp_path / "out.zip", redact=True))
+    assert b'"output": "on ABCD1-EFGH2, key <key>"' in files["audit_log.jsonl"]
+    assert host in files["README.txt"].decode("utf-8-sig")
+
+
+def test_diagnostics_readme_says_windows_reports_are_not_redacted(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state)
+    dest = handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", include_diagnostics=True, redact=True)
+    files = _zip_texts(dest)
+    readme = files["diagnostics/README.txt"].decode("utf-8-sig")
+    assert "Redigovať pre klienta" in readme and "NEMENÍ" in readme
+    assert "Redact for the client" in readme and "does NOT change" in readme
+    # The Windows reports themselves go in untouched.
+    assert files["diagnostics/systeminfo.csv"] == b"data-systeminfo"
+    assert "Redact for the client" not in handoff.diagnostics_readme([], HOST, RUN)
+
+
+def test_handoff_runner_passes_redact_through(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(handoff, "build_handoff_zip", lambda *a, **kw: captured.update(kw) or tmp_path / "x.zip")
+    handoff.HandoffRunner(tmp_path, HOST, RUN, tmp_path / "x.zip", redact=True).run()
+    assert captured["redact"] is True and captured["include_diagnostics"] is True

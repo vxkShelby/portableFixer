@@ -99,6 +99,27 @@ PowerShell.
   it takes a minute and adds little.
 - **Job details** (top-bar button, Ctrl+J): technician name (remembered),
   client / job number and a note - shown in the report header.
+- **Redact for the client** (toggle in the Job details window, off by
+  default, remembered): the report (HTML and JSON) and the client
+  package's text files (`report.html`, `report.json`, the `audit_log.jsonl`
+  copy, README) replace user names in paths (`C:\Users\<user>\`) and
+  this PC's profile names anywhere else (e.g. `PC\Jan Novak`),
+  IPv4/IPv6 and MAC addresses, serial numbers (BIOS, disks), product-key
+  fragments (`XXXXX-XXXXX-…`, `PartialProductKey`) and Wi-Fi network
+  names (SSID) with markers such as `<ip>` or `<serial>`. The computer
+  name and the Job details stay. Versions with a part above 255
+  (`10.0.26100.1`) or with a label (`Version : 2.0.0.0`, a `DriverVersion`
+  table column), hashes and GUIDs are left alone, and so are loopback,
+  masks and public DNS (8.8.8.8, 1.1.1.1). An unlabelled short four-part
+  number (`driver 10.1.18.2`) becomes `<ip>`. The report says so visibly at the top ("Redacted
+  for the client") and its JSON has `"redacted": true`. Masking happens
+  only when the report is written and the package is saved - the audit
+  log on the stick is never changed, and `undo.ps1` goes into the package
+  unchanged (it must restore the exact paths). Windows' built-in reports
+  in `diagnostics/` are not redacted, and `diagnostics/README.txt` says
+  so. It masks by the shape of a value and the English property name
+  (`SerialNumber`, `SSID`) - not a guarantee: a value printed without
+  such a label (e.g. in a table column) can remain.
 - **Batch-finished notice:** when the window is in the background (e.g.
   during a long DISM/SFC run) the taskbar entry flashes and a system
   notification shows the OK/failed counts.
@@ -272,7 +293,11 @@ PowerShell.
   asking. PortableFix registers nothing to start with Windows - the
   technician starts it after the restart. The review screen says in
   advance which action runs last and which actions wait for the
-  restart.
+  restart. The report's safety log shows it in the report's language
+  with action names: the restart and what was saved to continue (or
+  that saving failed), the continuation after the restart, actions
+  dropped because the catalog no longer has them, a declined
+  continuation and a missing first-half registry backup.
 - **The PC stays awake during a batch:** while a batch runs (report
   writing included), PortableFix holds off system sleep via
   `SetThreadExecutionState` (the display may still turn off). It is

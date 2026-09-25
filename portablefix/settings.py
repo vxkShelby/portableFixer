@@ -27,6 +27,11 @@ class Settings:
     # keeps today's behaviour; on a client's corporate network a ping to a
     # public IP every few seconds can trip EDR alerts.
     quiet_mode: bool = False
+    # "Redact for the client" (research G20): the report and the handoff
+    # package's own text files mask user names in paths, addresses, serial
+    # numbers, key fragments and SSIDs. Off by default - the technician's
+    # own copy should be complete unless they ask otherwise.
+    redact_for_client: bool = False
 
 
 def settings_path(base_dir: Path) -> Path:
@@ -53,6 +58,7 @@ def load_settings(base_dir: Path) -> Settings:
     presets = data.get("custom_presets")
     technician = data.get("technician_name")
     quiet_mode = data.get("quiet_mode")
+    redact = data.get("redact_for_client")
     return Settings(
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
         dry_run=dry_run if isinstance(dry_run, bool) else True,
@@ -65,6 +71,7 @@ def load_settings(base_dir: Path) -> Settings:
         # Strictly a bool: a hand-edited "quiet_mode": "false" must not be
         # read as truthy and silently change what the app sends on the wire.
         quiet_mode=quiet_mode if isinstance(quiet_mode, bool) else False,
+        redact_for_client=redact if isinstance(redact, bool) else False,
     )
 
 

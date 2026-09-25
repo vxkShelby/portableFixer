@@ -138,3 +138,14 @@ def test_quiet_mode_defaults_off_round_trips_and_rejects_non_bool(tmp_path):
         assert load_settings(tmp_path).quiet_mode is False, raw
     _write_raw(tmp_path, json.dumps({"quiet_mode": False}))
     assert load_settings(tmp_path).quiet_mode is False
+
+
+def test_redact_for_client_defaults_off_round_trips_and_rejects_non_bool(tmp_path):
+    # Off by default (G20): the technician's own report stays complete.
+    assert Settings().redact_for_client is False
+    assert load_settings(tmp_path).redact_for_client is False
+    save_settings(tmp_path, Settings(redact_for_client=True))
+    assert load_settings(tmp_path).redact_for_client is True
+    for raw in ("true", 1, None, []):
+        _write_raw(tmp_path, json.dumps({"redact_for_client": raw}))
+        assert load_settings(tmp_path).redact_for_client is False, raw

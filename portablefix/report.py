@@ -9,6 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from . import redaction
 from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
@@ -209,6 +210,50 @@ def _guarded_subjects_label(subject: str, subjects: list[str], language: str) ->
     return _subject_label(prefix + ", ".join(names), [], language)
 
 
+def _find_action_by_id(modules: list[ModuleDef], action_id: str) -> ActionDef | None:
+    # Action ids are unique across the catalog (main_window looks them up
+    # by id alone), and a resume event records bare ids.
+    for module in modules:
+        for action in module.actions:
+            if action.id == action_id:
+                return action
+    return None
+
+
+# The fixed English sentences main_window / main.py write for the restart
+# and resume events (research G03) - PortableFix's own text, so reading the
+# action ids back out of them is not parsing localized output. Display only;
+# the event keeps the sentence verbatim.
+_RESTART_IMMEDIATE = "restarts Windows immediately"
+_RESTART_SAVED = re.compile(r"Saved to continue after the restart: (?P<ids>.+?)\.\s*$")
+_RESTART_NOT_SAVED = re.compile(r"Could not save the rest of the batch \((?P<ids>.+?)\) - start it again by hand")
+_RESUMED = re.compile(r"Continuing the batch after a restart \(\d+ action\(s\): (?P<ids>.+?)\)\.\s*$")
+_RESUME_SKIPPED = re.compile(r"Not in this version's catalog, not continued: (?P<ids>.+?)\.\s*$")
+_RESUME_DECLINED = re.compile(r"Technician declined to continue the batch after the restart: (?P<ids>.+?)\.\s*$")
+_RESUME_HIVE_MISSING = re.compile(r"Registry hive backup of the first half not found: (?P<paths>.+?)\.\s*$")
+_RESUME_PATTERNS = {
+    "restart_pending": (_RESTART_SAVED, _RESTART_NOT_SAVED),
+    "resumed_after_reboot": (_RESUMED,),
+    "resume_skipped": (_RESUME_SKIPPED,),
+    "resume_declined": (_RESUME_DECLINED,),
+}
+
+
+def _resume_action_labels(kind: str, output: str, modules: list[ModuleDef], language: str) -> list[str]:
+    """The actions a restart/resume event names, as labels in the report's
+    language ([] when it names none or the sentence is not recognised). An
+    id no longer in the catalog stays as the id."""
+    for pattern in _RESUME_PATTERNS.get(kind, ()):
+        match = pattern.search(output)
+        if match:
+            labels = []
+            for action_id in (item.strip() for item in match.group("ids").split(",")):
+                action = _find_action_by_id(modules, action_id)
+                labels.append(action.label(language) if action else action_id)
+            return labels
+    return []
+
+
 def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
     # str(): a corrupted log can hold any JSON value here.
     subject = str(entry.get("subject") or "")
@@ -216,9 +261,10 @@ def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
     # Missing in logs written before the field existed.
     subjects = [str(item) for item in raw_subjects] if isinstance(raw_subjects, list) else []
     subject_label = _guarded_subjects_label(subject, subjects, language) or _subject_label(subject, modules, language)
-    return {
+    kind = entry["action_id"]
+    event = {
         "timestamp": entry["timestamp"],
-        "kind": entry["action_id"],
+        "kind": kind,
         "exit_code": entry["exit_code"],
         "dry_run": entry["dry_run"],
         "output": entry.get("output", ""),
@@ -232,6 +278,11 @@ def _build_event(entry: dict, modules: list[ModuleDef], language: str) -> dict:
         # None in logs written before the field existed.
         "restore_point_sequence": entry.get("restore_point_sequence"),
     }
+    if kind in _RESUME_PATTERNS:
+        # The saved / continued / dropped actions by name (G03) - the
+        # English sentence in `output` lists bare ids.
+        event["action_labels"] = _resume_action_labels(kind, str(entry.get("output") or ""), modules, language)
+    return event
 
 
 def _summarize_restore_points(events: list[dict]) -> list[dict]:
@@ -455,6 +506,7 @@ input[type="search"]::placeholder { color: #8b93b8; }
 .job-note .lbl { display: block; font-size: 11px; color: #9aa5ce; text-transform: uppercase; }
 .banner { background: #3b2a1a; border-left: 3px solid #e0af68; color: #f5d9a8; border-radius: 8px;
           padding: 10px 14px; margin: 0 0 14px 0; font-weight: 600; }
+.banner.redacted { background: #1f2a44; border-left-color: #7aa2f7; color: #c0caf5; font-weight: normal; }
 .warned-tag { color: #e0af68; font-size: 11px; font-weight: bold; }
 .warn-text { color: #9aa5ce; font-size: 12px; margin-top: 6px; font-style: italic; white-space: pre-line; }
 .rp-fail { color: #f7768e; font-weight: bold; }
@@ -474,6 +526,7 @@ table.snapshot td.delta.bad { color: #f7768e; }
   table.snapshot td.delta.bad { color: #c0392b; }
   .snap-note { color: #444; }
   .banner { background: #fff; color: #111; border: 1px solid #9a6700; border-left: 4px solid #9a6700; }
+  .banner.redacted { background: #fff; color: #111; border-color: #555; }
   .warned-tag { color: #9a6700; }
   .warn-text { color: #444; }
   .rp-fail { color: #c0392b; }
@@ -881,8 +934,50 @@ def _render_event(event: dict, language: str) -> str:
         return f"<li>{when}{t('report_review')}: <span{css}>{t(key)}</span>{hive}{quote}</li>"
     if kind == "integrity_guard":
         return f"<li>{when}<span class=\"rp-fail\">{t('report_integrity_guard')}</span></li>"
+    resume_html = _render_resume_event(event, label, risk, t)
+    if resume_html is not None:
+        return f"<li>{when}{resume_html}</li>"
     # Unknown/future system event - still show it rather than drop evidence.
     return f"<li>{when}{html.escape(str(kind))}: {html.escape(event.get('output', ''))}</li>"
+
+
+def _action_list(event: dict) -> str:
+    # event.get(): report JSON written before the field existed.
+    labels = event.get("action_labels")
+    if not isinstance(labels, list):
+        return ""
+    return html.escape(", ".join(str(item) for item in labels))
+
+
+def _render_resume_event(event: dict, label: str, risk: str, t) -> str | None:
+    """A restart/resume event (research G03) in the report's language, or
+    None when the event is not one of them. Falls back to the logged
+    sentence when it names no actions the report could read back."""
+    kind = event.get("kind")
+    output = str(event.get("output") or "")
+    actions = _action_list(event) or html.escape(output)
+    if kind == "restart_pending":
+        state = t("report_restart_immediate" if _RESTART_IMMEDIATE in output else "report_restart_batch_stopped")
+        rest = ""
+        if _RESTART_SAVED.search(output):
+            rest = f'<div class="warn-text">{t("report_restart_saved")}: {actions}</div>'
+        elif _RESTART_NOT_SAVED.search(output):
+            # Nothing will be offered after the restart - whoever reads the
+            # report must know the rest has to be started by hand.
+            rest = f'<div class="warn-text"><span class="rp-fail">{t("report_restart_not_saved")}</span>: {actions}</div>'
+        return f"{t('report_restart_pending')}: <strong>{label}</strong>{risk} &mdash; {state}{rest}"
+    if kind == "resumed_after_reboot":
+        after = f" ({t('report_resumed_after')} <strong>{label}</strong>)" if event.get("subject") else ""
+        return f"{t('report_resumed')}{after}: {actions}"
+    if kind == "resume_skipped":
+        return f"<span class=\"rp-fail\">{t('report_resume_skipped')}</span>: {actions}"
+    if kind == "resume_declined":
+        return f"{t('report_resume_declined')}: {actions}"
+    if kind == "resume_hive_backup_missing":
+        match = _RESUME_HIVE_MISSING.search(output)
+        paths = html.escape(match.group("paths") if match else output)
+        return f"<span class=\"rp-fail\">{t('report_resume_hive_missing')}</span>: {paths}"
+    return None
 
 
 def _render_safety_section(events: list[dict], language: str) -> str:
@@ -963,6 +1058,13 @@ def _render_html(data: dict) -> str:
         # The report lives on the client's disk, in %TEMP% - say so where
         # the technician will actually see it, not only in a startup popup.
         storage_banner = f'<div class="banner" role="note">{t("report_storage_fallback")}</div>'
+    if data.get("redacted"):
+        # Said on the page itself: a client or a colleague reading "<ip>"
+        # must know it was masked on purpose, not lost.
+        storage_banner += (
+            f'<div class="banner redacted" role="note"><strong>{t("report_redacted")}</strong> &mdash; '
+            f'{t("report_redacted_detail")}</div>'
+        )
 
     comparison_section = ""
     comparison = data.get("previous_comparison")
@@ -1021,11 +1123,14 @@ def generate_report(
     snapshot_after: dict,
     job: dict | None = None,
     storage_fallback: bool = False,
+    redact: bool = False,
 ) -> tuple[Path, Path]:
     data = build_report_data(
         base_dir, run_id, modules, language, snapshot_before, snapshot_after, job,
         storage_fallback=storage_fallback,
     )
+    if redact:
+        data = redact_report_data(data)
     reports_dir = base_dir / "Reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     html_path = reports_dir / f"{data['hostname']}_{run_id}.html"
@@ -1033,6 +1138,32 @@ def generate_report(
     html_path.write_text(_render_html(data), encoding="utf-8")
     json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return html_path, json_path
+
+
+def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
+    """The report with personal data masked for the client (research G20):
+    user names in paths, IP/MAC addresses, serial numbers, product-key
+    fragments and Wi-Fi names. The computer name and the technician /
+    client / note entered on purpose stay - they are also never masked
+    where the command output happens to repeat them. Only the rendered copy
+    changes; the audit log keeps everything.
+
+    `mask`: profile names masked wherever they appear - by default the
+    profile folders of this PC, which the report was made on, so a name
+    printed without a path after it ("PC\\Jan Novak") is caught too."""
+    job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
+    if mask is None:
+        mask = redaction.local_profile_names()
+    redacted = redaction.redact_data(data, keep=keep, mask=mask)
+    redacted["redacted"] = True
+    return redacted
+
+
+def render_report_html(data: dict) -> str:
+    """The HTML page for report data as generate_report writes it (the
+    handoff package re-renders a redacted copy from the saved JSON)."""
+    return _render_html(data)
 
 
 class ReportRunner(QThread):
@@ -1047,10 +1178,10 @@ class ReportRunner(QThread):
 
     def __init__(self, base_dir: Path, run_id: str, modules: list[ModuleDef], language: str,
                  snapshot_before: dict, snapshot_after: dict, job: dict | None = None,
-                 storage_fallback: bool = False, parent=None):
+                 storage_fallback: bool = False, redact: bool = False, parent=None):
         super().__init__(parent)
         self._args = (base_dir, run_id, modules, language, snapshot_before, snapshot_after)
-        self._kwargs = {"job": job, "storage_fallback": storage_fallback}
+        self._kwargs = {"job": job, "storage_fallback": storage_fallback, "redact": redact}
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
