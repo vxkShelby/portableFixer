@@ -53,7 +53,7 @@ PowerShell.
 | M18 | Repair | Back up user folders (Desktop/Documents/Pictures/Favorites), backup to another drive with a SHA-256 manifest and verification |
 | M19 | Repair | Windows optional features: overview, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Repair | Software updates via winget: list, outdated software, update all |
-| M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor) |
+| M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor), battery wear (verdict), RAM test at next restart and its result |
 | M22 | Cleanup | Deep cleanup: orphaned uninstall entries, duplicate files, broken shortcuts (.lnk), secure free-space wipe |
 | M23 | Antivirus | Microsoft Defender: status, threat history with a verdict, signature update, quick/full/offline scan, exclusions, PUA protection |
 
@@ -194,6 +194,28 @@ PowerShell.
   no longer closes the browser: while it runs the action refuses and
   changes nothing - closing it would lose the client's open tabs and
   unsaved forms.
+- **Battery and RAM (M21):** *Battery wear* (SAFE) reads
+  `powercfg /batteryreport /XML` into a temporary file in `%TEMP%` and
+  deletes it right away. For each battery it lists the design and full
+  charge capacity, health in % and the cycle count. Verdict: GOOD above
+  80 %, CAUTION 60 - 80 %, REPLACE below 60 %. With several batteries
+  the worst one decides. A desktop gets NO BATTERY, firmware without
+  capacities UNKNOWN; a full charge capacity of 0 next to a valid design
+  capacity often means a dead battery, and the output says so.
+  *Schedule RAM test at next restart*
+  (REQUIRES_REBOOT, not in "Select all") does what mdsched.exe does,
+  without its dialog: `bcdedit /bootsequence {memdiag}` sets a one-time
+  boot into the Windows Memory Diagnostic. **The PC is not restarted** -
+  you restart it when it suits the client. The rest of the batch does
+  not wait for the test. It reports success only when the `{memdiag}`
+  entry exists, bcdedit exits 0 and (when the BCD hive is readable) the
+  one-time sequence really holds the `{memdiag}` GUID. Undo cancels a
+  test that has not run yet. *RAM test result* (SAFE) reads the last
+  result from the System event log by the event IDs of the
+  `Microsoft-Windows-MemoryDiagnostics-Results` provider (1101/1201 no
+  errors, 1102/1202 errors, 1103 cancelled, 1104 not completed), with
+  the date and a PASS / FAIL / INCOMPLETE / NEVER RUN verdict. Nothing is
+  read from translated text.
 - **Microsoft Defender (M23):** *Defender threat history* (SAFE) lists
   the detections of the last 90 days (with a 30-day count) - threat
   name, severity, status, action taken, affected files, time - and the
