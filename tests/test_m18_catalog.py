@@ -212,9 +212,18 @@ class Box:
             f"$m = {rc_map}; $n = Split-Path -Leaf $a[1]; "
             "if ($m.ContainsKey($n)) { $global:LASTEXITCODE = $m[$n] } else { $global:LASTEXITCODE = 1 } }",
             # Real hashing, except for files named *locked* (held open elsewhere).
+            # Hashed with .NET rather than by delegating to the real command:
+            # in Windows PowerShell 5.1 Get-FileHash lives in the Utility
+            # module's nested script module, so the module-qualified name
+            # Microsoft.PowerShell.Utility\\Get-FileHash does not resolve.
             "function Get-FileHash { [CmdletBinding()] param([string] $LiteralPath, [string] $Algorithm) "
             "if ((Split-Path -Leaf $LiteralPath) -like '*locked*') { throw 'Proces nemá prístup k súboru.' }; "
-            "Microsoft.PowerShell.Utility\\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm }",
+            # .NET resolves paths without PowerShell drives (E: is a PSDrive here).
+            "$pfStubSt = [IO.File]::OpenRead((Resolve-Path -LiteralPath $LiteralPath -EA Stop).ProviderPath); "
+            "try { $pfStubH = [Security.Cryptography.SHA256]::Create().ComputeHash([IO.Stream]$pfStubSt) } "
+            "finally { $pfStubSt.Dispose() }; "
+            "[pscustomobject]@{ Algorithm = 'SHA256'; Hash = ([BitConverter]::ToString($pfStubH) -replace '-', ''); "
+            "Path = $LiteralPath } }",
         ]
         names = ["Get-ItemProperty", "Get-Partition", "Get-CimInstance", "robocopy", "Get-FileHash"]
         # In Windows PowerShell 5.1 Get-FileHash is a function exported by the
