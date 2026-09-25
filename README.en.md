@@ -46,7 +46,7 @@ PowerShell.
 | M11 | — | Reporting (HTML report after every batch, not a catalog) |
 | M12 | Diagnostics | Online: layered connectivity test, DNS, proxy |
 | M13 | Cleanup | Debloat: telemetry, scheduled tasks, Fast Startup, Explorer ads, Recall/Click to Do |
-| M14 | Repair | Printing: printers, drivers, offline/ghost printers, spooler reset |
+| M14 | Repair | Printing: printers, drivers and their classes (WPP), PrintBRM backup, SMB/NAS compatibility, offline/ghost printers, spooler reset |
 | M15 | Repair | Boot/platform: BCD, TPM, Secure Boot, Secure Boot 2023 certificate verdict (2026-10-19 deadline), WinRE and Quick Machine Recovery readiness, BitLocker, Safe Mode, F8 recovery |
 | M16 | Repair | Office: version/channel, Outlook add-ins, OST/PST, quick/full repair |
 | M17 | Repair | Browsers: extensions, policy, homepage hijack, profile reset |
@@ -175,6 +175,28 @@ PowerShell.
   the threat history reports a NOT ACTIVE verdict - or ATTENTION when
   Defender still recorded threats that were not removed or are still
   active.
+- **Printing (M14):** *Printer driver classes and WPP readiness* (SAFE)
+  lists for every driver its type (Type 3 / Type 4), version, maker,
+  isolation and the printers using it. For every printer it shows the port
+  (monitor, address) and whether it is ready for Windows Protected Print,
+  i.e. uses the inbox IPP class driver (Mopria). A `VERDICT:` line says how
+  many printers depend on third-party drivers - those get security fixes
+  only from July 2027. *Back up printers, drivers and ports (PrintBRM)*
+  (MODERATE) saves everything with `PrintBrm.exe -B` to
+  `%ProgramData%\PortableFix\printer_backups\<date_time>.printerExport`
+  (an administrators-only folder) and prints the restore command
+  `PrintBrm.exe -R -F <file>`. There is no automatic undo - the technician
+  runs the restore. Run it before removing drivers or resetting the print
+  system. *SMB and print sharing compatibility* (SAFE), for an old NAS or
+  shared printer that stopped working, reports SMB1 (client and server),
+  required signing, guest logons, print RPC protection
+  (`RpcAuthnLevelPrivacyEnabled`, RPC policies) and driver installation
+  from print servers. It explains what an old device needs for each, and
+  a SECURE / WEAKENED verdict says whether any protection is relaxed. It
+  changes nothing and never lowers security. When the Print Spooler is
+  not running, the driver report and the backup fail with an explanation
+  and the SMB report says so. Everything is read from cmdlets, the
+  registry and exit codes, never from translated text.
 
 ## Safety mechanisms
 
