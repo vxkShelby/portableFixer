@@ -206,8 +206,11 @@ DIAGNOSTIC_REPORTS: tuple[DiagnosticSpec, ...] = (
         "dxdiag /t - graphics, sound, displays, DirectX drivers.",
     ),
     # Last: the slowest (often a minute or more) and the most complete one.
+    # "+all-loadedmodules" is the documented msinfo32 /categories form for
+    # "everything except Loaded Modules" - that category (every DLL of every
+    # process) is what usually drags msinfo32 on for minutes.
     DiagnosticSpec(
-        "msinfo32.nfo", ("msinfo32", "/nfo", _OUT), 300, False,
+        "msinfo32.nfo", ("msinfo32", "/nfo", _OUT, "/categories", "+all-loadedmodules"), 300, False,
         "msinfo32 /nfo – úplné Systémové informácie (otvorte v msinfo32): hardvér, ovládače, "
         "služby, spustené programy, premenné prostredia.",
         "msinfo32 /nfo - full System Information (open in msinfo32): hardware, drivers, services, "
@@ -272,7 +275,9 @@ def _run_report(argv: list[str], timeout_sec: float, stdout_path: Path | None,
         proc = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL,
             stdout=out if out is not None else subprocess.DEVNULL,
-            stderr=subprocess.STDOUT if out is not None else subprocess.DEVNULL,
+            # Never into the report file: stderr is warnings in the display
+            # language and would break the CSVs; failure is the exit code.
+            stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         deadline = time.monotonic() + timeout_sec

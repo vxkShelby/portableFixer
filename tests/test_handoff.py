@@ -218,6 +218,7 @@ class _FakePopen:
     (exit code, bytes written, mode) with mode "ok", "hang" or "oserror"."""
 
     calls: list = []
+    stderrs: list = []
     procs: list = []
     behaviour: dict = {}
 
@@ -225,6 +226,7 @@ class _FakePopen:
         name = os.path.basename(argv[0]).lower().removesuffix(".exe")
         code, payload, mode = self.behaviour.get(name, (0, b"data-" + name.encode(), "ok"))
         type(self).calls.append(list(argv))
+        type(self).stderrs.append(stderr)
         if mode == "oserror":
             raise FileNotFoundError(argv[0])
         type(self).procs.append(self)
@@ -254,6 +256,7 @@ class _FakePopen:
 @pytest.fixture
 def fake_reports(monkeypatch):
     _FakePopen.calls = []
+    _FakePopen.stderrs = []
     _FakePopen.procs = []
     _FakePopen.behaviour = {}
     monkeypatch.setattr(handoff.subprocess, "Popen", _FakePopen)
@@ -321,6 +324,10 @@ def test_diagnostics_commands_are_locale_free(tmp_path, fake_reports):
     assert by_name["powercfg"][:3] == ["powercfg", "/batteryreport", "/output"]
     assert by_name["dxdiag"][:2] == ["dxdiag", "/t"]
     assert by_name["winget.exe"][1] == "export"
+    # Everything except Loaded Modules - the category that makes msinfo32
+    # take minutes.
+    assert by_name["msinfo32"][1] == "/nfo"
+    assert by_name["msinfo32"][-2:] == ["/categories", "+all-loadedmodules"]
     events = [c for c in fake_reports.calls if c[0] == "wevtutil"]
     assert [c[2] for c in events] == ["System", "Application"]
     for call in events:
@@ -546,3 +553,11 @@ def test_real_process_output_and_timeout(tmp_path):
     assert [r.status for r in results] == [handoff.STATUS_OK, handoff.STATUS_TIMEOUT]
     assert (tmp_path / "out.txt").read_bytes() == b"\xe1 ok"
     assert not (tmp_path / "hang.txt").exists()
+
+
+def test_diagnostics_stderr_never_lands_in_report_files(tmp_path, fake_reports):
+    # stderr is warnings in the display language: mixed into systeminfo.csv
+    # it would make the CSV unreadable by any tool.
+    handoff.collect_diagnostics(tmp_path / "work")
+    assert fake_reports.stderrs
+    assert all(err == subprocess.DEVNULL for err in fake_reports.stderrs)

@@ -83,7 +83,7 @@ PowerShell.
   (never `Data/settings.json` or other runs).
   The **Include Windows diagnostics** option (off by default, never
   remembered) runs Windows' built-in reports when saving and adds
-  them in a `diagnostics/` folder: `msinfo32 /nfo`, `systeminfo` (CSV),
+  them in a `diagnostics/` folder: `msinfo32 /nfo` (without Loaded Modules), `systeminfo` (CSV),
   `powercfg /batteryreport` (laptops only, skipped on a desktop),
   `dxdiag /t`, `winget export` (when winget exists), critical and error
   events of the System and Application logs from the last 7 days

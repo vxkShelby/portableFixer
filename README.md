@@ -82,7 +82,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   toho jedného behu (nikdy `Data/settings.json` ani iné behy).
   Voľba **Pribaliť diagnostiku Windows** (predvolene vypnutá, nastavenie sa
   neukladá) pri uložení spustí vstavané reporty Windows a
-  vloží ich do priečinka `diagnostics/`: `msinfo32 /nfo`, `systeminfo`
+  vloží ich do priečinka `diagnostics/`: `msinfo32 /nfo` (bez kategórie Načítané moduly), `systeminfo`
   (CSV), `powercfg /batteryreport` (len notebooky, na desktope sa
   preskočí), `dxdiag /t`, `winget export` (ak je winget), kritické
   udalosti a chyby z denníkov System a Application za 7 dní (`wevtutil
