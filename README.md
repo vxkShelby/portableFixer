@@ -38,7 +38,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M04 | Oprava | Integrita systému: DISM, SFC, AppX, WMI |
 | M05 | Oprava | Windows Update: reset služieb a cache, DLL, detekcia, stav Windows 10 ESU (koniec Consumer ESU 13. 10. 2026) |
 | M06 | Oprava | Sieť: DNS, hosts, DHCP, Winsock, TCP/IP |
-| M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby, WMI, IFEO backdoor, služby bez úvodzoviek |
+| M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby, WMI, IFEO backdoor, služby bez úvodzoviek, súpis bez položiek Microsoftu (podpis, SHA256) |
 | M08 | Zabezpečenie | Defender, firewall, UAC audit + rýchly sken, WPBT disable |
 | M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu, Storage Sense (prehľad a mesačné čistenie s presným undo) |
 | M10 | Diagnostika | Drivery: problémové zariadenia (+ reštart), ovládače tretích strán, sieť/GPU, záloha/obnova |
@@ -291,6 +291,27 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   je šifrovaná a súbor nad 4 GB sa na FAT32 nezmestí (záloha skončí
   ako INCOMPLETE). Kontrola toho istého fyzického disku nerozpozná
   písmeno SUBST ani pripojený VHD(X) uložený na systémovom disku.
+- **Autoštart bez položiek Microsoftu** (M07, SAFE): jeden súpis
+  všetkých miest autoštartu - Run/RunOnce, Startup, naplánované úlohy,
+  služby a ovládače (pri svchost aj ServiceDll), Winlogon, AppInit_DLLs,
+  balíčky LSA, monitory tlače, Winsock, BootExecute, IFEO a Active Setup.
+  Pri každej položke nájde skutočný súbor (úvodzovky, argumenty,
+  `rundll32 x.dll,Vstup`, `%premenné%`, cesty k System32), zistí podpis
+  Authenticode s podpisovateľom, SHA256 a čas zmeny. Položky podpísané
+  Microsoftom skryje (podpis musí byť platný a certifikát aj jeho vydavateľ
+  Microsoftu, alebo `IsOSBinary`); IFEO presmerovania, skriptovacích
+  hostiteľov a spúšťače (powershell.exe, cmd.exe, wscript.exe, conhost.exe...)
+  a ovládače tretích strán podpísané cez WHQL ukáže vždy; rundll32,
+  regsvr32, msiexec a podobných hostiteľov vtedy, keď argumenty ukazujú
+  na súbor mimo priečinka Windows alebo na sieť (poznámka uvedie súbor a
+  jeho podpis). Pri 32-bitových AppInit_DLLs a Winsock hľadá súbor v
+  SysWOW64. Ostatné
+  vypíše so stabilným ID `AR-xxxxxxxxxxxx` (hash miesta, názvu a príkazu),
+  najprv s neplatným podpisom a nepodpísané, potom chýbajúce súbory, s
+  počtami podľa kategórie a riadkom `SUMMARY`. Podpis sa overuje raz na
+  súbor, súbory nad 200 MB sa nehašujú. Nepodpísaný súbor v priečinku
+  Windows môže byť podpísaný katalógom, ak nebeží služba CryptSvc - pri
+  položke je poznámka. Nič nemení; vypínanie položiek príde neskôr.
 
 ## Bezpečnostné mechanizmy
 
