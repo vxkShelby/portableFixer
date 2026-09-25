@@ -52,7 +52,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M18 | Oprava | Záloha používateľských priečinkov (Desktop/Documents/Pictures/Favorites), záloha na iný disk so SHA-256 manifestom a overením |
 | M19 | Oprava | Voliteľné funkcie Windows: prehľad, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Oprava | Aktualizácia softvéru cez winget: zoznam, zastaraný softvér, update all |
-| M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor) |
+| M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor), opotrebenie batérie (verdikt), test pamäte RAM pri reštarte a jeho výsledok |
 | M22 | Čistenie | Hlbšie čistenie: osamotené uninstall položky, duplicitné súbory, nefunkčné odkazy (.lnk), bezpečné prepísanie voľného miesta |
 | M23 | Antivírus | Microsoft Defender: stav, história hrozieb s verdiktom, aktualizácia definícií, rýchly/úplný/offline sken, výnimky, ochrana pred PUA |
 
@@ -152,6 +152,25 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   a tried CIM, nikdy z preloženého textu správ, takže fungujú v každom
   jazyku Windows. Triáž pádov a hardvérové chyby WHEA sú aj v predvoľbe
   Plná diagnostika.
+- **Batéria a RAM (M21):** *Opotrebenie batérie* (SAFE) číta
+  `powercfg /batteryreport /XML` do dočasného súboru v `%TEMP%`, ktorý
+  hneď zmaže. Pre každú batériu vypíše menovitú a plnú kapacitu, zdravie
+  v % a počet cyklov. Verdikt: GOOD nad 80 %, CAUTION 60 - 80 %,
+  REPLACE pod 60 %. Pri viacerých batériách rozhoduje najhoršia.
+  Stolný počítač dostane NO BATTERY a firmvér bez kapacít UNKNOWN.
+  *Naplánovanie testu pamäte RAM pri reštarte* (REQUIRES_REBOOT, nie je
+  vo „Vybrať všetko“) robí to isté ako mdsched.exe, ale bez dialógu:
+  `bcdedit /bootsequence {memdiag}` nastaví jednorazový štart Windows
+  Memory Diagnostic. **PC sa nereštartuje** - reštartuješ ho, keď sa to
+  hodí klientovi. Zvyšok dávky na test nečaká. Úspech hlási, len ak
+  položka `{memdiag}` existuje, bcdedit skončil s kódom 0 a (ak sa dá
+  prečítať hive BCD) jednorazová sekvencia naozaj obsahuje GUID
+  `{memdiag}`. Undo zruší test, ktorý ešte nebežal. *Výsledok testu
+  pamäte RAM* (SAFE) prečíta posledný výsledok zo systémového denníka
+  podľa event ID providera `Microsoft-Windows-MemoryDiagnostics-Results`
+  (1101/1201 bez chýb, 1102/1202 chyby, 1103 zrušený, 1104 nedokončený)
+  s dátumom a verdiktom PASS / FAIL / INCOMPLETE / NEVER RUN. Nič sa
+  nečíta z preloženého textu.
 - **Microsoft Defender (M23):** *História hrozieb Defenderu* (SAFE)
   vypíše detekcie za 90 dní (počet aj za 30 dní) - názov hrozby,
   závažnosť, stav, vykonaný zásah, dotknuté súbory, čas - a aktuálny stav
