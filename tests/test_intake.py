@@ -232,7 +232,9 @@ def test_missing_logo_file_is_unreadable(tmp_path):
     None, 5, "", "not base64!!", base64.b64encode(b"GIF89a").decode(),
     base64.b64encode(PNG + b"\x00" * branding.MAX_LOGO_BYTES).decode(),
     'iVBORw0KGgo=" onerror="alert(1)',
-])
+# Explicit ids: pytest puts the test id into PYTEST_CURRENT_TEST, and the
+# oversized base64 as an id exceeds Windows' 32767-character variable limit.
+], ids=["none", "int", "empty", "not_base64", "gif", "over_limit", "attribute_injection"])
 def test_decode_logo_refuses_anything_but_a_valid_image(value):
     assert branding.decode_logo(value) is None
 
