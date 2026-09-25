@@ -150,8 +150,10 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   hodnotu do `%ProgramData%\PortableFix` (priečinok len pre
   administrátorov) a undo ju obnoví. Ak Defender nahradil iný antivírus,
   akcie to zistia z `Get-MpComputerStatus` (AMRunningMode, príznaky
-  služby, HRESULT chyby) a skončia s nenulovým kódom a vysvetlením,
-  nikdy podľa preloženého textu.
+  služby, HRESULT chyby), nikdy podľa preloženého textu: skeny a zmena
+  PUA odmietnu bežať s nenulovým kódom a vysvetlením, história hrozieb
+  vypíše verdikt NOT ACTIVE - alebo ATTENTION, ak Defender aj tak
+  zaznamenal neodstránené či stále aktívne hrozby.
 
 ## Bezpečnostné mechanizmy
 

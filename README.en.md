@@ -152,8 +152,11 @@ PowerShell.
   value to `%ProgramData%\PortableFix` (an administrators-only folder)
   and undo restores it. When another antivirus has replaced Defender,
   the actions detect it from `Get-MpComputerStatus` (AMRunningMode,
-  service flags, error HRESULTs) and exit non-zero with an explanation,
-  never from translated text.
+  service flags, error HRESULTs), never from translated text: the scans
+  and the PUA change refuse with a non-zero exit and an explanation, and
+  the threat history reports a NOT ACTIVE verdict - or ATTENTION when
+  Defender still recorded threats that were not removed or are still
+  active.
 
 ## Safety mechanisms
 

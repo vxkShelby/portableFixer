@@ -320,6 +320,20 @@ def test_history_passive_defender_is_not_active_but_still_reports(tmp_path, mode
         f"VERDICT: NOT ACTIVE - Microsoft Defender is not the active antivirus on this PC (AMRunningMode: {mode})")
 
 
+@pytest.mark.parametrize("mode", ["Passive Mode", "SxS Passive Mode", "EDR Block Mode"])
+def test_history_passive_defender_with_unremediated_threats_is_attention(tmp_path, mode):
+    # A passive Defender still detects. What it failed to remove must not be
+    # hidden behind "check the other antivirus instead".
+    result, _ = _run_history(tmp_path, status=_status(mode),
+                             threats=[_threat(8, "Backdoor:Win32/Z", 5, active=True)],
+                             detections=[_detection(8, 2, status=103, action=3, success=False)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Backdoor:Win32/Z | severity: severe | status: remove failed" in result.stdout
+    verdict = _verdict(result.stdout)
+    assert verdict.startswith("VERDICT: ATTENTION - 1 detection(s) not remediated and 1 threat(s) still active")
+    assert f"not the active antivirus on this PC (AMRunningMode: {mode})" in verdict
+
+
 def test_history_older_windows_without_running_mode_uses_the_enabled_flags(tmp_path):
     result, _ = _run_history(tmp_path, status=_status(None))
     assert "Running mode (AMRunningMode): not reported by this Windows version" in result.stdout
@@ -433,6 +447,14 @@ def test_fullscan_timeouts_outlast_the_heartbeat_and_a_long_scan():
     # Long enough that the pre-flight treats it as a long action (battery).
     assert preflight.is_long_action(action)
     assert action.changes_system is False
+
+
+def test_fullscan_is_the_only_m23_action_that_asks_the_disk_health_probe():
+    # Reading every file on every fixed drive for hours is exactly the load
+    # the G13 disk-health pre-flight guards a failing disk against.
+    module = load_module(CATALOG_PATH)
+    assert {a.id for a in module.actions if a.stresses_disk} == {FULLSCAN_ID}
+    assert preflight.profile_for([(module, _action(FULLSCAN_ID))]).stresses_disk
 
 
 # --- Defender Offline ---------------------------------------------------------
@@ -598,14 +620,21 @@ def test_pua_enable_backs_up_previous_value_and_undo_restores_it(tmp_path, initi
     assert _called(again_calls, "Set-MpPreference") == []
 
 
-def test_pua_already_enabled_changes_nothing_and_keeps_the_first_backup(tmp_path):
-    first, _ = _run_pua(tmp_path, initial=0)
-    assert first.returncode == 0, first.stdout + first.stderr
-    second, calls = _run_pua(tmp_path)
-    assert second.returncode == 0, second.stdout + second.stderr
-    assert "already enabled - nothing changed" in second.stdout
+def test_pua_already_enabled_changes_nothing_and_its_undo_leaves_pua_on(tmp_path):
+    # A backup left by an earlier visit (or a GPO-locked run) holds Disabled.
+    # The executor records an undo for every exit 0, so the no-op run must
+    # overwrite it - otherwise its undo would switch PUA protection off.
+    _pua_backup(tmp_path).parent.mkdir(parents=True)
+    _pua_backup(tmp_path).write_text('{"PUAProtection": 0}', encoding="utf-8")
+    result, calls = _run_pua(tmp_path, initial=1)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already enabled - nothing changed" in result.stdout
     assert _called(calls, "Set-MpPreference") == []
-    assert json.loads(_pua_backup(tmp_path).read_text(encoding="utf-8-sig"))["PUAProtection"] == 0
+    assert json.loads(_pua_backup(tmp_path).read_text(encoding="utf-8-sig"))["PUAProtection"] == 1
+
+    undo, _ = _run_pua(tmp_path, command=_action(PUA_ID).undo_command)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert _pua_state(tmp_path) == 1
 
 
 def test_pua_enforced_by_policy_fails_and_keeps_the_backup(tmp_path):
