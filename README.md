@@ -45,7 +45,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M11 | — | Reporting (HTML report po každej dávke, nie katalóg) |
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
 | M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri, Recall/Click to Do |
-| M14 | Oprava | Tlač: tlačiarne, ovládače, offline/ghost tlačiarne, reset spooleru |
+| M14 | Oprava | Tlač: tlačiarne, ovládače a ich triedy (WPP), záloha PrintBRM, kompatibilita SMB/NAS, offline/ghost tlačiarne, reset spooleru |
 | M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, verdikt pre Secure Boot certifikáty 2023 (termín 19. 10. 2026), pripravenosť WinRE a Quick Machine Recovery, BitLocker, Bezpečný režim, F8 recovery |
 | M16 | Oprava | Office: verzia/kanál, doplnky Outlooku, OST/PST, rýchla/úplná oprava |
 | M17 | Oprava | Prehliadače: rozšírenia, policy, únos domovskej stránky, reset profilu |
@@ -172,6 +172,34 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   PUA odmietnu bežať s nenulovým kódom a vysvetlením, história hrozieb
   vypíše verdikt NOT ACTIVE - alebo ATTENTION, ak Defender aj tak
   zaznamenal neodstránené či stále aktívne hrozby.
+- **Tlač (M14):** *Triedy ovládačov tlačiarní a pripravenosť na WPP*
+  (SAFE) vypíše pri každom ovládači typ (Type 3 / Type 4), verziu,
+  výrobcu, izoláciu a tlačiarne, ktoré ho používajú. Pri každej tlačiarni
+  ukáže port (monitor, adresu) a či je pripravená na Windows Protected
+  Print, teda či používa inbox IPP class driver (Mopria) alebo Microsoft
+  Print To PDF - ovládače od Microsoftu pre konkrétne zariadenia (PCL6
+  class driver, Generic / Text Only) pod WPP nefungujú. Riadok
+  `VERDICT:` povie, koľko tlačiarní nie je pripravených a koľko z nich
+  závisí od ovládačov tretích strán - tie od júla 2027 dostávajú už len
+  bezpečnostné opravy. *Záloha
+  tlačiarní, ovládačov a portov (PrintBRM)* (MODERATE) uloží všetko
+  nástrojom `PrintBrm.exe -B` do
+  `%ProgramData%\PortableFix\printer_backups\<dátum_čas>.printerExport`
+  (priečinok len pre administrátorov) a vypíše príkaz na obnovu
+  `PrintBrm.exe -R -F <súbor>`. Automatické undo nemá - obnovu spustí
+  technik sám. Spustite ju pred odstránením ovládačov alebo resetom
+  tlačového systému. *Kompatibilita SMB a zdieľanej tlače* (SAFE) pri
+  nefunkčnom starom NAS alebo zdieľanej tlačiarni vypíše SMB1 (klient
+  aj server), povinné podpisovanie, prihlásenie hosťa, ochranu
+  tlačového RPC (`RpcAuthnLevelPrivacyEnabled`, RPC politiky) a
+  inštaláciu ovládačov z tlačových serverov. Ku každému vysvetlí, čo
+  staré zariadenie potrebuje, a verdikt SECURE / WEAKENED povie, či je
+  niektorá ochrana oslabená (WEAK DEFAULT: nikto nič neoslabil, ale
+  predvolené prihlásenie hosťa pred Windows 11 24H2 je slabšie, než sa
+  odporúča). Nič nemení a bezpečnosť nikdy neznižuje.
+  Keď Zaraďovač tlače nebeží, prehľad ovládačov aj záloha skončia s
+  chybou a vysvetlením a SMB prehľad to uvedie. Všetko sa číta z
+  cmdletov, registrov a kódov, nikdy z preloženého textu.
 
 ## Bezpečnostné mechanizmy
 
