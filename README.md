@@ -235,8 +235,12 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   Authenticode s podpisovateľom, SHA256 a čas zmeny. Položky podpísané
   Microsoftom skryje (podpis musí byť platný a certifikát aj jeho vydavateľ
   Microsoftu, alebo `IsOSBinary`); IFEO presmerovania, skriptovacích
-  hostiteľov (powershell.exe, cmd.exe, wscript.exe...) a ovládače tretích
-  strán podpísané cez WHQL ukáže vždy. Ostatné
+  hostiteľov a spúšťače (powershell.exe, cmd.exe, wscript.exe, conhost.exe...)
+  a ovládače tretích strán podpísané cez WHQL ukáže vždy; rundll32,
+  regsvr32, msiexec a podobných hostiteľov vtedy, keď argumenty ukazujú
+  na súbor mimo priečinka Windows alebo na sieť (poznámka uvedie súbor a
+  jeho podpis). Pri 32-bitových AppInit_DLLs a Winsock hľadá súbor v
+  SysWOW64. Ostatné
   vypíše so stabilným ID `AR-xxxxxxxxxxxx` (hash miesta, názvu a príkazu),
   najprv s neplatným podpisom a nepodpísané, potom chýbajúce súbory, s
   počtami podľa kategórie a riadkom `SUMMARY`. Podpis sa overuje raz na

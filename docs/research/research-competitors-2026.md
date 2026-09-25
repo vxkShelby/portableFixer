@@ -518,7 +518,7 @@ Zoradené podľa priority (skóre = hodnota ÷ náročnosť; pri rovnosti nižš
 ### 28. G04 – Triáž autoštartu s filtrom podpisu a reverzibilným vypnutím · skóre 1,67 (riziko 3)
 - **Čo robia a kto:** Autoruns 14.3 pokrýva ~17–20 kategórií. Filter skryje položky podpísané Microsoftom, stĺpce ukazujú podpis, hash a VirusTotal. Vypnutie je reverzibilný checkbox a `.arn` snapshoty sa dajú porovnať (File > Compare). Glary má „Delay“ (*neoverené*).
 - **Oprava po overení:** `-u` (len nepodpísané) patrí command-line verzii **autorunsc** a pri zapnutom VT ukáže aj neznáme alebo detegované položky.
-- **Stav v PortableFix:** m07 má 7 read-only reportov (Run, Startup, tasky, služby, WMI, IFEO, unquoted paths), bez filtra podpisu, hashu či vypnutia. Autenticode kontrola existuje len pre bežiace procesy (m08).
+- **Stav v PortableFix:** m07 má 8 read-only reportov (Run, Startup, tasky, služby, WMI, IFEO, unquoted paths a od kroku 1 aj súpis bez položiek Microsoftu s podpisom a SHA256 – `autoruns_thirdparty_signed_view`). Krok 1 je hotový; chýba reverzibilné vypnutie (krok 2). Autenticode kontrola existuje len pre bežiace procesy (m08).
 - **Prečo to technikovi pomôže:** Upratanie autoštartu je jedna z najčastejších úloh v teréne a každý konkurent vie položky aj meniť.
 - **Návrh:**
   - Krok 1 (SAFE, dá sa hneď, bez G05): `autoruns_thirdparty_signed_view`. Run a RunOnce, Startup, tasky, služby, Winlogon, AppInit, LSA, print monitors, Winsock, BootExecute, IFEO a Active Setup, so signerom, SHA256 a časom súboru. Bez položiek podpísaných Microsoftom, so stabilnými ID.

