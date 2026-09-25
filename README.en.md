@@ -126,13 +126,16 @@ PowerShell.
   cleanup. *Crash triage* scans 90 days of the System log (BugCheck
   1001, Kernel-Power 41, EventLog 6008) and lists every crash with its
   stop code and parameters, the dump path, and the name and probable
-  cause from a built-in table of the ~35 most common codes. *WHEA
+  cause from a built-in table of the ~35 most common codes. The summary
+  per stop code counts crashes, not events: events within 5 minutes of
+  each other (at most one of each kind) are one crash. *WHEA
   hardware errors* summarizes 30 days of PCI Express, processor and
   memory errors by component and count. *Reliability history* shows the
   1-10 stability index with its trend and the top failing programs.
   *Crash dump evidence* lists Minidump, MEMORY.DMP and LiveKernelReports
-  with size and date - the "System crash dumps" cleanup deletes them, so
-  copy them off first. Everything is read from event IDs, provider
+  with size and date and says for each file whether the "System crash
+  dumps" cleanup deletes it (it cleans only the default Windows
+  locations, not a custom CrashControl folder) - copy them off first. Everything is read from event IDs, provider
   names, event XML and CIM classes, never from translated message text,
   so it works in any Windows display language. Crash triage and WHEA
   hardware errors are also part of the Full diagnostic preset.
@@ -166,7 +169,9 @@ PowerShell.
   SpotFix repair; M22: the `cipher /w` free-space wipe). When one is in
   a real batch, the pre-flight runs the same script as the SAFE **Disk
   health - verdict** action once, when the review screen opens (a single
-  PowerShell launch with a 20 s timeout). If the system disk reports
+  PowerShell launch with a 20 s timeout, in the background - the window
+  stays responsive, and "Cancel batch" cancels the batch and logs it in
+  the audit log). If the system disk reports
   FAILING or WARNING, a blocker says "back up or image the disk first";
   it can only be overridden with a deliberate tick, and the override is
   written to the audit log. When the system disk cannot be identified,

@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import shutil
 import socket
@@ -6,7 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QEventLoop, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -41,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from . import style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import diagnostics, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
+from .. import diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -142,6 +144,28 @@ def _thread_running(runner) -> bool:
         return False
 
 
+class _DiskHealthProbeRunner(QThread):
+    """The G13 disk health probe off the GUI thread: it launches PowerShell
+    and may take up to disk_health.PROBE_TIMEOUT_SEC on a dying disk.
+
+    The verdicts go into a plain list owned by the caller rather than a
+    signal argument or an attribute: the caller reads them after the thread
+    has finished, when this object may already be deleteLater'd."""
+
+    def __init__(self, probe, results: list, parent=None):
+        super().__init__(parent)
+        self._probe = probe
+        self._results = results
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        try:
+            verdicts = self._probe()
+        except Exception:  # noqa: BLE001 - any probe failure means "unknown"
+            verdicts = None
+        self._results.append(verdicts)
+
+
 def _score_state(score: int) -> str:
     """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
     if score >= 80:
@@ -203,6 +227,9 @@ class MainWindow(QMainWindow):
         self._hive_backup_requested = False
         self._hive_backup_attempted = False
         self._pending_hive_backup_runner: hive_backup.HiveBackupRunner | None = None
+        # Disk health probes (G13) still running - a cancelled one is left to
+        # finish on its own (PowerShell times out), and closeEvent waits for it.
+        self._disk_health_runners: list[_DiskHealthProbeRunner] = []
         self._hive_backups: list[Path] = []
         self._report_runner: report.ReportRunner | None = None
         self._batch_active = False
@@ -461,6 +488,12 @@ class MainWindow(QMainWindow):
             (self._pending_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
             (self._pending_panel_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
             (self._pending_hive_backup_runner, hive_backup.HIVE_SAVE_TIMEOUT_SEC * len(hive_backup.HIVES) * 1000 + 5_000),
+            # PowerShell is killed at its timeout, its pipes drained for a
+            # few seconds more - a live QThread must never be destroyed.
+            *(
+                (runner, (disk_health.PROBE_TIMEOUT_SEC + disk_health.KILL_DRAIN_TIMEOUT_SEC) * 1000 + 5_000)
+                for runner in self._disk_health_runners
+            ),
             # Can't be interrupted mid-write, and it re-reads the whole
             # session's audit log - allow for a slow USB stick.
             (self._report_runner, 30_000),
@@ -3420,22 +3453,68 @@ class MainWindow(QMainWindow):
         # itself is driven through BatchReviewDialog.exec in the GUI tests.
         return BatchReviewDialog(review, parent=self).ask()
 
+    def _probe_disk_health(self, probe) -> tuple[list | None, bool]:
+        """Runs the disk health probe on a worker thread behind a busy
+        dialog with Cancel; returns (verdicts, cancelled). The GUI stays
+        responsive meanwhile - the probe can take up to
+        disk_health.PROBE_TIMEOUT_SEC when the storage stack hangs, which
+        a dying disk's often does. Tests inject `probe` via Probes.disk_health."""
+        self._disk_health_runners = [r for r in self._disk_health_runners if _thread_running(r)]
+        results: list = []
+        loop = QEventLoop()
+        runner = _DiskHealthProbeRunner(probe, results, parent=self)
+        # Queued on purpose: a probe that finishes before loop.exec() starts
+        # must still quit the loop (a direct quit() before exec() is lost).
+        runner.finished.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
+        dialog = QProgressDialog(
+            self._t("preflight_disk_probe_running").format(seconds=disk_health.PROBE_TIMEOUT_SEC),
+            self._t("preflight_disk_probe_cancel"), 0, 0, self,
+        )
+        dialog.setWindowTitle(self._t("app_title"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        # The Cancel button emits canceled; Esc / the title bar's close
+        # reject the dialog instead - both mean the same "not now".
+        cancel_asked: list[bool] = []
+        for signal in (dialog.canceled, dialog.rejected):
+            signal.connect(lambda: cancel_asked.append(True))
+            signal.connect(loop.quit)
+        self._disk_health_runners.append(runner)
+        runner.start()
+        dialog.show()
+        loop.exec()
+        # A verdict that arrived together with the click still counts.
+        cancelled = bool(cancel_asked) and not results
+        dialog.close()
+        dialog.deleteLater()
+        if cancelled:
+            return None, True
+        return (results[0] if results else None), False
+
     def _review_batch(self, queue: list[str]) -> list[str] | None:
         """Pre-flight + the one review screen (research G11/G12). Returns
         the queue to run - without the declined actions - or None when the
         technician cancelled the batch."""
         items = [self._find_action(aid) for aid in queue]
         profile = preflight.profile_for(items)
-        # The G13 disk health probe launches PowerShell synchronously (up to
-        # disk_health.PROBE_TIMEOUT_SEC) - a busy cursor says the click was
-        # taken instead of leaving a frozen-looking window.
+        probes = self._preflight_probes()
         if profile.stresses_disk:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            result = preflight.run_preflight(profile, self._preflight_probes())
-        finally:
-            if profile.stresses_disk:
-                QApplication.restoreOverrideCursor()
+            verdicts, cancelled = self._probe_disk_health(probes.disk_health)
+            if cancelled or self._closed:
+                # Cancel on the busy dialog = "not now": the batch does not
+                # start (skipping the probe would silently skip the G13 gate).
+                outcome = (
+                    "Technician cancelled the batch before the review screen." if cancelled
+                    else "The window was closed before the review screen."
+                )
+                self._log_system_event(
+                    "batch_review", None, f"Pre-flight: disk health check cancelled. {outcome}", decision="cancelled",
+                )
+                return None
+            probes = dataclasses.replace(probes, disk_health=lambda: verdicts)
+        result = preflight.run_preflight(profile, probes)
         review = build_review(
             items, result, self.settings.language,
             hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,

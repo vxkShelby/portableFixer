@@ -5055,11 +5055,12 @@ def test_preflight_blocker_disables_confirm_until_overridden_and_logs_the_overri
     assert event["warning_text"] == i18n.translate("preflight_low_disk", "en").format(free_gb="2.0", min_gb=5)
 
 
-def test_failing_disk_blocks_a_disk_stressing_batch_until_overridden_with_a_busy_cursor(qtbot, tmp_path, monkeypatch):
+def test_failing_disk_blocks_a_disk_stressing_batch_until_overridden_probe_off_gui_thread(qtbot, tmp_path, monkeypatch):
     # G13 end to end: a stresses_disk action + a FAILING system disk puts
     # the disk_failing blocker on the review screen, the override tick is
-    # the only way past it and the audit event says so. The probe runs
-    # under a busy cursor (it is a synchronous PowerShell launch).
+    # the only way past it and the audit event says so. The probe (a
+    # PowerShell launch of up to 20 s) runs on a worker thread behind a
+    # busy dialog, never on the GUI thread.
     from portablefix import disk_health, preflight
     from portablefix.gui.batch_review import BatchReviewDialog
 
@@ -5071,10 +5072,16 @@ def test_failing_disk_blocks_a_disk_stressing_batch_until_overridden_with_a_busy
     command: "Write-Output 'defrag-ran'"
     stresses_disk: true
 """
-    cursors = []
+    import threading
+
+    from PySide6.QtWidgets import QProgressDialog
+
+    from portablefix import i18n
+
+    threads = []
 
     def failing_disk():
-        cursors.append(QApplication.overrideCursor() is not None)
+        threads.append(threading.current_thread() is threading.main_thread())
         return [disk_health.DiskVerdict("0", disk_health.FAILING, ("predict_failure",), "WDC X", system=True)]
 
     probes = preflight.Probes(is_admin=lambda: True, pending_reboot=lambda: [], disk_health=failing_disk)
@@ -5088,14 +5095,18 @@ def test_failing_disk_blocks_a_disk_stressing_batch_until_overridden_with_a_busy
         return self.result()
 
     monkeypatch.setattr(BatchReviewDialog, "exec", technician)
+    dialogs = []
+    real_show = QProgressDialog.show
+    monkeypatch.setattr(QProgressDialog, "show", lambda self: (dialogs.append(self.labelText()), real_show(self)))
     _check(window, "defrag_thing")
 
     window.run_selected_actions()
     _wait_batch_idle(qtbot, window)
 
     assert shown == [(["disk_failing"], False)]
-    assert cursors == [True]
-    assert QApplication.overrideCursor() is None
+    assert threads == [False]
+    assert dialogs == [i18n.translate("preflight_disk_probe_running", "en").format(seconds=20)]
+    assert not any(d.isVisible() for d in window.findChildren(QProgressDialog))
     log_path = audit_log_path(tmp_path, "run_review_disk")
     assert _executed_action_ids(log_path) == ["defrag_thing"]
     [event] = _system_events(log_path, "batch_review")
@@ -6369,3 +6380,108 @@ def test_review_restore_point_label_follows_the_only_destructive_tick(qtbot, tmp
     assert texts == [
         i18n.translate("review_restore_point_no", "en"), i18n.translate("review_restore_point_yes", "en"),
     ]
+
+
+STRESSING_REVIEW_YAML = REVIEW_BATCH_YAML + """
+  - id: defrag_thing
+    label_sk: "Defrag vec"
+    label_en: "Defrag thing"
+    risk: MODERATE
+    command: "Write-Output 'defrag-ran'"
+    stresses_disk: true
+"""
+
+
+def _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, how):
+    # A hung storage stack: the probe blocks until released. The GUI event
+    # loop keeps running (the busy dialog's Cancel is clickable), Cancel
+    # aborts the batch before the review screen and says so in the audit
+    # log, and the abandoned worker is still waited for on close.
+    import threading
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QProgressDialog, QPushButton
+
+    from portablefix import preflight
+    from portablefix.gui.main_window import _thread_running
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def hung_disk():
+        started.set()
+        release.wait(30)
+        return []
+
+    probes = preflight.Probes(is_admin=lambda: True, pending_reboot=lambda: [], disk_health=hung_disk)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_disk_cancel", probes=probes,
+                            yaml=STRESSING_REVIEW_YAML)
+    monkeypatch.setattr(window, "_ask_batch_review", lambda review: pytest.fail("no review screen after Cancel"))
+    ticks = []
+
+    def click_cancel():
+        # Runs on the GUI thread while the probe is still blocked.
+        ticks.append(started.is_set())
+        [dialog] = [d for d in window.findChildren(QProgressDialog) if d.isVisible()]
+        if how == "button":
+            dialog.findChild(QPushButton).click()
+        else:
+            dialog.reject()  # what Esc and the title bar's close do
+
+    QTimer.singleShot(200, click_cancel)
+    _check(window, "defrag_thing")
+
+    window.run_selected_actions()
+
+    assert ticks == [True]
+    assert not window._batch_active and window._queue == []
+    log_path = audit_log_path(tmp_path, "run_review_disk_cancel")
+    assert _executed_action_ids(log_path) == []
+    [event] = _system_events(log_path, "batch_review")
+    assert event["decision"] == "cancelled"
+    assert "disk health check cancelled" in event["output"]
+    [runner] = window._disk_health_runners
+    assert runner.isRunning()
+    release.set()
+    qtbot.waitUntil(lambda: not _thread_running(runner), timeout=10_000)
+
+
+def test_disk_health_probe_keeps_the_gui_responsive_and_cancel_stops_the_batch(qtbot, tmp_path, monkeypatch):
+    _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, "button")
+
+
+def test_disk_health_probe_dialog_escape_also_stops_the_batch(qtbot, tmp_path, monkeypatch):
+    _cancel_a_hung_disk_probe(qtbot, tmp_path, monkeypatch, "escape")
+
+
+def test_disk_health_probe_that_raises_is_unknown_and_the_batch_runs(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+
+    def broken_probe():
+        raise RuntimeError("WMI exploded")
+
+    probes = preflight.Probes(is_admin=lambda: True, pending_reboot=lambda: [], disk_health=broken_probe)
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_disk_raise", probes=probes,
+                            yaml=STRESSING_REVIEW_YAML)
+    reviews = _answer_review(monkeypatch)
+    _check(window, "defrag_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert [i.code for i in reviews[0].review.preflight.blockers] == []
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_review_disk_raise")) == ["defrag_thing"]
+
+
+def test_close_waits_for_an_abandoned_disk_health_probe():
+    # closeEvent must wait for every disk probe thread it may leave behind
+    # (Qt aborts the process on a destroyed running QThread) - long enough
+    # for PowerShell's timeout plus the pipe drain after kill().
+    import inspect
+
+    from portablefix import disk_health
+
+    source = inspect.getsource(MainWindow.closeEvent)
+    assert "self._disk_health_runners" in source
+    assert "disk_health.PROBE_TIMEOUT_SEC + disk_health.KILL_DRAIN_TIMEOUT_SEC" in source
+    assert disk_health.KILL_DRAIN_TIMEOUT_SEC > 0
