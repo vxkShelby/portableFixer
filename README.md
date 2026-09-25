@@ -194,9 +194,17 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   a ďalšie akcie by bežali proti rozpracovanému stavu
   (`restart_before_next: true`: *Plná kontrola disku pri reštarte* a
   *Odinštalovanie poslednej aktualizácie*), po úspechu dávku zastaví.
+  *Plná kontrola disku pri reštarte* hlási úspech, len ak je kontrola
+  naozaj naplánovaná (dirty bit zväzku alebo záznam `autochk` pre disk
+  v `BootExecute`), inak zlyhá a dávka pokračuje bez reštartu.
   Zvyšok dávky (id akcií, run_id, DRY-RUN, údaje o zákazke, kroky
   `undo.ps1`) sa uloží do `Data/pending_batch.json` a PortableFix
-  povie, že treba reštartovať. Pri ďalšom spustení PortableFix ponúkne
+  povie, že treba reštartovať. Kroky `undo.ps1` z ďalších dávok v tom
+  istom okne pred reštartom sa do súboru dopisujú, aby o ne pokračovanie
+  neprišlo; zálohy registrov sa ukladajú relatívne k priečinku
+  PortableFix, takže ich nájde aj pri inom písmene USB (chýbajúcu
+  zálohu ohlási). Ak sa pri pokračovaní prepne DRY-RUN na režim prvej
+  časti dávky, kontrolná obrazovka to povie. Pri ďalšom spustení PortableFix ponúkne
   pokračovanie: súhlas označí zvyšné akcie a znova otvorí kontrolnú
   obrazovku (aj pri dávke len zo SAFE akcií), odmietnutie uloženú dávku
   zahodí. Pokračovanie používa rovnaký run_id, takže audit log, report

@@ -249,3 +249,53 @@ def test_catalog_flags_exactly_the_actions_that_restart_or_need_a_restart_first(
     for action in actions:
         if "Start-MpWDOScan" in action.command or "Restart-Computer" in action.command:
             assert action.restarts_pc, action.id
+
+
+# --- keeping the saved undo lists in step (review finding) -------------------
+
+def _saved(tmp_path, **overrides):
+    values = dict(run_id="run_sync", action_ids=["tweak2"], undo_steps=["undo-a"], irreversible=["irr-a"])
+    values.update(overrides)
+    save_pending(tmp_path, PendingBatch(**values), now=NOW, computer="PC-1")
+
+
+def test_sync_undo_rewrites_the_lists_and_keeps_the_saved_batch(tmp_path):
+    _saved(tmp_path)
+    assert batch_resume.sync_undo(
+        tmp_path, "run_sync", undo_steps=["undo-a", "undo-b"], irreversible=["irr-a", "irr-b"], hive_backups=["h"],
+    )
+    pending = load_pending(tmp_path, now=NOW, computer="PC-1")
+    assert pending.undo_steps == ["undo-a", "undo-b"] and pending.irreversible == ["irr-a", "irr-b"]
+    assert pending.hive_backups == ["h"]
+    # Still the same saved batch: its age and PC are those of the stop.
+    assert pending.action_ids == ["tweak2"] and pending.created == NOW.isoformat() and pending.computer == "PC-1"
+
+
+def test_sync_undo_leaves_another_runs_file_alone(tmp_path):
+    _saved(tmp_path)
+    before = resume_path(tmp_path).read_text(encoding="utf-8")
+    assert not batch_resume.sync_undo(tmp_path, "other_run", undo_steps=["x"], irreversible=[], hive_backups=[])
+    assert resume_path(tmp_path).read_text(encoding="utf-8") == before
+
+
+def test_sync_undo_without_a_file_or_with_a_broken_one_writes_nothing(tmp_path):
+    assert not batch_resume.sync_undo(tmp_path, "run_sync", undo_steps=["x"], irreversible=[], hive_backups=[])
+    assert not resume_path(tmp_path).exists()
+    resume_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    resume_path(tmp_path).write_text("{not json", encoding="utf-8")
+    assert not batch_resume.sync_undo(tmp_path, "run_sync", undo_steps=["x"], irreversible=[], hive_backups=[])
+    assert resume_path(tmp_path).read_text(encoding="utf-8") == "{not json"
+
+
+def test_hive_backups_are_saved_relative_and_follow_a_new_drive_letter(tmp_path):
+    first = tmp_path / "E" / "PortableFix"
+    second = tmp_path / "F" / "PortableFix"
+    inside = first / "Backups" / "run_x" / "hives-20260925-100000"
+    outside = tmp_path / "elsewhere" / "hives"
+    saved = batch_resume.saved_hive_paths(first, [inside, outside])
+    assert saved[0] == str(Path("Backups") / "run_x" / "hives-20260925-100000")
+    assert saved[1] == str(outside)
+    # After the restart the stick is on another letter: the state dir moved.
+    assert batch_resume.hive_paths_on_load(second, saved) == [
+        second / "Backups" / "run_x" / "hives-20260925-100000", outside,
+    ]

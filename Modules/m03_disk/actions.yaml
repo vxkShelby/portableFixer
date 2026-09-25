@@ -68,9 +68,15 @@ actions:
     # The repair runs at boot - integrity/cleanup work after it in the same
     # batch waits for that restart (offered again on the next start).
     restart_before_next: true
-    command: "Write-Output \"Y\" | chkdsk $env:SystemDrive /f /r; $dirty = fsutil dirty query $env:SystemDrive; Write-Output $dirty"
-    description_sk: "Naplánuje plnú kontrolu a opravu systémového disku pri ďalšom reštarte. Môže trvať dlho. Výstup potvrdí, či sa naplánovanie podarilo (dirty bit)."
-    description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time. Output confirms whether scheduling succeeded (dirty bit)."
+    # Success (exit 0) stops the batch for a restart, so it must mean "the
+    # check really is scheduled": chkdsk's own exit code and its localized
+    # prompt/answer prove nothing, so the command then reads the two places
+    # Windows keeps a scheduled boot check - the volume's dirty bit
+    # (Win32_Volume.DirtyBitSet) and an autochk entry for the drive in
+    # Session Manager\BootExecute - and exits 1 when neither is there.
+    command: "Write-Output 'Y' | chkdsk $env:SystemDrive /f /r; $code = $LASTEXITCODE; $vol = Get-CimInstance -ClassName Win32_Volume -Filter (\"DriveLetter='\" + $env:SystemDrive + \"'\") -EA SilentlyContinue | Select-Object -First 1; $dirty = [bool]($vol -and $vol.DirtyBitSet); $boot = @((Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name BootExecute -EA SilentlyContinue).BootExecute) -join ' | '; $queued = $boot.ToUpperInvariant().Contains(('\\??\\' + $env:SystemDrive).ToUpperInvariant()); Write-Output ('chkdsk exit code: ' + $code + '; dirty bit: ' + $dirty + '; BootExecute: ' + $boot); if ($dirty -or $queued) { Write-Output ('Check of ' + $env:SystemDrive + ' scheduled for the next restart.') } else { Write-Output ('The check of ' + $env:SystemDrive + ' was NOT scheduled - nothing will run at the next restart.'); exit 1 }"
+    description_sk: "Naplánuje plnú kontrolu a opravu systémového disku pri ďalšom reštarte. Môže trvať dlho. Úspech hlási, len ak je kontrola naozaj naplánovaná (dirty bit alebo záznam autochk v BootExecute) - inak akcia zlyhá a dávka pokračuje bez reštartu."
+    description_en: "Schedules a full check and repair of the system drive at the next restart. May take a long time. Reports success only when the check really is scheduled (dirty bit or an autochk entry in BootExecute) - otherwise the action fails and the batch carries on without a restart."
   - id: disk_check_scheduled
     label_sk: "Overenie naplánovanej kontroly"
     label_en: "Verify scheduled check"

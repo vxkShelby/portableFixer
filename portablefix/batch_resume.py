@@ -109,6 +109,10 @@ def save_pending(state_dir: Path, pending: PendingBatch, *, now: datetime | None
     batch can't be continued automatically."""
     pending.created = (now or datetime.now(timezone.utc)).isoformat()
     pending.computer = computer if computer is not None else computer_name()
+    return _write(state_dir, pending)
+
+
+def _write(state_dir: Path, pending: PendingBatch) -> Path:
     path = resume_path(state_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -124,6 +128,52 @@ def save_pending(state_dir: Path, pending: PendingBatch, *, now: datetime | None
         os.fsync(f.fileno())
     os.replace(tmp, path)
     return path
+
+
+def sync_undo(
+    state_dir: Path, run_id: str, *, undo_steps: list[str], irreversible: list[str], hive_backups: list[str],
+) -> bool:
+    """Brings the saved undo lists of a resume file for `run_id` up to date
+    and returns True when it did. The window that saved it can go on
+    running batches under the same run_id before the restart; the
+    continued batch rewrites undo.ps1 from these lists, so without this a
+    step applied in between would silently lose its rollback. The file's
+    created/computer stay as they were - it is still the same saved batch.
+    Raises OSError when the file exists but can't be rewritten."""
+    path = resume_path(state_dir)
+    if not path.exists():
+        return False
+    try:
+        pending = _parse(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, UnicodeDecodeError):
+        # Unreadable: load_pending drops it on the next start anyway.
+        return False
+    if pending is None or pending.run_id != run_id:
+        return False
+    pending.undo_steps = list(undo_steps)
+    pending.irreversible = list(irreversible)
+    pending.hive_backups = list(hive_backups)
+    _write(state_dir, pending)
+    return True
+
+
+def saved_hive_paths(state_dir: Path, paths: list[Path]) -> list[str]:
+    """Hive backup folders as the resume file keeps them: relative to the
+    state dir when inside it, so a USB stick that comes back on another
+    drive letter after the restart still finds them (hive_paths_on_load)."""
+    base = Path(state_dir)
+    saved = []
+    for path in paths:
+        try:
+            saved.append(str(Path(path).relative_to(base)))
+        except ValueError:
+            # Outside the state dir (e.g. a storage fallback) - kept as is.
+            saved.append(str(path))
+    return saved
+
+
+def hive_paths_on_load(state_dir: Path, saved: list[str]) -> list[Path]:
+    return [Path(p) if Path(p).is_absolute() else Path(state_dir) / p for p in saved]
 
 
 def discard_pending(state_dir: Path) -> None:

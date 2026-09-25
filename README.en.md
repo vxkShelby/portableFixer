@@ -198,9 +198,18 @@ PowerShell.
   whose change only a restart completes, and which later actions would
   otherwise run against half-way (`restart_before_next: true`: *Full
   disk check at restart* and *Uninstall last update*), stops the batch
-  when it succeeds. The rest of the batch (action ids, run_id, DRY-RUN,
-  job details, `undo.ps1` steps) is saved to `Data/pending_batch.json`
-  and PortableFix says a restart is needed. On the next start
+  when it succeeds. *Full disk check at restart* reports success only
+  when the check really is scheduled (the volume's dirty bit or an
+  `autochk` entry for the drive in `BootExecute`); otherwise it fails
+  and the batch carries on without a restart. The rest of the batch
+  (action ids, run_id, DRY-RUN, job details, `undo.ps1` steps) is saved
+  to `Data/pending_batch.json` and PortableFix says a restart is
+  needed. `undo.ps1` steps of further batches in the same window before
+  the restart are added to the file, so the continued batch keeps them;
+  registry hive backups are saved relative to the PortableFix folder,
+  so they are found on another USB drive letter too (a missing one is
+  reported). When continuing switches DRY-RUN to the first half's
+  mode, the review screen says so. On the next start
   PortableFix offers to continue: "Yes" selects the remaining actions
   and opens the review screen again (even for a SAFE-only batch), "No"
   discards the saved batch. The continued batch keeps the run_id, so

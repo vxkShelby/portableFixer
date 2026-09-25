@@ -331,6 +331,8 @@ class MainWindow(QMainWindow):
         self._restarting = False
         # The saved batch being continued (resume_batch), until it starts.
         self._resuming: batch_resume.PendingBatch | None = None
+        # i18n key of the review note when resume_batch switched DRY-RUN.
+        self._resume_mode_note = ""
         self._build_ui()
         # Quiet mode: no GitHub request at start; the sysinfo panel has a
         # button for an explicit check instead.
@@ -3584,9 +3586,25 @@ class MainWindow(QMainWindow):
         # first half's steps (and the hive backups it points to).
         self._undo_steps = list(pending.undo_steps) + self._undo_steps
         self._irreversible_actions = list(pending.irreversible) + self._irreversible_actions
-        self._hive_backups = [Path(p) for p in pending.hive_backups] + self._hive_backups
+        # Saved relative to the state dir, so a new USB drive letter after
+        # the restart is followed; one that is still missing is said aloud -
+        # undo.ps1 would point at a backup that is not there.
+        hive_backups = batch_resume.hive_paths_on_load(self.state_dir, pending.hive_backups)
+        missing_hives = [str(path) for path in hive_backups if not path.exists()]
+        if missing_hives:
+            self._log_system_event(
+                "resume_hive_backup_missing", None,
+                f"Registry hive backup of the first half not found: {', '.join(missing_hives)}.",
+            )
+            self.console.appendPlainText(self._t("resume_hive_backup_missing").format(paths=", ".join(missing_hives)))
+        self._hive_backups = hive_backups + self._hive_backups
+        self._resume_mode_note = ""
         if self.settings.dry_run != pending.dry_run:
+            # The continued batch runs in the mode of its first half - but
+            # never silently: the review screen says the mode was switched.
             self.dry_run_checkbox.setChecked(pending.dry_run)
+            self._resume_mode_note = "review_note_resumed_dry_run" if pending.dry_run else "review_note_resumed_real_run"
+            self.console.appendPlainText(self._t(self._resume_mode_note))
         self._apply_selection(list(self._action_checkboxes), "none")
         for action_id in known:
             self._action_checkboxes[action_id].setChecked(True)
@@ -3595,6 +3613,7 @@ class MainWindow(QMainWindow):
         # A review that was cancelled (or never shown) leaves the selection
         # in place for the technician, but never a stale "resuming" flag.
         self._resuming = None
+        self._resume_mode_note = ""
 
     def _preflight_busy_tasks(self) -> list[str]:
         # System-changing jobs of this window that would run side by side
@@ -3676,6 +3695,8 @@ class MainWindow(QMainWindow):
         notes = []
         if resuming is not None:
             notes.append(self._t("review_note_resumed").format(count=len(queue)))
+            if self._resume_mode_note:
+                notes.append(self._t(self._resume_mode_note))
         restarting = [aid for aid in queue if self._find_action(aid)[1].restarts_pc]
         if restarting:
             notes.append(self._t("review_note_restarts_last").format(
@@ -4065,7 +4086,7 @@ class MainWindow(QMainWindow):
             job=self._job_info(),
             undo_steps=list(self._undo_steps),
             irreversible=list(self._irreversible_actions),
-            hive_backups=[str(path) for path in self._hive_backups],
+            hive_backups=batch_resume.saved_hive_paths(self.state_dir, self._hive_backups),
             snapshot_before=self._snapshot_before,
         )
         try:
@@ -4306,6 +4327,17 @@ class MainWindow(QMainWindow):
                 irreversible=self._irreversible_actions, hive_backups=self._hive_backups,
             )
             self._undo_written_state = state
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+        # A batch saved for after a restart under this run_id rewrites
+        # undo.ps1 from its own copy of these lists - keep that copy in step
+        # with every change made since, or the continued batch drops them.
+        try:
+            batch_resume.sync_undo(
+                self.state_dir, self.run_id, undo_steps=self._undo_steps, irreversible=self._irreversible_actions,
+                hive_backups=batch_resume.saved_hive_paths(self.state_dir, self._hive_backups),
+            )
         except OSError:
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))

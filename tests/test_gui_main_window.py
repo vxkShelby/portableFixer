@@ -6827,3 +6827,114 @@ def test_resumed_safe_only_batch_still_shows_the_review(qtbot, tmp_path, monkeyp
     assert batch_resume.resume_path(tmp_path).exists()
     assert window._action_checkboxes["look_thing"].isChecked()
     assert window._resuming is None and window._keep_awake.calls == []
+
+
+UNDO_AFTER_SAVE_YAML = RESTART_YAML + """
+  - id: tweak2
+    label_sk: "Uprava 2"
+    label_en: "Tweak two"
+    risk: MODERATE
+    changes_system: false
+    command: "Write-Output 'tweak2-ran'"
+    undo_command: "Write-Output 'undo-tweak2'"
+"""
+
+
+def _second_window(qtbot, tmp_path, monkeypatch, run_id, dry_run=False):
+    # The next start of PortableFix on the same stick: modules already there.
+    from portablefix import preflight
+
+    window = MainWindow(
+        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=dry_run),
+        is_admin=True, run_id=run_id,
+    )
+    qtbot.addWidget(window)
+    healthy = preflight.Probes(
+        power=lambda: preflight.PowerStatus(on_battery=False, percent=100),
+        pending_reboot=lambda: [],
+        system_free_bytes=lambda: 100 * 1024**3,
+        is_admin=lambda: True,
+        busy_tasks=lambda: [],
+    )
+    monkeypatch.setattr(window, "_preflight_probes", lambda: healthy)
+    window._keep_awake = _RecordingKeepAwake()
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    return window
+
+
+def test_undo_steps_added_after_the_resume_save_survive_the_resume(qtbot, tmp_path, monkeypatch):
+    # The window that saved the rest of a batch runs another batch under the
+    # same run_id before the restart: its undo steps must reach the resume
+    # file, or the continued batch rewrites undo.ps1 without them.
+    from portablefix import batch_resume
+
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_undo_sync", yaml=UNDO_AFTER_SAVE_YAML)
+    _answer_review(monkeypatch)
+    monkeypatch.setattr(window, "_notify_restart_needed", lambda: None)
+    _check(window, "sched_thing", "tweak2")
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+    assert batch_resume.load_pending(tmp_path).action_ids == ["tweak2"]
+
+    window._apply_selection(list(window._action_checkboxes), "none")
+    _check(window, "tweak_thing")
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+    assert "undo-tweak" in window._undo_script_path.read_text(encoding="utf-8")
+    assert batch_resume.load_pending(tmp_path).undo_steps == ["Write-Output 'undo-tweak'"]
+
+    second = _second_window(qtbot, tmp_path, monkeypatch, "run_undo_sync")
+    second.resume_batch(batch_resume.load_pending(tmp_path))
+    _wait_batch_idle(qtbot, second)
+
+    text = second._undo_script_path.read_text(encoding="utf-8")
+    assert "undo-tweak2" in text and "'undo-tweak'" in text
+
+
+def test_resume_that_switches_dry_run_says_so_on_the_review(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume, i18n
+
+    batch_resume.save_pending(tmp_path, batch_resume.PendingBatch(run_id="run_resume_mode", action_ids=["look_thing"]))
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_resume_mode", dry_run=True)
+    reviews = _answer_review(monkeypatch, accept=False)
+
+    window.resume_batch(batch_resume.load_pending(tmp_path))
+
+    note = i18n.translate("review_note_resumed_real_run", "en")
+    assert note in reviews[0].review.notes
+    assert note in window.console.toPlainText()
+    assert window.settings.dry_run is False
+    assert window._resume_mode_note == ""
+
+
+def test_resume_in_the_same_mode_adds_no_mode_note(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume, i18n
+
+    batch_resume.save_pending(tmp_path, batch_resume.PendingBatch(run_id="run_resume_same", action_ids=["look_thing"]))
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_resume_same")
+    reviews = _answer_review(monkeypatch, accept=False)
+
+    window.resume_batch(batch_resume.load_pending(tmp_path))
+
+    assert i18n.translate("review_note_resumed_real_run", "en") not in reviews[0].review.notes
+
+
+def test_resume_rebases_hive_backups_and_reports_a_missing_one(qtbot, tmp_path, monkeypatch):
+    from portablefix import batch_resume, i18n
+
+    present = tmp_path / "Backups" / "run_resume_hive" / "hives-1"
+    present.mkdir(parents=True)
+    batch_resume.save_pending(tmp_path, batch_resume.PendingBatch(
+        run_id="run_resume_hive", action_ids=["look_thing"],
+        hive_backups=[str(Path("Backups") / "run_resume_hive" / "hives-1"), str(Path("Backups") / "run_resume_hive" / "hives-2")],
+    ))
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_resume_hive")
+    _answer_review(monkeypatch, accept=False)
+
+    window.resume_batch(batch_resume.load_pending(tmp_path))
+
+    gone = tmp_path / "Backups" / "run_resume_hive" / "hives-2"
+    assert window._hive_backups == [present, gone]
+    [event] = _system_events(audit_log_path(tmp_path, "run_resume_hive"), "resume_hive_backup_missing")
+    assert str(gone) in event["output"] and str(present) not in event["output"]
+    assert i18n.translate("resume_hive_backup_missing", "en").format(paths=str(gone)) in window.console.toPlainText()
