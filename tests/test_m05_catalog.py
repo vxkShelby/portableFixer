@@ -164,7 +164,8 @@ ESU_HKLM = "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows\\Con
 UNINSTALL_KEY = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
 SECURITY_UPDATES = "0fa1201d-4330-4fa8-8ae9-b877473b6441"
 DEFINITION_UPDATES = "e0789628-ce08-4437-be74-2495b842f43b"
-WIN10 = {"CurrentBuildNumber": "19045", "UBR": 6456, "EditionID": "Professional", "DisplayVersion": "22H2",
+# UBR 6575 = the November 2025 ESU update, above the last public 6456.
+WIN10 = {"CurrentBuildNumber": "19045", "UBR": 6575, "EditionID": "Professional", "DisplayVersion": "22H2",
          "InstallationType": "Client"}
 
 ESU_STUB_HELPERS = r"""
@@ -173,9 +174,22 @@ function Get-ItemProperty { [CmdletBinding()] param([string] $LiteralPath) if ($
 function Get-ChildItem { [CmdletBinding()] param([string] $LiteralPath) if ($global:KIDS.ContainsKey($LiteralPath)) { $global:KIDS[$LiteralPath] } }
 function New-Object { [CmdletBinding()] param([string] $ComObject) if ($null -eq $global:WUH) { throw [System.Runtime.InteropServices.COMException]::new('Trieda nie je zaregistrovaná.') }; $searcher = [pscustomobject]@{}; $searcher | Add-Member ScriptMethod GetTotalHistoryCount { @($global:WUH).Count }; $searcher | Add-Member ScriptMethod QueryHistory { param($start, $count) $global:WUH }; $session = [pscustomobject]@{ S = $searcher }; $session | Add-Member ScriptMethod CreateUpdateSearcher { $this.S }; $session }
 function Get-Service { [CmdletBinding()] param([string] $Name) if ($global:SVC -and $Name -eq '0patchservice') { [pscustomobject]@{ Name = $Name; Status = 'Running' } } }
-function whoami { if ($env:PF_WHOAMI) { $env:PF_WHOAMI } else { $global:LASTEXITCODE = 1 } }
+function Pf-WindowsIdentity { if (-not $env:PF_WHO_NAME) { throw [System.Security.SecurityException]::new('Prístup odmietnutý.') }; [pscustomobject]@{ Name = $env:PF_WHO_NAME; User = [pscustomobject]@{ Value = $env:PF_WHO_SID } } }
 function Get-CimInstance { [CmdletBinding()] param([string] $ClassName) [pscustomobject]@{ UserName = $env:PF_CONSOLE_USER } }
 """
+
+# [Security.Principal.WindowsIdentity]::GetCurrent() is a .NET static call a
+# PowerShell function cannot shadow, so the harness swaps exactly that call
+# for a stub; with_identity_stub() refuses a command that reads the identity
+# any other way.
+IDENTITY_CALL = "[Security.Principal.WindowsIdentity]::GetCurrent()"
+
+
+def with_identity_stub(command: str) -> str:
+    assert IDENTITY_CALL in command
+    stubbed = command.replace(IDENTITY_CALL, "(Pf-WindowsIdentity)")
+    assert "WindowsIdentity]" not in stubbed and "whoami" not in stubbed
+    return stubbed
 
 
 def _powershell_or_skip() -> str:
@@ -240,7 +254,7 @@ def _run_esu(tmp_path, cv=WIN10, rollups=(), hkcu=None, hklm=None, wu_history=No
             entries.append(f"[pscustomobject]@{{ Operation = {op}; ResultCode = {rc}; "
                            f"Date = [DateTime]::UtcNow.AddDays(-{days}); Categories = @({cat_objs}) }}")
         wuh = "@(" + ", ".join(entries) + ")"
-    env_vars = {"SystemRoot": str(windows), "PF_WHOAMI": f'"{who[0]}","{who[1]}"' if who else "",
+    env_vars = {"SystemRoot": str(windows), "PF_WHO_NAME": who[0] if who else "", "PF_WHO_SID": who[1] if who else "",
                 "PF_CONSOLE_USER": console if console is not None else (who[0] if who else "")}
     # Set inside the script, not in the child's environment: Windows
     # PowerShell cannot start with a fake SystemRoot.
@@ -252,9 +266,9 @@ def _run_esu(tmp_path, cv=WIN10, rollups=(), hkcu=None, hklm=None, wu_history=No
            "$global:KIDS = @{ " + "; ".join(kids) + " }",
            f"$global:WUH = {wuh}",
            f"$global:SVC = {'$true' if patch_service else '$false'}",
-           "foreach ($n in 'Get-ItemProperty', 'Get-ChildItem', 'New-Object', 'Get-Service', 'whoami', 'Get-CimInstance') { "
+           "foreach ($n in 'Get-ItemProperty', 'Get-ChildItem', 'New-Object', 'Get-Service', 'Pf-WindowsIdentity', 'Get-CimInstance') { "
            f"if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') {{ exit {STUB_GUARD_EXIT} }} }}",
-           _esu_command()]
+           with_identity_stub(_esu_command())]
     )
     result = subprocess.run(
         [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -271,7 +285,7 @@ def _verdict(stdout: str) -> str:
     return lines[0]
 
 
-ROLLUP = "Package_for_RollupFix~31bf3856ad364e35~amd64~~19041.6456.1.10"
+ROLLUP = "Package_for_RollupFix~31bf3856ad364e35~amd64~~19041.6575.1.6"
 ENROLLED = {"ESUEligibility": 3, "ESUEligibilityResult": 1}
 
 
@@ -293,7 +307,7 @@ def test_esu_enrolled_and_patched_is_ok(tmp_path):
     result = _run_esu(tmp_path, rollups=[(ROLLUP, 112, 10.5)], hkcu=ENROLLED)
     assert result.returncode == 0, result.stdout + result.stderr
     out = result.stdout
-    assert "Windows build: 19045.6456 (EditionID Professional, DisplayVersion 22H2, InstallationType Client)" in out
+    assert "Windows build: 19045.6575 (EditionID Professional, DisplayVersion 22H2, InstallationType Client)" in out
     assert re.search(r"Last cumulative update installed: \d{4}-\d{2}-\d{2} \(10 days ago; source: servicing package "
                      + re.escape(ROLLUP), out), out
     assert f"{ESU_HKCU}: ESUEligibility = 3 DeviceEnrolled, ESUEligibilityResult = 1 SUCCESS" in out
@@ -305,6 +319,7 @@ def test_esu_enrolled_and_patched_is_ok(tmp_path):
     assert "Consumer ESU end date (Microsoft): 2026-10-13." in out
     assert "Options: 1) upgrade to Windows 11" in out and "3) a new PC." in out
     assert "HKCU = registry hive of PC\\technik (S-1-5-21-1-2-3-1001)" in out
+    assert "ESU updates: installed - build 19045.6575 is newer than 19045.6456" in out
     assert "WARNING" not in out
 
 
@@ -345,10 +360,61 @@ def test_esu_reenroll_required(tmp_path):
     assert _verdict(result.stdout).startswith("VERDICT: ACTION NEEDED - the Consumer ESU enrollment must be renewed")
 
 
+NOT_ENROLLED = {"ESUEligibility": 2, "ESUEligibilityResult": 1}
+LAST_PUBLIC = dict(WIN10, UBR=6456)
+
+
+def test_esu_fresh_reinstall_on_the_last_public_update_is_unpatched(tmp_path):
+    # A reinstall/reset/repair upgrade reinstalls the October 2025 update
+    # with a fresh InstallTime - the date alone must not read as patched.
+    result = _run_esu(tmp_path, cv=LAST_PUBLIC, rollups=[(ROLLUP, 112, 3.5)], hkcu=NOT_ENROLLED)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ESU updates: none installed - build 19045.6456 is at or below 19045.6456" in result.stdout
+    verdict = _verdict(result.stdout)
+    assert verdict.startswith("VERDICT: UNPATCHED - Windows 10 without an ESU enrollment and no update newer than "
+                              "the last public one (2025-10-14)"), verdict
+    assert "installed only 3 days ago, but it is the public one of 2025-10-14 or older" in verdict
+    assert "PATCHED -" not in verdict.replace("UNPATCHED -", "") and "key-based" not in verdict
+    # Even with no ESU state at all and an older UBR, never PATCHED.
+    result = _run_esu(tmp_path, cv=dict(WIN10, UBR=6093), rollups=[(ROLLUP, 112, 3.5)])
+    assert _verdict(result.stdout).startswith("VERDICT: UNPATCHED")
+
+
+def test_esu_enrolled_but_no_esu_update_yet(tmp_path):
+    result = _run_esu(tmp_path, cv=LAST_PUBLIC, rollups=[(ROLLUP, 112, 3.5)], hkcu=ENROLLED)
+    assert _verdict(result.stdout).startswith(
+        "VERDICT: ACTION NEEDED - enrolled in Consumer ESU, but no ESU update is installed yet (build 19045.6456): "
+        "run Windows Update.")
+
+
+def test_esu_pre_22h2_never_gets_esu_updates(tmp_path):
+    result = _run_esu(tmp_path, cv=dict(WIN10, CurrentBuildNumber="19044", UBR=9999), rollups=[(ROLLUP, 112, 3.5)])
+    assert "ESU updates: not possible" in result.stdout
+    assert _verdict(result.stdout).startswith("VERDICT: UNPATCHED")
+
+
+def test_esu_unreadable_ubr_with_explicit_not_enrolled_state_is_not_patched(tmp_path):
+    cv = {k: v for k, v in WIN10.items() if k != "UBR"}
+    result = _run_esu(tmp_path, cv=cv, rollups=[(ROLLUP, 112, 3.5)], hkcu=NOT_ENROLLED)
+    assert "ESU updates: unknown - the build revision (UBR) could not be read." in result.stdout
+    assert _verdict(result.stdout).startswith("VERDICT: CHECK - the ESU state says not enrolled")
+    # Without an explicit not-enrolled state the date is all there is.
+    result = _run_esu(tmp_path, cv=cv, rollups=[(ROLLUP, 112, 3.5)])
+    assert _verdict(result.stdout).startswith("VERDICT: PATCHED - no Consumer ESU enrollment recorded here")
+
+
+def test_esu_inactive_microsoft_account_asks_to_sign_in(tmp_path):
+    result = _run_esu(tmp_path, rollups=[(ROLLUP, 112, 59.5)], hkcu={"ESUEligibility": 13, "ESUEligibilityResult": 14})
+    assert "ESUEligibility = 13 WarnInactiveMSA" in result.stdout
+    assert _verdict(result.stdout).startswith(
+        "VERDICT: ACTION NEEDED - the Microsoft account used for the Consumer ESU enrollment is inactive: sign in")
+
+
 def test_esu_values_outside_the_public_decoding_are_unknown(tmp_path):
     result = _run_esu(tmp_path, rollups=[(ROLLUP, 112, 10.5)], hkcu={"ESUEligibility": 99, "ESUEligibilityResult": "x"})
     assert f"{ESU_HKCU}: ESUEligibility = 99 Unknown, ESUEligibilityResult = x Unknown" in result.stdout
-    assert _verdict(result.stdout).startswith("VERDICT: PATCHED - no Consumer ESU enrollment recorded here")
+    assert _verdict(result.stdout).startswith("VERDICT: PATCHED - no Consumer ESU enrollment recorded here, yet an "
+                                              "ESU update is installed")
 
 
 def test_esu_key_based_esu_is_named(tmp_path):
@@ -364,7 +430,8 @@ def test_esu_falls_back_to_security_updates_in_wua_history(tmp_path):
                (1, 2, 20.5, [SECURITY_UPDATES]), (2, 2, 2.5, [SECURITY_UPDATES])]
     result = _run_esu(tmp_path, rollups=(), wu_history=history, hkcu=ENROLLED)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "(20 days ago; source: Windows Update history (security update)" in result.stdout
+    assert ("(20 days ago; source: Windows Update history - newest security update of any product, "
+            "not necessarily a Windows cumulative update") in result.stdout
     assert _verdict(result.stdout).startswith("VERDICT: OK")
 
 
@@ -388,7 +455,7 @@ def test_esu_warns_when_hkcu_is_not_the_signed_in_users(tmp_path):
     result = _run_esu(tmp_path, rollups=[(ROLLUP, 112, 10.5)], console="PC\\zakaznik")
     assert "WARNING: the signed-in user is PC\\zakaznik, but PortableFix runs as PC\\technik" in result.stdout
     result = _run_esu(tmp_path, rollups=[(ROLLUP, 112, 10.5)], who=None, console="PC\\zakaznik")
-    assert "whoami failed, name unknown" in result.stdout
+    assert "identity lookup failed, name unknown" in result.stdout
 
 
 def test_esu_missing_component_and_pre_22h2_build(tmp_path):
@@ -399,6 +466,11 @@ def test_esu_missing_component_and_pre_22h2_build(tmp_path):
 
 @pytest.mark.parametrize("cv,verdict", [
     (dict(WIN10, InstallationType="Server", CurrentBuildNumber="17763"), "VERDICT: NOT APPLICABLE - Windows Server"),
+    # Server Core reports its own InstallationType; Server 2025 shares 26100.
+    (dict(WIN10, InstallationType="Server Core", EditionID="ServerStandard", CurrentBuildNumber="20348"),
+     "VERDICT: NOT APPLICABLE - Windows Server"),
+    (dict(WIN10, InstallationType="", EditionID="ServerDatacenter", CurrentBuildNumber="26100"),
+     "VERDICT: NOT APPLICABLE - Windows Server"),
     (dict(WIN10, EditionID="EnterpriseS", CurrentBuildNumber="19044"), "VERDICT: NOT APPLICABLE - Windows 10 LTSC/LTSB edition (EnterpriseS)"),
     (dict(WIN10, EditionID="IoTEnterpriseS", CurrentBuildNumber="19044"), "VERDICT: NOT APPLICABLE - Windows 10 LTSC/LTSB edition (IoTEnterpriseS)"),
     (dict(WIN10, CurrentBuildNumber="9600"), "VERDICT: NOT APPLICABLE - build 9600 is not Windows 10."),
@@ -426,7 +498,7 @@ def test_esu_is_read_only_and_never_parses_localized_text():
     for forbidden in ("Get-HotFix", "Win32_QuickFixEngineering", ".Title", ".Message", "Select-String", "-replace"):
         assert forbidden not in command, forbidden
     assert set(re.findall(r"-match '([^']*)'", command)) == {"^(IoT)?EnterpriseS"}
-    assert set(re.findall(r"-like '([^']*)'", command)) == {"Package_for_RollupFix*", "0patch*"}
+    assert set(re.findall(r"-like '([^']*)'", command)) == {"Package_for_RollupFix*", "0patch*", "Server*"}
     # ProductName says "Windows 10" on Windows 11 - the build decides.
     assert "ProductName" not in command
 

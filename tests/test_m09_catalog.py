@@ -207,10 +207,23 @@ function New-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [stri
 function Remove-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [string] $Name) Load-PfReg; Log-Pf ('Remove-ItemProperty ' + $Name); $global:PFR[$LiteralPath].values.Remove($Name); Save-PfReg }
 function Remove-Item { [CmdletBinding()] param([string] $LiteralPath, [switch] $Force) if ($LiteralPath -like 'HK*:*') { Load-PfReg; Log-Pf ('Remove-Item ' + $LiteralPath); $global:PFR.Remove($LiteralPath); Save-PfReg } else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force } }
 function icacls { Log-Pf ('icacls ' + ($args -join ' ')); $global:LASTEXITCODE = 0 }
-function whoami { if ($env:PF_WHOAMI) { $env:PF_WHOAMI } else { $global:LASTEXITCODE = 1 } }
+function Pf-WindowsIdentity { if (-not $env:PF_WHO_NAME) { throw [System.Security.SecurityException]::new('Prístup odmietnutý.') }; [pscustomobject]@{ Name = $env:PF_WHO_NAME; User = [pscustomobject]@{ Value = $env:PF_WHO_SID } } }
 function Get-CimInstance { [CmdletBinding()] param([string] $ClassName) [pscustomobject]@{ UserName = $env:PF_CONSOLE_USER } }
-foreach ($n in 'Test-Path', 'Get-Item', 'Get-ItemProperty', 'New-Item', 'New-ItemProperty', 'Remove-ItemProperty', 'Remove-Item', 'icacls', 'whoami', 'Get-CimInstance') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
+foreach ($n in 'Test-Path', 'Get-Item', 'Get-ItemProperty', 'New-Item', 'New-ItemProperty', 'Remove-ItemProperty', 'Remove-Item', 'icacls', 'Pf-WindowsIdentity', 'Get-CimInstance') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
 """
+
+# [Security.Principal.WindowsIdentity]::GetCurrent() is a .NET static call a
+# PowerShell function cannot shadow, so the harness swaps exactly that call
+# for a stub; with_identity_stub() refuses a command that reads the identity
+# any other way.
+IDENTITY_CALL = "[Security.Principal.WindowsIdentity]::GetCurrent()"
+
+
+def with_identity_stub(command: str) -> str:
+    assert IDENTITY_CALL in command
+    stubbed = command.replace(IDENTITY_CALL, "(Pf-WindowsIdentity)")
+    assert "WindowsIdentity]" not in stubbed and "whoami" not in stubbed
+    return stubbed
 
 
 def _powershell_or_skip() -> str:
@@ -260,14 +273,14 @@ class _StorageSenseRig:
     def run(self, command, fail_name="", ignore_name=""):
         env_vars = {
             "ProgramData": str(self.program_data), "PF_REGFILE": str(self.regfile), "PF_LOGFILE": str(self.logfile),
-            "PF_WHOAMI": f'"{self.who[0]}","{self.who[1]}"' if self.who else "",
+            "PF_WHO_NAME": self.who[0] if self.who else "", "PF_WHO_SID": self.who[1] if self.who else "",
             "PF_CONSOLE_USER": self.console, "PF_FAIL_NAME": fail_name, "PF_IGNORE_NAME": ignore_name,
             "USERDOMAIN": "PC", "USERNAME": "technik",
         }
         # Set inside the script, not in the child's environment: Windows
         # PowerShell cannot start with some system variables redirected.
         prelude = "\n".join(f"$env:{k} = {_ps_quote(v)}" for k, v in env_vars.items())
-        script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8\n" + prelude + "\n" + SS_STUBS + "\n" + command
+        script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8\n" + prelude + "\n" + SS_STUBS + "\n" + with_identity_stub(command)
         result = subprocess.run(
             [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
             env=dict(os.environ), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
@@ -508,12 +521,55 @@ def test_storage_sense_enable_refuses_when_policy_turns_it_off(tmp_path):
     assert "Would refuse: Storage Sense is turned off by policy" in result.stdout
 
 
-def test_storage_sense_enable_refuses_without_whoami(tmp_path):
+def test_storage_sense_enable_refuses_without_identity(tmp_path):
     rig = _StorageSenseRig(tmp_path, _reg(), who=None)
     result = rig.run(_action("storage_sense_enable").command)
     assert result.returncode == 1
-    assert "whoami failed" in result.stdout and "Nothing was changed" in result.stdout
+    assert "identity lookup failed" in result.stdout and "Nothing was changed" in result.stdout
     assert rig.state() == {} and not rig.backup.exists()
+
+
+def test_storage_sense_second_enable_keeps_the_first_backup(tmp_path):
+    # A batch re-run or a double click must not replace the original values
+    # with the already-enabled ones.
+    rig = _StorageSenseRig(tmp_path, _reg({"01": ("DWord", 0)}))
+    action = _action("storage_sense_enable")
+    assert rig.run(action.command).returncode == 0
+    first = rig.backup.read_text(encoding="utf-8-sig")
+    result = rig.run(action.preview_command)
+    assert "Would keep the earlier backup" in result.stdout
+    result = rig.run(action.command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "An earlier backup of PC\\technik is kept" in result.stdout
+    assert rig.backup.read_text(encoding="utf-8-sig") == first
+    assert rig.run(action.undo_command).returncode == 0
+    assert rig.state()[SS_KEY] == {"01": ["DWord", 0]}
+
+
+def test_storage_sense_enable_replaces_a_backup_of_another_user(tmp_path):
+    rig = _StorageSenseRig(tmp_path, _reg())
+    action = _action("storage_sense_enable")
+    assert rig.run(action.command).returncode == 0
+    rig.who = ("PC\\zakaznik", "S-1-5-21-1000-2000-3000-1002")
+    result = rig.run(action.command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "earlier backup" not in result.stdout
+    assert json.loads(rig.backup.read_text(encoding="utf-8-sig"))["Sid"] == "S-1-5-21-1000-2000-3000-1002"
+
+
+def test_storage_sense_identity_is_read_without_native_text_output():
+    # whoami.exe text goes through a console code page; a name like "Ján"
+    # could come back mangled and trip the over-the-shoulder warning.
+    action = _action("storage_sense_enable")
+    for script in (_action("storage_sense_report").command, action.command, action.undo_command, action.preview_command):
+        assert "whoami" not in script and IDENTITY_CALL in script
+
+
+def test_storage_sense_warning_compares_names_with_diacritics(tmp_path):
+    rig = _StorageSenseRig(tmp_path, _reg(), who=("PC\\Ján", "S-1-5-21-1000-2000-3000-1001"))
+    result = rig.run(_action("storage_sense_report").command)
+    assert "HKCU = registry hive of PC\\Ján (S-1-5-21-1000-2000-3000-1001)" in result.stdout
+    assert "WARNING" not in result.stdout
 
 
 def test_storage_sense_enable_refuses_a_value_type_it_could_not_restore(tmp_path):

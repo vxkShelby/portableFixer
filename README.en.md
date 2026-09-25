@@ -182,7 +182,11 @@ PowerShell.
   publicly known decoding print as Unknown), the age of the last
   cumulative update from the servicing stack (RollupFix packages, with
   the Windows Update history as fallback; more than 45 days = unpatched),
-  whether the 0patch agent is installed and the build with UBR. The
+  whether the 0patch agent is installed and the build with UBR. The date
+  alone is not enough - a reinstall, reset or repair upgrade installs the
+  October 2025 update with a fresh date - so build 19045 with a UBR of
+  6456 or lower (the last public update, 2025-10-14) is never PATCHED: no
+  ESU update ever arrived. The
   `VERDICT:` line (OK / ACTION NEEDED / PATCHED / UNPATCHED / UNKNOWN /
   NOT APPLICABLE) is followed by the options: upgrade to Windows 11, ESU
   (Consumer ESU ends on 2026-10-13 per Microsoft) or a new PC. On
@@ -197,7 +201,8 @@ PowerShell.
   agent at all. The exact previous values (type, value and whether they
   existed) go to `%ProgramData%\PortableFix\storage_sense_backup.json`
   and undo restores them exactly, deleting values that did not exist
-  before; without the backup, undo refuses to run. **HKCU is the hive of
+  before; without the backup, undo refuses to run. Running it again keeps
+  the same user's first backup, so undo still returns the original state. **HKCU is the hive of
   the user PortableFix runs as** - both actions (and the ESU check) print
   that user's name and SID and warn when a different user is signed in
   (the technician elevated with their own account).

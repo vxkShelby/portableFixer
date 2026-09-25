@@ -178,7 +178,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   dekódovania vypíše ako Unknown), vek poslednej kumulatívnej
   aktualizácie zo servisného zásobníka (balíky RollupFix, záloha cez
   históriu Windows Update; viac ako 45 dní = nezáplatované), prítomnosť
-  agenta 0patch a build s UBR. Riadok `VERDICT:` (OK / ACTION NEEDED /
+  agenta 0patch a build s UBR. Samotný dátum nestačí - reinštalácia, reset
+  či opravný upgrade nainštalujú októbrovú aktualizáciu z roku 2025 s
+  čerstvým dátumom; build 19045 s UBR najviac 6456 (posledná verejná
+  aktualizácia z 14. 10. 2025) preto nikdy nie je PATCHED, lebo žiadna ESU
+  aktualizácia neprišla. Riadok `VERDICT:` (OK / ACTION NEEDED /
   PATCHED / UNPATCHED / UNKNOWN / NOT APPLICABLE) nasledujú možnosti:
   upgrade na Windows 11, ESU (Consumer ESU podľa Microsoftu končí
   13. 10. 2026) alebo nové PC. Na Windows 11 oznámi, že ESU sa ho netýka.
@@ -192,8 +196,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   Presné predošlé hodnoty (typ, hodnotu aj to, či existovali) uloží do
   `%ProgramData%\PortableFix\storage_sense_backup.json` a undo ich presne
   obnoví, hodnoty, ktoré predtým neexistovali, zmaže; bez zálohy undo
-  odmietne bežať. **HKCU je hive používateľa, pod ktorým PortableFix
-  beží** - obe akcie (aj ESU) vypíšu jeho meno a SID a upozornia, ak je
+  odmietne bežať. Opakované zapnutie ponechá prvú zálohu toho istého
+  používateľa, takže undo vráti pôvodný stav. **HKCU je hive
+  používateľa, pod ktorým PortableFix beží** - obe akcie (aj ESU) vypíšu jeho meno a SID a upozornia, ak je
   prihlásený iný používateľ (technik zvýšil práva vlastným účtom).
 - **Tlač (M14):** *Triedy ovládačov tlačiarní a pripravenosť na WPP*
   (SAFE) vypíše pri každom ovládači typ (Type 3 / Type 4), verziu,
