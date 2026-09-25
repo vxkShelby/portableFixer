@@ -40,7 +40,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M06 | Oprava | Sieť: DNS, hosts, DHCP, Winsock, TCP/IP |
 | M07 | Diagnostika | Autostart: registry Run, Startup, úlohy, služby, WMI, IFEO backdoor, služby bez úvodzoviek, súpis bez položiek Microsoftu (podpis, SHA256) |
 | M08 | Zabezpečenie | Defender, firewall, UAC audit + rýchly sken, WPBT disable |
-| M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu, Storage Sense (prehľad a mesačné čistenie s presným undo) |
+| M09 | Oprava | Tuning: plán napájania, vizuálne efekty, End Task, Sticky Keys, klasické menu, HAGS, Game DVR (úpravy registra s undo na presný pôvodný stav), Storage Sense (prehľad a mesačné čistenie s presným undo) |
 | M10 | Diagnostika | Drivery: problémové zariadenia (+ reštart), ovládače tretích strán, sieť/GPU, záloha/obnova |
 | M11 | — | Reporting (HTML report po každej dávke, nie katalóg) |
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
@@ -458,6 +458,29 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   undo príkazy do `Backups/<run-id>/undo.ps1` — v opačnom (LIFO)
   poradí, takže skript sa dá spustiť ako celok. Zapisuje sa po každej
   úspešnej akcii, takže aj pri páde aplikácie súbor odráža reálny stav.
+- **Undo na presný pôvodný stav (deklaratívne `ops:`):** akcia v
+  `actions.yaml` môže namiesto ručne písaného `command` uviesť zoznam
+  operácií - `reg_set {path, name, type, value}`, `reg_delete {path,
+  name}`, `service_start_type {name, start_type}` (`automatic`,
+  `automatic_delayed`, `manual`, `disabled`) a `task_state {path,
+  enabled}` - a voliteľne `ops_message`. PortableFix z nich vygeneruje
+  príkaz, ktorý pred prvou zmenou zachytí živý stav (hodnotu aj typ,
+  alebo že hodnota či kľúč neexistovali; typ štartu služby; či je úloha
+  zapnutá) do `Backups/<run-id>/state/<akcia>.json` a až potom zmeny
+  urobí. Undo sa po behu vygeneruje z tohto záznamu a vráti presne
+  predošlý stav: hodnoty, ktoré predtým neexistovali, zmaže a kľúče,
+  ktoré akcia vytvorila, odstráni (len ak sú prázdne). Zapíše sa aj
+  vtedy, keď akcia zlyhá uprostred, takže vráti aj to, čo sa stihlo
+  zmeniť. Náhľad v DRY-RUN („zmenilo by X z <teraz> na <nové>“) vzniká
+  automaticky. Pri HKCU sa uloží SID používateľa a undo spustené pod iným
+  používateľom tieto hodnoty preskočí. Cesty a názvy musia prejsť
+  prísnymi pravidlami (len hive HKLM, HKCU, HKU, HKCR, žiadne zástupné
+  znaky) a hodnoty sa do PowerShellu dostanú len ako literály; chybné
+  `ops` zastavia načítanie modulu s presnou chybou. Takto sú prepísané
+  registrové úpravy M09 (vizuálne efekty, End Task, Sticky Keys,
+  klasické menu, HAGS, priorita popredia, Game DVR); ich undo predtým
+  zapisovalo pevné predvolené hodnoty Windows alebo jedinú zálohu v
+  `%ProgramData%`.
 - **Audit log + report:** každá akcia sa zapisuje do
   `Logs/<run-id>/audit.jsonl` a po každej dávke sa generuje HTML report
   do `Reports/`.
@@ -743,8 +766,11 @@ lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
 
 ## Známe obmedzenia
 
-- Undo pokrýva len akcie so statickým vratným príkazom; DISM/SFC/chkdsk
-  opravy sú z princípu nevratné (kryje ich bod obnovenia).
+- Undo pokrýva len akcie so statickým vratným príkazom alebo s `ops:`
+  (tie vrátia presný pôvodný stav); DISM/SFC/chkdsk opravy sú z princípu
+  nevratné (kryje ich bod obnovenia). Plány napájania, zastavenie služieb
+  a Storage Sense v M09 zatiaľ `ops` nepoužívajú (powercfg, stav služby
+  a podmienka politiky sa nimi vyjadriť nedajú).
 - Undo pri kombinovaných akciách (napr. zastavenie 4 služieb naraz) sa
   zapíše len pri plnom úspechu akcie.
 - `regsvr32`/`UsoClient` kroky v M05 hlásia úspech aj pri tichom

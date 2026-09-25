@@ -6938,3 +6938,146 @@ def test_resume_rebases_hive_backups_and_reports_a_missing_one(qtbot, tmp_path, 
     [event] = _system_events(audit_log_path(tmp_path, "run_resume_hive"), "resume_hive_backup_missing")
     assert str(gone) in event["output"] and str(present) not in event["output"]
     assert i18n.translate("resume_hive_backup_missing", "en").format(paths=str(gone)) in window.console.toPlainText()
+
+
+# --- G10: declarative ops actions --------------------------------------------
+
+OPS_YAML = r"""
+module_id: m02_cleanup
+category: REPAIR
+actions:
+  - id: ops_tweak
+    label_sk: "Uprava registra"
+    label_en: "Registry tweak"
+    risk: MODERATE
+    ops:
+      - reg_set: {path: 'HKLM\SOFTWARE\PortableFixTest', name: Level, type: DWord, value: 2}
+"""
+
+
+def _ops_window(qtbot, tmp_path, monkeypatch, run_id, state: str | None, exit_code: int = 0):
+    """An ops action whose command stands in for the generated one (which
+    would read the real registry): it saves `state` where the executor's
+    $__pfOpsState prefix says, then exits with `exit_code`."""
+    window = _review_window(qtbot, tmp_path, monkeypatch, run_id, yaml=OPS_YAML)
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    _, action = window._find_action("ops_tweak")
+    save = ""
+    if state is not None:
+        source = tmp_path / "prepared_state.json"
+        source.write_text(state, encoding="utf-8")
+        quoted = str(source).replace("'", "''")
+        save = (
+            "[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($__pfOpsState)); "
+            f"[IO.File]::Copy('{quoted}', $__pfOpsState); "
+        )
+    action.command = f"if (-not $__pfOpsState) {{ exit 42 }}; {save}Write-Output 'ops-ran'; exit {exit_code}"
+    return window, action
+
+
+def _ops_state(existed: bool, value=None) -> str:
+    return json.dumps({
+        "version": 1, "action": "ops_tweak", "user": None, "sid": None,
+        "entries": [{
+            "i": 0, "op": "reg_set", "key": "HKLM\\SOFTWARE\\PortableFixTest", "name": "Level", "existed": existed,
+            "kind": "DWord" if existed else None, "value": value, "missing_from": None,
+        }],
+    })
+
+
+def test_ops_action_undo_is_generated_from_the_state_it_captured(qtbot, tmp_path, monkeypatch):
+    window, action = _ops_window(qtbot, tmp_path, monkeypatch, "run_ops_undo", _ops_state(True, 7))
+    reviews = _answer_review(monkeypatch)
+    _check(window, "ops_tweak")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert "ops-ran" in window.console.toPlainText()
+    # Not "no undo" on the review screen: the undo is made after the run.
+    [item] = reviews[0].review.items
+    assert item.irreversible is False
+    state_path = tmp_path / "Backups" / "run_ops_undo" / "state" / "ops_tweak.json"
+    assert state_path.is_file()
+    undo_text = (tmp_path / "Backups" / "run_ops_undo" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert f"# ops_tweak: restores the state captured just before it ran ({state_path})" in undo_text
+    assert "-Name 'Level' -Value ([int32]'7') -PropertyType DWord" in undo_text
+    assert "NOT reversible" not in undo_text
+    assert window._ops_state_paths == {}
+
+
+def test_ops_action_run_twice_keeps_both_captures_newest_undo_first(qtbot, tmp_path, monkeypatch):
+    window, action = _ops_window(qtbot, tmp_path, monkeypatch, "run_ops_twice", _ops_state(True, 7))
+    _answer_review(monkeypatch)
+    for _ in range(2):
+        _check(window, "ops_tweak")
+        window.run_selected_actions()
+        _wait_batch_idle(qtbot, window)
+    state_dir = tmp_path / "Backups" / "run_ops_twice" / "state"
+    assert sorted(p.name for p in state_dir.iterdir()) == ["ops_tweak-2.json", "ops_tweak.json"]
+    undo_text = (tmp_path / "Backups" / "run_ops_twice" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert undo_text.index("ops_tweak-2.json") < undo_text.index("ops_tweak.json)")
+
+
+def test_ops_action_refused_before_capturing_adds_no_undo_and_no_irreversible_note(qtbot, tmp_path, monkeypatch):
+    window, _ = _ops_window(qtbot, tmp_path, monkeypatch, "run_ops_refused", None, exit_code=1)
+    _answer_review(monkeypatch)
+    _check(window, "ops_tweak")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert window._undo_steps == [] and window._irreversible_actions == []
+
+
+def test_ops_action_failing_after_the_capture_still_gets_its_undo(qtbot, tmp_path, monkeypatch):
+    window, _ = _ops_window(qtbot, tmp_path, monkeypatch, "run_ops_partial", _ops_state(False), exit_code=1)
+    _answer_review(monkeypatch)
+    _check(window, "ops_tweak")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    [step] = window._undo_steps
+    assert "Remove-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\PortableFixTest' -Name 'Level'" in step
+    assert window._irreversible_actions == []
+
+
+def test_ops_action_with_an_unusable_state_is_listed_as_not_reversible(qtbot, tmp_path, monkeypatch):
+    window, _ = _ops_window(qtbot, tmp_path, monkeypatch, "run_ops_broken", "{not json")
+    _answer_review(monkeypatch)
+    _check(window, "ops_tweak")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert window._undo_steps == []
+    undo_text = (tmp_path / "Backups" / "run_ops_broken" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "NOT reversible" in undo_text and "Registry tweak (ops_tweak)" in undo_text
+    assert "could not be read" in undo_text
+
+
+def test_ops_action_dry_run_previews_without_a_state_file(qtbot, tmp_path, monkeypatch):
+    window, action = _ops_window(qtbot, tmp_path, monkeypatch, "run_ops_dry", _ops_state(True, 7))
+    window.settings.dry_run = True
+    _answer_review(monkeypatch)
+    # The generated preview reads the real registry - stand in for it too.
+    action.preview_command = "if ($__pfOpsState) { exit 42 }; Write-Output 'ops-preview'"
+    _check(window, "ops_tweak")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert "ops-preview" in window.console.toPlainText()
+    assert "ops-ran" not in window.console.toPlainText()
+    assert not (tmp_path / "Backups" / "run_ops_dry" / "state").exists()
+    assert window._undo_steps == []
+
+
+def test_ops_action_detail_panel_shows_what_undo_restores(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QPlainTextEdit
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_ops_detail", yaml=OPS_YAML)
+    window._action_detail_toggles["ops_tweak"].click()
+    texts = [w.toPlainText() for w in window._action_detail_panels["ops_tweak"].findChildren(QPlainTextEdit)]
+    assert any("reg_set HKLM\\SOFTWARE\\PortableFixTest\\Level = 2 (DWord)" in t and "restores it exactly" in t for t in texts)

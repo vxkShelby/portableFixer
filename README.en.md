@@ -41,7 +41,7 @@ PowerShell.
 | M06 | Repair | Network: DNS, hosts, DHCP, Winsock, TCP/IP |
 | M07 | Diagnostics | Autostart: Run registry keys, Startup, tasks, services, WMI, IFEO backdoors, unquoted service paths, inventory without Microsoft entries (signature, SHA256) |
 | M08 | Security | Defender, firewall, UAC audit + quick scan, WPBT disable |
-| M09 | Repair | Tuning: power plan, visual effects, End Task, Sticky Keys, classic context menu, Storage Sense (report and monthly cleanup with exact undo) |
+| M09 | Repair | Tuning: power plan, visual effects, End Task, Sticky Keys, classic context menu, HAGS, Game DVR (registry tweaks whose undo restores the exact previous state), Storage Sense (report and monthly cleanup with exact undo) |
 | M10 | Diagnostics | Drivers: problem devices (+ restart), third-party drivers, network/GPU, backup/restore |
 | M11 | — | Reporting (HTML report after every batch, not a catalog) |
 | M12 | Diagnostics | Online: layered connectivity test, DNS, proxy |
@@ -470,6 +470,29 @@ PowerShell.
   (LIFO) order, so the script can be run as a whole. It's written after
   every successful action, so even if the app crashes the file reflects
   real state.
+- **Undo to the exact previous state (declarative `ops:`):** instead of a
+  hand-written `command`, an action in `actions.yaml` can list operations:
+  `reg_set {path, name, type, value}`, `reg_delete {path, name}`,
+  `service_start_type {name, start_type}` (`automatic`,
+  `automatic_delayed`, `manual`, `disabled`) and `task_state {path,
+  enabled}`, plus an optional `ops_message`. PortableFix generates a
+  command that captures the live state before the first change (value and
+  type, or that the value or key did not exist; the service start type;
+  whether the task is enabled) into
+  `Backups/<run-id>/state/<action>.json` and only then applies the
+  changes. After the run, undo is generated from that record and restores
+  exactly the previous state: values that did not exist are deleted and
+  keys the action created are removed (only while empty). It is written
+  even when the action fails halfway, so what did change is restored too.
+  The DRY-RUN preview ("would change X from <now> to <new>") comes for
+  free. For HKCU the user's SID is recorded and an undo run as a different
+  user skips those values. Paths and names must pass strict rules (hives
+  HKLM, HKCU, HKU, HKCR only, no wildcard characters) and values reach
+  PowerShell only as literals; malformed `ops` stop the module from
+  loading with a precise error. The M09 registry tweaks (visual effects,
+  End Task, Sticky Keys, classic context menu, HAGS, foreground priority,
+  Game DVR) use it now; their undo used to write fixed Windows defaults or
+  a single backup in `%ProgramData%`.
 - **Audit log + report:** every action is written to
   `Logs/<run-id>/audit.jsonl`, and an HTML report is generated to
   `Reports/` after each batch.
@@ -740,8 +763,12 @@ retry on failure, instead of the whole file at once.
 
 ## Known limitations
 
-- Undo only covers actions with a static reversible command; DISM/SFC/chkdsk
-  repairs are inherently irreversible (covered by the restore point instead).
+- Undo only covers actions with a static reversible command or with
+  `ops:` (those restore the exact previous state); DISM/SFC/chkdsk repairs
+  are inherently irreversible (covered by the restore point instead). The
+  M09 power plans, service pausing and Storage Sense do not use `ops` yet
+  (powercfg, a service's running state and a policy precondition cannot
+  be expressed with them).
 - Undo for combined actions (e.g. stopping 4 services at once) is only
   written on full success of the action.
 - `regsvr32`/`UsoClient` steps in M05 report success even on a silent

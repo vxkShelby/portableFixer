@@ -7,6 +7,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from .ops import STATE_VARIABLE, ps_str
+
 # Lives in paths.py so the Qt-free updater core can use it; re-exported
 # here for the modules and tests that have always imported it from here.
 from .paths import powershell_executable  # noqa: F401
@@ -31,7 +33,9 @@ class ExecutionPlan:
     argv: list[str] | None
 
 
-def build_execution_plan(command: str, dry_run: bool, temp_protect: Path | None = None) -> ExecutionPlan:
+def build_execution_plan(
+    command: str, dry_run: bool, temp_protect: Path | None = None, ops_state: Path | None = None,
+) -> ExecutionPlan:
     if dry_run:
         return ExecutionPlan(mode="dry_run", display_command=command, argv=None)
     prefix = ""
@@ -40,6 +44,10 @@ def build_execution_plan(command: str, dry_run: bool, temp_protect: Path | None 
         # quotes - the real path can contain $ or backticks PowerShell would expand.
         escaped = str(temp_protect).replace("'", "''")
         prefix = f"$__pfProtect = '{escaped}'; "
+    if ops_state is not None:
+        # Where an `ops:` command saves the state it captures (research G10);
+        # without it the command refuses to change anything.
+        prefix += f"{STATE_VARIABLE} = {ps_str(str(ops_state))}; "
     utf8_command = f"{prefix}[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}"
     return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [utf8_command])
 
