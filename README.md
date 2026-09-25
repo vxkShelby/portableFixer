@@ -152,6 +152,23 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   a tried CIM, nikdy z preloženého textu správ, takže fungujú v každom
   jazyku Windows. Triáž pádov a hardvérové chyby WHEA sú aj v predvoľbe
   Plná diagnostika.
+- **Prehliadače vo všetkých profiloch (M02, M17):** *Cache prehliadačov*
+  čistí všetky profily (Default, Profile N, Guest Profile... - každý
+  priečinok v `User Data` so súborom `Preferences`) prehliadačov Chrome,
+  Edge, Brave, Vivaldi, Opera a Opera GX (Opera má profil priamo
+  v `%APPDATA%\Opera Software\Opera Stable`, ďalšie profily
+  v `_side_profiles`, HTTP cache v rovnakej ceste pod `%LOCALAPPDATA%`)
+  a všetky profily Firefoxu. Maže len obsah priečinkov `Cache`,
+  `Code Cache`, `GPUCache`, `Service Worker\CacheStorage` a `ScriptCache`,
+  nikdy cookies, heslá, históriu, záložky ani rozšírenia. Prehliadač,
+  ktorý beží, preskočí a vypíše (nikdy ho nezatvára), cez junction ani
+  symlink nejde a pri každom profile vypíše uvoľnené MB; DRY-RUN vypíše,
+  čo by vyčistil. Rovnaký zoznam profilov používa *Prehľad rozšírení*
+  aj *Kontrola domovskej stránky a vyhľadávania* (pribudla URL
+  vyhľadávača a stránky pri štarte), takže únos v „Profile 2“ alebo
+  v Brave už neujde. *Reset profilu Chrome/Edge* prehliadač už nezatvára:
+  ak beží, odmietne pokračovať a nič nezmení - klient by inak prišiel
+  o otvorené karty a rozpísané formuláre.
 - **Microsoft Defender (M23):** *História hrozieb Defenderu* (SAFE)
   vypíše detekcie za 90 dní (počet aj za 30 dní) - názov hrozby,
   závažnosť, stav, vykonaný zásah, dotknuté súbory, čas - a aktuálny stav
