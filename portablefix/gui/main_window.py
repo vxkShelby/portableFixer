@@ -1069,8 +1069,15 @@ class MainWindow(QMainWindow):
             action.id,
             action.label(self.settings.language),
             action.description(self.settings.language),
-            action.command,
+            self._action_command_text(action),
         )).lower()
+
+    @staticmethod
+    def _action_command_text(action) -> str:
+        # An `ops:` action's command is kilobytes of generated engine code
+        # naming every op kind (ScheduledTask, sc.exe ...) - searching or
+        # reading it would say nothing about what this action changes.
+        return ops.describe(action.ops) if action.ops else action.command
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
@@ -1417,7 +1424,7 @@ class MainWindow(QMainWindow):
         description_label.setWordWrap(True)
         panel_layout.addWidget(description_label)
 
-        command_box = QPlainTextEdit(action.command)
+        command_box = QPlainTextEdit(self._action_command_text(action))
         command_box.setObjectName("actionDetailCommand")
         command_box.setReadOnly(True)
         command_box.setFixedHeight(60)
@@ -1428,8 +1435,8 @@ class MainWindow(QMainWindow):
             undo_label.setObjectName("actionDetailLabel")
             panel_layout.addWidget(undo_label)
             # An ops action's undo only exists after it ran (it is made from
-            # the captured state) - show what it will restore instead.
-            undo_box = QPlainTextEdit(action.undo_command or ops.describe(action.ops))
+            # the captured state) - say how it will restore instead.
+            undo_box = QPlainTextEdit(action.undo_command or self._t("action_detail_ops_undo"))
             undo_box.setObjectName("actionDetailCommand")
             undo_box.setReadOnly(True)
             undo_box.setFixedHeight(48)

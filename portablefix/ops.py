@@ -354,7 +354,7 @@ def describe(op_list) -> str:
             lines.append(f"service_start_type {op.name} -> {op.start_type}")
         else:
             lines.append(f"task_state {op.path} -> {'enabled' if op.enabled else 'disabled'}")
-    lines.append("Undo is generated from the state captured just before the run and restores it exactly.")
+    # The note on how undo works is the GUI's (i18n "action_detail_ops_undo").
     return "\n".join(lines)
 
 
@@ -505,11 +505,15 @@ def apply_script(action_id: str, op_list, message: str = "") -> str:
         f"[IO.File]::WriteAllText({STATE_VARIABLE}, $pfJson, (New-Object Text.UTF8Encoding($false))) }} "
         f"catch {{ Write-Output ('Could not save the previous state to ' + {STATE_VARIABLE} + ' ' + (pfErr $_) + '. Nothing was changed.'); exit 1 }}"
     )
+    # The saved capture stays the pre-run state undo restores, but whether
+    # an op has anything to do is decided on a fresh read: an earlier op of
+    # this same action may have changed the same value, service or task.
     statements.append(
-        "for ($i = 0; $i -lt $pfOps.Count; $i++) { $o = $pfOps[$i]; $e = $pfEntries[$i]; $pl = pfPlan $o $e; "
-        "if ($null -eq $pl) { Write-Output (pfSkip $o $e); continue }; "
-        "try { pfApply $o $e } catch { Write-Output ('FAILED: ' + (pfWhat $o) + ' ' + (pfErr $_)); "
+        "for ($i = 0; $i -lt $pfOps.Count; $i++) { $o = $pfOps[$i]; $e = $null; $pl = $null; "
+        "try { $e = pfCap $o $i; $pl = pfPlan $o $e; if ($null -ne $pl) { pfApply $o $e } } "
+        "catch { Write-Output ('FAILED: ' + (pfWhat $o) + ' ' + (pfErr $_)); "
         f"Write-Output ('The previous state is saved in ' + {STATE_VARIABLE} + ' - undo.ps1 restores what was changed so far.'); exit 1 }}; "
+        "if ($null -eq $pl) { Write-Output (pfSkip $o $e); continue }; "
         "$created = ''; if (($o.t -eq 'reg_set') -and $e.missing_from) { $created = ' (created key ' + $e.missing_from + ')' }; "
         "Write-Output ((pfWhat $o) + ': ' + $pl[0] + ' -> ' + $pl[1] + $created) }"
     )
@@ -654,9 +658,18 @@ def _undo_service(op, entry) -> list[str]:
         raise OpsStateError(f"service {op.name}: invalid start {start!r}/{delayed!r}")
     arg = "delayed-auto" if start == 2 and delayed else _SC_START[start]
     shown = "automatic (delayed)" if start == 2 and delayed else _START_NAMES[start]
+    p = ps_str(_SERVICES_KEY + op.name)
+    # The delayed flag only means something with Start = 2.
+    delayed_check = f" -or ($pfDl -ne {_ps_bool(delayed)})" if start == 2 else ""
     return [
         f"$null = & sc.exe config {ps_str(op.name)} start= {arg}",
         f"if ($LASTEXITCODE -ne 0) {{ throw ('sc.exe config failed with exit code ' + $LASTEXITCODE) }}",
+        # Read back, as the command does: exit code 0 alone does not prove
+        # the delayed flag followed.
+        f"$pfSk = Get-Item -LiteralPath {p}; $pfNames = @($pfSk.GetValueNames()); $pfSt = $null; "
+        "if ($pfNames -contains 'Start') { $pfSt = [int]$pfSk.GetValue('Start') }; "
+        "$pfDl = [bool](($pfNames -contains 'DelayedAutostart') -and ([int]$pfSk.GetValue('DelayedAutostart') -eq 1))",
+        f"if (($pfSt -ne {start}){delayed_check}) {{ throw ('the start type is Start=' + [string]$pfSt + ', delayed=' + [string]$pfDl + ' after sc.exe config') }}",
         f"Write-Output {ps_str('Restored service ' + op.name + ' start type: ' + shown)}",
     ]
 

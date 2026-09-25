@@ -65,9 +65,9 @@ function Remove-Item { [CmdletBinding()] param([string] $LiteralPath, [switch] $
 function sc.exe { $a = @($args); Pf-Log ('sc.exe ' + ($a -join ' ')); if ([int]$env:PF_SC_EXIT) { $global:LASTEXITCODE = [int]$env:PF_SC_EXIT; return 'Zlyhanie' }
   $p = ('Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\' + $a[1]).ToLowerInvariant(); Pf-Load; $k = $global:PFM.keys.PSObject.Properties[$p]; if ($null -eq $k) { $global:LASTEXITCODE = 1060; return }
   $map = @{ 'boot' = 0; 'system' = 1; 'auto' = 2; 'delayed-auto' = 2; 'demand' = 3; 'disabled' = 4 }; $vals = $k.Value.values
-  foreach ($n in 'Start', 'DelayedAutostart') { if ($vals.PSObject.Properties[$n]) { $vals.PSObject.Properties.Remove($n) } }
+  foreach ($n in 'Start', 'DelayedAutostart') { if ($vals.PSObject.Properties[$n] -and -not (($n -eq 'DelayedAutostart') -and $env:PF_SC_KEEP_DELAYED)) { $vals.PSObject.Properties.Remove($n) } }
   $vals | Add-Member -NotePropertyName 'Start' -NotePropertyValue ([pscustomobject]@{ kind = 'DWord'; value = $map[$a[3]] })
-  if ($a[3] -eq 'delayed-auto') { $vals | Add-Member -NotePropertyName 'DelayedAutostart' -NotePropertyValue ([pscustomobject]@{ kind = 'DWord'; value = 1 }) }
+  if (($a[3] -eq 'delayed-auto') -and ($null -eq $vals.PSObject.Properties['DelayedAutostart'])) { $vals | Add-Member -NotePropertyName 'DelayedAutostart' -NotePropertyValue ([pscustomobject]@{ kind = 'DWord'; value = 1 }) }
   Pf-Save; 'Úspech'; $global:LASTEXITCODE = 0 }
 function Get-ScheduledTask { [CmdletBinding()] param([string] $TaskPath, [string] $TaskName)
   Pf-Log ('Get-ScheduledTask ' + $TaskPath + $TaskName); if ($env:PF_TASK_BROKEN) { throw [System.Runtime.InteropServices.COMException]::new('Služba neodpovedá.') }
@@ -143,6 +143,8 @@ class Machine:
             "PF_STATEFILE": str(self.statefile), "PF_LOGFILE": str(self.logfile),
             "PF_WHO_NAME": self.who[0] if self.who else "", "PF_WHO_SID": self.who[1] if self.who else "",
             "PF_FAIL_NAME": "", "PF_FAIL_KEY": "", "PF_SC_EXIT": "0", "PF_TASK_BROKEN": "",
+            # sc.exe leaves an existing DelayedAutostart flag behind.
+            "PF_SC_KEEP_DELAYED": "",
         }
         env_vars.update({k: str(v) for k, v in env.items()})
         # Set inside the script, not in the child's environment: Windows

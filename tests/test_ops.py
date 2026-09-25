@@ -433,6 +433,49 @@ def test_two_ops_on_the_same_value_undo_to_the_original(tmp_path, state_path):
     assert machine.values("HKLM\\SOFTWARE\\App") == {"V": ("DWord", 5)}
 
 
+def test_later_op_on_the_same_value_sees_what_the_earlier_one_wrote(tmp_path, state_path):
+    # Set, then set back: the second op must not be skipped against the
+    # state captured before the first one ran.
+    machine = Machine(tmp_path, registry={"HKLM\\SOFTWARE\\T": {"X": ("DWord", 0)}})
+    op_list = _op_list(reg_set("HKLM\\SOFTWARE\\T", "X", "DWord", 1), reg_set("HKLM\\SOFTWARE\\T", "X", "DWord", 0))
+    result = _run_action(machine, "a1", op_list, state_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "HKLM\\SOFTWARE\\T\\X: 0 (DWord) -> 1 (DWord)" in result.stdout
+    assert "HKLM\\SOFTWARE\\T\\X: 1 (DWord) -> 0 (DWord)" in result.stdout
+    assert "unchanged" not in result.stdout
+    assert machine.values("HKLM\\SOFTWARE\\T") == {"X": ("DWord", 0)}
+    assert _undo(machine, "a1", op_list, state_path).returncode == 0
+    assert machine.values("HKLM\\SOFTWARE\\T") == {"X": ("DWord", 0)}
+
+
+def test_delete_after_set_of_a_new_value_deletes_it(tmp_path, state_path):
+    machine = Machine(tmp_path, registry={"HKLM\\SOFTWARE": {}})
+    op_list = _op_list(
+        reg_set("HKLM\\SOFTWARE\\T", "X", "DWord", 1),
+        {"reg_delete": {"path": "HKLM\\SOFTWARE\\T", "name": "X"}},
+    )
+    result = _run_action(machine, "a1", op_list, state_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "HKLM\\SOFTWARE\\T\\X: absent -> 1 (DWord) (created key HKLM\\SOFTWARE\\T)" in result.stdout
+    assert "HKLM\\SOFTWARE\\T\\X: 1 (DWord) -> absent" in result.stdout
+    assert machine.values("HKLM\\SOFTWARE\\T") == {}
+    # Undo goes back to before the run: no value, and the created key removed.
+    assert _undo(machine, "a1", op_list, state_path).returncode == 0
+    assert machine.values("HKLM\\SOFTWARE\\T") is None
+
+
+def test_second_start_type_op_on_one_service_is_applied(tmp_path, state_path):
+    machine = Machine(tmp_path, services={"WSearch": (3, False)})
+    op_list = _op_list(
+        {"service_start_type": {"name": "WSearch", "start_type": "disabled"}},
+        {"service_start_type": {"name": "WSearch", "start_type": "manual"}},
+    )
+    result = _run_action(machine, "a1", op_list, state_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Service WSearch start type: disabled -> manual" in result.stdout
+    assert machine.service("WSearch") == (3, False)
+
+
 def test_running_an_action_twice_and_undoing_both_returns_the_first_state(tmp_path):
     machine = Machine(tmp_path, registry={"HKLM\\SOFTWARE\\App": {"V": ("DWord", 5)}})
     op_list = _op_list(reg_set("HKLM\\SOFTWARE\\App", "V", "DWord", 6))
@@ -495,6 +538,22 @@ def test_service_change_that_fails_stops_the_action_with_undo_for_what_changed(t
     result = _undo(machine, "a1", op_list, state_path)
     assert machine.values("HKLM\\SOFTWARE\\App") == {}
     assert "FAILED to restore service DiagTrack" not in result.stdout  # nothing to fail: sc.exe works again
+
+
+def test_service_undo_reads_the_start_type_back(tmp_path, state_path):
+    machine = Machine(tmp_path, services={"DiagTrack": (2, False)})
+    op_list = _op_list({"service_start_type": {"name": "DiagTrack", "start_type": "automatic_delayed"}})
+    assert _run_action(machine, "a1", op_list, state_path).returncode == 0
+    assert machine.service("DiagTrack") == (2, True)
+    # sc.exe "succeeds" but leaves the delayed flag: undo must say so, not
+    # claim the service is back to plain automatic.
+    result = _undo(machine, "a1", op_list, state_path, PF_SC_KEEP_DELAYED=1)
+    assert "FAILED to restore service DiagTrack" in result.stdout
+    assert "Restored service DiagTrack" not in result.stdout
+    result = _undo(machine, "a1", op_list, state_path)
+    assert "Restored service DiagTrack start type: automatic" in result.stdout
+    assert "FAILED" not in result.stdout
+    assert machine.service("DiagTrack") == (2, False)
 
 
 def test_task_state_round_trip(tmp_path, state_path):
@@ -729,7 +788,8 @@ def test_describe_lists_the_ops_for_the_detail_panel():
     assert "reg_set HKLM\\SOFTWARE\\PortableFixTest\\D = 7 (DWord)" in text
     assert "service_start_type DiagTrack -> automatic_delayed" in text
     assert "task_state \\Root Task -> enabled" in text
-    assert "restores it exactly" in text
+    # Only the op lines: the (translated) note on undo is the GUI's.
+    assert len(text.splitlines()) == 4
 
 
 def test_executor_passes_the_state_file_path_as_a_literal(tmp_path):

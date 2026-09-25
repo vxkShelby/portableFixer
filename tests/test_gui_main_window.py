@@ -7077,7 +7077,23 @@ def test_ops_action_dry_run_previews_without_a_state_file(qtbot, tmp_path, monke
 def test_ops_action_detail_panel_shows_what_undo_restores(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QPlainTextEdit
 
+    from portablefix import i18n
+
     window = _review_window(qtbot, tmp_path, monkeypatch, "run_ops_detail", yaml=OPS_YAML)
     window._action_detail_toggles["ops_tweak"].click()
-    texts = [w.toPlainText() for w in window._action_detail_panels["ops_tweak"].findChildren(QPlainTextEdit)]
-    assert any("reg_set HKLM\\SOFTWARE\\PortableFixTest\\Level = 2 (DWord)" in t and "restores it exactly" in t for t in texts)
+    command_text, undo_text = [
+        w.toPlainText() for w in window._action_detail_panels["ops_tweak"].findChildren(QPlainTextEdit)
+    ]
+    # The ops, not the generated engine script.
+    assert command_text == "reg_set HKLM\\SOFTWARE\\PortableFixTest\\Level = 2 (DWord)"
+    assert undo_text == i18n.translate("action_detail_ops_undo", "en")
+
+
+def test_ops_action_search_matches_its_ops_not_the_generated_engine(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_ops_search", yaml=OPS_YAML)
+    _, action = window._find_action("ops_tweak")
+    # The engine names every op kind; a registry-only action must not match them.
+    assert "ScheduledTask" in action.command and "sc.exe" in action.command
+    haystack = window._action_search_haystack(action)
+    assert "scheduledtask" not in haystack and "sc.exe" not in haystack
+    assert "portablefixtest\\level" in haystack
