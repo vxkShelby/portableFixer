@@ -459,7 +459,8 @@ def _build_work_time(entries: list[dict], now: datetime) -> dict:
     if not batch_count and not timer_total and timer.running_since is None:
         return {}
     return {
-        # The sum of every batch of the run (G20) - the billable machine time.
+        # The sum of every real (not DRY-RUN) batch of the run (G20) - the
+        # billable machine time.
         "batch_seconds": batch_total,
         "batch_count": batch_count,
         # The technician's own start/stop timer; a running one counts up to

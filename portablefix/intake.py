@@ -183,10 +183,14 @@ def batch_duration_output(seconds: float) -> str:
 
 
 def batch_seconds(entries: list[dict]) -> tuple[int, int]:
-    """(total seconds, number of logged batch segments) of the run."""
+    """(total seconds, number of logged batch segments) of the run. A
+    DRY-RUN batch only previews and repairs nothing, so it is left out -
+    the total is the time spent on the repair itself."""
     total = 0
     count = 0
     for entry in _system_events(entries, BATCH_DURATION_EVENT):
+        if entry.get("dry_run") is True:
+            continue
         raw = _parse_output(entry.get("output")) or {}
         seconds = raw.get("seconds")
         if isinstance(seconds, int) and not isinstance(seconds, bool) and 0 <= seconds <= _MAX_BATCH_SECONDS:

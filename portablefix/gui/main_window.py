@@ -232,6 +232,12 @@ class MainWindow(QMainWindow):
         self._disk_health_runners: list[_DiskHealthProbeRunner] = []
         self._hive_backups: list[Path] = []
         self._report_runner: report.ReportRunner | None = None
+        # A batch-end report of this run was written by this window - the
+        # forms and the timer, changed afterwards, rewrite it (G20).
+        self._report_written = False
+        # Such a change came while a report was being written: that report
+        # may have read the audit log before it, so one more rewrite follows.
+        self._report_refresh_pending = False
         self._batch_active = False
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
@@ -1320,6 +1326,50 @@ class MainWindow(QMainWindow):
             "Manual work timer started." if decision == intake.TIMER_START else "Manual work timer stopped.",
             decision=decision,
         )
+        self._refresh_report()
+
+    def _refresh_report(self) -> None:
+        """Rewrites the run's report after the forms or the timer changed
+        (G20). The hand-over is usually filled in after the last batch, when
+        the PC is tested and handed over - without this the report (and the
+        handoff zip that packs it) would stay as of the last batch end."""
+        if self._closed or self._batch_active or self._restarting:
+            # A running batch writes its own report at the end, from the
+            # same audit log; a restarting PC keeps the report written
+            # before it (see _run_next).
+            return
+        if self._report_runner is not None:
+            self._report_refresh_pending = True
+            return
+        if not self._report_written:
+            # No report yet - the first batch end writes one with the forms.
+            return
+        # The snapshots of the last batch, not a new one: the report
+        # describes the repair, and only the forms and the timer changed.
+        runner = report.ReportRunner(
+            self.state_dir, self.run_id, self.modules, self.settings.language,
+            self._snapshot_before, self._snapshot_after,
+            job=self._job_info(), storage_fallback=self._storage_fallback,
+            redact=self.settings.redact_for_client, branding=self.settings.branding_info(), parent=self,
+        )
+        runner.result_ready.connect(self._on_report_refreshed)
+        self._report_runner = runner
+        runner.start()
+
+    def _on_report_refreshed(self, html_path: Path | None, write_failed: bool) -> None:
+        self._report_runner = None
+        if self._closed:
+            return
+        if write_failed:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+        elif html_path is not None:
+            self.console.appendPlainText(self._t("report_refreshed"))
+        self._run_pending_report_refresh()
+
+    def _run_pending_report_refresh(self) -> None:
+        if self._report_refresh_pending:
+            self._report_refresh_pending = False
+            self._refresh_report()
 
     def _open_forms_dialog(self, parent: QWidget | None = None) -> None:
         entries = self._run_audit_entries()
@@ -1340,6 +1390,7 @@ class MainWindow(QMainWindow):
         # OK on an untouched dialog must not add a copy. A cleared form is
         # logged too, so the report stops showing the old one.
         entries = self._run_audit_entries()
+        changed = False
         for kind, form, saved in (
             (intake.INTAKE_EVENT, intake_form, intake.latest_intake(entries)),
             (intake.OUTTAKE_EVENT, outtake_form, intake.latest_outtake(entries)),
@@ -1350,6 +1401,9 @@ class MainWindow(QMainWindow):
             if previous is not None and form.to_dict() == previous.to_dict():
                 continue
             self._log_system_event(kind, 0, intake.form_to_output(form))
+            changed = True
+        if changed:
+            self._refresh_report()
 
     def _open_branding_dialog(self, parent: QWidget | None = None) -> None:
         values = {
@@ -3899,6 +3953,8 @@ class MainWindow(QMainWindow):
 
     def _on_report_ready(self, html_path: Path | None, write_failed: bool) -> None:
         self._report_runner = None
+        if html_path is not None:
+            self._report_written = True
         # The batch is over (report written or not): sleep is allowed again.
         self._keep_awake.release()
         if not self._closed:
@@ -3920,6 +3976,7 @@ class MainWindow(QMainWindow):
             self._show_batch_summary(html_path)
         if self._restart_needed_after and not self._closed:
             self._notify_restart_needed()
+        self._run_pending_report_refresh()
 
     def _notify_restart_needed(self) -> None:
         # Own method so a test can see it without a real modal box.

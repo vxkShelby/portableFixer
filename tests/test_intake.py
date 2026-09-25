@@ -135,6 +135,16 @@ def test_batch_seconds_sums_valid_durations_only(tmp_path):
     assert intake.batch_seconds(read_audit_entries(tmp_path, run)) == (181, 2)
 
 
+def test_batch_seconds_leaves_out_dry_run_batches(tmp_path):
+    run = "run_bd_dry"
+    _event(tmp_path, run, intake.BATCH_DURATION_EVENT, intake.batch_duration_output(90))
+    # make_entry's dry_run flag: a preview-only batch repaired nothing.
+    append_entry(tmp_path, run, make_entry(
+        "_system", intake.BATCH_DURATION_EVENT, "", 0, intake.batch_duration_output(600), True, run,
+    ))
+    assert intake.batch_seconds(read_audit_entries(tmp_path, run)) == (90, 1)
+
+
 def test_batch_duration_output_never_goes_negative():
     assert json.loads(intake.batch_duration_output(-3)) == {"seconds": 0}
 

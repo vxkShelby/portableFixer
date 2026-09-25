@@ -132,15 +132,20 @@ PowerShell.
   when. Each save with a change goes into the audit log as a `_system`
   event (`intake`, `outtake`); the report (HTML and JSON, in the report's
   language) shows the latest save in the "Intake" and "Hand-over"
-  sections. Redact for the client covers the form text too; the name the
+  sections. The hand-over is usually filled in after the last batch, so
+  a save with a change rewrites the run's report at once (and with it
+  the handoff package); before the first batch, its end writes it.
+  Redact for the client covers the form text too; the name the
   PC was handed to stays, like the Job details.
 - **Work time:** every batch logs how long it ran (`batch_duration`) and
-  the report shows the total for the whole run. The Job details window
+  the report shows the total for the whole run (DRY-RUN batches repair
+  nothing, so they are left out). The Job details window
   also has an optional manual timer (Start / Stop); its start and stop go
   into the run's audit log, so it survives a restart of PortableFix
   within the same run. The report shows it next to the batch time (not
   added up - the timer usually runs through the batches too); a running
-  timer counts up to the moment the report is written.
+  timer counts up to the moment the report is written. A start or stop
+  after the last batch rewrites the report.
 - **Report branding** (button in the Job details window, remembered, all
   optional): company, company ID (IČO), contact and a logo in the report
   header. The logo (PNG or JPEG, at most 256 KB) is checked by the file's

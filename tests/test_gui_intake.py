@@ -1,6 +1,7 @@
 """GUI side of research G20's intake / hand-over forms, the manual work
 timer, the batch duration and the report branding - reached from the Job
-details dialog. Run one test per process, like the other GUI tests."""
+details dialog. CI runs this file in its main pytest process; locally,
+like every GUI test, it can also run one test per process."""
 
 import json
 import time
@@ -250,3 +251,87 @@ def test_forms_dialog_is_slovak(qtbot, tmp_path):
     assert dialog.condition_checkboxes["liquid_damage"].text() == "poškodenie tekutinou"
     assert dialog.backup_combo.itemText(2) == "Klient zálohu odmieta a riziko straty dát berie na seba"
     assert dialog.check_combos["display"].itemText(1) == "V poriadku"
+
+
+def _end_batch(qtbot, window, monkeypatch):
+    # A real batch end: the duration is logged and the real report written.
+    monkeypatch.setattr(window, "_take_snapshot", lambda: {})
+    window._batch_active = True
+    window._batch_started_at = time.monotonic() - 60
+    window._queue = []
+    window._run_next()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=20000)
+
+
+def _report_json(tmp_path, run_id=RUN_ID):
+    [path] = (tmp_path / "Reports").glob(f"*_{run_id}.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_hand_over_saved_after_the_last_batch_rewrites_the_report(qtbot, tmp_path, monkeypatch):
+    # Not DRY-RUN: only a real batch's time counts as work time.
+    window = _window(qtbot, tmp_path, Settings(language="en", dry_run=False))
+    _end_batch(qtbot, window, monkeypatch)
+    assert "outtake" not in _report_json(tmp_path)
+
+    # The PC is tested and handed over after the repair.
+    window._open_forms_dialog()
+    window._forms_dialog.handed_to_edit.setText("Ján")
+    window._forms_dialog.check_combos["wifi"].setCurrentIndex(window._forms_dialog.check_combos["wifi"].findData("pass"))
+    window._forms_dialog.accept()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=20000)
+    data = _report_json(tmp_path)
+    assert data["outtake"]["handed_to"] == "Ján"
+    assert data["outtake"]["checks"][0]["result"] == "pass"
+    assert data["work_time"]["batch_count"] == 1
+    assert window.console.toPlainText().splitlines()[-1] == "[PortableFix] The report was updated (intake / hand-over, work time)."
+
+
+def test_timer_stopped_after_the_last_batch_rewrites_the_report(qtbot, tmp_path, monkeypatch):
+    # Not DRY-RUN: only a real batch's time counts as work time.
+    window = _window(qtbot, tmp_path, Settings(language="en", dry_run=False))
+    window._open_job_dialog()
+    window._work_timer_widget.toggle()
+    # No report yet: nothing to rewrite, the batch end writes it.
+    assert window._report_runner is None
+    _end_batch(qtbot, window, monkeypatch)
+    assert _report_json(tmp_path)["work_time"]["timer_running"] is True
+
+    window._work_timer_widget.toggle()
+    qtbot.waitUntil(lambda: window._report_runner is None, timeout=20000)
+    assert _report_json(tmp_path)["work_time"]["timer_running"] is False
+
+
+def test_forms_saved_before_any_report_do_not_write_one(qtbot, tmp_path):
+    window = _window(qtbot, tmp_path)
+    window._open_forms_dialog()
+    window._forms_dialog.handed_to_edit.setText("Ján")
+    window._forms_dialog.accept()
+    assert window._report_runner is None
+    assert not (tmp_path / "Reports").exists() or not list((tmp_path / "Reports").glob("*.json"))
+
+
+def test_forms_saved_during_a_batch_or_while_a_report_is_written(qtbot, tmp_path, monkeypatch):
+    window = _window(qtbot, tmp_path)
+    window._report_written = True
+    calls = []
+
+    def no_runner(*args, **kwargs):
+        calls.append(kwargs)
+        raise AssertionError("no report may start here")
+
+    monkeypatch.setattr(report, "ReportRunner", no_runner)
+    # A running batch writes its own report at the end.
+    window._batch_active = True
+    window._refresh_report()
+    assert calls == [] and window._report_refresh_pending is False
+    # A report being written may have read the log already: one more follows.
+    window._batch_active = False
+    window._report_runner = object()
+    window._refresh_report()
+    assert calls == [] and window._report_refresh_pending is True
+    started = []
+    window._report_runner = None
+    monkeypatch.setattr(window, "_refresh_report", lambda: started.append(True))
+    window._run_pending_report_refresh()
+    assert started == [True] and window._report_refresh_pending is False

@@ -128,16 +128,20 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   komu a kedy sa PC odovzdalo. Každé uloženie so zmenou sa zapíše do
   auditného logu ako `_system` udalosť (`intake`, `outtake`); report
   (HTML aj JSON, v jazyku reportu) ukáže posledné uloženie v sekciách
-  „Pri prevzatí“ a „Pri odovzdaní“. Redigovanie pre klienta sa týka aj
+  „Pri prevzatí“ a „Pri odovzdaní“. Odovzdanie sa zvyčajne vypĺňa až po
+  poslednej dávke - uloženie so zmenou preto report tohto behu (a tým aj
+  balík na odovzdanie) hneď prepíše; pred prvou dávkou ho zapíše až jej
+  koniec. Redigovanie pre klienta sa týka aj
   textu formulárov; meno, komu sa PC odovzdalo, zostane ako údaje zo
   Zákazky.
 - **Čas práce:** každá dávka zapíše do auditného logu, ako dlho trvala
-  (`batch_duration`), a report uvedie súčet za celý beh. V okne Zákazka
+  (`batch_duration`), a report uvedie súčet za celý beh (dávky v režime
+  DRY-RUN nič neopravujú, preto sa nezapočítajú). V okne Zákazka
   je aj voliteľný ručný časovač (Spustiť / Zastaviť); jeho štart a stop
   idú do auditného logu behu, takže prežije aj reštart PortableFixu v tom
   istom behu. Report ho ukáže vedľa času dávok (nesčíta ich - časovač
   zvyčajne beží aj počas dávok); bežiaci časovač sa počíta do chvíle
-  zápisu reportu.
+  zápisu reportu. Štart alebo stop po poslednej dávke report prepíše.
 - **Branding reportu** (tlačidlo v okne Zákazka, pamätá sa, všetko
   voliteľné): firma, IČO, kontakt a logo v hlavičke reportu. Logo (PNG
   alebo JPEG, najviac 256 KB) sa overí podľa prvých bajtov súboru, nie
