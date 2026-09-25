@@ -50,7 +50,7 @@ PowerShell.
 | M15 | Repair | Boot/platform: BCD, TPM, Secure Boot, Secure Boot 2023 certificate verdict (2026-10-19 deadline), WinRE and Quick Machine Recovery readiness, BitLocker, Safe Mode, F8 recovery |
 | M16 | Repair | Office: version/channel, Outlook add-ins, OST/PST, quick/full repair |
 | M17 | Repair | Browsers: extensions, policy, homepage hijack, profile reset |
-| M18 | Repair | Back up user folders (Desktop/Documents/Pictures/Favorites) |
+| M18 | Repair | Back up user folders (Desktop/Documents/Pictures/Favorites), backup to another drive with a SHA-256 manifest and verification |
 | M19 | Repair | Windows optional features: overview, .NET 3.5, PowerShell v2, Sandbox |
 | M20 | Repair | Software updates via winget: list, outdated software, update all |
 | M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor) |
@@ -202,6 +202,34 @@ PowerShell.
   not running, the driver report and the backup fail with an explanation
   and the SMB report says so. Everything is read from cmdlets, the
   registry and exit codes, never from translated text.
+- **Client data backup to another drive (M18):** *Back up user data to
+  another drive* (MODERATE, not in "Select all") copies the current
+  user's Desktop, Documents, Pictures, Downloads and Favorites (also
+  when redirected into OneDrive) and Chrome, Edge, Brave and Firefox
+  bookmarks to the drive PortableFix runs from, into
+  `PortableFix_Backups\<COMPUTER>_<time>\Files`. There is no picker:
+  the destination is the drive of the process's current folder, which the
+  packaged app sets to its own root at startup - so run PortableFix from the
+  external drive. The action refuses the system drive, another
+  partition of the same physical disk, a path without a drive letter
+  and a drive without enough free space (estimate + 256 MB). It copies
+  with `robocopy /E /COPY:DAT /R:1 /W:1 /XJ /XA:O` (never walks into a
+  junction, never downloads online-only OneDrive files) and treats exit
+  codes 0-7 as success, 8+ as failure. It then writes
+  `manifest-sha256.csv` (relative path, size, SHA-256), prints the
+  manifest's own SHA-256 into the report and stores the run result in
+  `backup-status.txt`; when the manifest holds fewer files than the
+  estimate it prints a WARN (robocopy may have left out a folder
+  silently). Nothing at the source is deleted. The profile
+  backed up is that of the account the app runs under. *Verify backup
+  on another drive* (SAFE) re-hashes this PC's newest backup and lists
+  missing, changed and unreadable files with an OK / FAIL verdict; with
+  no backup to check (NO BACKUP) it also exits with an error. *List
+  existing backups* also shows the backups on the PortableFix drive.
+  The backup is not encrypted, and a file over 4 GB does not fit on
+  FAT32 (the backup ends INCOMPLETE). The same-disk check cannot see
+  through a SUBST drive letter or a mounted VHD(X) stored on the system
+  drive.
 
 ## Safety mechanisms
 
