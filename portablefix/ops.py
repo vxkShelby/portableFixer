@@ -499,7 +499,11 @@ def apply_script(action_id: str, op_list, message: str = "") -> str:
     who = "$pfWho[0]" if hkcu else "$null"
     sid = "$pfWho[1]" if hkcu else "$null"
     statements.append(
-        "try { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName(" + STATE_VARIABLE + ")); "
+        # Remove-TypeData: Windows PowerShell 5.1 otherwise writes a wrapped
+        # array (the entries, a Binary or MultiString value) as
+        # {"value": [...], "Count": n}, which read_state rejects.
+        "try { Remove-TypeData -TypeName System.Array -EA SilentlyContinue; "
+        "[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName(" + STATE_VARIABLE + ")); "
         f"$pfJson = ConvertTo-Json -Depth 6 -InputObject ([ordered]@{{ version = {STATE_VERSION}; action = {ps_str(action_id)}; "
         f"user = {who}; sid = {sid}; entries = @($pfEntries) }}); "
         f"[IO.File]::WriteAllText({STATE_VARIABLE}, $pfJson, (New-Object Text.UTF8Encoding($false))) }} "
