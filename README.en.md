@@ -39,7 +39,7 @@ PowerShell.
 | M04 | Repair | System integrity: DISM, SFC, AppX, WMI |
 | M05 | Repair | Windows Update: service/cache reset, DLL re-registration, detection |
 | M06 | Repair | Network: DNS, hosts, DHCP, Winsock, TCP/IP |
-| M07 | Diagnostics | Autostart: Run registry keys, Startup, tasks, services, WMI, IFEO backdoors, unquoted service paths |
+| M07 | Diagnostics | Autostart: Run registry keys, Startup, tasks, services, WMI, IFEO backdoors, unquoted service paths, inventory without Microsoft entries (signature, SHA256) |
 | M08 | Security | Defender, firewall, UAC audit + quick scan, WPBT disable |
 | M09 | Repair | Tuning: power plan, visual effects, End Task, Sticky Keys, classic context menu |
 | M10 | Diagnostics | Drivers: problem devices (+ restart), third-party drivers, network/GPU, backup/restore |
@@ -230,6 +230,23 @@ PowerShell.
   FAT32 (the backup ends INCOMPLETE). The same-disk check cannot see
   through a SUBST drive letter or a mounted VHD(X) stored on the system
   drive.
+- **Autostart without Microsoft entries** (M07, SAFE): one inventory of
+  every autostart location - Run/RunOnce, Startup, scheduled tasks,
+  services and drivers (ServiceDll for svchost), Winlogon, AppInit_DLLs,
+  LSA packages, print monitors, Winsock, BootExecute, IFEO and Active
+  Setup. For each entry it finds the real file (quotes, arguments,
+  `rundll32 x.dll,Entry`, `%variables%`, System32 paths) and reads its
+  Authenticode signature with the signer, SHA256 and last write time.
+  Entries signed by Microsoft are hidden (a valid signature whose
+  certificate and issuer both belong to Microsoft, or `IsOSBinary`); IFEO
+  redirects, script hosts (powershell.exe, cmd.exe, wscript.exe...) and
+  WHQL-signed third-party drivers are always shown. The rest is listed with a stable `AR-xxxxxxxxxxxx`
+  ID (a hash of location, name and command), invalid signatures and
+  unsigned files first, then missing files, with counts per category and
+  a `SUMMARY` line. Each file's signature is checked once and files over
+  200 MB are not hashed. An unsigned file in the Windows folder may be
+  catalog-signed when the CryptSvc service is not running - the entry
+  says so. Changes nothing; disabling entries comes later.
 
 ## Safety mechanisms
 
