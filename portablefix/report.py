@@ -9,7 +9,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import redaction
+from . import branding as branding_mod
+from . import intake, redaction
 from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
@@ -84,6 +85,12 @@ def _read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
             continue
         entries.append(entry)
     return entries
+
+
+def read_audit_entries(base_dir: Path, run_id: str) -> list[dict]:
+    """The run's audit entries as the report reads them (the intake /
+    outtake forms and the work timer load their saved state from here)."""
+    return _read_audit_entries(base_dir, run_id)
 
 
 _MAX_PREVIOUS_REPORT_BYTES = 10 * 1024 * 1024
@@ -332,12 +339,16 @@ def build_report_data(
     snapshot_after: dict,
     job: dict | None = None,
     storage_fallback: bool = False,
+    branding: dict | None = None,
 ) -> dict:
     entries = _read_audit_entries(base_dir, run_id)
     actions = []
     events = []
     for entry in entries:
         if entry["module_id"] == SYSTEM_MODULE_ID:
+            if entry["action_id"] in intake.EVENT_KINDS:
+                # Forms and work time have sections of their own (G20).
+                continue
             # Restore points, safety-prompt answers and batch stops are
             # facts about the run, not actions - keep them out of the action
             # counts/chips and list them in their own safety section.
@@ -363,11 +374,12 @@ def build_report_data(
         )
     hostname = socket.gethostname()
     previous = _find_previous_report(base_dir / "Reports", hostname, run_id)
-    return {
+    generated_at = datetime.now(timezone.utc)
+    data = {
         "run_id": run_id,
         "language": language,
         "hostname": hostname,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": generated_at.isoformat(),
         "os": platform.platform(),
         "snapshot_before": snapshot_before,
         "snapshot_after": snapshot_after,
@@ -386,6 +398,74 @@ def build_report_data(
         "restore_points": _summarize_restore_points(events),
         "elevated": _summarize_elevation(entries),
         "storage_fallback": bool(storage_fallback),
+    }
+    # Research G20, each key only when there is something to show - an
+    # unused form adds nothing to the report.
+    intake_data = _build_intake(entries, language)
+    if intake_data:
+        data["intake"] = intake_data
+    outtake_data = _build_outtake(entries, language)
+    if outtake_data:
+        data["outtake"] = outtake_data
+    work_time = _build_work_time(entries, generated_at)
+    if work_time:
+        data["work_time"] = work_time
+    branding_data = branding_mod.clean_branding(branding)
+    if branding_data:
+        data["branding"] = branding_data
+    return data
+
+
+def _build_intake(entries: list[dict], language: str) -> dict:
+    found = intake.latest_intake(entries)
+    if found is None:
+        return {}
+    form, timestamp = found
+    data = form.to_dict()
+    data["timestamp"] = timestamp
+    # The codes are for machines; the labels, in the report's language, are
+    # what the page shows - both in the JSON.
+    data["condition_labels"] = [translate(f"intake_flag_{flag}", language) for flag in form.condition_flags]
+    data["backup_label"] = translate(f"intake_backup_{form.backup}", language) if form.backup else ""
+    data["password_handling_label"] = (
+        translate(f"intake_password_{form.password_handling}", language) if form.password_handling else ""
+    )
+    return data
+
+
+def _build_outtake(entries: list[dict], language: str) -> dict:
+    found = intake.latest_outtake(entries)
+    if found is None:
+        return {}
+    form, timestamp = found
+    return {
+        "timestamp": timestamp,
+        "checks": [
+            {
+                "key": key, "label": translate(f"outtake_check_{key}", language),
+                "result": form.checks[key], "result_label": translate(f"outtake_result_{form.checks[key]}", language),
+            }
+            for key in intake.OUTTAKE_CHECKS if key in form.checks
+        ],
+        "handed_to": form.handed_to,
+        "handed_at": form.handed_at,
+    }
+
+
+def _build_work_time(entries: list[dict], now: datetime) -> dict:
+    batch_total, batch_count = intake.batch_seconds(entries)
+    timer = intake.timer_state(entries)
+    timer_total = timer.total_seconds(now)
+    if not batch_count and not timer_total and timer.running_since is None:
+        return {}
+    return {
+        # The sum of every batch of the run (G20) - the billable machine time.
+        "batch_seconds": batch_total,
+        "batch_count": batch_count,
+        # The technician's own start/stop timer; a running one counts up to
+        # the moment the report was written.
+        "timer_seconds": timer_total,
+        "timer_running": timer.running_since is not None,
     }
 
 
@@ -519,7 +599,27 @@ table.snapshot td.delta { font-weight: bold; color: #9aa5ce; white-space: nowrap
 table.snapshot td.delta.good { color: #9ece6a; }
 table.snapshot td.delta.bad { color: #f7768e; }
 .snap-note { color: #9aa5ce; font-size: 12px; margin: 4px 0 0 0; }
+.brand { display: flex; align-items: center; gap: 14px; margin: 0 0 12px 0; }
+.brand-logo { max-height: 64px; max-width: 220px; object-fit: contain; }
+.brand-text { line-height: 1.5; color: #9aa5ce; }
+.brand-text strong { color: #c0caf5; font-size: 15px; }
+.brand-contact { white-space: pre-line; }
+dl.form { background: #24283b; border-radius: 8px; padding: 10px 16px; margin: 0;
+          display: grid; grid-template-columns: minmax(9em, max-content) 1fr; gap: 6px 16px; }
+dl.form dt { color: #9aa5ce; font-size: 12px; }
+dl.form dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.form-note { color: #9aa5ce; font-size: 12px; margin: 6px 0 0 0; }
+table.summary td.check-pass { color: #9ece6a; font-weight: bold; }
+table.summary td.check-fail { color: #f7768e; font-weight: bold; }
+table.summary td.check-na { color: #9aa5ce; }
 @media print {
+  .brand-text, .brand-text strong { color: #111; }
+  dl.form { background: #fff; border: 1px solid #bbb; }
+  dl.form dt, .form-note { color: #444; }
+  dl.form dd { color: #111; }
+  table.summary td.check-pass { color: #1e7b34; }
+  table.summary td.check-fail { color: #c0392b; }
+  table.summary td.check-na { color: #444; }
   table.snapshot tbody th { color: #111; }
   table.snapshot td.delta { color: #444; }
   table.snapshot td.delta.good { color: #1e7b34; }
@@ -991,6 +1091,146 @@ def _render_safety_section(events: list[dict], language: str) -> str:
     )
 
 
+def _render_branding(brand, language: str) -> str:
+    """The technician's logo and company in the report header (G20). The
+    logo is checked again here: the page may be re-rendered from a saved
+    report.json, which could have been edited by hand."""
+    if not isinstance(brand, dict) or not brand:
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    company = str(brand.get("company") or "")
+    logo = branding_mod.decode_logo(brand.get("logo"))
+    logo_html = ""
+    if logo is not None:
+        mime, encoded = logo
+        logo_html = f'<img class="brand-logo" src="data:{mime};base64,{encoded}" alt="{html.escape(company, quote=True)}">'
+    lines = []
+    if company:
+        lines.append(f"<strong>{html.escape(company)}</strong>")
+    if brand.get("company_id"):
+        lines.append(f"{t('report_branding_company_id')}: {html.escape(str(brand['company_id']))}")
+    if brand.get("contact"):
+        lines.append(f'<span class="brand-contact">{html.escape(str(brand["contact"]))}</span>')
+    text_html = f'<div class="brand-text">{"<br>".join(lines)}</div>' if lines else ""
+    if not logo_html and not text_html:
+        return ""
+    return f'<header class="brand">{logo_html}{text_html}</header>'
+
+
+def _recorded_note(timestamp, t) -> str:
+    if not timestamp:
+        return ""
+    when = html.escape(_format_timestamp(timestamp))
+    return f'<p class="form-note">{t("report_form_recorded")}: {when}</p>'
+
+
+def _render_intake(form, language: str) -> str:
+    """The intake form (G20): the state the PC was received in."""
+    if not isinstance(form, dict) or not form:
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    rows = []
+
+    def row(label_key: str, value: str) -> None:
+        if value:
+            rows.append(f"<dt>{t(label_key)}</dt><dd>{value}</dd>")
+
+    row("report_intake_problem", html.escape(str(form.get("problem") or "")))
+    labels = form.get("condition_labels")
+    flags = ", ".join(str(item) for item in labels) if isinstance(labels, list) else ""
+    condition = "; ".join(part for part in (flags, str(form.get("condition") or "")) if part)
+    row("report_intake_condition", html.escape(condition))
+    row("report_intake_accessories", html.escape(str(form.get("accessories") or "")))
+    backup = html.escape(str(form.get("backup_label") or ""))
+    if backup and form.get("backup") == intake.BACKUP_WAIVER:
+        # The client took the risk of data loss - the line the technician
+        # may one day have to point at.
+        backup = f"<strong>{backup}</strong>"
+    row("report_intake_backup", backup)
+    row("report_intake_password", html.escape(str(form.get("password_handling_label") or "")))
+    if not rows:
+        return ""
+    return (
+        f'<section aria-labelledby="pf-h-intake"><h2 id="pf-h-intake">{t("report_intake_heading")}</h2>'
+        f'<dl class="form">{"".join(rows)}</dl>{_recorded_note(form.get("timestamp"), t)}</section>'
+    )
+
+
+def _render_outtake(form, language: str) -> str:
+    """The hand-over check (G20): Pass / Fail / N/A per function, and
+    who took the PC when."""
+    if not isinstance(form, dict) or not form:
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    checks = form.get("checks") if isinstance(form.get("checks"), list) else []
+    body = ""
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        result = str(check.get("result") or "")
+        css = f' class="check-{result}"' if result in intake.CHECK_RESULTS else ""
+        body += (
+            f'<tr><th scope="row">{html.escape(str(check.get("label") or check.get("key") or "?"))}</th>'
+            f'<td{css}>{html.escape(str(check.get("result_label") or result))}</td></tr>'
+        )
+    table = ""
+    if body:
+        table = (
+            '<div class="table-wrap"><table class="summary snapshot"><thead><tr>'
+            f'<th scope="col">{t("report_outtake_col_check")}</th><th scope="col">{t("report_outtake_col_result")}</th>'
+            f"</tr></thead><tbody>{body}</tbody></table></div>"
+        )
+    handed = ""
+    if form.get("handed_to"):
+        when = f" &middot; {html.escape(str(form['handed_at']))}" if form.get("handed_at") else ""
+        handed = (
+            f'<dl class="form"><dt>{t("report_outtake_handed_to")}</dt>'
+            f"<dd><strong>{html.escape(str(form['handed_to']))}</strong>{when}</dd></dl>"
+        )
+    if not table and not handed:
+        return ""
+    return (
+        f'<section aria-labelledby="pf-h-outtake"><h2 id="pf-h-outtake">{t("report_outtake_heading")}</h2>'
+        f'{table}{handed}{_recorded_note(form.get("timestamp"), t)}</section>'
+    )
+
+
+def _seconds(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _work_time_text(work, language: str) -> str:
+    """The meta line with the run's work time (G20): the sum of its
+    batches and, when used, the manual timer - shown apart, since the timer
+    usually runs through the batches too."""
+    if not isinstance(work, dict) or not work:
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    parts = []
+    if _seconds(work.get("batch_count")):
+        parts.append(t("report_work_batches").format(time=intake.format_duration(_seconds(work.get("batch_seconds")))))
+    if _seconds(work.get("timer_seconds")) or work.get("timer_running"):
+        timer = t("report_work_timer").format(time=intake.format_duration(_seconds(work.get("timer_seconds"))))
+        if work.get("timer_running"):
+            timer += f" ({t('report_work_timer_running')})"
+        parts.append(timer)
+    if not parts:
+        return ""
+    return f"{t('report_work_time')}: {' &middot; '.join(parts)}"
+
+
 def _render_toolbar(language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
@@ -1053,6 +1293,9 @@ def _render_html(data: dict) -> str:
     if isinstance(elevated, bool):
         extra_meta += f"<br>\n{t('report_elevated')}: {t('report_yes') if elevated else t('report_no')}"
     safety_section = _render_safety_section(data.get("events") or [], language)
+    work_time = _work_time_text(data.get("work_time"), language)
+    if work_time:
+        extra_meta += f"<br>\n{work_time}"
     storage_banner = ""
     if data.get("storage_fallback"):
         # The report lives on the client's disk, in %TEMP% - say so where
@@ -1085,6 +1328,7 @@ def _render_html(data: dict) -> str:
 <title>PortableFix report {html.escape(data['run_id'])}</title>
 <style>{_CSS}</style></head>
 <body><main class="wrap">
+{_render_branding(data.get('branding'), language)}
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 {storage_banner}
 {_render_job(data.get('job') or dict(), t)}
@@ -1097,6 +1341,7 @@ def _render_html(data: dict) -> str:
 <div class="chip fail"><span class="num">{fail_count}</span><span class="lbl">{t('report_chip_failed')}</span></div>
 <div class="chip dry"><span class="num">{dry_count}</span><span class="lbl">{t('report_chip_dry_run')}</span></div>
 </div>
+{_render_intake(data.get('intake'), language)}
 {snapshot_section}
 {failed_section}
 {safety_section}
@@ -1108,6 +1353,7 @@ def _render_html(data: dict) -> str:
 {cards}
 </section>
 {restart_section}
+{_render_outtake(data.get('outtake'), language)}
 </main>
 <script>{_JS}</script>
 </body></html>
@@ -1124,10 +1370,11 @@ def generate_report(
     job: dict | None = None,
     storage_fallback: bool = False,
     redact: bool = False,
+    branding: dict | None = None,
 ) -> tuple[Path, Path]:
     data = build_report_data(
         base_dir, run_id, modules, language, snapshot_before, snapshot_after, job,
-        storage_fallback=storage_fallback,
+        storage_fallback=storage_fallback, branding=branding,
     )
     if redact:
         data = redact_report_data(data)
@@ -1155,7 +1402,24 @@ def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
     keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
     if mask is None:
         mask = redaction.local_profile_names()
+    # The technician's own branding and the name the PC was handed to were
+    # entered on purpose, like the job details: they stay as they are (and
+    # the logo's base64 must not be touched at all - a collected value
+    # between two "/" in it would break the image). The rest of the intake
+    # and outtake is free text and is redacted like everything else.
+    data = dict(data)
+    brand = data.pop("branding", None)
+    outtake = data.get("outtake")
+    handed_to = outtake.get("handed_to") if isinstance(outtake, dict) else None
+    if isinstance(brand, dict):
+        keep += [str(value) for key, value in brand.items() if key not in ("logo", "logo_mime")]
+    if handed_to:
+        keep.append(str(handed_to))
     redacted = redaction.redact_data(data, keep=keep, mask=mask)
+    if brand is not None:
+        redacted["branding"] = brand
+    if handed_to and isinstance(redacted.get("outtake"), dict):
+        redacted["outtake"]["handed_to"] = handed_to
     redacted["redacted"] = True
     return redacted
 
@@ -1178,10 +1442,11 @@ class ReportRunner(QThread):
 
     def __init__(self, base_dir: Path, run_id: str, modules: list[ModuleDef], language: str,
                  snapshot_before: dict, snapshot_after: dict, job: dict | None = None,
-                 storage_fallback: bool = False, redact: bool = False, parent=None):
+                 storage_fallback: bool = False, redact: bool = False, branding: dict | None = None,
+                 parent=None):
         super().__init__(parent)
         self._args = (base_dir, run_id, modules, language, snapshot_before, snapshot_after)
-        self._kwargs = {"job": job, "storage_fallback": storage_fallback, "redact": redact}
+        self._kwargs = {"job": job, "storage_fallback": storage_fallback, "redact": redact, "branding": branding}
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:

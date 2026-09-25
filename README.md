@@ -117,6 +117,33 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   tvaru hodnoty a anglického názvu vlastnosti (`SerialNumber`, `SSID`),
   nie záruka: hodnota bez takého označenia (napr. v stĺpci tabuľky) môže
   ostať.
+- **Prevzatie / odovzdanie** (tlačidlo v okne Zákazka, všetko voliteľné):
+  karta Prevzatie - nahlásený problém, fyzický stav (text a zaškrtnutie:
+  škrabance, prasknutý displej, chýbajúce klávesy, poškodenie tekutinou),
+  prevzaté príslušenstvo, záloha dát (klient ju žiada, alebo waiver -
+  zálohu odmieta a riziko straty dát berie na seba) a ako sa naložilo s
+  heslom (netreba / zadal ho klient / resetované). Pole pre samotné heslo
+  neexistuje a nikdy sa nezapisuje. Karta Odovzdanie - Wi-Fi, zvuk,
+  kamera, klávesnica, USB, nabíjanie a displej: V poriadku / Chyba / N/A,
+  komu a kedy sa PC odovzdalo. Každé uloženie so zmenou sa zapíše do
+  auditného logu ako `_system` udalosť (`intake`, `outtake`); report
+  (HTML aj JSON, v jazyku reportu) ukáže posledné uloženie v sekciách
+  „Pri prevzatí“ a „Pri odovzdaní“. Redigovanie pre klienta sa týka aj
+  textu formulárov; meno, komu sa PC odovzdalo, zostane ako údaje zo
+  Zákazky.
+- **Čas práce:** každá dávka zapíše do auditného logu, ako dlho trvala
+  (`batch_duration`), a report uvedie súčet za celý beh. V okne Zákazka
+  je aj voliteľný ručný časovač (Spustiť / Zastaviť); jeho štart a stop
+  idú do auditného logu behu, takže prežije aj reštart PortableFixu v tom
+  istom behu. Report ho ukáže vedľa času dávok (nesčíta ich - časovač
+  zvyčajne beží aj počas dávok); bežiaci časovač sa počíta do chvíle
+  zápisu reportu.
+- **Branding reportu** (tlačidlo v okne Zákazka, pamätá sa, všetko
+  voliteľné): firma, IČO, kontakt a logo v hlavičke reportu. Logo (PNG
+  alebo JPEG, najviac 256 KB) sa overí podľa prvých bajtov súboru, nie
+  podľa prípony, a skopíruje sa do `Data/settings.json` ako base64 -
+  report ostáva jeden samostatný HTML súbor. Neplatné logo sa odmietne s
+  dôvodom a neuloží sa. Redigovanie brandingu nemení.
 - **Upozornenie na koniec dávky:** ak je okno v pozadí (napr. počas
   dlhého DISM/SFC), bliká na paneli úloh a zobrazí systémovú notifikáciu
   s počtom OK/zlyhaných akcií.

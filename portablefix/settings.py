@@ -3,6 +3,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import branding
+
 DEFAULT_LANGUAGE = "sk"
 SUPPORTED_LANGUAGES = ("sk", "en")
 MAX_CUSTOM_PRESETS = 20
@@ -32,6 +34,22 @@ class Settings:
     # numbers, key fragments and SSIDs. Off by default - the technician's
     # own copy should be complete unless they ask otherwise.
     redact_for_client: bool = False
+    # The technician's branding in the report header (research G20), all
+    # optional. The logo is the image itself as base64 (PNG/JPEG, at most
+    # branding.MAX_LOGO_BYTES), not a path - see branding.py.
+    branding_company: str = ""
+    branding_company_id: str = ""
+    branding_contact: str = ""
+    branding_logo: str = ""
+
+    def branding_info(self) -> dict:
+        """The branding as report.py takes it (see branding.clean_branding)."""
+        return branding.clean_branding({
+            "company": self.branding_company,
+            "company_id": self.branding_company_id,
+            "contact": self.branding_contact,
+            "logo": self.branding_logo,
+        })
 
 
 def settings_path(base_dir: Path) -> Path:
@@ -59,6 +77,7 @@ def load_settings(base_dir: Path) -> Settings:
     technician = data.get("technician_name")
     quiet_mode = data.get("quiet_mode")
     redact = data.get("redact_for_client")
+    logo = branding.decode_logo(data.get("branding_logo"))
     return Settings(
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
         dry_run=dry_run if isinstance(dry_run, bool) else True,
@@ -72,6 +91,12 @@ def load_settings(base_dir: Path) -> Settings:
         # read as truthy and silently change what the app sends on the wire.
         quiet_mode=quiet_mode if isinstance(quiet_mode, bool) else False,
         redact_for_client=redact if isinstance(redact, bool) else False,
+        branding_company=branding.clean_text(data.get("branding_company"), branding.MAX_COMPANY_LENGTH),
+        branding_company_id=branding.clean_text(data.get("branding_company_id"), branding.MAX_COMPANY_ID_LENGTH),
+        branding_contact=branding.clean_text(data.get("branding_contact"), branding.MAX_CONTACT_LENGTH),
+        # A logo that is not a valid PNG/JPEG within the limit (hand-edited,
+        # cut short) is dropped rather than put into every report.
+        branding_logo=logo[1] if logo is not None else "",
     )
 
 

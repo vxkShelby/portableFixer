@@ -1472,3 +1472,175 @@ def test_report_runner_passes_redact_through(tmp_path, monkeypatch):
     runner = report.ReportRunner(tmp_path, "run_x", [], "en", {}, {}, redact=True)
     runner.run()
     assert captured["redact"] is True
+
+
+# --- Intake / outtake, work time and branding (research G20) ---------------
+
+_PNG_LOGO = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x01" * 32
+
+
+def _g20_run(tmp_path, run_id):
+    from portablefix import intake
+
+    intake_form = intake.IntakeForm(
+        problem="Pomalý štart <b>", condition="Škrabanec na veku",
+        condition_flags=["scratches", "liquid_damage"], accessories="nabíjačka",
+        backup="waiver", password_handling="given_by_client",
+    )
+    outtake_form = intake.OuttakeForm(
+        checks={"wifi": "pass", "sound": "fail", "camera": "na"}, handed_to="Ján Novák", handed_at="2026-09-25 16:30",
+    )
+    append_entry(tmp_path, run_id, make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, run_id))
+    _system_event(tmp_path, run_id, intake.INTAKE_EVENT, 0, intake.form_to_output(intake_form))
+    _system_event(tmp_path, run_id, intake.OUTTAKE_EVENT, 0, intake.form_to_output(outtake_form))
+    _system_event(tmp_path, run_id, intake.BATCH_DURATION_EVENT, 0, intake.batch_duration_output(600))
+    _system_event(tmp_path, run_id, intake.BATCH_DURATION_EVENT, 0, intake.batch_duration_output(125))
+
+
+@pytest.mark.parametrize(("language", "texts"), [
+    ("sk", ["Pri prevzatí", "Nahlásený problém", "škrabance, poškodenie tekutinou; Škrabanec na veku",
+            "<strong>Klient zálohu odmieta a riziko straty dát berie na seba</strong>", "Zadal ho klient",
+            "Pri odovzdaní", "V poriadku", "Chyba", "Odovzdané", "Čas práce: dávky 12 min"]),
+    ("en", ["Intake", "Reported problem", "scratches, liquid damage; Škrabanec na veku",
+            "<strong>The client declines a backup and accepts the risk of data loss</strong>", "Given by the client",
+            "Hand-over", "Pass", "Fail", "Handed over to", "Work time: batches 12 min"]),
+])
+def test_report_renders_intake_outtake_and_work_time_in_both_languages(tmp_path, language, texts):
+    _g20_run(tmp_path, "run_g20")
+    html_path, json_path = generate_report(tmp_path, "run_g20", _fixture_modules(), language, {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    for text in texts:
+        assert text in content, text
+    # Free text is escaped, never markup.
+    assert "Pomalý štart &lt;b&gt;" in content
+    assert '<td class="check-pass">' in content and '<td class="check-fail">' in content
+    assert "<strong>Ján Novák</strong> &middot; 2026-09-25 16:30" in content
+    # Neither form is a safety fact - nothing of them in the safety log.
+    assert '<ul class="events">' not in content
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["intake"]["backup"] == "waiver"
+    assert data["intake"]["password_handling"] == "given_by_client"
+    assert data["intake"]["condition_flags"] == ["scratches", "liquid_damage"]
+    assert data["intake"]["timestamp"]
+    assert [c["key"] for c in data["outtake"]["checks"]] == ["wifi", "sound", "camera"]
+    assert data["outtake"]["handed_to"] == "Ján Novák"
+    assert data["work_time"] == {"batch_seconds": 725, "batch_count": 2, "timer_seconds": 0, "timer_running": False}
+    assert data["events"] == []
+    # The labels in the report's language, next to the codes.
+    assert data["intake"]["backup_label"] in content
+
+
+def test_report_without_forms_has_no_new_sections(tmp_path):
+    append_entry(tmp_path, "run_plain", make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_plain"))
+    html_path, json_path = generate_report(tmp_path, "run_plain", _fixture_modules(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    for key in ("intake", "outtake", "work_time", "branding"):
+        assert key not in data
+    for marker in ("pf-h-intake", "pf-h-outtake", "Work time", 'class="brand"'):
+        assert marker not in content
+
+
+def test_report_shows_the_manual_timer_and_a_running_one(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from portablefix import intake
+
+    run = "run_timer"
+    start = datetime.now(timezone.utc) - timedelta(minutes=20)
+    for decision, when in (("start", start), ("stop", start + timedelta(minutes=5)), ("start", start + timedelta(minutes=10))):
+        entry = make_entry("_system", intake.WORK_TIMER_EVENT, "", 0, "", False, run, decision=decision)
+        entry.timestamp = when.isoformat()
+        append_entry(tmp_path, run, entry)
+    html_path, json_path = generate_report(tmp_path, run, _fixture_modules(), "sk", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["work_time"]["timer_running"] is True
+    # 5 closed minutes + ~10 running ones.
+    assert 15 * 60 <= data["work_time"]["timer_seconds"] < 16 * 60
+    content = html_path.read_text(encoding="utf-8")
+    assert "Čas práce: ručný časovač 15 min (stále beží)" in content
+    # No batch ran - no batch part.
+    assert "dávky" not in content
+
+
+def test_report_header_shows_branding_with_the_logo_inline(tmp_path):
+    import base64
+
+    logo = base64.b64encode(_PNG_LOGO).decode("ascii")
+    brand = {"company": "Servis <s.r.o.>", "company_id": "12345678", "contact": "0900 123 456\nservis@example.sk", "logo": logo}
+    html_path, json_path = generate_report(tmp_path, "run_brand", _fixture_modules(), "sk", {}, {}, branding=brand)
+    content = html_path.read_text(encoding="utf-8")
+    assert f'<img class="brand-logo" src="data:image/png;base64,{logo}" alt="Servis &lt;s.r.o.&gt;">' in content
+    assert "<strong>Servis &lt;s.r.o.&gt;</strong>" in content
+    assert "IČO: 12345678" in content
+    assert "servis@example.sk" in content
+    # Before the title, so it heads the page and the printout.
+    assert content.index('class="brand"') < content.index("<h1>")
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["branding"]["logo_mime"] == "image/png"
+    assert data["branding"]["company_id"] == "12345678"
+
+
+def test_report_branding_refuses_a_forged_logo_when_re_rendered(tmp_path):
+    from portablefix.report import render_report_html
+
+    html_path, json_path = generate_report(tmp_path, "run_forge", _fixture_modules(), "en", {}, {},
+                                           branding={"company": "Servis"})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    # A hand-edited report.json must not put anything else into <img src>.
+    data["branding"]["logo"] = 'x" onerror="alert(1)'
+    data["branding"]["logo_mime"] = "text/html"
+    content = render_report_html(data)
+    assert "<img" not in content and "onerror" not in content
+    assert "<strong>Servis</strong>" in content
+    assert "Company ID" not in content
+
+
+def test_report_invalid_logo_alone_adds_no_branding(tmp_path):
+    import base64
+
+    html_path, json_path = generate_report(tmp_path, "run_badlogo", _fixture_modules(), "en", {}, {},
+                                           branding={"logo": base64.b64encode(b"GIF89a....").decode()})
+    assert "branding" not in json.loads(json_path.read_text(encoding="utf-8"))
+    assert 'class="brand"' not in html_path.read_text(encoding="utf-8")
+
+
+def test_redacted_report_masks_form_text_but_keeps_branding_and_the_hand_over_name(tmp_path, monkeypatch):
+    import base64
+
+    from portablefix import intake, redaction
+
+    # The client's profile name equals the hand-over name - the name
+    # entered on purpose still stays.
+    monkeypatch.setattr(redaction, "local_profile_names", lambda users_dir=None: ["Jan Novak"])
+    run = "run_g20red"
+    form = intake.IntakeForm(problem="Nejde sieť na 192.168.1.23, SerialNumber : 5CD1234XYZ")
+    _system_event(tmp_path, run, intake.INTAKE_EVENT, 0, intake.form_to_output(form))
+    _system_event(tmp_path, run, intake.OUTTAKE_EVENT, 0, intake.form_to_output(
+        intake.OuttakeForm(checks={"wifi": "pass"}, handed_to="Jan Novak")))
+    # The logo's base64 holds "/5CD1234XYZ/" - the serial collected above,
+    # between two non-word characters: masking it would break the image.
+    logo = base64.b64encode(_PNG_LOGO).decode("ascii") + "/5CD1234XYZ/"
+    brand = {"company": "Servis 10.0.0.5", "contact": "Jan Novak, 0900", "logo": logo}
+    html_path, json_path = generate_report(tmp_path, run, _fixture_modules(), "en", {}, {}, redact=True, branding=brand)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["intake"]["problem"] == "Nejde sieť na <ip>, SerialNumber : <serial>"
+    assert data["outtake"]["handed_to"] == "Jan Novak"
+    assert data["branding"]["company"] == "Servis 10.0.0.5"
+    assert data["branding"]["contact"] == "Jan Novak, 0900"
+    assert data["branding"]["logo"] == logo
+    content = html_path.read_text(encoding="utf-8")
+    assert "192.168.1.23" not in content
+    assert "SerialNumber : 5CD1234XYZ" not in content
+    assert f"base64,{logo}" in content
+    assert "<strong>Jan Novak</strong>" in content
+
+
+def test_report_runner_passes_branding_through(tmp_path, monkeypatch):
+    from portablefix import report
+
+    captured = {}
+    monkeypatch.setattr(report, "generate_report", lambda *a, **kw: captured.update(kw) or (tmp_path / "r.html", None))
+    report.ReportRunner(tmp_path, "run_x", [], "en", {}, {}, branding={"company": "Servis"}).run()
+    assert captured["branding"] == {"company": "Servis"}

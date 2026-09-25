@@ -120,6 +120,34 @@ PowerShell.
   so. It masks by the shape of a value and the English property name
   (`SerialNumber`, `SSID`) - not a guarantee: a value printed without
   such a label (e.g. in a table column) can remain.
+- **Intake / hand-over** (button in the Job details window, all
+  optional): the Intake tab - reported problem, physical condition (text
+  and checkboxes: scratches, cracked screen, missing keys, liquid damage),
+  accessories received, data backup (requested by the client, or a
+  waiver - the client declines it and accepts the risk of data loss) and
+  how the password was handled (not needed / given by the client /
+  reset). There is no field for the password itself and it is never
+  recorded. The Hand-over tab - Wi-Fi, sound, camera, keyboard, USB,
+  charging and display: Pass / Fail / N/A, who the PC was handed to and
+  when. Each save with a change goes into the audit log as a `_system`
+  event (`intake`, `outtake`); the report (HTML and JSON, in the report's
+  language) shows the latest save in the "Intake" and "Hand-over"
+  sections. Redact for the client covers the form text too; the name the
+  PC was handed to stays, like the Job details.
+- **Work time:** every batch logs how long it ran (`batch_duration`) and
+  the report shows the total for the whole run. The Job details window
+  also has an optional manual timer (Start / Stop); its start and stop go
+  into the run's audit log, so it survives a restart of PortableFix
+  within the same run. The report shows it next to the batch time (not
+  added up - the timer usually runs through the batches too); a running
+  timer counts up to the moment the report is written.
+- **Report branding** (button in the Job details window, remembered, all
+  optional): company, company ID (IČO), contact and a logo in the report
+  header. The logo (PNG or JPEG, at most 256 KB) is checked by the file's
+  first bytes, not its extension, and copied into `Data/settings.json` as
+  base64 - the report stays one self-contained HTML file. An invalid logo
+  is refused with the reason and not saved. Redaction leaves the branding
+  as it is.
 - **Batch-finished notice:** when the window is in the background (e.g.
   during a long DISM/SFC run) the taskbar entry flashes and a system
   notification shows the OK/failed counts.
