@@ -1234,3 +1234,227 @@ def test_restore_point_subjects_tolerates_a_corrupted_value(tmp_path):
     path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
     [point] = build_report_data(tmp_path, "run_badsubj", [], "en", {}, {})["restore_points"]
     assert point["subject_label"] == "Uninstall: A" and point["subjects"] == []
+
+
+# --- Restart / resume events (research G03) --------------------------------
+
+
+def _restart_modules():
+    def action(action_id, sk, en, risk=RiskLevel.SAFE):
+        return ActionDef(id=action_id, label_sk=sk, label_en=en, risk=risk, command="x")
+
+    return [ModuleDef(module_id="m03_repair", actions=[
+        action("dism_restore", "Oprava obrazu", "Image repair", RiskLevel.REQUIRES_REBOOT),
+        action("sfc_scan", "Kontrola súborov", "File check"),
+        action("chkdsk_now", "Kontrola disku", "Disk check"),
+    ])]
+
+
+def _restart_events(tmp_path, run_id):
+    # The exact sentences main_window / main.py write (pinned below).
+    _system_event(tmp_path, run_id, "restart_pending", 0,
+                  "dism_restore succeeded and needs a restart before the rest of the batch - batch stopped. "
+                  "Saved to continue after the restart: sfc_scan, chkdsk_now.",
+                  risk="REQUIRES_REBOOT", subject="m03_repair/dism_restore")
+    _system_event(tmp_path, run_id, "resume_skipped", None,
+                  "Not in this version's catalog, not continued: old_gone.")
+    _system_event(tmp_path, run_id, "resumed_after_reboot", 0,
+                  "Continuing the batch after a restart (2 action(s): sfc_scan, chkdsk_now).",
+                  subject="m03_repair/dism_restore")
+
+
+@pytest.mark.parametrize(("language", "expected"), [
+    ("en", [
+        'Windows restart: <strong>Image repair</strong> <span class="mod">[REQUIRES_REBOOT]</span> &mdash; '
+        "succeeded and needs a restart before the rest of the batch - batch stopped"
+        '<div class="warn-text">Saved to continue after the restart: File check, Disk check</div>',
+        "Not continued after the restart - not in this version&#x27;s catalog</span>: old_gone",
+        "Batch continued after the restart (after <strong>Image repair</strong>): File check, Disk check",
+    ]),
+    ("sk", [
+        'Reštart Windows: <strong>Oprava obrazu</strong> <span class="mod">[REQUIRES_REBOOT]</span> &mdash; '
+        "po úspešnom behu vyžaduje reštart pred zvyškom dávky - dávka zastavená"
+        '<div class="warn-text">Uložené na pokračovanie po reštarte: Kontrola súborov, Kontrola disku</div>',
+        "Po reštarte nepokračovali - nie sú v katalógu tejto verzie</span>: old_gone",
+        "Dávka pokračovala po reštarte (po akcii <strong>Oprava obrazu</strong>): Kontrola súborov, Kontrola disku",
+    ]),
+])
+def test_restart_and_resume_events_reach_the_safety_section_translated(tmp_path, language, expected):
+    _restart_events(tmp_path, "run_rs")
+    html_path, json_path = generate_report(tmp_path, "run_rs", _restart_modules(), language, {}, {})
+    items = _safety_items(html_path.read_text(encoding="utf-8"))
+    for text in expected:
+        assert text in items
+    # Never the raw event kind or main_window's English sentence.
+    for raw in ("restart_pending:", "resumed_after_reboot:", "resume_skipped:", "batch stopped. Saved"):
+        assert raw not in items
+    # Not actions: the counts and chips stay clean.
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["actions"] == []
+    kinds = {e["kind"]: e for e in data["events"]}
+    assert kinds["restart_pending"]["action_labels"] == [
+        "File check" if language == "en" else "Kontrola súborov",
+        "Disk check" if language == "en" else "Kontrola disku",
+    ]
+    assert kinds["resume_skipped"]["action_labels"] == ["old_gone"]
+    # The audit sentence itself is kept verbatim for the record.
+    assert kinds["resumed_after_reboot"]["output"].startswith("Continuing the batch after a restart")
+
+
+def test_restart_that_restarts_at_once_and_could_not_save_the_rest_is_flagged(tmp_path):
+    _system_event(tmp_path, "run_rs2", "restart_pending", 0,
+                  "dism_restore restarts Windows immediately - report and undo.ps1 written before it runs. "
+                  "Could not save the rest of the batch (sfc_scan) - start it again by hand after the restart.",
+                  risk="REQUIRES_REBOOT", subject="m03_repair/dism_restore")
+    # Nothing was queued behind it: no second line at all.
+    _system_event(tmp_path, "run_rs2", "restart_pending", 0,
+                  "chkdsk_now restarts Windows immediately - report and undo.ps1 written before it runs.",
+                  risk="SAFE", subject="m03_repair/chkdsk_now")
+    items = _safety_items(
+        generate_report(tmp_path, "run_rs2", _restart_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
+    )
+    assert ("restarts Windows at once - the report and undo.ps1 were written before it ran"
+            '<div class="warn-text"><span class="rp-fail">The rest of the batch could not be saved - '
+            "start it by hand after the restart</span>: File check</div>") in items
+    assert ("<strong>Disk check</strong> <span class=\"mod\">[SAFE]</span> &mdash; restarts Windows at once - "
+            "the report and undo.ps1 were written before it ran</li>") in items
+
+
+@pytest.mark.parametrize(("language", "expected"), [
+    ("en", "Technician declined to continue the batch after the restart: File check, Disk check"),
+    ("sk", "Technik po reštarte odmietol pokračovať v dávke: Kontrola súborov, Kontrola disku"),
+])
+def test_declined_resume_is_on_the_first_halfs_report(tmp_path, language, expected):
+    _system_event(tmp_path, "run_rd", "resume_declined", None,
+                  "Technician declined to continue the batch after the restart: sfc_scan, chkdsk_now.",
+                  decision="declined")
+    items = _safety_items(
+        generate_report(tmp_path, "run_rd", _restart_modules(), language, {}, {})[0].read_text(encoding="utf-8")
+    )
+    assert expected in items
+
+
+def test_missing_first_half_hive_backup_is_flagged(tmp_path):
+    _system_event(tmp_path, "run_rh", "resume_hive_backup_missing", None,
+                  r"Registry hive backup of the first half not found: E:\PortableFix\Backups\r\hives-1.")
+    items = _safety_items(generate_report(tmp_path, "run_rh", [], "sk", {}, {})[0].read_text(encoding="utf-8"))
+    assert ('<span class="rp-fail">Záloha registra z prvej časti dávky sa nenašla</span>: '
+            r"E:\PortableFix\Backups\r\hives-1</li>") in items
+
+
+def test_resume_event_with_an_unrecognised_sentence_still_shows_it(tmp_path):
+    # A reworded (future) sentence: the event is still shown, verbatim.
+    _system_event(tmp_path, "run_ru", "resume_declined", None, "Declined <for> some reason", decision="declined")
+    _system_event(tmp_path, "run_ru", "resumed_after_reboot", 0, "Continued.")
+    items = _safety_items(generate_report(tmp_path, "run_ru", [], "en", {}, {})[0].read_text(encoding="utf-8"))
+    assert "Technician declined to continue the batch after the restart: Declined &lt;for&gt; some reason" in items
+    assert "Batch continued after the restart: Continued.</li>" in items
+
+
+def test_report_json_from_before_action_labels_still_renders():
+    from portablefix.report import _render_event
+
+    event = {"timestamp": "2026-09-25T10:00:00+00:00", "kind": "resume_skipped", "exit_code": None,
+             "output": "Not in this version's catalog, not continued: a, b.", "subject": ""}
+    assert "Not in this version&#x27;s catalog, not continued: a, b." in _render_event(event, "en")
+
+
+def test_restart_sentences_match_what_main_window_and_main_log():
+    # report.py reads the action ids back out of these fixed sentences -
+    # pin them so a rewording can't silently drop the names from the report.
+    from pathlib import Path
+
+    from portablefix import report
+
+    root = Path(report.__file__).parent
+    window = (root / "gui" / "main_window.py").read_text(encoding="utf-8")
+    main = (root.parent / "main.py").read_text(encoding="utf-8")
+    assert f"{{action.id}} {report._RESTART_IMMEDIATE} - " in window
+    assert '" Saved to continue after the restart: {waiting}."' in window
+    assert '" Could not save the rest of the batch ({waiting}) - start it again by hand after the restart."' in window
+    assert '"Continuing the batch after a restart ({len(queue)} action(s): {\', \'.join(queue)})."' in window
+    assert '"Not in this version\'s catalog, not continued: {\', \'.join(missing)}."' in window
+    assert '"Registry hive backup of the first half not found: {\', \'.join(missing_hives)}."' in window
+    assert '"Technician declined to continue the batch after the restart: {\', \'.join(pending.action_ids)}."' in main
+    for kind in ("restart_pending", "resumed_after_reboot", "resume_skipped", "resume_hive_backup_missing"):
+        assert f'"{kind}"' in window
+    assert '"resume_declined"' in main
+
+
+# --- Redact for the client (research G20) ----------------------------------
+
+
+_PERSONAL_OUTPUT = (
+    "SerialNumber : 5CD1234XYZ\n"
+    "Cleaned C:\\Users\\jnovak\\AppData\\Local\\Temp\n"
+    "IPv4 192.168.1.23 MAC 00-1A-2B-3C-4D-5E\n"
+    "SSID : Novakovci\n"
+    "Windows 10.0.26100.1"
+)
+
+
+@pytest.mark.parametrize(("language", "banner"), [
+    ("sk", "Redigované pre klienta"),
+    ("en", "Redacted for the client"),
+])
+def test_redacted_report_masks_personal_data_and_says_so(tmp_path, language, banner):
+    import socket
+
+    append_entry(tmp_path, "run_red", make_entry("m02_cleanup", "user_temp", "cmd", 0, _PERSONAL_OUTPUT, False, "run_red"))
+    log_before = audit_log_path(tmp_path, "run_red").read_bytes()
+    job = {"technician": "Ján Technik", "client": "Firma 192.168.1.23", "note": "Pomalý štart"}
+    html_path, json_path = generate_report(
+        tmp_path, "run_red", _fixture_modules(), language, {}, {}, job=job, redact=True,
+    )
+
+    content = html_path.read_text(encoding="utf-8")
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["redacted"] is True
+    assert f'<div class="banner redacted" role="note"><strong>{banner}</strong>' in content
+    assert data["actions"][0]["output"] == (
+        "SerialNumber : <serial>\nCleaned C:\\Users\\<user>\\AppData\\Local\\Temp\n"
+        "IPv4 <ip> MAC <mac>\nSSID : <ssid>\nWindows 10.0.26100.1"
+    )
+    for secret in ("5CD1234XYZ", "jnovak", "00-1A-2B-3C-4D-5E", "Novakovci", "IPv4 192.168.1.23"):
+        assert secret not in content
+    # Escaped like any other text on the page, never markup.
+    assert "C:\\Users\\&lt;user&gt;\\AppData" in content
+    # Entered on purpose: the computer name and the job fields stay.
+    assert data["hostname"] == socket.gethostname()
+    assert data["job"] == job
+    assert "Firma 192.168.1.23" in content
+    # The audit log itself is never touched.
+    assert audit_log_path(tmp_path, "run_red").read_bytes() == log_before
+    assert b"5CD1234XYZ" in log_before
+
+
+def test_report_is_not_redacted_by_default(tmp_path):
+    append_entry(tmp_path, "run_nored", make_entry("m02_cleanup", "user_temp", "cmd", 0, _PERSONAL_OUTPUT, False, "run_nored"))
+    html_path, json_path = generate_report(tmp_path, "run_nored", _fixture_modules(), "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert "redacted" not in data
+    assert data["actions"][0]["output"] == _PERSONAL_OUTPUT
+    content = html_path.read_text(encoding="utf-8")
+    assert "Redacted for the client" not in content and "5CD1234XYZ" in content
+
+
+def test_redacted_events_keep_their_translated_rendering(tmp_path):
+    # Masking runs over the event outputs too, and must not break how the
+    # safety section reads them.
+    _system_event(tmp_path, "run_redev", "resume_hive_backup_missing", None,
+                  "Registry hive backup of the first half not found: C:\\Users\\jnovak\\AppData\\Local\\Temp\\PF\\hives-1.")
+    _restart_events(tmp_path, "run_redev")
+    html_path, _ = generate_report(tmp_path, "run_redev", _restart_modules(), "en", {}, {}, redact=True)
+    items = _safety_items(html_path.read_text(encoding="utf-8"))
+    assert "C:\\Users\\&lt;user&gt;\\AppData\\Local\\Temp\\PF\\hives-1</li>" in items
+    assert "Saved to continue after the restart: File check, Disk check" in items
+
+
+def test_report_runner_passes_redact_through(tmp_path, monkeypatch):
+    from portablefix import report
+
+    captured = {}
+    monkeypatch.setattr(report, "generate_report", lambda *a, **kw: captured.update(kw) or (tmp_path / "r.html", None))
+    runner = report.ReportRunner(tmp_path, "run_x", [], "en", {}, {}, redact=True)
+    runner.run()
+    assert captured["redact"] is True

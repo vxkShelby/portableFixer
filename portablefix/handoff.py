@@ -15,8 +15,18 @@ the client's machine. Every report has its own timeout and a failed or
 hung one is only noted in diagnostics/README.txt - it never fails the
 handoff. Nothing is redacted: the README says plainly what each file holds
 and that it contains personal data, which is why it is opt-in.
+
+With "Redact for the client" on (research G20), the files PortableFix
+itself wrote - the report and the audit log copy - go into the zip with
+personal data masked (see redaction.py) and the README says so. The
+originals on the stick are never touched. undo.ps1 is left as it is:
+masking a path in it
+would make it restore the wrong thing, and the Windows reports under
+diagnostics/ are not PortableFix's text to rewrite (binary .nfo/.evtx, raw
+console code page), so the README says both plainly.
 """
 
+import json
 import os
 import re
 import shutil
@@ -32,7 +42,7 @@ from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
-from . import history
+from . import history, redaction, report
 from .audit_log import audit_log_path
 
 # Fixed arc names, independent of hostname/run_id, so the README can refer
@@ -112,6 +122,25 @@ How to use undo.ps1 safely:
   4. It only reverts changes from this one run. If more work was done on
      the PC since, ask the technician first.
   5. If in doubt, do not run it - contact the technician.
+"""
+
+REDACTED_README_NOTE = """\
+
+REDIGOVANÉ PRE KLIENTA / REDACTED FOR THE CLIENT
+------------------------------------------------
+V súboroch report.html, report.json a audit_log.jsonl sú mená používateľov
+v cestách, IP a MAC adresy, sériové čísla, časti licenčných kľúčov a názvy
+Wi-Fi sietí nahradené značkami ako <user>, <ip> alebo <serial>. Názov
+počítača a údaje, ktoré technik zadal (technik, klient, poznámka), zostali.
+undo.ps1 je nezmenený, aby vrátil zmeny presne. Vstavané reporty Windows
+v priečinku diagnostics/ (ak je pribalený) redigované nie sú.
+
+In report.html, report.json and audit_log.jsonl, user names in paths, IP
+and MAC addresses, serial numbers, product-key fragments and Wi-Fi network
+names are replaced by markers such as <user>, <ip> or <serial>. The
+computer name and what the technician entered (technician, client, note)
+stay. undo.ps1 is unchanged so that it reverts exactly. Windows' built-in
+reports in the diagnostics/ folder (if included) are not redacted.
 """
 
 
@@ -387,7 +416,8 @@ _STATUS_TEXT = {
 
 def diagnostics_readme(results: list[DiagnosticResult], hostname: str, run_id: str,
                        dry_run: bool = False,
-                       reports: tuple[DiagnosticSpec, ...] = DIAGNOSTIC_REPORTS) -> str:
+                       reports: tuple[DiagnosticSpec, ...] = DIAGNOSTIC_REPORTS,
+                       redacted: bool = False) -> str:
     """Bilingual diagnostics/README.txt: the personal data warning, what
     each file holds and what happened to every report."""
     specs = {spec.arcname: spec for spec in reports}
@@ -430,6 +460,11 @@ def diagnostics_readme(results: list[DiagnosticResult], hostname: str, run_id: s
             "Beh bol v režime DRY-RUN (nič sa neopravovalo). Diagnostika sa aj tak",
             "zozbierala, lebo tieto príkazy systém iba čítajú.",
         ]
+    if redacted:
+        lines += [
+            "Nastavenie „Redigovať pre klienta“ tieto súbory NEMENÍ - redigované sú",
+            "len report a auditný záznam v koreni balíka.",
+        ]
     lines += [
         "",
         *_rows(0),
@@ -450,6 +485,11 @@ def diagnostics_readme(results: list[DiagnosticResult], hostname: str, run_id: s
         lines += [
             "The run was a DRY-RUN (nothing was repaired). Diagnostics were still",
             "collected because these commands only read the system.",
+        ]
+    if redacted:
+        lines += [
+            "The \"Redact for the client\" setting does NOT change these files - only",
+            "the report and the audit log at the top of the package are redacted.",
         ]
     lines += ["", *_rows(1), ""]
     return "\n".join(lines)
@@ -514,11 +554,99 @@ def _write_text(zf: zipfile.ZipFile, arcname: str, text: str) -> None:
     zf.writestr(info, text.replace("\n", "\r\n").encode("utf-8-sig"))
 
 
+def _write_bytes(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
+    info = zipfile.ZipInfo(arcname, date_time=datetime.now().timetuple()[:6])
+    info.compress_type = zipfile.ZIP_DEFLATED
+    zf.writestr(info, data)
+
+
+# The placeholders as they must appear in HTML source.
+_HTML_PLACEHOLDERS = {
+    p: p.replace("<", "&lt;").replace(">", "&gt;")
+    for p in (redaction.USER, redaction.IP, redaction.MAC, redaction.SERIAL, redaction.KEY, redaction.SSID)
+}
+
+
+def _load_report_json(path: Path | None) -> dict | None:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _redacted_audit_log(source: Path, keep: list[str]) -> bytes:
+    """The audit log copy with every entry redacted, one JSON object per
+    line as audit_log.append_entry writes them. Parsed first so a path is
+    matched as the text it is, not as JSON-escaped backslashes; a line that
+    is not JSON (a torn write) is redacted as plain text."""
+    lines = source.read_bytes().splitlines()
+    entries: list = []
+    for raw in lines:
+        text = raw.decode("utf-8", errors="replace")
+        try:
+            entries.append(json.loads(text))
+        except ValueError:
+            entries.append(text)
+    # One call for the whole log: an SSID or serial number named by key in
+    # one entry is masked in every other entry too.
+    redacted = redaction.redact_data(
+        [e for e in entries if not isinstance(e, str)], keep=keep,
+    )
+    out = []
+    parsed = iter(redacted)
+    for entry in entries:
+        if isinstance(entry, str):
+            out.append(redaction.redact_text(entry, keep))
+        else:
+            out.append(json.dumps(next(parsed)))
+    return ("\n".join(out) + ("\n" if out else "")).encode("utf-8")
+
+
+def _redacted_report_html(redacted_report: dict | None, html_source: Path, keep: list[str]) -> bytes:
+    # Re-rendered from the redacted JSON when there is one: the page then
+    # carries the "Redacted for the client" banner, and every masked value
+    # is escaped the way the report escapes everything else.
+    if redacted_report is not None:
+        try:
+            return report.render_report_html(redacted_report).encode("utf-8")
+        except (KeyError, TypeError, AttributeError, ValueError):
+            pass  # Hand-edited or foreign JSON - fall back to the page itself.
+    text = redaction.redact_text(html_source.read_text(encoding="utf-8", errors="replace"), keep)
+    for placeholder, escaped in _HTML_PLACEHOLDERS.items():
+        text = text.replace(placeholder, escaped)
+    return text.encode("utf-8")
+
+
+def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]], hostname: str) -> None:
+    paths = dict(sources)
+    report_data = _load_report_json(paths.get(ARC_REPORT_JSON))
+    job = report_data.get("job") if report_data is not None and isinstance(report_data.get("job"), dict) else {}
+    # The computer name and what the technician typed in stay readable.
+    keep = [hostname, *(str(value) for value in job.values())]
+    redacted_report = report.redact_report_data(report_data) if report_data is not None else None
+    for arcname, source in sources:
+        if arcname == ARC_REPORT_JSON and redacted_report is not None:
+            _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2).encode("utf-8"))
+        elif arcname == ARC_REPORT_JSON:
+            text = source.read_text(encoding="utf-8", errors="replace")
+            _write_bytes(zf, arcname, redaction.redact_text(text, keep).encode("utf-8"))
+        elif arcname == ARC_REPORT_HTML:
+            _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep))
+        elif arcname == ARC_AUDIT_LOG:
+            _write_bytes(zf, arcname, _redacted_audit_log(source, keep))
+        else:
+            zf.write(source, arcname=arcname)
+
+
 def build_handoff_zip(
     state_dir: Path, hostname: str, run_id: str, dest_path: Path,
     include_diagnostics: bool = False, dry_run: bool = False,
     progress: Callable[[int, int, str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    redact: bool = False,
 ) -> Path:
     """Write PortableFix_<host>_<run_id>.zip-style package to `dest_path`.
 
@@ -531,6 +659,9 @@ def build_handoff_zip(
     include_diagnostics runs the Windows reports (minutes - call it from a
     worker thread) and adds them under diagnostics/; with it off no command
     is started at all.
+
+    redact masks personal data in the package's copies of the report and
+    the audit log (research G20); the files on disk stay as they are.
     """
     sources = package_sources(state_dir, hostname, run_id)
     if not sources:
@@ -549,11 +680,19 @@ def build_handoff_zip(
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as raw, zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as zf:
-                _write_text(zf, ARC_README, README_TEXT.format(hostname=hostname, run_id=run_id))
-                for arcname, source in sources:
-                    zf.write(source, arcname=arcname)
+                readme = README_TEXT.format(hostname=hostname, run_id=run_id)
+                if redact:
+                    readme += REDACTED_README_NOTE
+                _write_text(zf, ARC_README, readme)
+                if redact:
+                    _write_redacted_sources(zf, sources, hostname)
+                else:
+                    for arcname, source in sources:
+                        zf.write(source, arcname=arcname)
                 if diag_dir is not None:
-                    _write_text(zf, ARC_DIAG_README, diagnostics_readme(diag_results, hostname, run_id, dry_run))
+                    _write_text(zf, ARC_DIAG_README, diagnostics_readme(
+                        diag_results, hostname, run_id, dry_run, redacted=redact,
+                    ))
                     for result in diag_results:
                         if result.status == STATUS_OK and result.path is not None:
                             zf.write(result.path, arcname=f"{DIAG_DIR}/{result.arcname}")
@@ -579,16 +718,17 @@ class HandoffRunner(QThread):
     result_ready = Signal(object, str, str)
 
     def __init__(self, state_dir: Path, hostname: str, run_id: str, dest_path: Path,
-                 dry_run: bool = False, parent=None):
+                 dry_run: bool = False, redact: bool = False, parent=None):
         super().__init__(parent)
         self._args = (Path(state_dir), hostname, run_id, Path(dest_path))
         self._dry_run = dry_run
+        self._redact = redact
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
         try:
             saved = build_handoff_zip(
-                *self._args, include_diagnostics=True, dry_run=self._dry_run,
+                *self._args, include_diagnostics=True, dry_run=self._dry_run, redact=self._redact,
                 progress=self.progress.emit, should_stop=self.isInterruptionRequested,
             )
         except HandoffCancelled:

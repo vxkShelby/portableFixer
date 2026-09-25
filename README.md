@@ -97,6 +97,23 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   `powercfg /energy` chýba zámerne - trvá minútu a pridá málo.
 - **Zákazka** (tlačidlo v hornej lište, Ctrl+J): meno technika (zapamätá
   sa), klient / číslo zákazky a poznámka - zobrazia sa v hlavičke reportu.
+- **Redigovať pre klienta** (prepínač v okne Zákazka, predvolene vypnutý,
+  pamätá sa): report (HTML aj JSON) a textové súbory balíka pre klienta
+  (`report.html`, `report.json`, kópia `audit_log.jsonl`, README) nahradia
+  mená používateľov v cestách (`C:\Users\<user>\`), IPv4/IPv6 a MAC
+  adresy, sériové čísla (BIOS, disky), časti licenčných kľúčov
+  (`XXXXX-XXXXX-…`, `PartialProductKey`) a názvy Wi-Fi sietí (SSID)
+  značkami ako `<ip>` či `<serial>`. Názov počítača a údaje zo Zákazky
+  zostanú. Verzie (`10.0.26100.1`), hashe a GUID sa nemenia; loopback,
+  masky a verejné DNS (8.8.8.8, 1.1.1.1) tiež nie. Report to na začiatku
+  viditeľne uvedie („Redigované pre klienta“) a JSON má `"redacted": true`.
+  Redaguje sa až pri zápise reportu a pri ukladaní balíka - auditný log
+  na USB sa nikdy nemení a v balíku ostáva `undo.ps1` bez zmeny (musí
+  vrátiť presné cesty). Vstavané reporty Windows v `diagnostics/` sa
+  neredigujú a `diagnostics/README.txt` to povie. Je to maskovanie podľa
+  tvaru hodnoty a anglického názvu vlastnosti (`SerialNumber`, `SSID`),
+  nie záruka: hodnota bez takého označenia (napr. v stĺpci tabuľky) môže
+  ostať.
 - **Upozornenie na koniec dávky:** ak je okno v pozadí (napr. počas
   dlhého DISM/SFC), bliká na paneli úloh a zobrazí systémovú notifikáciu
   s počtom OK/zlyhaných akcií.
@@ -266,7 +283,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   alebo z iného počítača sa zmaže bez otázky. PortableFix nič
   neregistruje na automatické spustenie s Windows - po reštarte ho
   technik spustí sám. Kontrolná obrazovka vopred vypíše, ktorá akcia
-  pobeží posledná a ktoré akcie počkajú na reštart.
+  pobeží posledná a ktoré akcie počkajú na reštart. Bezpečnostný záznam
+  reportu to uvedie v jazyku reportu a s názvami akcií: reštart a čo sa
+  uložilo na pokračovanie (alebo že sa uložiť nepodarilo), pokračovanie
+  po reštarte, akcie vynechané pre chýbajúci katalóg, odmietnuté
+  pokračovanie a chýbajúcu zálohu registra z prvej časti.
 - **PC neuspí počas dávky:** kým beží dávka (vrátane zápisu reportu),
   PortableFix cez `SetThreadExecutionState` bráni uspaniu systému
   (obrazovka sa môže vypnúť). Po dávke alebo pri zatvorení okna sa

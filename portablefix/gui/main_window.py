@@ -1245,6 +1245,12 @@ class MainWindow(QMainWindow):
         self._job_note = note.strip()[:2000]
         self._refresh_job_button()
 
+    def _set_redact_for_client(self, checked: bool) -> None:
+        if checked == self.settings.redact_for_client:
+            return
+        self.settings.redact_for_client = checked
+        self._persist_settings()
+
     def _open_job_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(self._t("job_dialog_title"))
@@ -1263,6 +1269,14 @@ class MainWindow(QMainWindow):
         form.addRow(self._t("job_technician_label"), technician_edit)
         form.addRow(self._t("job_client_label"), client_edit)
         form.addRow(self._t("job_note_label"), note_edit)
+        # Research G20: a setting, not part of the job - remembered like the
+        # technician's name, since it is the same choice on every visit.
+        redact_checkbox = QCheckBox(self._t("job_redact_label"))
+        redact_checkbox.setObjectName("jobRedact")
+        redact_checkbox.setChecked(self.settings.redact_for_client)
+        redact_checkbox.setToolTip(self._t("job_redact_tooltip"))
+        redact_checkbox.setAccessibleDescription(self._t("job_redact_tooltip"))
+        form.addRow("", redact_checkbox)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         # Qt ships no Slovak translations for standard buttons - label it ourselves.
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self._t("dialog_cancel"))
@@ -1272,7 +1286,10 @@ class MainWindow(QMainWindow):
         (client_edit if self.settings.technician_name else technician_edit).setFocus()
         self._job_dialog = dialog
         dialog.accepted.connect(
-            lambda: self._set_job(technician_edit.text(), client_edit.text(), note_edit.toPlainText())
+            lambda: (
+                self._set_job(technician_edit.text(), client_edit.text(), note_edit.toPlainText()),
+                self._set_redact_for_client(redact_checkbox.isChecked()),
+            )
         )
         dialog.open()
 
@@ -2427,7 +2444,9 @@ class MainWindow(QMainWindow):
             self._start_handoff_with_diagnostics(hostname, run_id, Path(dest), parent)
             return None
         try:
-            saved = handoff.build_handoff_zip(self.state_dir, hostname, run_id, Path(dest))
+            saved = handoff.build_handoff_zip(
+                self.state_dir, hostname, run_id, Path(dest), redact=self.settings.redact_for_client,
+            )
         except ValueError:
             QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
             return None
@@ -2445,7 +2464,8 @@ class MainWindow(QMainWindow):
             self.console.appendPlainText(self._t("handoff_diag_dry_run_note"))
         self.console.appendPlainText(self._t("handoff_diag_started"))
         runner = handoff.HandoffRunner(
-            self.state_dir, hostname, run_id, dest, dry_run=self.settings.dry_run, parent=self
+            self.state_dir, hostname, run_id, dest, dry_run=self.settings.dry_run,
+            redact=self.settings.redact_for_client, parent=self,
         )
         runner.progress.connect(self._on_handoff_progress)
         runner.result_ready.connect(
@@ -3858,7 +3878,10 @@ class MainWindow(QMainWindow):
                     self._snapshot_before,
                     snapshot_after,
                 )
-                report_kwargs = {"job": self._job_info(), "storage_fallback": self._storage_fallback}
+                report_kwargs = {
+                    "job": self._job_info(), "storage_fallback": self._storage_fallback,
+                    "redact": self.settings.redact_for_client,
+                }
                 if self._closed:
                     # closeEvent has already waited on every runner, so a
                     # thread started now could outlive the window (Qt aborts
@@ -4128,7 +4151,8 @@ class MainWindow(QMainWindow):
         runner = report.ReportRunner(
             self.state_dir, self.run_id, self.modules, self.settings.language,
             self._snapshot_before, self._snapshot_after,
-            job=self._job_info(), storage_fallback=self._storage_fallback, parent=self,
+            job=self._job_info(), storage_fallback=self._storage_fallback,
+            redact=self.settings.redact_for_client, parent=self,
         )
         runner.result_ready.connect(
             lambda html_path, write_failed, m=module, a=action: self._on_pre_restart_report_ready(html_path, write_failed, m, a)
