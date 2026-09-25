@@ -179,9 +179,11 @@ PowerShell.
   lists for every driver its type (Type 3 / Type 4), version, maker,
   isolation and the printers using it. For every printer it shows the port
   (monitor, address) and whether it is ready for Windows Protected Print,
-  i.e. uses the inbox IPP class driver (Mopria). A `VERDICT:` line says how
-  many printers depend on third-party drivers - those get security fixes
-  only from July 2027. *Back up printers, drivers and ports (PrintBRM)*
+  i.e. uses the inbox IPP class driver (Mopria) or Microsoft Print To PDF -
+  Microsoft-provided drivers for specific devices (PCL6 class drivers,
+  Generic / Text Only) stop working under WPP. A `VERDICT:` line says how
+  many printers are not ready and how many of them depend on third-party
+  drivers - those get security fixes only from July 2027. *Back up printers, drivers and ports (PrintBRM)*
   (MODERATE) saves everything with `PrintBrm.exe -B` to
   `%ProgramData%\PortableFix\printer_backups\<date_time>.printerExport`
   (an administrators-only folder) and prints the restore command
@@ -192,7 +194,9 @@ PowerShell.
   required signing, guest logons, print RPC protection
   (`RpcAuthnLevelPrivacyEnabled`, RPC policies) and driver installation
   from print servers. It explains what an old device needs for each, and
-  a SECURE / WEAKENED verdict says whether any protection is relaxed. It
+  a SECURE / WEAKENED verdict says whether any protection is relaxed
+  (WEAK DEFAULT: nothing was relaxed, but the guest logon default before
+  Windows 11 24H2 is weaker than recommended). It
   changes nothing and never lowers security. When the Print Spooler is
   not running, the driver report and the backup fail with an explanation
   and the SMB report says so. Everything is read from cmdlets, the

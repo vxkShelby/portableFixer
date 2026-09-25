@@ -302,6 +302,14 @@ PDF_DRIVER = {"Name": "Microsoft Print To PDF", "PrinterEnvironment": "Windows x
 HP_V3_X64 = {"Name": "HP Universal Printing PCL 6", "PrinterEnvironment": "Windows x64", "MajorVersion": 3,
              "DriverVersion": (61 << 48) | (250 << 32) | (1 << 16) | 24923, "Manufacturer": "HP", "Provider": "HP"}
 HP_V3_X86 = dict(HP_V3_X64, PrinterEnvironment="Windows NT x86")
+# Microsoft ships these (Provider Microsoft), but none is the IPP class
+# driver, so Windows Protected Print blocks them.
+HP_PCL6_CLASS = {"Name": "HP LaserJet PCL6 Class Driver", "PrinterEnvironment": "Windows x64", "MajorVersion": 4,
+                 "DriverVersion": (10 << 48) | (26100 << 16), "Manufacturer": "HP", "Provider": "Microsoft"}
+GENERIC_TEXT = {"Name": "Generic / Text Only", "PrinterEnvironment": "Windows x64", "MajorVersion": 3,
+                "DriverVersion": (10 << 48) | (26100 << 16), "Manufacturer": "Generic", "Provider": "Microsoft"}
+MS_FAX_V3 = {"Name": "Microsoft Shared Fax Driver", "PrinterEnvironment": "Windows x64", "MajorVersion": 3,
+             "DriverVersion": (10 << 48) | (26100 << 16), "Manufacturer": "Microsoft", "Provider": "Microsoft"}
 KYO_V4 = {"Name": "Kyocera TASKalfa 2553ci KX", "PrinterEnvironment": "Windows x64", "MajorVersion": 4,
           "DriverVersion": 0, "Manufacturer": "Kyocera", "Provider": "Kyocera"}
 PORTS = [
@@ -396,10 +404,11 @@ def test_driver_class_report_classifies_drivers_printers_and_ports(tmp_path):
     assert "port: IP_192.168.1.30, type" in brother
     assert "WPP: READY - inbox IPP class driver" in brother
     pdf = next(p for p in printers if p.startswith("PRINTER: Microsoft Print to PDF"))
-    assert "WPP: READY - inbox Microsoft driver" in pdf
+    assert "WPP: READY - inbox Microsoft Print To PDF" in pdf
     assert "Printers: 4, drivers: 5 (Type 3: 2, Type 4: 3), ports: 3" in out
     verdict = _verdict(out)
-    assert verdict.startswith("VERDICT: 2 of 4 printer(s) depend on third-party drivers")
+    assert verdict.startswith("VERDICT: 2 of 4 printer(s) not ready for Windows Protected Print "
+                              "(2 on third-party drivers, 0 on Microsoft-provided non-IPP drivers)")
     assert "July 2027" in verdict
 
 
@@ -411,7 +420,8 @@ def test_driver_class_report_wpp_on_with_third_party_driver_needs_attention(tmp_
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Windows Protected Print: ENABLED" in result.stdout
     assert _verdict(result.stdout).startswith(
-        "VERDICT: ATTENTION - Windows Protected Print is on, but 1 of 2 printer(s) use third-party drivers")
+        "VERDICT: ATTENTION - Windows Protected Print is on, but 1 of 2 printer(s) do not use the inbox IPP "
+        "class driver (1 on third-party drivers, 0 on Microsoft-provided non-IPP drivers)")
 
 
 def test_driver_class_report_all_inbox_drivers_is_ok(tmp_path):
@@ -424,7 +434,51 @@ def test_driver_class_report_all_inbox_drivers_is_ok(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "0 - isolation turned off" in result.stdout
-    assert _verdict(result.stdout).startswith("VERDICT: OK - all 2 printer(s) use inbox Microsoft drivers")
+    assert _verdict(result.stdout).startswith(
+        "VERDICT: OK - all 2 printer(s) use the inbox IPP class driver or Microsoft Print To PDF")
+
+
+MS_NON_IPP = [HP_PCL6_CLASS, GENERIC_TEXT, MS_FAX_V3]
+
+
+@pytest.mark.parametrize("wpp", [True, False])
+def test_driver_class_report_microsoft_provided_non_ipp_drivers_are_not_ready(tmp_path, wpp):
+    # Provider=Microsoft (or even Manufacturer=Microsoft) is not the IPP
+    # class driver: WPP blocks these, so they must never read as READY/OK.
+    registry = {WPP_KEY: {"WindowsProtectedPrintGroupPolicyState": 1}} if wpp else {}
+    result, _ = _run_driver_class(
+        tmp_path,
+        printers=[_printer("HP", HP_PCL6_CLASS["Name"]), _printer("Gen", GENERIC_TEXT["Name"]),
+                  _printer("Fax", MS_FAX_V3["Name"]), _printer("IPP", IPP_DRIVER["Name"])],
+        drivers=MS_NON_IPP + [IPP_DRIVER], registry=registry,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "inbox Microsoft driver" not in out
+    assert ("DRIVER: HP LaserJet PCL6 Class Driver [Windows x64] - Type 4, version 10.0.26100.0, "
+            "Microsoft-provided non-IPP driver") in out
+    for name, major in (("HP", 4), ("Gen", 3), ("Fax", 3)):
+        line = _lines(out, f"PRINTER: {name} ")[0]
+        assert f"WPP: NOT READY - Microsoft-provided Type {major} driver, but not the IPP class driver" in line, line
+    assert "WPP: READY - inbox IPP class driver" in _lines(out, "PRINTER: IPP ")[0]
+    verdict = _verdict(out)
+    split = "3 of 4 printer(s)"
+    if wpp:
+        assert verdict.startswith(f"VERDICT: ATTENTION - Windows Protected Print is on, but {split} do not use")
+        assert "(0 on third-party drivers, 3 on Microsoft-provided non-IPP drivers)" in verdict
+    else:
+        assert verdict.startswith(f"VERDICT: {split} not ready for Windows Protected Print "
+                                  "(0 on third-party drivers, 3 on Microsoft-provided non-IPP drivers)")
+
+
+def test_driver_class_report_ipp_named_driver_from_another_maker_is_not_ready(tmp_path):
+    # the IPP name alone is not enough - a vendor's "IPP Class Driver" with
+    # Provider Microsoft is still not the inbox Microsoft one
+    fake = dict(IPP_DRIVER, Name="Contoso IPP Class Driver", Manufacturer="Contoso")
+    result, _ = _run_driver_class(tmp_path, printers=[_printer("C", fake["Name"])], drivers=[fake])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WPP: NOT READY - Microsoft-provided Type 4 driver" in _lines(result.stdout, "PRINTER: C ")[0]
+    assert _verdict(result.stdout).startswith("VERDICT: 1 of 1 printer(s) not ready")
 
 
 def test_driver_class_report_without_printers(tmp_path):
@@ -694,6 +748,47 @@ def test_smb_compat_unset_signing_and_guest_on_24h2_follow_the_new_defaults(tmp_
     notes = "\n".join(_lines(out, "NOTE: "))
     assert "SMB signing is required for outgoing" in notes
     assert "guest (anonymous) access is refused" in notes
+
+
+def test_smb_compat_guest_allowed_by_the_edition_default_is_not_called_relaxed(tmp_path):
+    # Windows 10 / 11 before 24H2 on Home/Pro allow guest logons out of the
+    # box - nobody relaxed anything, so no RELAXED line and no WEAKENED.
+    result = _run_smb(tmp_path, build="19045",
+                      client={"RequireSecuritySignature": False, "EnableInsecureGuestLogons": True},
+                      server={"EnableSMB1Protocol": False, "RequireSecuritySignature": False})
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert ("Insecure guest logons (AllowInsecureGuestAuth): ALLOWED - default of this edition before "
+            "Windows 11 24H2 (recommended: block) [SMB client configuration]") in out
+    assert not _lines(out, "RELAXED: ")
+    weak = _lines(out, "WEAK DEFAULT: ")
+    assert len(weak) == 1 and "nobody relaxed it" in weak[0]
+    assert _verdict(out).startswith("VERDICT: WEAK DEFAULT - nothing was relaxed, but 1 Windows default(s)")
+
+
+@pytest.mark.parametrize("registry", [
+    {WS_KEY: {"AllowInsecureGuestAuth": 1}},
+    {WS_POLICY_KEY: {"AllowInsecureGuestAuth": 1}},
+])
+def test_smb_compat_guest_allowed_by_an_explicit_value_is_relaxed(tmp_path, registry):
+    result = _run_smb(tmp_path, build="19045",
+                      client={"RequireSecuritySignature": False, "EnableInsecureGuestLogons": True},
+                      server={"EnableSMB1Protocol": False, "RequireSecuritySignature": False},
+                      registry=registry)
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert not _lines(out, "WEAK DEFAULT: ")
+    assert any("Insecure guest logons are allowed" in r for r in _lines(out, "RELAXED: "))
+    assert _verdict(out).startswith("VERDICT: WEAKENED - 1 setting(s)")
+
+
+def test_smb_compat_guest_allowed_on_24h2_without_a_value_is_relaxed(tmp_path):
+    result = _run_smb(tmp_path, build="26100",
+                      client={"RequireSecuritySignature": True, "EnableInsecureGuestLogons": True},
+                      server=SECURE_SERVER)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not _lines(result.stdout, "WEAK DEFAULT: ")
+    assert _verdict(result.stdout).startswith("VERDICT: WEAKENED - 1 setting(s)")
 
 
 @pytest.mark.parametrize("spooler", ["Stopped", None])

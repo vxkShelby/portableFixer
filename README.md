@@ -175,9 +175,12 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   (SAFE) vypíše pri každom ovládači typ (Type 3 / Type 4), verziu,
   výrobcu, izoláciu a tlačiarne, ktoré ho používajú. Pri každej tlačiarni
   ukáže port (monitor, adresu) a či je pripravená na Windows Protected
-  Print, teda či používa inbox IPP class driver (Mopria). Riadok
-  `VERDICT:` povie, koľko tlačiarní závisí od ovládačov tretích strán -
-  tie od júla 2027 dostávajú už len bezpečnostné opravy. *Záloha
+  Print, teda či používa inbox IPP class driver (Mopria) alebo Microsoft
+  Print To PDF - ovládače od Microsoftu pre konkrétne zariadenia (PCL6
+  class driver, Generic / Text Only) pod WPP nefungujú. Riadok
+  `VERDICT:` povie, koľko tlačiarní nie je pripravených a koľko z nich
+  závisí od ovládačov tretích strán - tie od júla 2027 dostávajú už len
+  bezpečnostné opravy. *Záloha
   tlačiarní, ovládačov a portov (PrintBRM)* (MODERATE) uloží všetko
   nástrojom `PrintBrm.exe -B` do
   `%ProgramData%\PortableFix\printer_backups\<dátum_čas>.printerExport`
@@ -190,7 +193,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   tlačového RPC (`RpcAuthnLevelPrivacyEnabled`, RPC politiky) a
   inštaláciu ovládačov z tlačových serverov. Ku každému vysvetlí, čo
   staré zariadenie potrebuje, a verdikt SECURE / WEAKENED povie, či je
-  niektorá ochrana oslabená. Nič nemení a bezpečnosť nikdy neznižuje.
+  niektorá ochrana oslabená (WEAK DEFAULT: nikto nič neoslabil, ale
+  predvolené prihlásenie hosťa pred Windows 11 24H2 je slabšie, než sa
+  odporúča). Nič nemení a bezpečnosť nikdy neznižuje.
   Keď Zaraďovač tlače nebeží, prehľad ovládačov aj záloha skončia s
   chybou a vysvetlením a SMB prehľad to uvedie. Všetko sa číta z
   cmdletov, registrov a kódov, nikdy z preloženého textu.
