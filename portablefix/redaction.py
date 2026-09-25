@@ -397,6 +397,18 @@ def local_profile_names(users_dir: Path | None = None) -> list[str]:
     return sorted(names)
 
 
+def account_names(accounts: Iterable[str]) -> list[str]:
+    """The account part of "DOMAIN\\user" names (the target user of G25),
+    for `mask`: an AzureAD or renamed account ("AzureAD\\JanNovak") need not
+    match its profile folder ("jan.novak"), so local_profile_names alone
+    would leave it readable in a redacted report."""
+    names = []
+    for account in accounts:
+        if isinstance(account, str) and account.strip():
+            names.append(account.strip().rsplit("\\", 1)[-1])
+    return names
+
+
 # Report fields that are structure, not content: ids, timestamps, the
 # technician's own entries and the computer name, kept on purpose.
 _STRUCTURAL_KEYS = frozenset({

@@ -75,10 +75,18 @@ def test_banner_is_hidden_when_the_desktop_user_runs_portablefix(qtbot, tmp_path
 
 
 def test_banner_is_hidden_when_detection_did_not_run(qtbot, tmp_path):
-    # No target handed over: MainWindow detects itself - off Windows that is
-    # UNKNOWN, which must stay silent.
+    # An UNKNOWN target (detection failed, or off Windows) must stay silent.
     window = _window(qtbot, tmp_path, TargetUser())
     assert window.target_user_banner.isHidden()
+
+
+def test_window_detects_the_target_itself_when_none_is_handed_over(qtbot, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(target_user, "detect", lambda: calls.append(1) or DIFFERENT)
+    window = _window(qtbot, tmp_path, None)
+    assert calls == [1]
+    assert window.target_user is DIFFERENT
+    assert not window.target_user_banner.isHidden()
 
 
 def test_banner_warns_when_the_signed_in_user_is_uncertain(qtbot, tmp_path):
@@ -158,3 +166,35 @@ def test_system_events_and_panel_actions_record_the_target(qtbot, tmp_path):
     assert len(entries) == 2
     for entry in entries:
         assert (entry["target_user_sid"], entry["target_user_status"]) == (CLIENT, "different")
+
+
+def test_undo_step_without_a_known_target_clears_an_earlier_steps_hive(qtbot, tmp_path, monkeypatch):
+    # undo.ps1 runs every step in one scope: a step recorded while the
+    # target was UNKNOWN must not inherit the hive an earlier step's prelude
+    # set (a batch continued after a restart with a different detection).
+    window = _window(qtbot, tmp_path, DIFFERENT)
+    monkeypatch.setattr(window, "_run_next", lambda: None)
+    runner = SimpleNamespace(captured_output=["done"])
+    window._on_action_finished("m13_debloat", "user_tweak", "cmd", 0, runner)
+    window.target_user = TargetUser()
+    window._on_action_finished("m13_debloat", "user_tweak", "cmd", 0, runner)
+
+    text = (tmp_path / "Backups" / RUN_ID / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "Remove-Variable __pfUserHive,__pfUserSid -EA SilentlyContinue; Remove-ItemProperty" in text
+    assert f"$__pfUserHive = '{CLIENT_HIVE}'; $__pfUserSid = '{CLIENT}'; Remove-ItemProperty" in text
+
+
+def test_integrity_guard_entry_records_the_target(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    window = _window(qtbot, tmp_path, DIFFERENT)
+    monkeypatch.setattr(window, "_app_dir_intact", lambda: False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Ok)
+    window._queue = ["user_tweak"]
+
+    window._run_next()
+
+    [entry] = [e for e in _entries(tmp_path) if e["action_id"] == "integrity_guard"]
+    assert (entry["target_user"], entry["target_user_sid"], entry["target_user_status"]) == (
+        "PC\\klient", CLIENT, "different",
+    )

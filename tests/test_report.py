@@ -1472,3 +1472,21 @@ def test_report_runner_passes_redact_through(tmp_path, monkeypatch):
     runner = report.ReportRunner(tmp_path, "run_x", [], "en", {}, {}, redact=True)
     runner.run()
     assert captured["redact"] is True
+
+
+def test_redacted_report_masks_the_target_user_that_has_no_matching_profile_folder(tmp_path, monkeypatch):
+    # G25: an AzureAD / renamed account need not match its profile folder
+    # name, so the target user is masked by its own name too.
+    from portablefix import redaction
+
+    monkeypatch.setattr(redaction, "local_profile_names", lambda users_dir=None: ["jan.novak"])
+    entry = make_entry(
+        "m13_debloat", "user_tweak", "cmd", 0, "Set for AzureAD\\JanNovak", False, "run_aad",
+        target_user="AzureAD\\JanNovak", target_user_sid="S-1-12-1-1-2-3-4", target_user_status="different",
+    )
+    append_entry(tmp_path, "run_aad", entry)
+    html_path, json_path = generate_report(tmp_path, "run_aad", _fixture_modules(), "en", {}, {}, redact=True)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["target_user"]["user"] == "AzureAD\\<user>"
+    assert "JanNovak" not in json_path.read_text(encoding="utf-8")
+    assert "JanNovak" not in html_path.read_text(encoding="utf-8")

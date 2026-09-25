@@ -30,7 +30,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run non-GUI test suite
-        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py --deselect tests/test_update_spawn_windows.py --deselect tests/test_frozen_update_e2e.py -q --timeout=300
+        run: python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_gui_target_user.py --deselect tests/test_executor.py --deselect tests/test_update_spawn_windows.py --deselect tests/test_frozen_update_e2e.py -q --timeout=300
 
       # Runs the real powershell.exe under the updater's old and new spawn
       # flags; -s prints each launch's exit code, output size and timing, the
@@ -40,8 +40,9 @@ jobs:
       - name: Real PowerShell spawn and update hand-off
         run: python -m pytest tests/test_update_spawn_windows.py -s -q --timeout=180
 
-      # test_gui_main_window.py and test_executor.py spawn real powershell.exe
-      # processes through the same QThread mechanism (portablefix/executor.py).
+      # test_gui_main_window.py, test_gui_target_user.py and test_executor.py
+      # spawn real powershell.exe processes through the same QThread
+      # mechanism (portablefix/executor.py).
       # Running many of them in one pytest invocation intermittently crashes
       # with a transient native error (STATUS_STACK_BUFFER_OVERRUN) - not a
       # code defect (see README.md "Vývoj"). Mirror the local workaround: run
@@ -50,7 +51,7 @@ jobs:
       - name: Run GUI/executor tests individually (crash-workaround)
         shell: pwsh
         run: |
-          $ids = python -m pytest tests/test_gui_main_window.py tests/test_executor.py --collect-only -q |
+          $ids = python -m pytest tests/test_gui_main_window.py tests/test_gui_target_user.py tests/test_executor.py --collect-only -q |
             Select-String "::" | ForEach-Object { $_.Line.Trim() }
 
           # --timeout: a hung test is killed after 90s and pytest-timeout

@@ -1191,6 +1191,10 @@ def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
     keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
     if mask is None:
         mask = redaction.local_profile_names()
+    # The target user's account name need not match any profile folder
+    # (AzureAD, a renamed account) - masked by name as well.
+    target = data.get("target_user") if isinstance(data.get("target_user"), dict) else {}
+    mask = [*mask, *redaction.account_names([str(target.get("user") or "")])]
     redacted = redaction.redact_data(data, keep=keep, mask=mask)
     redacted["redacted"] = True
     return redacted

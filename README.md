@@ -101,7 +101,8 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   pamätá sa): report (HTML aj JSON) a textové súbory balíka pre klienta
   (`report.html`, `report.json`, kópia `audit_log.jsonl`, README) nahradia
   mená používateľov v cestách (`C:\Users\<user>\`) aj mená profilov
-  tohto PC kdekoľvek inde (napr. `PC\Jan Novák`), IPv4/IPv6 a MAC
+  tohto PC a meno cieľového používateľa (aj `AzureAD\JanNovak`)
+  kdekoľvek inde (napr. `PC\Jan Novák`), IPv4/IPv6 a MAC
   adresy, sériové čísla (BIOS, disky), časti licenčných kľúčov
   (`XXXXX-XXXXX-…`, `PartialProductKey`) a názvy Wi-Fi sietí (SSID)
   značkami ako `<ip>` či `<serial>`. Názov počítača a údaje zo Zákazky

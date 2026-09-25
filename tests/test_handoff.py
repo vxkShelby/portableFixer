@@ -654,6 +654,26 @@ def test_redacted_package_masks_this_pcs_profile_names_everywhere(tmp_path, monk
     assert lines[1] == "torn <user>"
 
 
+def test_redacted_package_masks_the_target_user_that_has_no_matching_profile_folder(tmp_path, monkeypatch):
+    # G25: "AzureAD\\JanNovak" has the profile folder jan.novak - the name
+    # recorded as the target user is masked in the audit log and report too.
+    monkeypatch.setattr(handoff.redaction, "local_profile_names", lambda users_dir=None: ["jan.novak"])
+    state = tmp_path / "state"
+    _write_run(state)
+    reports = state / "Reports"
+    (reports / f"{HOST}_{RUN}.json").unlink()
+    (reports / f"{HOST}_{RUN}.html").write_text("<p>AzureAD\\JanNovak</p>", encoding="utf-8")
+    (state / "Logs" / f"{RUN}.jsonl").write_bytes((
+        json.dumps({"run_id": "r", "output": "ok", "target_user": "AzureAD\\JanNovak",
+                    "target_user_status": "different"}) + "\n").encode("utf-8"))
+
+    files = _zip_texts(handoff.build_handoff_zip(state, HOST, RUN, tmp_path / "out.zip", redact=True))
+
+    assert files["report.html"].decode("utf-8") == "<p>AzureAD\\&lt;user&gt;</p>"
+    [line] = files["audit_log.jsonl"].decode("utf-8").splitlines()
+    assert json.loads(line)["target_user"] == "AzureAD\\<user>"
+
+
 def test_package_without_redaction_is_byte_for_byte_the_run(tmp_path):
     state = tmp_path / "state"
     host, _ = _write_real_run(state)

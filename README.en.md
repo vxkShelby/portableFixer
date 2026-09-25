@@ -103,7 +103,8 @@ PowerShell.
   default, remembered): the report (HTML and JSON) and the client
   package's text files (`report.html`, `report.json`, the `audit_log.jsonl`
   copy, README) replace user names in paths (`C:\Users\<user>\`) and
-  this PC's profile names anywhere else (e.g. `PC\Jan Novak`),
+  this PC's profile names and the target user's account name (also
+  `AzureAD\JanNovak`) anywhere else (e.g. `PC\Jan Novak`),
   IPv4/IPv6 and MAC addresses, serial numbers (BIOS, disks), product-key
   fragments (`XXXXX-XXXXX-…`, `PartialProductKey`) and Wi-Fi network
   names (SSID) with markers such as `<ip>` or `<serial>`. The computer

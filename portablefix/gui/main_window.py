@@ -3948,6 +3948,7 @@ class MainWindow(QMainWindow):
                 "queued action - batch stopped for safety.",
                 self.settings.dry_run,
                 self.run_id,
+                **self.target_user.audit_fields(),
             )
             try:
                 append_entry(self.state_dir, self.run_id, entry)
@@ -4337,7 +4338,13 @@ class MainWindow(QMainWindow):
                 if "$__pfUser" in undo_step:
                     # undo.ps1 runs later, maybe as someone else entirely -
                     # it must restore the same profile the change went to.
-                    undo_step = self.target_user.prelude() + undo_step
+                    # Unknown target: no prelude, so clear what an earlier
+                    # step's prelude left in undo.ps1's one shared scope -
+                    # this step then falls back to HKCU: as it did at run time.
+                    undo_step = (
+                        self.target_user.prelude()
+                        or "Remove-Variable __pfUserHive,__pfUserSid -EA SilentlyContinue; "
+                    ) + undo_step
                 self._undo_steps.append(undo_step)
                 self._write_undo_script()
             elif not action.undo_command and action.risk != RiskLevel.SAFE:
