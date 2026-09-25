@@ -37,11 +37,11 @@ PowerShell.
 | M02 | Cleanup | Temp files, cache, recycle bin, Windows Update cache... |
 | M03 | Repair | Disk: SMART, disk health verdict, NTFS scan/SpotFix, TRIM, chkdsk on restart |
 | M04 | Repair | System integrity: DISM, SFC, AppX, WMI |
-| M05 | Repair | Windows Update: service/cache reset, DLL re-registration, detection |
+| M05 | Repair | Windows Update: service/cache reset, DLL re-registration, detection, Windows 10 ESU status (Consumer ESU ends 2026-10-13) |
 | M06 | Repair | Network: DNS, hosts, DHCP, Winsock, TCP/IP |
 | M07 | Diagnostics | Autostart: Run registry keys, Startup, tasks, services, WMI, IFEO backdoors, unquoted service paths |
 | M08 | Security | Defender, firewall, UAC audit + quick scan, WPBT disable |
-| M09 | Repair | Tuning: power plan, visual effects, End Task, Sticky Keys, classic context menu |
+| M09 | Repair | Tuning: power plan, visual effects, End Task, Sticky Keys, classic context menu, Storage Sense (report and monthly cleanup with exact undo) |
 | M10 | Diagnostics | Drivers: problem devices (+ restart), third-party drivers, network/GPU, backup/restore |
 | M11 | — | Reporting (HTML report after every batch, not a catalog) |
 | M12 | Diagnostics | Online: layered connectivity test, DNS, proxy |
@@ -197,6 +197,36 @@ PowerShell.
   the threat history reports a NOT ACTIVE verdict - or ATTENTION when
   Defender still recorded threats that were not removed or are still
   active.
+- **Windows 10 ESU (M05):** *Windows 10 ESU - status and verdict* (SAFE)
+  reads the Consumer ESU enrollment state (`ESUEligibility` and
+  `ESUEligibilityResult` in both HKCU and HKLM; numbers outside the
+  publicly known decoding print as Unknown), the age of the last
+  cumulative update from the servicing stack (RollupFix packages, with
+  the Windows Update history as fallback; more than 45 days = unpatched),
+  whether the 0patch agent is installed and the build with UBR. The date
+  alone is not enough - a reinstall, reset or repair upgrade installs the
+  October 2025 update with a fresh date - so build 19045 with a UBR of
+  6456 or lower (the last public update, 2025-10-14) is never PATCHED: no
+  ESU update ever arrived. The
+  `VERDICT:` line (OK / ACTION NEEDED / PATCHED / UNPATCHED / UNKNOWN /
+  NOT APPLICABLE) is followed by the options: upgrade to Windows 11, ESU
+  (Consumer ESU ends on 2026-10-13 per Microsoft) or a new PC. On
+  Windows 11 it says that ESU does not apply.
+- **Storage Sense (M09):** *Storage Sense - settings report* (SAFE)
+  decodes the `StoragePolicy` values in HKCU (on/off, cadence, temporary
+  files, Recycle Bin, Downloads and their day limits; undocumented values
+  print as unknown) and the policies that override them. *Storage Sense -
+  turn on monthly cleanup* (MODERATE) sets a monthly run, deletion of
+  temporary files and of Recycle Bin files older than 30 days, and leaves
+  Downloads off - the PC stays clean after the technician leaves, with no
+  agent at all. The exact previous values (type, value and whether they
+  existed) go to `%ProgramData%\PortableFix\storage_sense_backup.json`
+  and undo restores them exactly, deleting values that did not exist
+  before; without the backup, undo refuses to run. Running it again keeps
+  the same user's first backup, so undo still returns the original state. **HKCU is the hive of
+  the user PortableFix runs as** - both actions (and the ESU check) print
+  that user's name and SID and warn when a different user is signed in
+  (the technician elevated with their own account).
 - **Printing (M14):** *Printer driver classes and WPP readiness* (SAFE)
   lists for every driver its type (Type 3 / Type 4), version, maker,
   isolation and the printers using it. For every printer it shows the port
