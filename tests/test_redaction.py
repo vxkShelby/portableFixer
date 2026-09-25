@@ -6,7 +6,7 @@ import time
 import pytest
 
 from portablefix.redaction import (
-    IP, KEY, MAC, SERIAL, SSID, USER, local_profile_names, redact_data, redact_text,
+    IP, KEY, MAC, SERIAL, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
 )
 
 
@@ -309,3 +309,9 @@ def test_job_tooltip_says_undo_ps1_is_not_redacted():
 
     assert "undo.ps1 sa kopíruje bez zmeny" in translate("job_redact_tooltip", "sk")
     assert "undo.ps1 is copied unchanged" in translate("job_redact_tooltip", "en")
+
+
+def test_account_names_takes_the_account_part_of_domain_names():
+    assert account_names(["AzureAD\\JanNovak", "PC\\klient", "eva", "", "  ", None]) == [
+        "JanNovak", "klient", "eva",
+    ]

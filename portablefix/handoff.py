@@ -577,6 +577,22 @@ def _load_report_json(path: Path | None) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _audit_target_users(source: Path) -> list[str]:
+    users = []
+    try:
+        lines = source.read_bytes().splitlines()
+    except OSError:
+        return users
+    for raw in lines:
+        try:
+            entry = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get("target_user"), str):
+            users.append(entry["target_user"])
+    return users
+
+
 def _redacted_audit_log(source: Path, keep: list[str], mask: list[str]) -> bytes:
     """The audit log copy with every entry redacted, one JSON object per
     line as audit_log.append_entry writes them. Parsed first so a path is
@@ -630,6 +646,10 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     # The package is saved on the client PC: its profile folders name the
     # people to hide even where a name is printed without its path.
     mask = redaction.local_profile_names()
+    # Plus every target user (research G25) the audit log recorded: an
+    # AzureAD or renamed account need not match its profile folder name.
+    if ARC_AUDIT_LOG in paths:
+        mask += redaction.account_names(_audit_target_users(paths[ARC_AUDIT_LOG]))
     redacted_report = report.redact_report_data(report_data, mask) if report_data is not None else None
     for arcname, source in sources:
         if arcname == ARC_REPORT_JSON and redacted_report is not None:

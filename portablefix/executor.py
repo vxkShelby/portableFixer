@@ -12,6 +12,7 @@ from .ops import STATE_VARIABLE, ps_str
 # Lives in paths.py so the Qt-free updater core can use it; re-exported
 # here for the modules and tests that have always imported it from here.
 from .paths import powershell_executable  # noqa: F401
+from .target_user import TargetUser
 
 POWERSHELL_PREFIX = [powershell_executable(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
 
@@ -35,15 +36,22 @@ class ExecutionPlan:
 
 def build_execution_plan(
     command: str, dry_run: bool, temp_protect: Path | None = None, ops_state: Path | None = None,
+    target_user: TargetUser | None = None,
 ) -> ExecutionPlan:
     if dry_run:
         return ExecutionPlan(mode="dry_run", display_command=command, argv=None)
     prefix = ""
+    if target_user is not None:
+        # $__pfUserHive / $__pfUserSid (research G25): the signed-in user's
+        # hive, which is not HKCU when the technician elevated with their
+        # own account. Empty when detection did not work - commands then
+        # fall back to HKCU: on their own.
+        prefix += target_user.prelude()
     if temp_protect is not None:
         # Single-quote with doubled-quote escaping, not an f-string into double
         # quotes - the real path can contain $ or backticks PowerShell would expand.
         escaped = str(temp_protect).replace("'", "''")
-        prefix = f"$__pfProtect = '{escaped}'; "
+        prefix += f"$__pfProtect = '{escaped}'; "
     if ops_state is not None:
         # Where an `ops:` command saves the state it captures (research G10);
         # without it the command refuses to change anything.

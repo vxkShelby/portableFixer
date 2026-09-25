@@ -323,6 +323,22 @@ def _summarize_elevation(entries: list[dict]) -> bool | None:
     return values.pop() if len(values) == 1 else None
 
 
+def _summarize_target_user(entries: list[dict]) -> dict:
+    """Whose hive per-user settings went to (research G25), from the audit
+    entries. The last recorded entry wins - detection runs once per start,
+    and a batch continued after a restart is the newest start. {} when no
+    entry recorded it (older log, or detection could not run)."""
+    for entry in reversed(entries):
+        status = entry.get("target_user_status")
+        if isinstance(status, str) and status and status != "unknown":
+            return {
+                "status": status,
+                "user": str(entry.get("target_user") or ""),
+                "sid": str(entry.get("target_user_sid") or ""),
+            }
+    return {}
+
+
 def build_report_data(
     base_dir: Path,
     run_id: str,
@@ -385,6 +401,7 @@ def build_report_data(
         "events": events,
         "restore_points": _summarize_restore_points(events),
         "elevated": _summarize_elevation(entries),
+        "target_user": _summarize_target_user(entries),
         "storage_fallback": bool(storage_fallback),
     }
 
@@ -405,8 +422,9 @@ def _clean_job(job: dict | None) -> dict:
     return cleaned
 
 
-def _render_job(job: dict, t) -> str:
-    if not job:
+def _render_job(job: dict, t, target_user: dict | None = None) -> str:
+    target_line = _render_target_user(target_user or {}, t)
+    if not job and not target_line:
         return ""
     parts = []
     if job.get("technician"):
@@ -417,7 +435,25 @@ def _render_job(job: dict, t) -> str:
     note = ""
     if job.get("note"):
         note = f'<div class="job-note"><span class="lbl">{t("report_job_note")}</span>{html.escape(job["note"])}</div>'
+    if target_line:
+        line = f"{line}<br>{target_line}" if line else target_line
     return f'<div class="job">{line}{note}</div>'
+
+
+def _render_target_user(target: dict, t) -> str:
+    """The profile per-user settings went to - next to the technician's
+    name, where a reader sees at once that it was the client's profile."""
+    user = target.get("user") or target.get("sid")
+    if not user:
+        return ""
+    text = f"{t('report_target_user')}: <strong>{html.escape(user)}</strong>"
+    if target.get("sid") and target.get("sid") != user:
+        text += f" ({html.escape(target['sid'])})"
+    if target.get("status") == "different":
+        text += f" &mdash; {t('report_target_user_differs')}"
+    elif target.get("status") in ("ambiguous", "no_user"):
+        text += f" &mdash; {t('report_target_user_unsure')}"
+    return text
 
 
 _RISK_COLORS = {
@@ -1087,7 +1123,7 @@ def _render_html(data: dict) -> str:
 <body><main class="wrap">
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 {storage_banner}
-{_render_job(data.get('job') or dict(), t)}
+{_render_job(data.get('job') or dict(), t, data.get('target_user'))}
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
 {t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}{extra_meta}</div>
@@ -1155,6 +1191,10 @@ def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
     keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
     if mask is None:
         mask = redaction.local_profile_names()
+    # The target user's account name need not match any profile folder
+    # (AzureAD, a renamed account) - masked by name as well.
+    target = data.get("target_user") if isinstance(data.get("target_user"), dict) else {}
+    mask = [*mask, *redaction.account_names([str(target.get("user") or "")])]
     redacted = redaction.redact_data(data, keep=keep, mask=mask)
     redacted["redacted"] = True
     return redacted

@@ -101,7 +101,8 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   pamätá sa): report (HTML aj JSON) a textové súbory balíka pre klienta
   (`report.html`, `report.json`, kópia `audit_log.jsonl`, README) nahradia
   mená používateľov v cestách (`C:\Users\<user>\`) aj mená profilov
-  tohto PC kdekoľvek inde (napr. `PC\Jan Novák`), IPv4/IPv6 a MAC
+  tohto PC a meno cieľového používateľa (aj `AzureAD\JanNovak`)
+  kdekoľvek inde (napr. `PC\Jan Novák`), IPv4/IPv6 a MAC
   adresy, sériové čísla (BIOS, disky), časti licenčných kľúčov
   (`XXXXX-XXXXX-…`, `PartialProductKey`) a názvy Wi-Fi sietí (SSID)
   značkami ako `<ip>` či `<serial>`. Názov počítača a údaje zo Zákazky
@@ -336,6 +337,26 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 
 ## Bezpečnostné mechanizmy
 
+- **Profil prihláseného používateľa:** keď technik zvýši práva vlastným
+  admin účtom (klient zostane prihlásený), PortableFix beží pod iným
+  účtom, než má pracovnú plochu. Pri štarte porovná SID vlastníka
+  `explorer.exe` vo vlastnej relácii (cez RDP je to RDP relácia, nie
+  konzola; bez explorera rozhodne používateľ relácie podľa WTS) so SID
+  svojho procesu. Ak sa líšia, pod hornou lištou ukáže pásik „Nastavenia
+  používateľa pôjdu do profilu <používateľ> (prihlásený), nie do profilu
+  technika“. Každá akcia dostane premenné `$__pfUserHive`
+  (`Registry::HKEY_USERS\<SID>`, pri zhode je to hive vlastného účtu) a
+  `$__pfUserSid`. Akcie M13, ktoré menia nastavenia používateľa (návrhy
+  v Štarte, webové výsledky, Copilot, reklamné ID, reklamy v
+  Prieskumníkovi, blokovanie reinštalácie, Recall), zapisujú do tohto
+  hive; spustené samostatne mimo PortableFixu použijú `HKCU:`. Ak je
+  používateľ medzitým odhlásený (hive nie je načítaný), akcia nič
+  nezmení, vypíše „Profile hive not loaded, skipped“ a skončí s chybou
+  (hive sa nikdy nenačítava cez `reg load`). Cieľový používateľ a SID sú
+  v audit logu pri každej akcii aj udalosti, v hlavičke reportu pri
+  údajoch o zákazke a `undo.ps1` vráti zmenu v tom istom profile. Keď sa
+  prihláseného používateľa nedá jednoznačne určiť (explorer pod viacerými
+  účtami), pásik na to upozorní a nastavenia idú do vlastného profilu.
 - **Úrovne rizika:** každá akcia je označená SAFE / MODERATE /
   DESTRUCTIVE / REQUIRES_REBOOT. MODERATE a vyššie vyžadujú potvrdenie,
   DESTRUCTIVE má osobitné varovanie o nevratnosti.
@@ -766,6 +787,13 @@ lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
 
 ## Známe obmedzenia
 
+- Na hive prihláseného používateľa (`$__pfUserHive`) sú zatiaľ prevedené
+  len akcie M13. HKCU v ďalších moduloch stále znamená účet, pod ktorým
+  PortableFix beží: M12 *reset proxy* (a jej kontrola), M16 (doplnky a
+  profil Outlooku), M08 *obnova Task Managera a Regeditu*, prehľady v
+  M01, M05 (ESU), M07, M17, M22, priečinky M18 (zálohy) a tweaky M09
+  (Storage Sense a ESU aspoň vypíšu, do koho profilu siahajú).
+  Odstraňovanie AppX balíkov v M13 platí pre účet procesu.
 - Undo pokrýva len akcie so statickým vratným príkazom alebo s `ops:`
   (tie vrátia presný pôvodný stav); DISM/SFC/chkdsk opravy sú z princípu
   nevratné (kryje ich bod obnovenia). Plány napájania, zastavenie služieb

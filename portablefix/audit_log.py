@@ -40,6 +40,13 @@ class AuditEntry:
     # picked several programs/packages at once; `subject` is the first of
     # them. [] = the point guarded just `subject`.
     subjects: list[str] = field(default_factory=list)
+    # Whose registry hive per-user settings went to (research G25): the
+    # signed-in client's when the technician elevated with their own
+    # account. "" = not recorded / could not be detected; status is
+    # target_user.SAME / DIFFERENT / AMBIGUOUS / NO_USER / UNKNOWN.
+    target_user: str = ""
+    target_user_sid: str = ""
+    target_user_status: str = ""
 
 
 def make_entry(
@@ -59,6 +66,9 @@ def make_entry(
     restore_point_sequence: int | None = None,
     restore_point_created: str = "",
     subjects: list[str] | None = None,
+    target_user: str = "",
+    target_user_sid: str = "",
+    target_user_status: str = "",
 ) -> AuditEntry:
     return AuditEntry(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -79,6 +89,9 @@ def make_entry(
         restore_point_sequence=restore_point_sequence,
         restore_point_created=restore_point_created,
         subjects=list(subjects or []),
+        target_user=target_user,
+        target_user_sid=target_user_sid,
+        target_user_status=target_user_status,
     )
 
 
