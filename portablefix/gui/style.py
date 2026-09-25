@@ -12,6 +12,9 @@ single row drowned out the handful of rows that actually need attention
 (MODERATE/DESTRUCTIVE/REQUIRES_REBOOT).
 """
 
+import ctypes
+import sys
+
 RISK_COLORS = {
     "SAFE": "#39ff88",
     "MODERATE": "#ffb020",
@@ -248,9 +251,11 @@ QPushButton#presetBtn:checked {
     color: #8ff2ff;
     font-weight: bold;
 }
+/* Muted text is #7c8799, not the earlier #6b7686 (3.8:1 on #141a24):
+   9pt text needs WCAG AA 4.5:1 on every card/button surface it sits on. */
 QLabel#selectionScope {
     font-family: 'Consolas', 'Cascadia Mono';
-    color: #6b7686;
+    color: #7c8799;
     font-size: 9pt;
 }
 
@@ -280,6 +285,16 @@ QToolButton#actionDetailToggle:checked {
     color: #2fe6ff;
     border: 1px solid #2fe6ff;
 }
+/* QPushButton:focus doesn't match tool buttons - without this the
+   per-action "details" toggle showed no keyboard focus at all. */
+QToolButton:focus {
+    outline: 2px solid #2fe6ff;
+    border: 1px solid #2fe6ff;
+}
+/* Dashboard tiles are keyboard-focusable (Tab, then Enter/Space). */
+QFrame#actionCard[tile="true"]:focus {
+    border: 2px solid #2fe6ff;
+}
 QWidget#actionDetailPanel {
     background-color: #0b0e14;
     border: 1px solid #1c2530;
@@ -293,7 +308,7 @@ QLabel#actionDetailLabel {
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 8pt;
     font-weight: bold;
-    color: #6b7686;
+    color: #7c8799;
 }
 QPlainTextEdit#actionDetailCommand {
     background-color: #06080c;
@@ -339,6 +354,13 @@ QLabel#dashboardScoreValue {
     font-weight: 700;
     color: #39ff88;
 }
+QLabel#dashboardScoreValue[state="none"] {
+    font-size: 16pt;
+    color: #7c8799;
+}
+QLabel#dashboardScoreValue[state="good"] { color: #39ff88; }
+QLabel#dashboardScoreValue[state="warn"] { color: #ffb020; }
+QLabel#dashboardScoreValue[state="bad"] { color: #ff2d6f; }
 QLabel#summaryDryRunNote {
     font-family: 'Consolas', 'Cascadia Mono';
     color: #ffb020;
@@ -346,6 +368,15 @@ QLabel#summaryDryRunNote {
 }
 QLabel#summaryRow[ok="true"] { color: #39ff88; }
 QLabel#summaryRow[ok="false"] { color: #ff2d6f; }
+QLabel#summaryMetricName { color: #d6e2f0; font-size: 9pt; }
+QLabel#summaryMetricDelta {
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+    font-weight: bold;
+    color: #7c8799;
+}
+QLabel#summaryMetricDelta[trend="good"] { color: #39ff88; }
+QLabel#summaryMetricDelta[trend="bad"] { color: #ff2d6f; }
 
 QPlainTextEdit#console {
     background-color: #06080c;
@@ -400,6 +431,30 @@ QLabel#countPill[state="warn"] {
     background-color: rgba(255, 176, 32, 30);
     color: #ffb020;
 }
+QLabel#countPill[state="idle"] {
+    background-color: rgba(255, 255, 255, 8);
+    /* Real content (the "0" before any analysis), not a disabled control -
+       so it needs 4.5:1 like other text; #4b5568 was 2.5:1. */
+    color: #7c8799;
+}
+
+QPushButton#panelBtn {
+    background-color: #141a24;
+    border: 1px solid #232d3a;
+    border-radius: 10px;
+    padding: 7px 12px;
+    color: #c4d0de;
+    font-size: 9.5pt;
+}
+QPushButton#panelBtn:hover {
+    border-color: #2fe6ff;
+    color: #2fe6ff;
+    background-color: #182028;
+}
+QPushButton#panelBtn:disabled {
+    color: #4b5568;
+    border-color: #1a212d;
+}
 
 QLabel#wingetBanner {
     border-radius: 10px;
@@ -411,10 +466,206 @@ QLabel#wingetBanner[state="warn"] {
     border: 1px solid rgba(255, 176, 32, 90);
     color: #d6e2f0;
 }
+QLabel#targetUserBanner {
+    background-color: rgba(255, 176, 32, 22);
+    border: 1px solid rgba(255, 176, 32, 90);
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: #d6e2f0;
+}
 QLabel#wingetBanner[state="ok"] {
     background: transparent;
     border: none;
-    color: #6b7686;
+    color: #7c8799;
     font-family: 'Consolas', 'Cascadia Mono';
 }
+
+QComboBox {
+    background-color: #06080c;
+    border: 1px solid #232d3a;
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-family: 'Consolas', 'Cascadia Mono';
+    color: #d6e2f0;
+    min-width: 80px;
+}
+QComboBox:hover, QComboBox:focus {
+    border: 1px solid #2fe6ff;
+}
+QComboBox:disabled {
+    background-color: #0b0e14;
+    border: 1px solid #1a212d;
+    color: #4b5568;
+}
+QComboBox QAbstractItemView {
+    background-color: #10141c;
+    border: 1px solid #232d3a;
+    selection-background-color: rgba(47, 230, 255, 45);
+    selection-color: #8ff2ff;
+    outline: none;
+    padding: 4px;
+}
+
+QCheckBox:disabled {
+    color: #4b5568;
+}
+QCheckBox::indicator:disabled {
+    border-color: #1a212d;
+    background: #0b0e14;
+}
+
+QToolTip {
+    background-color: #10141c;
+    color: #d6e2f0;
+    border: 1px solid #2fe6ff;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+QStatusBar {
+    background-color: #06080c;
+    border-top: 1px solid #1c2530;
+    color: #8a97a8;
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+}
+QStatusBar::item {
+    border: none;
+}
+
+QMessageBox {
+    background-color: #0b0e14;
+}
+QMessageBox QLabel {
+    color: #d6e2f0;
+}
+QMessageBox QPushButton {
+    min-width: 84px;
+}
+
+QScrollBar:horizontal {
+    background: #0b0e14;
+    height: 10px;
+    border-radius: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: #232d3a;
+    border-radius: 2px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #2fe6ff;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+QPushButton:disabled {
+    color: #4b5568;
+    border-color: #1a212d;
+}
+
+QFrame#historyRow {
+    background-color: #0d1118;
+    border: 1px solid #1c2530;
+    border-left: 3px solid #39ff88;
+    border-radius: 8px;
+}
+QFrame#historyRow[failed="true"] {
+    border-left: 3px solid #ff2d6f;
+}
+QLabel#historyText {
+    font-family: 'Consolas', 'Cascadia Mono';
+    font-size: 9pt;
+    color: #c4d0de;
+}
+QPushButton#presetBtn[custom="true"] {
+    border-style: solid;
+    border-color: #3a2a55;
+    color: #c9a8ff;
+}
+QPushButton#presetBtn[custom="true"]:hover {
+    border-color: #b26bff;
+    color: #d9c2ff;
+}
+QPushButton#presetBtn[custom="true"]:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(178, 107, 255, 50), stop:1 rgba(178, 107, 255, 8));
+    border: 1px solid #b26bff;
+    color: #e6d6ff;
+    font-weight: bold;
+}
+QPushButton#jobBtn {
+    background-color: #141a24;
+    border: 1px dashed #2a3542;
+    border-radius: 10px;
+    padding: 5px 12px;
+    color: #8a97a8;
+}
+QPushButton#jobBtn:hover {
+    border: 1px solid #2fe6ff;
+    color: #2fe6ff;
+}
+QPushButton#jobBtn[set="true"] {
+    border: 1px solid #2fe6ff;
+    color: #8ff2ff;
+    background-color: rgba(47, 230, 255, 18);
+}
 """
+
+
+# --- Windows High Contrast (research-accessibility.md Finding 3) ---
+#
+# A user who turned on High Contrast needs *their* colors (often yellow on
+# black, or black on white at large contrast) - the dark neon theme above
+# overrides every one of them. Qt already fills the application palette
+# from the High Contrast system colors, so in that mode the app simply
+# applies no stylesheet and lets the (Fusion) style paint with that palette.
+# The QStyleHints color scheme is not enough to detect this: it only
+# reports light/dark, not "the user needs forced colors".
+
+SPI_GETHIGHCONTRAST = 0x0042
+HCF_HIGHCONTRASTON = 0x00000001
+
+
+class _HighContrastW(ctypes.Structure):
+    # HIGHCONTRASTW from winuser.h.
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("dwFlags", ctypes.c_uint32),
+        ("lpszDefaultScheme", ctypes.c_void_p),
+    ]
+
+
+def is_high_contrast(system_parameters_info=None) -> bool:
+    """True when Windows High Contrast is on.
+
+    `system_parameters_info` stands in for user32.SystemParametersInfoW
+    (same arguments, gets a ctypes pointer to the struct) so tests can
+    drive it; off Windows, with no stand-in, this is always False."""
+    if system_parameters_info is None:
+        if sys.platform != "win32":
+            return False
+        try:
+            system_parameters_info = ctypes.windll.user32.SystemParametersInfoW
+        except (AttributeError, OSError):
+            return False
+    info = _HighContrastW()
+    info.cbSize = ctypes.sizeof(info)
+    try:
+        ok = system_parameters_info(SPI_GETHIGHCONTRAST, info.cbSize, ctypes.pointer(info), 0)
+    except (OSError, ctypes.ArgumentError):
+        # Unknown is treated as "off" - the app's own theme is the default.
+        return False
+    return bool(ok) and bool(info.dwFlags & HCF_HIGHCONTRASTON)
+
+
+def stylesheet(high_contrast: bool | None = None) -> str:
+    """The stylesheet every window/dialog should apply (never STYLE directly),
+    so High Contrast is honored everywhere consistently: "" in High
+    Contrast mode, the custom theme otherwise. Checked on each call (it is
+    cheap); the application-wide sheet is set once at startup, so switching
+    the mode while the app runs fully applies after a restart."""
+    if high_contrast is None:
+        high_contrast = is_high_contrast()
+    return "" if high_contrast else STYLE

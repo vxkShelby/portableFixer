@@ -2,39 +2,39 @@ module_id: m12_online
 category: DIAGNOSTICS
 actions:
   - id: online_connectivity_ladder
-    label_sk: "Postupny test pripojenia"
+    label_sk: "Postupný test pripojenia"
     label_en: "Connectivity ladder test"
     risk: SAFE
     command: "$gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop; Write-Output ('Gateway: ' + $gw); if ($gw) { Test-Connection -ComputerName $gw -Count 2 -ErrorAction SilentlyContinue | Format-Table -AutoSize }; Write-Output '--- 8.8.8.8 (ICMP) ---'; Test-Connection -ComputerName 8.8.8.8 -Count 2 -ErrorAction SilentlyContinue | Format-Table -AutoSize; Write-Output '--- HTTPS to www.microsoft.com:443 ---'; Test-NetConnection -ComputerName www.microsoft.com -Port 443 -EA SilentlyContinue | Select-Object ComputerName,RemotePort,TcpTestSucceeded | Format-Table -AutoSize; Write-Output '--- DNS resolve microsoft.com ---'; Resolve-DnsName microsoft.com -QuickTimeout -ErrorAction SilentlyContinue | Format-Table -AutoSize"
-    description_sk: "Otestuje pripojenie po vrstvach: brana, internet (ICMP aj HTTPS), DNS. HTTPS vrstva funguje aj tam, kde siete blokuju ICMP. Ukaze, kde presne spojenie zlyhava."
+    description_sk: "Otestuje pripojenie po vrstvách: brána, internet (ICMP aj HTTPS), DNS. Krok cez HTTPS funguje aj v sieťach, ktoré blokujú ICMP. Ukáže, kde presne spojenie zlyháva."
     description_en: "Tests connectivity layer by layer: gateway, internet (ICMP and HTTPS), DNS. The HTTPS rung still works on networks that block ICMP. Shows exactly where the connection fails."
   - id: online_dns_benchmark
-    label_sk: "Porovnanie rychlosti DNS"
+    label_sk: "Porovnanie rýchlosti DNS"
     label_en: "DNS speed comparison"
     risk: SAFE
     command: "$dnsServer = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses } | Select-Object -First 1 -ExpandProperty ServerAddresses | Select-Object -First 1; if ($dnsServer) { Write-Output ('Current DNS (' + $dnsServer + '):'); (Measure-Command { Resolve-DnsName microsoft.com -Server $dnsServer -QuickTimeout -ErrorAction SilentlyContinue }).TotalMilliseconds } else { Write-Output 'Current DNS: none configured' }; Write-Output 'Google DNS (8.8.8.8):'; (Measure-Command { Resolve-DnsName microsoft.com -Server 8.8.8.8 -QuickTimeout -ErrorAction SilentlyContinue }).TotalMilliseconds"
-    description_sk: "Porovna rychlost odpovede aktualneho DNS servera s Google DNS (8.8.8.8) - obe merania obchadzaju lokalnu DNS cache, nic nemeni."
+    description_sk: "Porovná rýchlosť odpovede aktuálneho DNS servera s Google DNS (8.8.8.8) - obe merania obchádzajú lokálnu DNS cache, nič nemení."
     description_en: "Compares response time of the current DNS server against Google DNS (8.8.8.8) - both measurements bypass the local DNS cache, changes nothing."
   - id: online_proxy_check
-    label_sk: "Kontrola proxy nastaveni"
+    label_sk: "Kontrola nastavení proxy"
     label_en: "Proxy settings check"
     risk: SAFE
     command: "netsh winhttp show proxy; Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue | Select-Object ProxyEnable,ProxyServer,AutoConfigURL | Format-List"
-    description_sk: "Vypise systemove (WinHTTP) aj pouzivatelske proxy nastavenia. Nezname proxy moze znamenat malware presmerovanie."
+    description_sk: "Vypíše systémové (WinHTTP) aj používateľské nastavenia proxy. Neznáma proxy môže znamenať presmerovanie prevádzky malwarom."
     description_en: "Shows system (WinHTTP) and per-user proxy settings. An unknown proxy can indicate malware traffic redirection."
   - id: online_proxy_reset
-    label_sk: "Reset proxy nastaveni"
+    label_sk: "Reset nastavení proxy"
     label_en: "Reset proxy settings"
     risk: MODERATE
     command: "$k = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'; $bk = \"$env:ProgramData\\PortableFix\\proxy_backup.json\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; $current = Get-ItemProperty -Path $k -EA SilentlyContinue; [PSCustomObject]@{ ProxyEnable = $current.ProxyEnable; ProxyServer = $current.ProxyServer; AutoConfigURL = $current.AutoConfigURL } | ConvertTo-Json | Set-Content -Path $bk -Encoding UTF8; Set-ItemProperty -Path $k -Name ProxyEnable -Value 0 -Type DWord -EA SilentlyContinue; Remove-ItemProperty -Path $k -Name ProxyServer -EA SilentlyContinue; Remove-ItemProperty -Path $k -Name AutoConfigURL -EA SilentlyContinue; netsh winhttp reset proxy | Out-Null; Write-Output 'Proxy settings cleared (per-user Internet Settings and system WinHTTP proxy) - traffic now goes direct.'"
     undo_command: "$k = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'; $bk = \"$env:ProgramData\\PortableFix\\proxy_backup.json\"; if (Test-Path $bk) { $b = Get-Content $bk -Raw | ConvertFrom-Json; if ($null -eq $b.ProxyEnable) { Remove-ItemProperty -Path $k -Name ProxyEnable -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name ProxyEnable -Value $b.ProxyEnable -Type DWord -EA SilentlyContinue }; if ($null -eq $b.ProxyServer) { Remove-ItemProperty -Path $k -Name ProxyServer -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name ProxyServer -Value $b.ProxyServer -Type String -EA SilentlyContinue }; if ($null -eq $b.AutoConfigURL) { Remove-ItemProperty -Path $k -Name AutoConfigURL -EA SilentlyContinue } else { Set-ItemProperty -Path $k -Name AutoConfigURL -Value $b.AutoConfigURL -Type String -EA SilentlyContinue }; Write-Output 'Proxy settings restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Vypne a vymaze proxy server/auto-config URL v pouzivatelskych Internet Settings a resetuje systemovy WinHTTP proxy - caste riesenie po malware/adware presmerovani prevadzky cez neziaducu proxy (pozri online_proxy_check). Zaloha sa prepisuje pri kazdom behu, undo obnovi predoslu hodnotu."
+    description_sk: "Vypne a vymaže proxy server/auto-config URL v používateľských Internet Settings a resetuje systémovú proxy WinHTTP - časté riešenie, keď malware/adware presmeroval prevádzku cez nežiaducu proxy (pozri online_proxy_check). Záloha sa prepisuje pri každom behu, undo obnoví predošlú hodnotu."
     description_en: "Disables and clears the proxy server/auto-config URL in per-user Internet Settings and resets the system WinHTTP proxy - a common fix after malware/adware redirects traffic through an unwanted proxy (see online_proxy_check). Backup is refreshed on every run; undo restores the previous value."
 
   - id: online_speed_test
-    label_sk: "Test rychlosti pripojenia"
+    label_sk: "Test rýchlosti pripojenia"
     label_en: "Connection speed test"
     risk: SAFE
     command: "$url = 'https://speed.cloudflare.com/__down?bytes=25000000'; try { $req = [System.Net.WebRequest]::Create($url); $req.UserAgent = 'Mozilla/5.0'; $req.Timeout = 20000; $sw = [System.Diagnostics.Stopwatch]::StartNew(); $resp = $req.GetResponse(); $stream = $resp.GetResponseStream(); $buffer = New-Object byte[] 65536; $total = 0; while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { $total += $read }; $sw.Stop(); $resp.Close(); $mbps = [math]::Round(($total * 8) / $sw.Elapsed.TotalSeconds / 1000000, 1); Write-Output (\"Download speed: $mbps Mbps ($([math]::Round($total/1MB,1)) MB in $([math]::Round($sw.Elapsed.TotalSeconds,1))s)\") } catch { Write-Output ('Speed test failed: ' + $_.Exception.Message) }"
-    description_sk: "Zmeria rychlost stiahnutia (~25 MB z Cloudflare) - rovnaky test ako tlacidlo v System info paneli, ale ako katalogova akcia sa vysledok zapise do audit logu a reportu davky. Vyzaduje internet."
+    description_sk: "Zmeria rýchlosť sťahovania (~25 MB z Cloudflare) - rovnaký test ako tlačidlo v paneli System info, ale keďže ide o akciu z katalógu, výsledok sa zapíše do audit logu a reportu dávky. Vyžaduje pripojenie na internet."
     description_en: "Measures download speed (~25 MB from Cloudflare) - the same test as the System info panel button, but as a catalog action the result gets written to the audit log and batch report. Requires internet."

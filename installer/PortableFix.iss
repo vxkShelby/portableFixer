@@ -1,9 +1,13 @@
 ; Inno Setup script for PortableFix.
 ; Compile with ISCC.exe (Inno Setup 6+) from the repo root:
 ;   ISCC installer\PortableFix.iss
-; Bump MyAppVersion together with portablefix/version.py on every release.
+; Bump MyAppVersion together with portablefix/version.py on every release;
+; scripts\build.ps1 refuses to build when they differ, and passes the checked
+; value as /DMyAppVersion (hence #ifndef: a command-line define wins).
 #define MyAppName "PortableFix"
+#ifndef MyAppVersion
 #define MyAppVersion "1.11.4"
+#endif
 #define MyAppPublisher "vxkShelby"
 #define MyAppURL "https://github.com/vxkShelby/portableFixer"
 #define RepoRoot ".."
@@ -47,16 +51,45 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "{#RepoRoot}\App\*"; DestDir: "{app}\App"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#RepoRoot}\Data\*"; DestDir: "{app}\Data"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Data\ by allowlist, like the portable zip: on the build machine it also
+; holds that machine's settings.json and update status, which would ship to
+; every user and overwrite their settings on each reinstall.
+Source: "{#RepoRoot}\Data\SHA256SUMS"; DestDir: "{app}\Data"; Flags: ignoreversion
+Source: "{#RepoRoot}\Data\PortableFix-SelfSigned.cer"; DestDir: "{app}\Data"; Flags: ignoreversion
+Source: "{#RepoRoot}\Data\.gitkeep"; DestDir: "{app}\Data"; Flags: ignoreversion
 Source: "{#RepoRoot}\Modules\*"; DestDir: "{app}\Modules"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\Vendor\*"; DestDir: "{app}\Vendor"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\PortableFix.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\portablefix.ico"; DestDir: "{app}"; Flags: ignoreversion
 
+; What an in-app update leaves behind when it was interrupted: its staged
+; package and the backups of the replaced folders. They belong to the version
+; being replaced or removed, and Inno Setup only deletes files it installed.
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_update_stage"
+Type: filesandordirs; Name: "{app}\App.old"
+Type: filesandordirs; Name: "{app}\Modules.old"
+Type: filesandordirs; Name: "{app}\Vendor.old"
+Type: filesandordirs; Name: "{app}\App.failed"
+Type: filesandordirs; Name: "{app}\Modules.failed"
+Type: filesandordirs; Name: "{app}\Vendor.failed"
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\_update_stage"
+Type: filesandordirs; Name: "{app}\App.old"
+Type: filesandordirs; Name: "{app}\Modules.old"
+Type: filesandordirs; Name: "{app}\Vendor.old"
+Type: filesandordirs; Name: "{app}\App.failed"
+Type: filesandordirs; Name: "{app}\Modules.failed"
+Type: filesandordirs; Name: "{app}\Vendor.failed"
+
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}\App"; IconFilename: "{app}\portablefix.ico"
+; WorkingDir is the install root, never App\: a process whose current
+; directory is App\ (the app, or anything it starts) blocks the update from
+; renaming that folder.
+Name: "{group}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}\App"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon
 
 [Run]
 ; No runasoriginaluser: Inno's de-elevation trick for that flag (used to
@@ -68,4 +101,5 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; Worki
 ; launch coming up elevated after an admin install. Every later launch
 ; (Start Menu/Desktop shortcut, or a per-user install) is unaffected -
 ; the app's own manifest is asInvoker, so those always start non-elevated.
-Filename: "{app}\App\PortableFix.exe"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+; WorkingDir as on the shortcuts; left out, it would default to App\.
+Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent

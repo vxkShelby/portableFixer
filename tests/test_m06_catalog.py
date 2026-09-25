@@ -135,3 +135,13 @@ def test_m06_catalog_set_public_dns_verifies_it_actually_applied():
     assert "exit 1" in action.command
     assert "-EA Stop" in action.undo_command
     assert "exit 1" in action.undo_command
+
+
+def test_m06_catalog_print_spooler_reset_restart_failure_exits_non_zero():
+    # "FAILED" in the output alone still exited 0 - the report/history said
+    # success while the Print Spooler stayed stopped.
+    module = load_module(CATALOG_PATH)
+    command = next(a for a in module.actions if a.id == "net_print_spooler_reset").command
+    failed = command.index("'FAILED'")
+    assert "$startErrs" in command[command.rindex("if (", 0, failed):failed]
+    assert "exit 1" in command[failed:command.index("}", failed)]

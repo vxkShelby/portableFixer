@@ -1,5 +1,6 @@
 import ctypes
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -11,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
+
+from .executor import powershell_executable
 
 
 @dataclass
@@ -74,6 +77,9 @@ def get_static_info() -> StaticInfo:
     cpu_name = " ".join(cpu_name.split())
 
     local_ip = "N/A"
+    # connect() on a UDP socket only asks the routing table which local
+    # address would be used - no packet leaves the PC, so this stays on in
+    # quiet mode (G33), unlike PingRunner and VpnStatusRunner below.
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         probe.connect(("8.8.8.8", 80))
@@ -104,7 +110,7 @@ def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
     # subprocess cost once per launch.
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+            [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command",
              "(Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 -ExpandProperty Speed); "
              "'---PF_SEP---'; "
              "(Get-PhysicalDisk | Select-Object -ExpandProperty HealthStatus) -join ', '"],
@@ -343,24 +349,37 @@ def _wmi_cpu_clock_mhz() -> float | None:
     return None
 
 
+# ping.exe's reply line is localized ("time=21ms", "čas=21ms", "Zeit=21ms",
+# "temps=21 ms", "время=21мс", "時間 =21ms") and printed in the console's OEM
+# code page - but every locale keeps the literal "TTL=" right after the
+# round-trip time (an IPv4 reply always carries it; timeouts, "unreachable"
+# and the statistics lines never do). So the number is the "=21" / "<1" just
+# before "TTL=", whatever word and unit (glued on or, in French, spaced off)
+# surround it. Matched on the raw bytes: no decoding, so no code page guess
+# can garble the text or raise UnicodeDecodeError in the ping thread.
+_PING_REPLY_TIME = re.compile(rb"[=<]\s*(\d+)\s*[^\s=<]*\s+TTL=")
+
+
+def parse_ping_latency(output: bytes) -> float | None:
+    """Round-trip time in ms from ping.exe's output in any display language,
+    None when no reply came back. "<1ms" reads as 1.0, as it always did."""
+    match = _PING_REPLY_TIME.search(output)
+    return float(match.group(1)) if match else None
+
+
 def ping_once(host: str = "8.8.8.8", timeout_ms: int = 1000) -> float | None:
+    # Runs every few seconds - one ping.exe, parsed in Python, is far cheaper
+    # than starting PowerShell for Test-Connection on every tick. -4: an IPv6
+    # reply has no "TTL=" to anchor on (a hostname can resolve to either).
     try:
         result = subprocess.run(
-            ["ping", "-n", "1", "-w", str(timeout_ms), host],
-            capture_output=True, text=True, timeout=(timeout_ms / 1000) + 2,
+            ["ping", "-4", "-n", "1", "-w", str(timeout_ms), host],
+            capture_output=True, timeout=(timeout_ms / 1000) + 2,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    for line in result.stdout.splitlines():
-        if "time=" in line:
-            try:
-                return float(line.split("time=")[1].split("ms")[0].strip("<="))
-            except (IndexError, ValueError):
-                return None
-        if "time<" in line:
-            return 1.0
-    return None
+    return parse_ping_latency(result.stdout or b"")
 
 
 _VPN_ADAPTER_PATTERN = (
@@ -389,7 +408,7 @@ def check_vpn_status() -> str | None:
     )
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )

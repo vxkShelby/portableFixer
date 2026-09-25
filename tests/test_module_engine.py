@@ -341,3 +341,107 @@ def test_load_module_without_undo_command_defaults_to_none(tmp_path):
     )
     module = load_module(yaml_path)
     assert module.actions[0].undo_command is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "- just\n- a list\n",
+        "module_id: m_test\nactions: not-a-list\n",
+        "module_id: m_test\nactions:\n  - \"id label_sk label_en risk command\"\n",
+        "module_id: m_test\nactions:\n  - null\n",
+    ],
+)
+def test_load_module_rejects_malformed_structure(tmp_path, content):
+    # Previously a bare-string action slipped past the required-field check
+    # (substring match) or raised TypeError, escaping load_all_modules'
+    # error collection and crashing startup.
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(content, encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "    inactivity_timeout_sec: \"600\"\n",
+        "    hard_cap_sec: true\n",
+        "    hard_cap_sec: -5\n",
+        "    problem_keywords: \"slow\"\n",
+        "    recommended_action_ids: [1, 2]\n",
+    ],
+)
+def test_load_module_rejects_invalid_field_types(tmp_path, extra):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML + extra, encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_module_rejects_empty_command(tmp_path):
+    yaml_path = tmp_path / "actions.yaml"
+    yaml_path.write_text(VALID_YAML.replace("\"Write-Output 'hi'\"", "\"   \""), encoding="utf-8")
+    with pytest.raises(ModuleLoadError):
+        load_module(yaml_path)
+
+
+def test_load_all_modules_collects_malformed_module_instead_of_crashing(tmp_path):
+    good = tmp_path / "m_good"
+    good.mkdir()
+    (good / "actions.yaml").write_text(VALID_YAML, encoding="utf-8")
+    bad = tmp_path / "m_bad"
+    bad.mkdir()
+    (bad / "actions.yaml").write_text("module_id: m_bad\nactions:\n  - oops\n", encoding="utf-8")
+    modules, errors = load_all_modules(tmp_path)
+    assert [m.module_id for m in modules] == ["m_test"]
+    assert len(errors) == 1 and "m_bad" in errors[0]
+
+
+def test_real_module_catalog_loads_without_errors():
+    modules, errors = load_all_modules(Path(__file__).resolve().parent.parent / "Modules")
+    assert errors == []
+    assert modules
+
+
+# --- changes_system (research G24) ---
+
+def _yaml_with(extra: str, risk: str = "SAFE") -> str:
+    return (
+        "module_id: m_test\n"
+        "actions:\n"
+        "  - id: a1\n"
+        "    label_sk: \"A\"\n"
+        "    label_en: \"A\"\n"
+        f"    risk: {risk}\n"
+        "    command: \"Write-Output 'hi'\"\n"
+        f"{extra}"
+    )
+
+
+@pytest.mark.parametrize(("extra", "expected"), [
+    ("", None),
+    ("    changes_system: true\n", True),
+    ("    changes_system: false\n", False),
+])
+def test_changes_system_is_optional_and_strictly_boolean(tmp_path, extra, expected):
+    path = tmp_path / "actions.yaml"
+    path.write_text(_yaml_with(extra), encoding="utf-8")
+    assert load_module(path).actions[0].changes_system is expected
+
+
+@pytest.mark.parametrize("value", ['"false"', "1", "yes please", "[]"])
+def test_changes_system_rejects_non_booleans(tmp_path, value):
+    # A quoted "false" is a truthy string - it must fail the load, not
+    # silently give (or take away) a restore point.
+    path = tmp_path / "actions.yaml"
+    path.write_text(_yaml_with(f"    changes_system: {value}\n"), encoding="utf-8")
+    with pytest.raises(ModuleLoadError, match="changes_system"):
+        load_module(path)
+
+
+def test_destructive_action_cannot_opt_out_of_the_restore_point(tmp_path):
+    path = tmp_path / "actions.yaml"
+    path.write_text(_yaml_with("    changes_system: false\n", risk="DESTRUCTIVE"), encoding="utf-8")
+    with pytest.raises(ModuleLoadError, match="DESTRUCTIVE"):
+        load_module(path)

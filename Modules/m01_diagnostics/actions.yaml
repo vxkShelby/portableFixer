@@ -2,36 +2,36 @@ module_id: m01_diagnostics
 category: DIAGNOSTICS
 actions:
   - id: os_info
-    label_sk: "Informacie o operacnom systeme"
+    label_sk: "Informácie o operačnom systéme"
     label_en: "Operating system information"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; $os | Select-Object Caption,Version,BuildNumber,InstallDate,LastBootUpTime | Format-List; Write-Output ('Uptime: ' + ((Get-Date) - $os.LastBootUpTime))"
-    description_sk: "Verzia, build, cas instalacie, posledny start a doba behu."
+    description_sk: "Verzia, build, dátum inštalácie, posledný štart a doba behu."
     description_en: "Version, build, install date, last boot, and uptime."
 
   - id: full_system_snapshot_report
-    label_sk: "Kompletny snimok systemu (jeden report)"
+    label_sk: "Kompletná snímka systému (jeden report)"
     label_en: "Full system snapshot (one report)"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; Write-Output '=== OS ==='; Write-Output ($os.Caption + ' ' + $os.Version + ' (build ' + $os.BuildNumber + '), uptime ' + ((Get-Date) - $os.LastBootUpTime)); Write-Output ''; Write-Output '=== Top 10 processes by CPU ==='; Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name,Id,CPU,@{N='WorkingSetMB';E={[math]::Round($_.WS/1MB,1)}} | Format-Table -AutoSize; Write-Output '=== Active network connections ==='; Get-NetTCPConnection -State Established,Listen -EA SilentlyContinue | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,@{N='Process';E={(Get-Process -Id $_.OwningProcess -EA SilentlyContinue).Name}} | Sort-Object State | Format-Table -AutoSize; Write-Output '=== Registry autostart (Run/RunOnce) ==='; foreach ($path in 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run') { Get-ItemProperty -Path $path -EA SilentlyContinue | Select-Object * -ExcludeProperty PS* | Format-List }; Write-Output '=== Startup folder items ==='; Get-ChildItem \"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\",\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\" -EA SilentlyContinue | Select-Object FullName | Format-Table -AutoSize; Write-Output '=== Non-Microsoft scheduled tasks (enabled) ==='; Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' -and $_.TaskPath -notlike '\\Microsoft\\*' } | Select-Object TaskName,TaskPath,State | Format-Table -AutoSize; Write-Output '=== Auto-start services ==='; Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' } | Select-Object Name,State,StartName | Format-Table -AutoSize"
     inactivity_timeout_sec: 60
-    description_sk: "Jeden konsolidovany report na spolocne odoslanie/ulozenie (v stale SysInspector nastroja): strucne OS info, 10 najvytazenejsich procesov, aktivne sietove spojenia s vlastniacim procesom, registrovy autostart (Run/RunOnce), Startup priecinok, naplanovane ulohy mimo Microsoft a automaticky spustane sluzby. Kazda sekcia uz existuje ako samostatna akcia inde v appke - tento report ich len spaja do jedneho vystupu na rychly prehlad. Nic nemeni."
+    description_sk: "Jeden konsolidovaný report určený na uloženie/odoslanie ako celok (v štýle nástroja SysInspector): stručný prehľad OS, 10 procesov s najvyšším CPU časom, aktívne sieťové spojenia s procesom, ktorému patria, autostart z registra (Run/RunOnce), priečinok Startup, naplánované úlohy mimo Microsoftu a automaticky spúšťané služby. Všetky sekcie už existujú ako samostatné akcie inde v aplikácii - tento report ich len spája do jedného výstupu pre rýchly prehľad. Nič nemení."
     description_en: "One consolidated report meant to be saved/shared as a whole (in the style of ESET SysInspector): a brief OS summary, top 10 processes by CPU, active network connections with their owning process, registry autostart (Run/RunOnce), the Startup folder, non-Microsoft scheduled tasks, and auto-start services. Every section already exists as its own separate action elsewhere in the app - this report just combines them into one output for a quick overview. Changes nothing."
 
   - id: computer_info
-    label_sk: "Informacie o pocitaci"
+    label_sk: "Informácie o počítači"
     label_en: "Computer information"
     risk: SAFE
     command: "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,@{N='TotalPhysicalMemoryGB';E={[math]::Round($_.TotalPhysicalMemory/1GB,2)}},Domain | Format-List; Get-CimInstance Win32_Battery -EA SilentlyContinue | Select-Object Name,BatteryStatus,EstimatedChargeRemaining | Format-List"
-    description_sk: "Vyrobca, model, celkova RAM (GB), domena a stav baterie (ak je notebook)."
+    description_sk: "Výrobca, model, celková RAM (GB), doména a stav batérie (ak ide o notebook)."
     description_en: "Manufacturer, model, total RAM (GB), domain, and battery status (if a laptop)."
 
   - id: bios_info
-    label_sk: "Informacie o BIOSe"
+    label_sk: "Informácie o BIOS-e"
     label_en: "BIOS information"
     risk: SAFE
     command: "Get-CimInstance Win32_BIOS | Select-Object Manufacturer,Name,SMBIOSBIOSVersion,ReleaseDate,SerialNumber | Format-List"
-    description_sk: "Vyrobca, verzia, datum vydania a seriove cislo BIOSu."
+    description_sk: "Výrobca, verzia, dátum vydania a sériové číslo BIOS-u."
     description_en: "BIOS manufacturer, version, release date, and serial number."
 
   - id: cpu_info
@@ -39,39 +39,39 @@ actions:
     label_en: "Processor"
     risk: SAFE
     command: "Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,CurrentClockSpeed,LoadPercentage | Format-List"
-    description_sk: "Nazov, pocet jadier/vlakien, frekvencia (nominalna aj aktualna) a zataz."
+    description_sk: "Názov, počet jadier/vlákien, frekvencia (nominálna aj aktuálna) a záťaž."
     description_en: "Name, core/thread count, clock speed (nominal and current), and load."
 
   - id: memory_info
-    label_sk: "Pamatove moduly"
+    label_sk: "Pamäťové moduly"
     label_en: "Memory modules"
     risk: SAFE
     command: "Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel,DeviceLocator,@{N='CapacityGB';E={[math]::Round($_.Capacity/1GB,2)}},Speed,ConfiguredClockSpeed,Manufacturer | Format-Table -AutoSize"
-    description_sk: "Kapacita (GB) a rychlost RAM modulov."
+    description_sk: "Kapacita (GB) a rýchlosť nainštalovaných modulov RAM."
     description_en: "Capacity (GB) and speed of installed RAM modules."
 
   - id: volumes
-    label_sk: "Diskove oddiely"
+    label_sk: "Diskové zväzky"
     label_en: "Volumes"
     risk: SAFE
     command: "Get-Volume | Select-Object DriveLetter,FileSystem,HealthStatus,@{N='SizeRemainingGB';E={[math]::Round($_.SizeRemaining/1GB,2)}},@{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | Format-Table -AutoSize"
-    description_sk: "Stav a volne miesto na zvazkoch (GB)."
+    description_sk: "Stav a voľné miesto na zväzkoch (GB)."
     description_en: "Health and free space per volume (GB)."
 
   - id: physical_disks
-    label_sk: "Fyzicke disky"
+    label_sk: "Fyzické disky"
     label_en: "Physical disks"
     risk: SAFE
     command: "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,OperationalStatus,@{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | Format-Table -AutoSize"
-    description_sk: "Typ media (SSD/HDD) a stav disku (GB)."
+    description_sk: "Typ média (SSD/HDD) a stav disku (GB)."
     description_en: "Media type (SSD/HDD) and disk health (GB)."
 
   - id: recent_hotfixes
-    label_sk: "Posledne aktualizacie"
+    label_sk: "Posledné aktualizácie"
     label_en: "Recent updates"
     risk: SAFE
     command: "$session = New-Object -ComObject Microsoft.Update.Session; $searcher = $session.CreateUpdateSearcher(); $count = $searcher.GetTotalHistoryCount(); $searcher.QueryHistory(0, [Math]::Min($count, 100)) | Where-Object { $_.Title -and $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 20 Date,Title | Format-Table -AutoSize -Wrap"
-    description_sk: "Poslednych 20 uspesne nainstalovanych aktualizacii (vratane kumulativnych, nielen legacy hotfixov)."
+    description_sk: "Posledných 20 úspešne nainštalovaných aktualizácií (vrátane kumulatívnych, nielen starších hotfixov)."
     description_en: "Last 20 successfully installed updates (including cumulative updates, not just legacy hotfixes)."
 
   - id: defender_status
@@ -79,133 +79,165 @@ actions:
     label_en: "Windows Defender status"
     risk: SAFE
     command: "try { Get-MpComputerStatus -EA Stop | Format-List } catch { Write-Output ('Windows Defender status unavailable: ' + $_.Exception.Message) }; Get-CimInstance -Namespace root\\SecurityCenter2 -ClassName AntiVirusProduct -EA SilentlyContinue | Select-Object displayName,productState | Format-Table -AutoSize"
-    description_sk: "Realtime ochrana, tamper protection, signatury Defenderu a zoznam registrovanych antivirusov (aj tretich stran)."
+    description_sk: "Ochrana v reálnom čase, tamper protection, signatúry Defenderu a zoznam registrovaných antivírusov (aj od tretích strán)."
     description_en: "Real-time protection, tamper protection, Defender signatures, and registered antivirus products (including third-party)."
 
   - id: top_cpu_processes
-    label_sk: "Najvytazenejsie procesy (CPU cas)"
+    label_sk: "Procesy s najvyšším CPU časom (kumulatívne)"
     label_en: "Top CPU-consuming processes (cumulative CPU time)"
     risk: SAFE
     command: "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,Id,CPU,@{N='WorkingSetMB';E={[math]::Round($_.WS/1MB,1)}},Path | Format-Table -AutoSize -Wrap"
-    description_sk: "20 procesov s najvyssim kumulativnym CPU casom od spustenia (nie okamzita zataz)."
+    description_sk: "20 procesov s najvyšším kumulatívnym CPU časom od spustenia (nie okamžitá záťaž)."
     description_en: "20 processes with the highest cumulative CPU time since launch (not live/current load)."
 
   - id: pending_reboot
-    label_sk: "Kontrola cakajuceho restartu"
+    label_sk: "Kontrola čakajúceho reštartu"
     label_en: "Pending reboot check"
     risk: SAFE
     command: "$pending = @(); if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') { $pending += 'Component Based Servicing' }; if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\Auto Update\\RebootRequired') { $pending += 'Windows Update' }; if (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name PendingFileRenameOperations -EA SilentlyContinue) { $pending += 'Pending File Rename Operations' }; if ($pending.Count -gt 0) { Write-Output ('REBOOT PENDING: ' + ($pending -join ', ')) } else { Write-Output 'No reboot pending.' }"
-    description_sk: "Zisti, ci system caka na restart (Windows Update, CBS, premenovanie suborov), nic nemeni."
+    description_sk: "Zistí, či systém čaká na reštart (Windows Update, CBS, premenovanie súborov), nič nemení."
     description_en: "Checks whether the system is waiting on a restart (Windows Update, CBS, pending file rename), changes nothing."
 
   - id: eventlog_critical_7d
-    label_sk: "Kriticke chyby za poslednych 7 dni"
+    label_sk: "Kritické a chybové udalosti (posledných 7 dní)"
     label_en: "Critical/error events (last 7 days)"
     risk: SAFE
     command: "$events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-7)} -MaxEvents 50 -EA SilentlyContinue; if ($events) { $events | Select-Object TimeCreated,LogName,ProviderName,Id,LevelDisplayName,Message | Format-Table -AutoSize -Wrap } else { Write-Output 'No critical/error events in the last 7 days.' }"
-    description_sk: "Vypise kriticke a chybove udalosti zo System a Application logov za poslednych 7 dni, nic nemeni."
+    description_sk: "Vypíše kritické a chybové udalosti z logov System a Application za posledných 7 dní, nič nemení."
     description_en: "Lists critical and error events from the System and Application logs over the last 7 days, changes nothing."
 
   - id: bsod_summary
-    label_sk: "Prehlad padov systemu (BSOD)"
+    label_sk: "Prehľad pádov systému (BSOD)"
     label_en: "System crash (BSOD) summary"
     risk: SAFE
     command: "Write-Output '--- Minidump files ---'; Get-ChildItem -Path \"$env:SystemRoot\\Minidump\" -Filter *.dmp -EA SilentlyContinue | Select-Object Name,LastWriteTime,Length | Format-Table -AutoSize; Write-Output '--- Recent BugCheck/critical System events ---'; $events = Get-WinEvent -FilterHashtable @{LogName='System'; Id=1001,41} -MaxEvents 15 -EA SilentlyContinue; if ($events) { $events | Select-Object TimeCreated,Id,ProviderName,Message | Format-List } else { Write-Output 'No recent BugCheck events found.' }"
-    description_sk: "Zobrazi ulozene minidump subory a nedavne udalosti BugCheck, nic nemeni."
+    description_sk: "Zobrazí uložené minidump súbory a nedávne udalosti BugCheck, nič nemení."
     description_en: "Shows saved minidump files and recent BugCheck events, changes nothing."
 
+  - id: crash_bugcheck_triage
+    label_sk: "Triáž pádov: stop kódy a neočakávané vypnutia"
+    label_en: "Crash triage: stop codes and unexpected shutdowns"
+    risk: SAFE
+    command: "$days = 90; $since = (Get-Date).AddDays(-$days); $codes = @{ '0x0000000A' = 'IRQL_NOT_LESS_OR_EQUAL|A driver touched invalid or paged memory at raised IRQL - faulty driver, less often RAM.'; '0x00000019' = 'BAD_POOL_HEADER|Kernel pool memory was corrupted - faulty driver or antivirus filter, less often RAM.'; '0x0000001A' = 'MEMORY_MANAGEMENT|Memory management found corruption - test the RAM, then suspect drivers.'; '0x0000001E' = 'KMODE_EXCEPTION_NOT_HANDLED|A kernel-mode exception was not handled - faulty or incompatible driver.'; '0x00000024' = 'NTFS_FILE_SYSTEM|NTFS file system failure - run chkdsk and check the disk (SMART).'; '0x0000003B' = 'SYSTEM_SERVICE_EXCEPTION|Exception in a system service - graphics driver, antivirus or another third-party driver.'; '0x0000004E' = 'PFN_LIST_CORRUPT|The physical page list is corrupted - RAM or a faulty driver.'; '0x00000050' = 'PAGE_FAULT_IN_NONPAGED_AREA|Invalid memory was referenced - RAM, a faulty driver or an antivirus filter.'; '0x00000074' = 'BAD_SYSTEM_CONFIG_INFO|The SYSTEM registry hive is damaged - restore the registry or use System Restore.'; '0x0000007A' = 'KERNEL_DATA_INPAGE_ERROR|Kernel data could not be read from disk - failing disk, cable or storage driver.'; '0x0000007B' = 'INACCESSIBLE_BOOT_DEVICE|The boot disk became inaccessible - storage controller mode (AHCI/RAID/VMD), storage driver or disk.'; '0x0000007E' = 'SYSTEM_THREAD_EXCEPTION_NOT_HANDLED|A system thread raised an unhandled exception - faulty driver.'; '0x0000007F' = 'UNEXPECTED_KERNEL_MODE_TRAP|CPU trap in kernel mode - hardware (RAM, overheating, overclock) or a driver.'; '0x0000009C' = 'MACHINE_CHECK_EXCEPTION|The CPU reported a fatal hardware error - CPU, RAM, motherboard or overclock.'; '0x0000009F' = 'DRIVER_POWER_STATE_FAILURE|A driver hung during sleep, resume or shutdown - chipset, graphics, network or USB driver.'; '0x000000A0' = 'INTERNAL_POWER_ERROR|Power management failed - often hibernation file or power driver; update BIOS and chipset drivers.'; '0x000000BE' = 'ATTEMPTED_WRITE_TO_READONLY_MEMORY|A driver wrote to read-only memory - faulty driver.'; '0x000000C2' = 'BAD_POOL_CALLER|A driver made a bad kernel pool request - faulty driver or antivirus.'; '0x000000C4' = 'DRIVER_VERIFIER_DETECTED_VIOLATION|Driver Verifier caught a driver - fix that driver or turn Driver Verifier off (verifier /reset).'; '0x000000C5' = 'DRIVER_CORRUPTED_EXPOOL|A driver corrupted the kernel pool - faulty driver.'; '0x000000D1' = 'DRIVER_IRQL_NOT_LESS_OR_EQUAL|A driver accessed invalid memory at raised IRQL - usually a network, storage or antivirus driver.'; '0x000000EA' = 'THREAD_STUCK_IN_DEVICE_DRIVER|A driver (typically graphics) got stuck waiting for the device - GPU driver or GPU hardware.'; '0x000000EF' = 'CRITICAL_PROCESS_DIED|A critical Windows process died - system file corruption (run DISM and SFC), disk errors or malware.'; '0x000000F4' = 'CRITICAL_OBJECT_TERMINATION|A critical process terminated - often a failing disk/SSD, cable or SSD firmware.'; '0x000000F7' = 'DRIVER_OVERRAN_STACK_BUFFER|A driver overran a stack buffer - faulty driver.'; '0x000000FC' = 'ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY|A driver tried to execute non-executable memory - faulty driver, less often RAM.'; '0x00000101' = 'CLOCK_WATCHDOG_TIMEOUT|A CPU core stopped responding - CPU, overclock/undervolt or BIOS; update the BIOS.'; '0x00000109' = 'CRITICAL_STRUCTURE_CORRUPTION|Kernel code or data was modified - a driver patching the kernel, or RAM.'; '0x00000116' = 'VIDEO_TDR_FAILURE|The graphics driver did not recover from a timeout - GPU driver, GPU overheating or overclock.'; '0x00000117' = 'VIDEO_TDR_TIMEOUT_DETECTED|The graphics driver stopped responding - GPU driver, GPU overheating or overclock.'; '0x00000119' = 'VIDEO_SCHEDULER_INTERNAL_ERROR|The GPU scheduler hit a fatal error - graphics driver.'; '0x00000124' = 'WHEA_UNCORRECTABLE_ERROR|Fatal hardware error (CPU, RAM, PCIe device, overclock/undervolt) - run WHEA hardware errors.'; '0x00000133' = 'DPC_WATCHDOG_VIOLATION|A driver ran too long at DPC level - storage controller/SSD firmware or network driver.'; '0x00000139' = 'KERNEL_SECURITY_CHECK_FAILURE|The kernel detected a corrupted data structure - faulty driver, less often RAM.'; '0x0000013A' = 'KERNEL_MODE_HEAP_CORRUPTION|The kernel heap was corrupted - faulty driver.'; '0x00000154' = 'UNEXPECTED_STORE_EXCEPTION|The memory store component failed - disk/SSD health, storage driver or antivirus.'; '0xC000021A' = 'STATUS_SYSTEM_PROCESS_TERMINATED|A user-mode subsystem (winlogon/csrss) died - system file corruption or a bad update.' }; function Get-PfCode([string]$s) { $s = $s.Trim(); $v = [uint32]0; if ($s -match '^0[xX]([0-9A-Fa-f]{1,8})$') { if ([uint32]::TryParse($Matches[1], [Globalization.NumberStyles]::HexNumber, [Globalization.CultureInfo]::InvariantCulture, [ref]$v)) { return $v } } elseif ([uint32]::TryParse($s, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$v)) { return $v }; return $null }; try { $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 41, 1001, 6008; StartTime = $since } -MaxEvents 500 -EA Stop) } catch { if ([string]$_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { Write-Output ('Could not read the System event log: ' + $_.Exception.Message); exit 1 }; $ev = @() }; $providers = @{ 41 = @('Microsoft-Windows-Kernel-Power'); 1001 = @('Microsoft-Windows-WER-SystemErrorReporting', 'BugCheck'); 6008 = @('EventLog') }; $ev = @($ev | Where-Object { $providers.ContainsKey([int]$_.Id) -and ($providers[[int]$_.Id] -contains [string]$_.ProviderName) } | Sort-Object TimeCreated -Descending); if ($ev.Count -eq 0) { Write-Output ('No unexpected shutdowns or bugchecks in the System log in the last ' + $days + ' days.'); exit 0 }; $rows = @(foreach ($e in $ev) { $x = [xml]$e.ToXml(); $d = @{}; $vals = @(); foreach ($n in $x.GetElementsByTagName('Data')) { $vals += [string]$n.InnerText; $nm = $n.GetAttribute('Name'); if ($nm) { $d[$nm] = [string]$n.InnerText } }; $code = $null; $params = ''; $dump = ''; if ($e.Id -eq 41) { $src = 'Kernel-Power 41'; $code = Get-PfCode $d['BugcheckCode']; $params = @(foreach ($k in 'BugcheckParameter1', 'BugcheckParameter2', 'BugcheckParameter3', 'BugcheckParameter4') { if ($d.ContainsKey($k)) { $d[$k] } }) -join ', '; if ($code -eq 0) { $params = '' } } elseif ($e.Id -eq 1001) { $src = 'BugCheck 1001'; $p1 = if ($d.ContainsKey('param1')) { $d['param1'] } elseif ($vals.Count) { $vals[0] } else { '' }; if ($p1 -match '^\\s*(0[xX][0-9A-Fa-f]{1,8})\\s*\\(([^)]*)\\)') { $m1 = $Matches[1]; $m2 = $Matches[2]; $code = Get-PfCode $m1; $params = @($m2 -split ',' | ForEach-Object { $_.Trim() }) -join ', ' }; $dump = if ($d.ContainsKey('param2')) { $d['param2'] } elseif ($vals.Count -gt 1) { $vals[1] } else { '' } } else { $src = 'EventLog 6008' }; if ($e.Id -eq 6008) { $hex = '-'; $name = 'UNEXPECTED_SHUTDOWN'; $cause = 'Windows logged that the previous shutdown was unexpected - power loss, forced power-off, a hang or a crash without a stop code.' } elseif ($null -eq $code) { $hex = '?'; $name = 'UNKNOWN'; $cause = 'The event carries no readable stop code.' } elseif ($code -eq 0) { $hex = '0x00000000'; $name = 'NO_BUGCHECK'; $cause = 'Rebooted without a clean shutdown and without a stop code - power loss, holding the power button, PSU/battery or overheating shutdown, or a hard hang.' } else { $hex = '0x{0:X8}' -f $code; $key = $hex; if (($code -shr 28) -eq 1) { $key = '0x{0:X8}' -f ($code -band 0x0FFFFFFF) }; $t = $codes[$key]; if ($t) { $name, $cause = $t -split '\\|', 2 } else { $name = 'UNKNOWN'; $cause = 'Not in the built-in table - look the stop code up in the Microsoft bug check code reference.' } }; [pscustomobject]@{ Time = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'); Source = $src; Code = $hex; Name = $name; Parameters = $params; Dump = $dump; Cause = $cause; At = $e.TimeCreated } }); Write-Output ('=== Unexpected shutdowns and bugchecks, last ' + $days + ' days (newest first, up to 30 listed) ==='); $rows | Select-Object -First 30 | Format-List Time, Source, Code, Name, Parameters, Dump, Cause | Out-String -Width 250; Write-Output '=== Summary by stop code (crashes, not events) ==='; $window = 10; $rank = { param($r) if ($r.Code -eq '-') { 0 } elseif ($r.Code -eq '0x00000000') { 1 } elseif ($r.Code -eq '?') { 2 } elseif ($r.Source -eq 'BugCheck 1001') { 4 } else { 3 } }; $crashes = New-Object System.Collections.Generic.List[object]; $cur = $null; foreach ($r in @($rows | Sort-Object At)) { if ($null -eq $cur -or ($r.At - $cur.Start).TotalMinutes -gt $window -or $cur.Sources.ContainsKey($r.Source)) { $cur = [pscustomobject]@{ Start = $r.At; Sources = @{}; Best = $r }; $crashes.Add($cur) } elseif ((& $rank $r) -gt (& $rank $cur.Best)) { $cur.Best = $r }; $cur.Sources[$r.Source] = $true }; @($crashes | ForEach-Object { $_.Best }) | Group-Object Code, Name | Sort-Object Count -Descending | ForEach-Object { $t = @($_.Group | Sort-Object At); [pscustomobject]@{ Crashes = $_.Count; Code = $t[0].Code; Name = $t[0].Name; Last = $t[-1].Time } } | Format-Table -AutoSize | Out-String -Width 250; Write-Output ('Counted ' + $crashes.Count + ' crash(es) or unexpected shutdown(s) from ' + $rows.Count + ' event(s).'); Write-Output ('How it counts: one crash usually logs several events at the next boot (BugCheck 1001, Kernel-Power 41, EventLog 6008). Events logged within ' + $window + ' minutes of each other - at most one of each kind - count as one crash, listed under its most specific stop code (a BugCheck 1001 code first). A stop code that repeats points at one cause; many different codes point at hardware (RAM, PSU, overheating). Keep the dump files (see Crash dump evidence) before any cleanup.')"
+    description_sk: "Prejde log System za posledných 90 dní: pády so stop kódom (BugCheck 1001), reštarty bez čistého vypnutia (Kernel-Power 41) a neočakávané vypnutia (EventLog 6008). Ku každej udalosti vypíše čas, stop kód s parametrami a cestu k výpisu pamäte, zo vstavanej tabuľky ~35 najčastejších kódov aj názov a pravdepodobnú príčinu (výstup je v angličtine) a na konci súhrn podľa kódu, ktorý počíta pády, nie udalosti: jeden pád zapíše pri ďalšom štarte zvyčajne viac udalostí, preto sa udalosti do 10 minút od seba (najviac jedna z každého druhu) rátajú ako jeden pád. Kernel-Power 41 s kódom 0 znamená výpadok napájania, podržanie vypínača alebo úplné zamrznutie. Kód sa číta zo štruktúrovaných dát udalosti, nie z preloženého textu, takže funguje v každom jazyku Windows. Nič nemení."
+    description_en: "Scans the System log for the last 90 days: crashes with a stop code (BugCheck 1001), restarts without a clean shutdown (Kernel-Power 41) and unexpected shutdowns (EventLog 6008). For each event it lists the time, the stop code with its parameters and the memory dump path, the name and probable cause from a built-in table of the ~35 most common codes, and a summary per code at the end that counts crashes, not events: one crash usually logs several events at the next boot, so events within 10 minutes of each other (at most one of each kind) count as one crash. Kernel-Power 41 with code 0 means power loss, a held power button or a hard hang. The code is read from the event's structured data, not from the translated message, so it works in any Windows display language. Changes nothing."
+
+  - id: whea_hardware_errors
+    label_sk: "Hardvérové chyby WHEA (30 dní)"
+    label_en: "WHEA hardware errors (30 days)"
+    risk: SAFE
+    command: "$days = 30; $since = (Get-Date).AddDays(-$days); $sources = @{ '0' = 'Machine check'; '1' = 'Corrected machine check'; '2' = 'Corrected platform error'; '3' = 'NMI'; '4' = 'PCI Express'; '5' = 'Generic'; '6' = 'INIT'; '7' = 'Boot error record'; '8' = 'SCI generic'; '12' = 'Generic v2'; '13' = 'SCI generic v2'; '14' = 'BMC'; '15' = 'Persistent memory'; '16' = 'Device driver' }; try { $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; StartTime = $since } -MaxEvents 5000 -EA Stop) } catch { if ([string]$_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { Write-Output ('Could not read the System event log: ' + $_.Exception.Message); exit 1 }; $ev = @() }; $ev = @($ev | Where-Object { [string]$_.ProviderName -eq 'Microsoft-Windows-WHEA-Logger' }); if ($ev.Count -eq 0) { Write-Output ('No WHEA hardware errors in the System log in the last ' + $days + ' days.'); exit 0 }; $rows = @(foreach ($e in $ev) { $x = [xml]$e.ToXml(); $d = @{}; foreach ($n in $x.GetElementsByTagName('Data')) { $nm = $n.GetAttribute('Name'); if ($nm) { $d[$nm] = [string]$n.InnerText } }; $id = [int]$e.Id; $fatal = ($id -eq 18) -or ([int]$e.Level -in 1, 2); $dev = ''; switch ($id) { 17 { $comp = 'PCI Express'; if ($d['PrimaryDeviceName']) { $dev = $d['PrimaryDeviceName'] } elseif ($d['VendorID']) { $dev = 'VEN ' + $d['VendorID'] + ' DEV ' + $d['DeviceID'] + ' at bus ' + $d['Bus'] + ' device ' + $d['Device'] + ' function ' + $d['Function'] } } 18 { $comp = 'Processor (machine check)'; $dev = 'APIC ' + $d['ApicId'] + ', bank ' + $d['MCABank'] } 19 { $comp = 'Processor (machine check)'; $dev = 'APIC ' + $d['ApicId'] + ', bank ' + $d['MCABank'] } 47 { $comp = 'Memory' } default { $es = [string]$d['ErrorSource']; $comp = if ($sources.ContainsKey($es)) { $sources[$es] } elseif ($es) { 'Error source ' + $es } else { 'Other' }; $comp += ' (event ' + $id + ')' } }; [pscustomobject]@{ Component = $comp; Device = $dev; Severity = $(if ($fatal) { 'FATAL' } else { 'corrected' }); Time = $e.TimeCreated } }); Write-Output ('=== WHEA hardware errors, last ' + $days + ' days: ' + $rows.Count + ' event(s) ==='); $rows | Group-Object Component, Device, Severity | Sort-Object Count -Descending | ForEach-Object { $t = @($_.Group | Sort-Object Time); [pscustomobject]@{ Count = $_.Count; Severity = $t[0].Severity; Component = $t[0].Component; Device = $t[0].Device; First = $t[0].Time.ToString('yyyy-MM-dd'); Last = $t[-1].Time.ToString('yyyy-MM-dd') } } | Format-Table -AutoSize -Wrap | Out-String -Width 250; $nFatal = @($rows | Where-Object { $_.Severity -eq 'FATAL' }).Count; if ($nFatal) { Write-Output ('VERDICT: ' + $nFatal + ' uncorrectable hardware error(s) - suspect the CPU, RAM, motherboard or the listed PCIe device, or an overclock/undervolt. Check temperatures, load BIOS defaults and test the RAM.') } else { Write-Output 'VERDICT: only corrected errors - the hardware recovered. A steady stream still points at a marginal component (for PCI Express often link power saving on that device or slot; update BIOS and chipset drivers).' }"
+    description_sk: "Zhrnie hardvérové chyby, ktoré Windows za posledných 30 dní zapísal cez WHEA-Logger (PCI Express, procesor – machine check, pamäť): počet podľa súčasti a zariadenia, závažnosť (opravená alebo fatálna), prvý a posledný výskyt a verdikt. Fatálne chyby zvyčajne sprevádza pád WHEA_UNCORRECTABLE_ERROR (0x124), opakované opravené chyby prezradia slabnúcu súčiastku ešte pred pádom. Nič nemení."
+    description_en: "Summarizes the hardware errors Windows logged through WHEA-Logger over the last 30 days (PCI Express, processor machine checks, memory): count per component and device, severity (corrected or fatal), first and last occurrence, and a verdict. Fatal errors usually come with a WHEA_UNCORRECTABLE_ERROR (0x124) crash; a steady stream of corrected errors reveals a failing part before it crashes. Changes nothing."
+
+  - id: reliability_history
+    label_sk: "História spoľahlivosti (index stability, 30 dní)"
+    label_en: "Reliability history (stability index, 30 days)"
+    risk: SAFE
+    command: "$days = 30; $since = (Get-Date).AddDays(-$days); $wql = 'TimeGenerated >= ''' + $since.ToUniversalTime().ToString('yyyyMMddHHmmss.ffffff', [Globalization.CultureInfo]::InvariantCulture) + '+000'''; try { $m = @(Get-CimInstance -ClassName Win32_ReliabilityStabilityMetrics -Filter $wql -Property SystemStabilityIndex, TimeGenerated -EA Stop | Where-Object { $_.TimeGenerated -ge $since } | Sort-Object TimeGenerated) } catch { Write-Output ('Could not read Win32_ReliabilityStabilityMetrics: ' + $_.Exception.Message); exit 1 }; Write-Output ('=== Stability index (1 = worst, 10 = best), last ' + $days + ' days ==='); if ($m.Count -eq 0) { Write-Output 'No stability data - Reliability Monitor data collection may be disabled, or the history is newer than one day.' } else { $daily = @($m | Group-Object { $_.TimeGenerated.ToString('yyyy-MM-dd') } | Sort-Object Name | ForEach-Object { [pscustomobject]@{ Day = $_.Name; Index = [math]::Round([double](($_.Group | Measure-Object SystemStabilityIndex -Minimum).Minimum), 2) } }); $all = $m | Measure-Object SystemStabilityIndex -Minimum -Average; $worst = @($daily | Sort-Object Index, Day)[0]; Write-Output ('Latest: ' + [math]::Round([double]$m[-1].SystemStabilityIndex, 2) + ' (' + $m[-1].TimeGenerated.ToString('yyyy-MM-dd HH:mm') + '), minimum: ' + [math]::Round([double]$all.Minimum, 2) + ' (' + $worst.Day + '), average: ' + [math]::Round([double]$all.Average, 2)); if ($daily.Count -ge 2) { $half = [math]::Floor($daily.Count / 2); $a = ($daily[0..($half - 1)] | Measure-Object Index -Average).Average; $b = ($daily[$half..($daily.Count - 1)] | Measure-Object Index -Average).Average; $trend = if ($b - $a -ge 0.5) { 'improving' } elseif ($a - $b -ge 0.5) { 'getting WORSE' } else { 'steady' }; Write-Output ('Trend: ' + $trend + ' (first half average ' + [math]::Round($a, 2) + ', second half ' + [math]::Round($b, 2) + ')') }; Write-Output 'Lowest index per day:'; $daily | Format-Table -AutoSize | Out-String -Width 250 }; try { $r = @(Get-CimInstance -ClassName Win32_ReliabilityRecords -Filter $wql -Property SourceName, EventIdentifier, ProductName, TimeGenerated -EA Stop | Where-Object { $_.TimeGenerated -ge $since }) } catch { Write-Output ('Could not read Win32_ReliabilityRecords: ' + $_.Exception.Message); exit 1 }; $kinds = @{ 'Application Error|1000' = 'Application crash'; 'Application Hang|1002' = 'Application hang'; 'Microsoft-Windows-WER-SystemErrorReporting|1001' = 'Windows crash (bugcheck)'; 'EventLog|6008' = 'Unexpected shutdown'; 'MsiInstaller|11708' = 'Failed installation'; 'Microsoft-Windows-WindowsUpdateClient|20' = 'Failed Windows update' }; $fails = @(foreach ($x in $r) { $k = [string]$x.SourceName + '|' + ([int64]$x.EventIdentifier -band 0xFFFF); if ($kinds.ContainsKey($k)) { [pscustomobject]@{ Kind = $kinds[$k]; Product = $(if ($x.ProductName) { [string]$x.ProductName } else { [string]$x.SourceName }); Time = $x.TimeGenerated } } }); Write-Output ('=== Top failing sources, last ' + $days + ' days: ' + $fails.Count + ' failure record(s) ==='); if ($fails.Count -eq 0) { Write-Output 'No application crashes/hangs, Windows crashes, unexpected shutdowns or failed installs/updates recorded.' } else { $fails | Group-Object Kind, Product | Sort-Object Count -Descending | Select-Object -First 15 | ForEach-Object { $t = @($_.Group | Sort-Object Time); [pscustomobject]@{ Count = $_.Count; Kind = $t[0].Kind; Product = $t[0].Product; Last = $t[-1].Time.ToString('yyyy-MM-dd HH:mm') } } | Format-Table -AutoSize -Wrap | Out-String -Width 250 }"
+    description_sk: "Z údajov Monitora spoľahlivosti (Win32_ReliabilityStabilityMetrics a Win32_ReliabilityRecords) vypíše index stability 1–10 za posledných 30 dní – posledný, minimum, priemer, trend a najnižšiu hodnotu po dňoch – a najčastejšie padajúce zdroje: pády a zamrznutia aplikácií, pády Windows, neočakávané vypnutia a zlyhané inštalácie či aktualizácie. Nič nemení."
+    description_en: "From the Reliability Monitor data (Win32_ReliabilityStabilityMetrics and Win32_ReliabilityRecords) it shows the 1-10 stability index for the last 30 days - latest, minimum, average, trend and the lowest value per day - and the top failing sources: application crashes and hangs, Windows crashes, unexpected shutdowns and failed installs or updates. Changes nothing."
+
+  - id: crash_dump_evidence
+    label_sk: "Výpisy pádov ako dôkaz (Minidump, MEMORY.DMP)"
+    label_en: "Crash dump evidence (Minidump, MEMORY.DMP)"
+    risk: SAFE
+    command: "$cc = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl' -EA SilentlyContinue; $defMd = Join-Path $env:SystemRoot 'Minidump'; $defMem = Join-Path $env:SystemRoot 'MEMORY.DMP'; $mdDir = if ($cc -and $cc.MinidumpDir) { [string]$cc.MinidumpDir } else { $defMd }; $memFile = if ($cc -and $cc.DumpFile) { [string]$cc.DumpFile } else { $defMem }; $lkr = Join-Path $env:SystemRoot 'LiveKernelReports'; $dirs = @($mdDir); if ($mdDir.TrimEnd('\\') -ne $defMd) { $dirs += $defMd }; $dirs += $lkr; $mems = @($memFile); if ($memFile -ne $defMem) { $mems += $defMem }; $files = @(); $unreadable = @(); foreach ($dir in $dirs) { if (Test-Path -LiteralPath $dir) { $gerr = $null; $files += @(Get-ChildItem -LiteralPath $dir -Filter *.dmp -File -Recurse -Force -EA SilentlyContinue -ErrorVariable gerr); if ($gerr) { $unreadable += $dir } } }; foreach ($mf in $mems) { $mem = Get-Item -LiteralPath $mf -Force -EA SilentlyContinue; if ($mem) { $files += $mem } }; $files = @($files | Sort-Object FullName -Unique); $types = @{ 0 = 'none'; 1 = 'complete memory dump'; 2 = 'kernel memory dump'; 3 = 'small memory dump (minidump)'; 7 = 'automatic memory dump' }; if ($cc -and $null -ne $cc.CrashDumpEnabled) { $t = [int]$cc.CrashDumpEnabled; Write-Output ('Dump setting: ' + $(if ($types.ContainsKey($t)) { $types[$t] } else { 'type ' + $t })); if ($t -eq 0) { Write-Output 'WARNING: crash dumps are turned off, so the next crash leaves no evidence (System Properties > Advanced > Startup and Recovery).' } }; Write-Output ('=== Crash dump files (' + (@($dirs + $mems) -join ', ') + ') ==='); $sep = [string][IO.Path]::DirectorySeparatorChar; $cleaned = { param($f) ($f.DirectoryName.TrimEnd($sep) -eq $defMd) -or ($f.FullName -eq $defMem) -or $f.FullName.StartsWith($lkr + $sep, [StringComparison]::OrdinalIgnoreCase) }; if ($files.Count) { $files | Sort-Object LastWriteTime -Descending | Select-Object @{N = 'LastWrite'; E = { $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') } }, @{N = 'SizeMB'; E = { [math]::Round($_.Length / 1MB, 2) } }, @{N = 'CleanupDeletes'; E = { if (& $cleaned $_) { 'yes' } else { 'no' } } }, FullName | Format-Table -AutoSize | Out-String -Width 250; Write-Output ('Total: ' + $files.Count + ' file(s), ' + [math]::Round((($files | Measure-Object Length -Sum).Sum) / 1MB, 2) + ' MB.'); $del = @($files | Where-Object { & $cleaned $_ }); $keep = $files.Count - $del.Count; Write-Output ('The cleanup action System crash dumps (crash_dumps) deletes ' + $del.Count + ' of these file(s), ' + [math]::Round((($del | Measure-Object Length -Sum).Sum) / 1MB, 2) + ' MB (CleanupDeletes = yes): it cleans only the default Windows locations (*.dmp directly in ' + $defMd + ', ' + $defMem + ', everything in ' + $lkr + ').' + $(if ($keep) { ' It does not touch the other ' + $keep + ' file(s).' } else { '' })) } else { Write-Output 'No crash dump files found.' }; Write-Output 'Keep the dumps as evidence: copy them off the PC (for example to the USB drive) or analyze them (WinDbg !analyze -v) before any cleanup.'; $custom = @(@($mdDir, $memFile) | Where-Object { $_.TrimEnd('\\') -notin $defMd, $defMem }); if ($custom.Count) { Write-Output ('Note: dumps are configured in a custom location (' + ($custom -join ', ') + '); crash_dumps does not delete those, but keep them as evidence too.') }; if ($unreadable.Count) { Write-Output ('Could not read: ' + ($unreadable -join ', ') + ' - run PortableFix as administrator.'); exit 1 }"
+    description_sk: "Vypíše súbory výpisov pamäte po pádoch (Minidump, MEMORY.DMP, LiveKernelReports) s veľkosťou a dátumom a nastavený typ výpisu; upozorní, ak sú výpisy vypnuté. Pri každom súbore uvedie, či ho čistenie 'Výpisy pádov systému (Minidump/MEMORY.DMP/LiveKernelReports)' zmaže – maže len predvolené umiestnenia Windows, nie výpisy vo vlastnom priečinku nastavenom v CrashControl. Predvolené umiestnenia prehľadá vždy, aj keď je nastavený vlastný priečinok, lebo staršie výpisy v nich čistenie zmaže. Pred čistením si výpisy skopírujte (napr. na USB kľúč) alebo ich analyzujte. Priečinok Minidump vyžaduje administrátora. Nič nemení ani nekopíruje."
+    description_en: "Lists the memory dump files left by crashes (Minidump, MEMORY.DMP, LiveKernelReports) with size and date, plus the configured dump type, and warns when dumps are turned off. For each file it says whether the 'System crash dumps (Minidump/MEMORY.DMP/LiveKernelReports)' cleanup deletes it - that cleanup covers only the default Windows locations, not dumps in a custom folder set in CrashControl. The default locations are always scanned, even when a custom folder is set, because the cleanup deletes older dumps left there. Copy the dumps off before any cleanup (for example to the USB drive) or analyze them. The Minidump folder needs administrator. Changes nothing and copies nothing."
+
   - id: disk_reliability_counters
-    label_sk: "Spolahlivost diskov (SMART pocitadla)"
+    label_sk: "Spoľahlivosť diskov (počítadlá SMART)"
     label_en: "Disk reliability counters (SMART)"
     risk: SAFE
     command: "try { $counters = Get-PhysicalDisk | Get-StorageReliabilityCounter -EA Stop | Select-Object DeviceId,Temperature,Wear,ReadErrorsTotal,ReadErrorsUncorrected,WriteErrorsTotal,WriteErrorsUncorrected,PowerOnHours; if ($counters) { $counters | Format-Table -AutoSize } else { Write-Output 'No reliability counters available for the physical disks on this system.' } } catch { Write-Output 'Storage reliability counters not supported on this system.' }"
-    description_sk: "Zobrazi teplotu, opotrebovanie a chybove pocitadla fyzickych diskov, ak su podporovane. Nic nemeni."
+    description_sk: "Zobrazí teplotu, opotrebovanie a chybové počítadlá fyzických diskov, ak sú podporované. Nič nemení."
     description_en: "Shows temperature, wear, and error counters for physical disks, if supported. Changes nothing."
 
   - id: boot_time_breakdown
-    label_sk: "Rozklad casu spustania (posledne starty)"
+    label_sk: "Rozpis času spúšťania (posledné štarty)"
     label_en: "Startup time breakdown (recent boots)"
     risk: SAFE
     command: "$events = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100} -MaxEvents 5 -EA SilentlyContinue; if ($events) { foreach ($e in $events) { $xml = [xml]$e.ToXml(); $bootMs = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'BootTime' }).'#text'; Write-Output ($e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + ' - total boot time: ' + [math]::Round([double]$bootMs/1000,1) + 's') } } else { Write-Output 'No boot performance events found (log empty, disabled, or needs administrator to read).' }"
-    description_sk: "Zobrazi celkovy cas spustania z poslednych 5 startov (Windows uz tuto udalost sam zaznamenava, ID 100 v logu Diagnostics-Performance). Nic nemeni."
+    description_sk: "Zobrazí celkový čas spúšťania pri posledných 5 štartoch (Windows ho sám zaznamenáva ako udalosť ID 100 v logu Diagnostics-Performance). Nič nemení."
     description_en: "Shows total boot duration from the last 5 startups (Windows already records this itself, event ID 100 in the Diagnostics-Performance log). Changes nothing."
 
   - id: battery_health_report
-    label_sk: "Zdravie baterie (design vs. realna kapacita)"
+    label_sk: "Zdravie batérie (menovitá vs. skutočná kapacita)"
     label_en: "Battery health report (design vs. actual capacity)"
     risk: SAFE
     command: "$me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\BatteryReport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $reportPath = \"$dest\\BatteryReport.html\"; $out = & powercfg /batteryreport /output $reportPath /duration 14 2>&1; if (Test-Path $reportPath) { Write-Output ('Battery health report saved to: ' + $reportPath); Write-Output 'Open it in a browser to see design capacity vs full charge capacity and drain history.' } else { Write-Output ('Could not generate battery report: ' + ($out -join ' ')); exit 1 }"
-    description_sk: "Vygeneruje Windows report o zdravi baterie (powercfg /batteryreport) - design kapacita vs. realna plna kapacita a historia vybijania za 14 dni - do priecinka pristupneho len aktualnemu poucivatelovi, SYSTEM a administratorom. Na pocitacoch bez baterie hlasi prazdny report. Nic nemeni, len ulozi HTML subor."
+    description_sk: "Vygeneruje vstavaný Windows report o zdraví batérie (powercfg /batteryreport) - menovitá vs. skutočná plná kapacita a história vybíjania za 14 dní - do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom. Na počítačoch bez batérie bude report prázdny. Nič nemení, len uloží HTML súbor."
     description_en: "Generates the built-in Windows battery health report (powercfg /batteryreport) - design capacity vs. actual full charge capacity and 14-day drain history - into a folder only the current user, SYSTEM, and administrators can read. On desktops without a battery the report comes back empty. Changes nothing, only saves an HTML file."
 
   - id: eventlog_full_export
-    label_sk: "Plny export event logov (.evtx)"
+    label_sk: "Úplný export logov udalostí (.evtx)"
     label_en: "Full event log export (.evtx)"
     risk: SAFE
     command: "$me = \"$env:USERDOMAIN\\$env:USERNAME\"; $root = \"$env:ProgramData\\PortableFix\"; New-Item -ItemType Directory -Force -Path $root | Out-Null; icacls $root /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $dest = \"$root\\EventLogExport_$(Get-Date -Format 'yyyyMMdd_HHmmss')\"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; icacls $dest /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\" /grant:r \"${me}:(OI)(CI)F\" | Out-Null; $logs = 'System','Application','Security'; $exported = 0; foreach ($log in $logs) { & wevtutil epl $log \"$dest\\$log.evtx\" 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { $exported++ } }; Write-Output (\"Exported $exported/$($logs.Count) event log(s) to: $dest (Security needs administrator)\"); if ($exported -eq 0) { exit 1 } else { exit 0 }"
-    description_sk: "Exportuje cele System/Application/Security logy do .evtx suborov (do priecinka pristupneho len aktualnemu pouzivatelovi, SYSTEM a administratorom) na neskorsiu analyzu v Event Vieweri inde (nie len poslednych 50 udalosti ako ine akcie). Security log vyzaduje administratora. Nic nemeni, len uklada subory."
+    description_sk: "Exportuje celé logy System/Application/Security do súborov .evtx (do priečinka prístupného len aktuálnemu používateľovi, SYSTEM a administrátorom) na neskoršiu analýzu v Event Vieweri aj na inom počítači (nie iba posledných 50 udalostí ako iné akcie). Log Security vyžaduje administrátora. Nič nemení, len ukladá súbory."
     description_en: "Exports the full System/Application/Security logs to .evtx files (into a folder only the current user, SYSTEM, and administrators can read) for later analysis in Event Viewer elsewhere (not just the last 50 events like other actions). The Security log needs administrator. Changes nothing, only saves files."
 
   - id: installed_software
-    label_sk: "Nainstalovany softver"
+    label_sk: "Nainštalovaný softvér"
     label_en: "Installed software"
     risk: SAFE
     command: "$apps = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -EA SilentlyContinue | Where-Object DisplayName | Select-Object DisplayName,DisplayVersion,Publisher,InstallDate | Sort-Object DisplayName; if ($apps) { $apps | Format-Table -AutoSize } else { Write-Output 'No installed software found in the registry uninstall keys.' }"
-    description_sk: "Vypise nainstalovane programy zo systemoveho registra, nic nemeni."
+    description_sk: "Vypíše nainštalované programy zo systémového registra, nič nemení."
     description_en: "Lists installed programs from the system registry, changes nothing."
 
   - id: activation_status
-    label_sk: "Stav aktivacie/licencie Windows"
+    label_sk: "Stav aktivácie/licencie Windows"
     label_en: "Windows activation/license status"
     risk: SAFE
     command: "$lic = Get-CimInstance SoftwareLicensingProduct -Filter \"ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL\" -EA SilentlyContinue; if ($lic) { $lic | Select-Object Name,Description,LicenseStatus,PartialProductKey | Format-List } else { Write-Output 'No licensing information available.' }"
-    description_sk: "Zobrazi stav aktivacie a ciastocny licencny kluc Windows, nic nemeni."
+    description_sk: "Zobrazí stav aktivácie a čiastočný licenčný kľúč Windows, nič nemení."
     description_en: "Shows the Windows activation status and partial product key, changes nothing."
 
   - id: restore_points
-    label_sk: "Zoznam obnovovacich bodov"
+    label_sk: "Zoznam bodov obnovenia systému"
     label_en: "System Restore point list"
     risk: SAFE
     command: "$rp = Get-ComputerRestorePoint -EA SilentlyContinue; if ($rp) { $rp | Select-Object SequenceNumber,CreationTime,Description,RestorePointType | Format-Table -AutoSize } else { Write-Output 'No system restore points found (System Protection may be disabled).' }"
-    description_sk: "Vypise dostupne obnovovacie body systemu, nic nemeni."
+    description_sk: "Vypíše dostupné body obnovenia systému, nič nemení."
     description_en: "Lists available System Restore points, changes nothing."
 
   - id: uptime_faststartup
-    label_sk: "Doba behu a rychle spustenie"
+    label_sk: "Doba behu a stav rýchleho spustenia"
     label_en: "Uptime and Fast Startup status"
     risk: SAFE
     command: "$os = Get-CimInstance Win32_OperatingSystem; $uptime = (Get-Date) - $os.LastBootUpTime; Write-Output ('Last boot: ' + $os.LastBootUpTime); Write-Output ('Uptime: {0}d {1}h {2}m' -f $uptime.Days,$uptime.Hours,$uptime.Minutes); $fs = Get-ItemPropertyValue -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -EA SilentlyContinue; if ($null -eq $fs) { Write-Output 'Fast Startup: not configured on this system.' } else { Write-Output ('Fast Startup enabled: ' + [bool]$fs) }"
-    description_sk: "Zobrazi dobu behu od posledneho startu a stav rychleho spustenia (Fast Startup), nic nemeni."
+    description_sk: "Zobrazí dobu behu od posledného štartu a stav rýchleho spustenia (Fast Startup), nič nemení."
     description_en: "Shows uptime since last boot and the Fast Startup (Hiberboot) status, changes nothing."
 
   - id: os_edition_eol
-    label_sk: "Edicia, build a podpora Windows"
+    label_sk: "Edícia, build a podpora Windows"
     label_en: "Windows edition, build, and support status"
     risk: SAFE
     command: "$cv = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' -EA SilentlyContinue; Write-Output ($cv.ProductName + ' ' + $cv.DisplayVersion + ' (build ' + $cv.CurrentBuildNumber + '.' + $cv.UBR + ')'); if ([int]$cv.CurrentBuildNumber -lt 22000) { Write-Output 'Windows 10: mainstream support ended 2025-10-14 - verify ESU enrollment or plan an upgrade.' }"
-    description_sk: "Zobrazi ediciu, presny build (vratane UBR) a upozorni, ak ide o Windows 10 po ukonceni podpory. Nic nemeni."
+    description_sk: "Zobrazí edíciu, presný build (vrátane UBR) a upozorní, ak ide o Windows 10 po ukončení podpory. Nič nemení."
     description_en: "Shows the edition, exact build (including UBR), and flags Windows 10 past end of support. Changes nothing."
 
   - id: bitlocker_status
-    label_sk: "Stav sifrovania BitLocker"
+    label_sk: "Stav šifrovania BitLocker"
     label_en: "BitLocker encryption status"
     risk: SAFE
     command: "try { $bl = Get-BitLockerVolume -EA Stop; if ($bl) { $bl | Select-Object MountPoint,VolumeStatus,ProtectionStatus,EncryptionPercentage,KeyProtector | Format-List } else { Write-Output 'No BitLocker volumes found.' } } catch { Write-Output 'BitLocker status unavailable on this system.' }"
-    description_sk: "Zobrazi stav sifrovania BitLocker na zvazkoch, nic nemeni."
+    description_sk: "Zobrazí stav šifrovania BitLocker na zväzkoch, nič nemení."
     description_en: "Shows BitLocker encryption status per volume, changes nothing."
 
   - id: tpm_status
-    label_sk: "Stav TPM cipu"
+    label_sk: "Stav čipu TPM"
     label_en: "TPM status"
     risk: SAFE
     command: "try { Get-Tpm -EA Stop | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated,ManufacturerVersion | Format-List } catch { Write-Output 'TPM status unavailable on this system.' }"
-    description_sk: "Zobrazi pritomnost a stav TPM cipu, nic nemeni."
+    description_sk: "Zobrazí prítomnosť a stav čipu TPM, nič nemení."
     description_en: "Shows the presence and status of the TPM chip, changes nothing."
 
   - id: pagefile_info
-    label_sk: "Konfiguracia odkladacieho suboru"
+    label_sk: "Konfigurácia a využitie odkladacieho súboru"
     label_en: "Page file configuration and usage"
     risk: SAFE
     command: "$pf = Get-CimInstance Win32_PageFileUsage -EA SilentlyContinue; if ($pf) { $pf | Select-Object Name,AllocatedBaseSize,CurrentUsage,PeakUsage | Format-Table -AutoSize } else { Write-Output 'No page file currently configured.' }; Get-CimInstance Win32_ComputerSystem | Select-Object AutomaticManagedPagefile | Format-List"
-    description_sk: "Zobrazi konfiguraciu a vyuzitie odkladacieho suboru (pagefile), nic nemeni."
+    description_sk: "Zobrazí konfiguráciu a využitie odkladacieho súboru (pagefile), nič nemení."
     description_en: "Shows page file configuration and usage, changes nothing."

@@ -86,6 +86,18 @@ def test_m22_catalog_wipe_free_space_has_a_raised_hard_cap():
     assert action.hard_cap_sec == 21600
 
 
+def test_m22_catalog_wipe_free_space_is_the_only_disk_stressing_action():
+    # G13: cipher /w writes every free sector of %SystemDrive% three times -
+    # on a dying disk that is as risky as the m03 defrag, so the pre-flight
+    # image-first gate must fire for it. The reports only read.
+    from portablefix.preflight import profile_for
+
+    module = load_module(CATALOG_PATH)
+    assert {a.id for a in module.actions if a.stresses_disk} == {"wipe_free_space"}
+    wipe = next(a for a in module.actions if a.id == "wipe_free_space")
+    assert profile_for([(module, wipe)]).stresses_disk
+
+
 def test_m22_catalog_wipe_free_space_targets_the_system_drive_not_a_hardcoded_letter():
     # A portable tool can't assume the OS lives on C: - every other
     # drive-wide action in this codebase (m03_disk) uses $env:SystemDrive.

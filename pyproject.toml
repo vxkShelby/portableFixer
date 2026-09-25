@@ -1,2 +1,6 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = [
+    "frozen_e2e: self-update of a PyInstaller-built probe; needs PF_E2E_V1/PF_E2E_V2 (CI job frozen-update-e2e)",
+    "real_preflight_probes: run the real Windows pre-flight probes instead of the healthy test defaults (tests/conftest.py)",
+]

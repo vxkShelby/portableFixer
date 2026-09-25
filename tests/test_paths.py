@@ -31,8 +31,6 @@ def test_resolve_writable_base_dir_success(tmp_path):
 
 
 def test_resolve_writable_base_dir_fallback(monkeypatch, tmp_path):
-    import tempfile
-
     def raise_oserror(self, *args, **kwargs):
         raise OSError("read-only filesystem")
 
@@ -260,3 +258,74 @@ def test_compute_windir_temp_protected_child_missing_windir_env_returns_none(mon
     monkeypatch.delenv("SystemRoot", raising=False)
 
     assert compute_windir_temp_protected_child(tmp_path) is None
+
+
+def _usb_unwritable(monkeypatch, usb_dir):
+    real_write_text = Path.write_text
+
+    def write_text(self, *args, **kwargs):
+        if self.parent == usb_dir:
+            raise OSError("read-only USB")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+
+def test_resolve_writable_base_dir_survives_gettempdir_itself_failing(monkeypatch, tmp_path):
+    # tempfile.gettempdir() raises FileNotFoundError when no temp dir is
+    # usable at all; it used to escape as a bare "Startup failed".
+    import portablefix.paths as paths_module
+
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    _usb_unwritable(monkeypatch, usb)
+
+    def no_temp():
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(paths_module.tempfile, "gettempdir", no_temp)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+    result, used_fallback = resolve_writable_base_dir(usb)
+
+    assert used_fallback is True
+    assert result == tmp_path / "local" / "PortableFix"
+
+
+def test_resolve_writable_base_dir_moves_on_when_temp_fallback_is_unusable(monkeypatch, tmp_path):
+    # A TEMP pointing somewhere dead (here: at a file, so nothing can be
+    # created under it) must fall through to the next candidate instead of
+    # ending startup.
+    import portablefix.paths as paths_module
+
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    _usb_unwritable(monkeypatch, usb)
+    dead_temp = tmp_path / "dead_temp"
+    dead_temp.write_text("not a directory")
+    monkeypatch.setattr(paths_module.tempfile, "gettempdir", lambda: str(dead_temp))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+    result, used_fallback = resolve_writable_base_dir(usb)
+
+    assert used_fallback is True
+    assert result == tmp_path / "local" / "PortableFix"
+
+
+def test_onefile_build_does_not_bundle_modules_or_data():
+    # research-app-performance.md 2.1: Modules/ and Data/ are read from the
+    # drive next to App/ (get_base_dir), never from the onefile bundle, so
+    # embedding them only cost an extraction to %TEMP% on every launch.
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    build_script = (root / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    bundled = re.findall(r'--add-data\s+"[^";]*;([^"]*)"', build_script)
+    assert bundled  # the pattern still matches the script's syntax
+    assert "Modules" not in bundled and "Data" not in bundled
+    # If anything ever starts reading from the bundle, this must change too.
+    # The updater only scrubs the bundle's traces out of the environment it
+    # hands to the swap and the relaunched exe - it never reads from it.
+    sources = list((root / "portablefix").rglob("*.py")) + [root / "main.py"]
+    scrubbers = {"update_swap.py", "update_swap_script.py"}
+    assert [p for p in sources if p.name not in scrubbers and "_MEIPASS" in p.read_text(encoding="utf-8")] == []

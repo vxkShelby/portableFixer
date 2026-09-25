@@ -1,0 +1,8 @@
+
+Envoi d'une requête 'Ping'  8.8.8.8 avec 32 octets de données :
+Réponse de 8.8.8.8 : octets=32 temps=18 ms TTL=117
+
+Statistiques Ping pour 8.8.8.8:
+    Paquets : envoyés = 1, reçus = 1, perdus = 0 (perte 0%),
+Durée approximative des boucles en millisecondes :
+    Minimum = 18ms, Maximum = 18ms, Moyenne = 18ms

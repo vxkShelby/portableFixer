@@ -1,7 +1,8 @@
 import json
 import os
-import subprocess
+import re
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -12,9 +13,41 @@ from urllib.parse import urlparse
 from PySide6.QtCore import QThread, Signal
 
 from . import elevation
-from .integrity import compute_sha256
+from .sha256sums import _sha256_unless_stopped
+from .version import APP_VERSION
+
+# The Qt-free core lives in update_swap; these names are re-exported because
+# main.py, the GUI and the tests have always reached them through updater.
+from .update_swap import (  # noqa: F401
+    REASON_BLOCKED,
+    REASON_CANCELLED,
+    REASON_EXITED,
+    REASON_SPAWN_ERROR,
+    REASON_TIMEOUT,
+    SWAP_FOLDERS,
+    UPDATE_STATUS_ABORTED,
+    UPDATE_STATUS_HANDED_OFF,
+    UPDATE_STATUS_IN_PROGRESS,
+    UPDATE_STATUS_OK,
+    UPDATE_STATUS_OK_SUMS_STALE,
+    UPDATE_STATUS_ROLLBACK_FAILED,
+    UPDATE_STATUS_ROLLED_BACK,
+    STAGE_DIR_NAME,
+    LaunchResult,
+    StagedUpdate,
+    UpdateStageCancelled,
+    UpdateStageError,
+    _remove_tree,
+    launch_swap,
+    stage_update,
+    update_log_dir,
+    update_status_path,
+)
 
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/vxkShelby/portableFixer/releases/latest"
+# Shown with every update failure: the way out when the in-app update
+# cannot work on this machine.
+RELEASES_PAGE_URL = "https://github.com/vxkShelby/portableFixer/releases/latest"
 _TRUSTED_DOWNLOAD_HOSTS = {"github.com", "objects.githubusercontent.com"}
 # urlretrieve has no timeout at all - a stalled connection hangs the download
 # thread forever. This bounds each individual socket read/connect instead.
@@ -29,6 +62,10 @@ def _is_trusted_download_url(url: str) -> bool:
 
 class UpdateVerificationError(Exception):
     pass
+
+
+class UpdateDownloadCancelled(Exception):
+    """The app is closing - the partial download was deleted."""
 
 
 @dataclass
@@ -91,6 +128,7 @@ def download_update(
     info: UpdateInfo,
     dest_dir: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Path:
     # Fail closed: a release published without a .sha256 asset (CI mishap, or
     # a tampered release that simply omits it) must not be trusted silently -
@@ -109,6 +147,10 @@ def download_update(
                 total = 0
             downloaded = 0
             while True:
+                # Checked per chunk: closing the app must not have to wait
+                # for (or destroy the thread of) a 55 MB download.
+                if should_stop is not None and should_stop():
+                    raise UpdateDownloadCancelled()
                 chunk = resp.read(_DOWNLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
@@ -120,11 +162,67 @@ def download_update(
         zip_path.unlink(missing_ok=True)
         raise
     with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
-        expected = resp.read().decode("utf-8").strip().split()[0].lower()
-    actual = compute_sha256(zip_path)
+        manifest = resp.read().decode("utf-8", errors="replace").split()
+    # An empty or garbled manifest must fail as a verification error (which
+    # the UI reports), not an IndexError, and never be compared as-is.
+    expected = manifest[0].lower() if manifest else ""
+    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        zip_path.unlink(missing_ok=True)
+        raise UpdateVerificationError("SHA256 manifest is empty or malformed - refusing to install.")
+    _verify_zip_sha256(zip_path, expected, should_stop)
+    return zip_path
+
+
+def _verify_zip_sha256(zip_path: Path, expected: str, should_stop) -> None:
+    try:
+        actual = _sha256_unless_stopped(zip_path, should_stop)
+    except OSError:
+        zip_path.unlink(missing_ok=True)
+        raise
+    if actual is None:
+        zip_path.unlink(missing_ok=True)
+        raise UpdateDownloadCancelled()
     if actual.lower() != expected:
         zip_path.unlink(missing_ok=True)
         raise UpdateVerificationError("Downloaded package does not match expected SHA256.")
+
+
+_SHA256_HEX = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def copy_local_update(
+    source_zip: Path,
+    expected_sha256: str,
+    dest_dir: Path,
+    on_progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> Path:
+    """The developer switch's stand-in for download_update: copies a local
+    release zip into dest_dir and verifies it the same way. A copy, because
+    staging deletes the zip it was given."""
+    if not _SHA256_HEX.fullmatch(expected_sha256 or ""):
+        raise UpdateVerificationError("--sha256 must be the 64-digit hex SHA256 of the zip - refusing to install.")
+    source_zip = Path(source_zip)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = dest_dir / "PortableFix-update.zip"
+    try:
+        total = source_zip.stat().st_size
+        copied = 0
+        with source_zip.open("rb") as src, zip_path.open("wb") as dst:
+            while True:
+                if should_stop is not None and should_stop():
+                    raise UpdateDownloadCancelled()
+                chunk = src.read(_DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                copied += len(chunk)
+                if on_progress is not None:
+                    on_progress(copied, total)
+    except BaseException:
+        zip_path.unlink(missing_ok=True)
+        raise
+    _verify_zip_sha256(zip_path, expected_sha256.lower(), should_stop)
     return zip_path
 
 
@@ -144,8 +242,7 @@ def needs_elevation_for_update(directory: Path) -> bool:
     # write-then-read-back probe in is_writable() would "succeed" against
     # that shadow copy while the real target stays untouched, and the swap
     # script (running as powershell.exe, which is NOT virtualized) then
-    # fails for real on every Move-Item, silently, thanks to
-    # $ErrorActionPreference. Rather than trying to out-clever
+    # fails for real on every rename. Rather than trying to out-clever
     # virtualization, refuse outright when installed under a protected
     # system path and not elevated.
     if elevation.is_admin():
@@ -178,206 +275,123 @@ def is_writable(directory: Path) -> bool:
         return False
 
 
-def _ps_quote(value: str) -> str:
-    # Single-quoted PowerShell strings never interpolate $variables, unlike
-    # the double-quoted strings this previously used - a literal '$' in a
-    # path (a legal NTFS character, e.g. a username) would otherwise be
-    # misread as a variable reference and silently truncate the path.
-    return "'" + value.replace("'", "''") + "'"
+def recover_interrupted_swap(install_dir: Path) -> list[str]:
+    """Puts back any App/Modules/Vendor folder that an interrupted update
+    swap (USB stick pulled, power lost) left behind only as X.old. Runs at
+    startup, before modules load. App.old itself can only be restored by
+    PortableFix.cmd - without App\\ there is no exe to run this - so in
+    practice this covers Modules/Vendor. Returns the restored folder names."""
+    restored = []
+    for name in SWAP_FOLDERS:
+        live = install_dir / name
+        backup = install_dir / f"{name}.old"
+        try:
+            if backup.is_dir() and not live.exists():
+                backup.rename(live)
+                restored.append(name)
+        except OSError:
+            continue
+    return restored
 
 
-def build_swap_script(current_pid: int, install_dir: Path, zip_path: Path) -> str:
-    # The downloaded zip's contract (produced by scripts/build_release_zip.ps1):
-    # exactly one top-level folder containing App/, Data/, Modules/, Vendor/,
-    # PortableFix.cmd.
-    app_dir = _ps_quote(str(install_dir / "App"))
-    app_bak = _ps_quote(str(install_dir / "App.old"))
-    app_exe = _ps_quote(str(install_dir / "App" / "PortableFix.exe"))
-    modules_dir = _ps_quote(str(install_dir / "Modules"))
-    modules_bak = _ps_quote(str(install_dir / "Modules.old"))
-    vendor_dir = _ps_quote(str(install_dir / "Vendor"))
-    vendor_bak = _ps_quote(str(install_dir / "Vendor.old"))
-    data_dir = _ps_quote(str(install_dir / "Data"))
-    settings_json = _ps_quote(str(install_dir / "Data" / "settings.json"))
-    cmd_path = _ps_quote(str(install_dir / "PortableFix.cmd"))
-    zip_p = _ps_quote(str(zip_path))
-    stage = _ps_quote(str(zip_path.parent / "PortableFixUpdateStage"))
-    settings_bak = _ps_quote(str(zip_path.parent / "settings.json.bak"))
-    log_dir = _ps_quote(str(Path(tempfile.gettempdir()) / "PortableFixUpdate"))
-    log_file = _ps_quote(str(Path(tempfile.gettempdir()) / "PortableFixUpdate" / f"update_log_{current_pid}.txt"))
-    return (
-        '$ErrorActionPreference = "SilentlyContinue"\n'
-        # No diagnostics existed here before - every step below is silent by
-        # design ($ErrorActionPreference), so this log is the only evidence
-        # left behind if a swap fails. Written under %TEMP%, never under
-        # install_dir, so it's captured even when the install itself is on
-        # an unwritable/protected path.
-        f"New-Item -ItemType Directory -Force -Path {log_dir} | Out-Null\n"
-        f"function Log([string]$msg) {{ Add-Content -Path {log_file} -Value ((Get-Date -Format o) + ' ' + $msg) -EA SilentlyContinue }}\n"
-        f"Log 'update swap started, waiting for pid {current_pid} to exit'\n"
-        # A PyInstaller --onefile bootloader keeps the PID alive while it
-        # deletes its own _MEI* extraction folder after the interpreter
-        # finalizes - AV real-time scanning of that delete can push this
-        # past several seconds on some machines. 60 x 500ms = 30s, not 15s.
-        f"for ($i = 0; $i -lt 60; $i++) {{\n"
-        f"    if (-not (Get-Process -Id {current_pid} -EA SilentlyContinue)) {{ break }}\n"
-        "    Start-Sleep -Milliseconds 500\n"
-        "}\n"
-        "Start-Sleep -Milliseconds 300\n"
-        # If the old process is still alive after the wait, its exe (and
-        # anything it has open under App\) is still locked - proceeding
-        # would make Move-Item fail silently and leave a half-swapped
-        # install. Nothing has been touched on disk yet, so aborting here
-        # is a clean no-op, not a rollback.
-        f"$swapAborted = $false\n"
-        f"if (Get-Process -Id {current_pid} -EA SilentlyContinue) {{\n"
-        f"    Log 'ABORT: pid {current_pid} did not exit in time, files likely still locked - skipping swap, relaunching old version'\n"
-        "    $swapAborted = $true\n"
-        "}\n"
-        "if (-not $swapAborted) {\n"
-        f"Log 'old process exited, proceeding with swap'\n"
-        f"if (Test-Path {settings_json}) {{ Copy-Item -Path {settings_json} -Destination {settings_bak} -Force }}\n"
-        f"Log \"settings.json backed up: $(Test-Path {settings_bak})\"\n"
-        f"Expand-Archive -Path {zip_p} -DestinationPath {stage} -Force\n"
-        f"Log \"expanded update zip: $(Test-Path {stage})\"\n"
-        # Zip-slip guard: refuse to proceed if any extracted entry landed
-        # outside the staging directory (a crafted zip with '../' entries).
-        f"$stageFull = (Resolve-Path {stage}).Path\n"
-        f"$escaped = Get-ChildItem -Path {stage} -Recurse -File | Where-Object {{ -not $_.FullName.StartsWith($stageFull) }}\n"
-        f"if ($escaped) {{ Log 'ABORT: zip-slip guard tripped'; Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue; exit 1 }}\n"
-        f"$stagedRoot = (Get-ChildItem -Path {stage} -Directory | Select-Object -First 1).FullName\n"
-        f"if (Test-Path {app_dir}) {{ Move-Item -Path {app_dir} -Destination {app_bak} -Force }}\n"
-        f"if (Test-Path {modules_dir}) {{ Move-Item -Path {modules_dir} -Destination {modules_bak} -Force }}\n"
-        f"if (Test-Path {vendor_dir}) {{ Move-Item -Path {vendor_dir} -Destination {vendor_bak} -Force }}\n"
-        f"Log \"old folders backed up: App.old=$(Test-Path {app_bak}) Modules.old=$(Test-Path {modules_bak}) Vendor.old=$(Test-Path {vendor_bak})\"\n"
-        # Root-cause fix: if App/Modules/Vendor is STILL present here, the
-        # move-away above silently failed (a locked .exe/DLL - AV scanning,
-        # or the process that just exited not having released the handle
-        # yet - swallowed by $ErrorActionPreference). Move-Item into an
-        # *existing* destination directory does not overwrite it, it nests
-        # the source folder one level deeper instead (verified empirically),
-        # so the old exe would stay exactly where it is. The verification
-        # check further down would then find that old exe still there and
-        # report "swap verified OK" - a false positive on an update that
-        # never actually happened. Refuse to swap into an occupied
-        # directory rather than nesting into it.
-        f"$backupOk = (-not (Test-Path {app_dir})) -and (-not (Test-Path {modules_dir})) -and (-not (Test-Path {vendor_dir}))\n"
-        f"if (-not $backupOk) {{ Log 'ABORT: old App/Modules/Vendor folder still present after backup move - likely locked, refusing to swap into an occupied directory' }}\n"
-        "if ($backupOk) {\n"
-        f"    Move-Item -Path \"$stagedRoot\\App\" -Destination {app_dir} -Force\n"
-        f"    Move-Item -Path \"$stagedRoot\\Modules\" -Destination {modules_dir} -Force\n"
-        f"    if (Test-Path \"$stagedRoot\\Vendor\") {{ Move-Item -Path \"$stagedRoot\\Vendor\" -Destination {vendor_dir} -Force }}\n"
-        f"    Copy-Item -Path \"$stagedRoot\\Data\\*\" -Destination {data_dir} -Recurse -Force\n"
-        f"    Copy-Item -Path \"$stagedRoot\\PortableFix.cmd\" -Destination {cmd_path} -Force\n"
-        f"    if (Test-Path {settings_bak}) {{ Copy-Item -Path {settings_bak} -Destination {settings_json} -Force }}\n"
-        f"    Log \"new files in place: App.exe=$(Test-Path {app_exe}) Modules=$(Test-Path {modules_dir}) Vendor=$(Test-Path {vendor_dir})\"\n"
-        f"    if ((Test-Path {app_exe}) -and (Test-Path {modules_dir}) -and (Get-ChildItem -Path {modules_dir} -EA SilentlyContinue) -and (Test-Path {vendor_dir}) -and (Get-ChildItem -Path {vendor_dir} -EA SilentlyContinue)) {{\n"
-        "        Log 'swap verified OK, removing backups'\n"
-        f"        Remove-Item -Path {app_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -Path {modules_bak} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -Path {vendor_bak} -Recurse -Force -EA SilentlyContinue\n"
-        "    } else {\n"
-        "        Log 'swap FAILED verification, rolling back to backups'\n"
-        f"        Remove-Item -Path {app_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -Path {modules_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"        Remove-Item -Path {vendor_dir} -Recurse -Force -EA SilentlyContinue\n"
-        f"        if (Test-Path {app_bak}) {{ Move-Item -Path {app_bak} -Destination {app_dir} -Force }}\n"
-        f"        if (Test-Path {modules_bak}) {{ Move-Item -Path {modules_bak} -Destination {modules_dir} -Force }}\n"
-        f"        if (Test-Path {vendor_bak}) {{ Move-Item -Path {vendor_bak} -Destination {vendor_dir} -Force }}\n"
-        f"        Log \"rollback done, App.exe present=$(Test-Path {app_exe})\"\n"
-        "    }\n"
-        "}\n"
-        "}\n"
-        # Relaunch, then clean up temp files - a freshly-downloaded zip can
-        # sit under active AV scanning for many seconds, and that must never
-        # delay the user seeing their updated app come back. Runs even if
-        # the swap above was rolled back (files restored, but the old
-        # process DID exit by that point, so it needs relaunching) - but
-        # NOT if $swapAborted, because that means the old process is still
-        # the one alive right now: relaunching would spawn a second
-        # instance that immediately loses to the single-instance mutex and
-        # silently exits, which looks exactly like "the restart did nothing".
-        "if (-not $swapAborted) {\n"
-        f"    Log \"relaunching via {app_exe}\"\n"
-        # Relaunch the GUI exe directly - NOT via PortableFix.cmd. Start-Process
-        # -FilePath on a .cmd target goes through ShellExecute's batfile
-        # handler, which spawns cmd.exe; on Windows 11 with Windows Terminal
-        # set as the default terminal app, -WindowStyle Hidden on that
-        # Start-Process is not reliably honored for the resulting console -
-        # observed directly on this machine as a visible/lingering
-        # 'cmd /K PortableFix.cmd' window regardless of /B, /C, or
-        # -WindowStyle. PortableFix.exe is a GUI app with no console of its
-        # own, so launching it directly removes cmd.exe from this path
-        # entirely - there is no console for any window-style setting to
-        # fail to hide.
-        f"    Start-Process -FilePath {app_exe} -WindowStyle Hidden -EA SilentlyContinue\n"
-        "    Start-Sleep -Milliseconds 1500\n"
-        f"    $relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object {{ $_.Path -eq {app_exe} }})\n"
-        f"    Log \"relaunch verified: $relaunchOk\"\n"
-        "    if (-not $relaunchOk) {\n"
-        f"        Log 'relaunch via Start-Process failed, retrying once'\n"
-        f"        Start-Process -FilePath {app_exe} -WindowStyle Hidden -EA SilentlyContinue\n"
-        "    }\n"
-        "} else {\n"
-        "    Log 'skipping relaunch - old process is still running (that is why the swap was aborted), it is already the running instance'\n"
-        "}\n"
-        f"Remove-Item -Path {stage} -Recurse -Force -EA SilentlyContinue\n"
-        "for ($i = 0; $i -lt 30; $i++) {\n"
-        f"    if (-not (Test-Path {zip_p})) {{ break }}\n"
-        f"    Remove-Item -Path {zip_p} -Force -EA SilentlyContinue\n"
-        "    Start-Sleep -Milliseconds 1000\n"
-        "}\n"
-        f"Remove-Item -Path {settings_bak} -Force -EA SilentlyContinue\n"
-        "Log 'update swap script finished'\n"
-    )
-
-
-def apply_update(zip_path: Path, install_dir: Path) -> bool:
-    if not is_writable(install_dir):
-        return False
-    current_pid = os.getpid()
-    script_text = build_swap_script(current_pid, install_dir, zip_path)
-    fd, script_path_str = tempfile.mkstemp(prefix=f"portablefix_update_{current_pid}_", suffix=".ps1")
-    script_path = Path(script_path_str)
-    # Created here in Python, not by the script's own New-Item (its first
-    # line) - so this directory exists even if powershell.exe is killed
-    # before running line 1. DETACHED_PROCESS gives the child no console
-    # and no inherited std handles, so without an explicit redirect any
-    # startup failure (execution policy refusal, a missing DLL, anything
-    # printed before the script itself runs) has nowhere to go and is
-    # silently lost - confirmed live on a machine where the script never
-    # wrote its own log, with every non-code cause (Job Object breakaway,
-    # AppLocker/WDAC/ASR, Defender, GPO execution policy) ruled out.
-    log_dir = Path(tempfile.gettempdir()) / "PortableFixUpdate"
-    launch_log_path = log_dir / f"popen_launch_{current_pid}.log"
+def consume_update_status(install_dir: Path) -> str | None:
+    """Reads and deletes the status the last swap script left behind, so each
+    outcome is reported exactly once."""
+    path = update_status_path(install_dir)
     try:
-        os.close(fd)
-        script_path.write_text(script_text, encoding="utf-8-sig")
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with open(launch_log_path, "wb") as launch_log:
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
-                # DETACHED_PROCESS/CREATE_NEW_PROCESS_GROUP only affect console
-                # and Ctrl+Break group membership - neither exempts the child
-                # from a Job Object the parent belongs to (common when this exe
-                # is launched from Windows Terminal or certain elevation
-                # wrappers, which assign JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
-                # Without this flag, the swap script gets killed the instant
-                # this process exits - before it can run a single line - which
-                # looks exactly like "the app just closes, update never happens".
-                creationflags=(
-                    subprocess.DETACHED_PROCESS
-                    | subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_BREAKAWAY_FROM_JOB
-                ),
-                stdin=subprocess.DEVNULL,
-                stdout=launch_log,
-                stderr=subprocess.STDOUT,
-                close_fds=True,
-            )
-        return True
+        status = path.read_text(encoding="utf-8-sig", errors="replace").strip()
     except OSError:
-        return False
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return status or None
+
+
+def update_status_message_key(status: str | None, restored: list[str]) -> str | None:
+    """i18n key describing the last update's outcome, or None when there's
+    nothing to tell (no update ran, or it succeeded cleanly)."""
+    if status == UPDATE_STATUS_ROLLBACK_FAILED:
+        return "update_status_rollback_failed"
+    if status == UPDATE_STATUS_IN_PROGRESS or restored:
+        return "update_status_interrupted"
+    if status in (UPDATE_STATUS_ABORTED, UPDATE_STATUS_ROLLED_BACK):
+        return "update_status_failed"
+    if status == UPDATE_STATUS_HANDED_OFF:
+        # The app handed off and quit, but the swap never even started
+        # working - it was killed or died after proving it was running.
+        return "update_status_incomplete"
+    if status == UPDATE_STATUS_OK_SUMS_STALE:
+        return "update_status_sums_stale"
+    return None
+
+
+_DAY_SEC = 24 * 3600
+_LOG_KEEP_SEC = 14 * _DAY_SEC
+# Everything launch_swap and the swap script write into update_log_dir().
+_UPDATE_LOG_PATTERNS = ("launch_*.txt", "popen_launch_*.log", "update_log_*.txt", "swap_*.ps1", "swap_*.json", "swap_*.marker")
+
+
+def _age_sec(path: Path, now: float) -> float:
+    try:
+        return now - path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _stage_version(stage_dir: Path) -> str | None:
+    try:
+        return (stage_dir / "version.txt").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def cleanup_update_leftovers(
+    install_dir: Path,
+    *,
+    temp_dir: Path | None = None,
+    log_dir: Path | None = None,
+    current_version: str | None = None,
+    now: float | None = None,
+) -> list[Path]:
+    """Removes what earlier update attempts left behind: download folders,
+    a stage that can no longer be installed, old launch/update logs and the
+    generated scripts of versions up to 1.11. Called at startup only, after
+    main() made sure no swap is running. Best effort; returns what it
+    removed."""
+    now = time.time() if now is None else now
+    current_version = current_version or APP_VERSION
+    if temp_dir is None:
+        try:
+            temp_dir = Path(tempfile.gettempdir())
+        except OSError:
+            temp_dir = None
+    if log_dir is None:
+        log_dir = update_log_dir()
+    candidates: list[Path] = []
+    if temp_dir is not None:
+        # A failed or abandoned download; a live one belongs to this very
+        # process and cannot exist yet at startup.
+        candidates += [p for p in temp_dir.glob("PortableFixUpdate_*") if _age_sec(p, now) > _DAY_SEC]
+        # The generated swap scripts of <= 1.11.x, never cleaned up by them.
+        candidates += list(temp_dir.glob("portablefix_update_*.ps1"))
+    stage_dir = Path(install_dir) / STAGE_DIR_NAME
+    if stage_dir.exists():
+        version = _stage_version(stage_dir)
+        if _age_sec(stage_dir, now) > _DAY_SEC or version is None or not is_newer(version, current_version):
+            candidates.append(stage_dir)
+    if log_dir is not None:
+        for pattern in _UPDATE_LOG_PATTERNS:
+            candidates += [p for p in log_dir.glob(pattern) if _age_sec(p, now) > _LOG_KEEP_SEC]
+    removed = []
+    for path in candidates:
+        try:
+            _remove_tree(path)
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
 
 
 class UpdateCheckRunner(QThread):
@@ -394,18 +408,91 @@ class UpdateCheckRunner(QThread):
 
 
 class UpdateDownloadRunner(QThread):
+    """Downloads the release zip - or, for the developer switch, copies a
+    local one (local_zip plus its SHA256) - and verifies it."""
+
     download_finished = Signal(object, str)
     progress = Signal(int, int)
 
-    def __init__(self, info: UpdateInfo, dest_dir: Path, parent=None):
+    def __init__(
+        self, info: UpdateInfo, dest_dir: Path, parent=None,
+        local_zip: Path | None = None, local_sha256: str = "",
+    ):
         super().__init__(parent)
         self._info = info
         self._dest_dir = dest_dir
+        self._local_zip = local_zip
+        self._local_sha256 = local_sha256
         self.finished.connect(self.deleteLater)
 
     def run(self) -> None:
         try:
-            path = download_update(self._info, self._dest_dir, on_progress=self.progress.emit)
+            if self._local_zip is not None:
+                path = copy_local_update(
+                    self._local_zip, self._local_sha256, self._dest_dir,
+                    on_progress=self.progress.emit, should_stop=self.isInterruptionRequested,
+                )
+            else:
+                path = download_update(
+                    self._info, self._dest_dir,
+                    on_progress=self.progress.emit, should_stop=self.isInterruptionRequested,
+                )
             self.download_finished.emit(path, "")
         except Exception as exc:
-            self.download_finished.emit(None, str(exc))
+            self.download_finished.emit(None, str(exc) or type(exc).__name__)
+
+
+class UpdateStageRunner(QThread):
+    """Extracting and hashing ~130 MB on a slow USB stick takes a while -
+    off the GUI thread, interruptible so closing the app never has to wait
+    for it (or destroy it while it runs)."""
+
+    stage_finished = Signal(object, str)
+    progress = Signal(int, int)
+
+    def __init__(self, zip_path: Path, install_dir: Path, version: str | None = None, parent=None):
+        super().__init__(parent)
+        self._zip_path = zip_path
+        self._install_dir = install_dir
+        self._version = version
+        self.finished.connect(self.deleteLater)
+
+    def _emit_progress(self, done: int, total: int) -> None:
+        # The signal carries C ints; a package over 2 GB is reported in KiB.
+        if total > 0x7FFFFFFF:
+            done, total = done >> 10, total >> 10
+        self.progress.emit(done, total)
+
+    def run(self) -> None:
+        try:
+            staged = stage_update(
+                self._zip_path, self._install_dir,
+                should_stop=self.isInterruptionRequested, progress=self._emit_progress, version=self._version,
+            )
+        except Exception as exc:
+            # Anything else escaping run() would end the thread without a
+            # signal and leave the GUI waiting forever.
+            self.stage_finished.emit(None, str(exc) or type(exc).__name__)
+            return
+        self.stage_finished.emit(staged, "")
+
+
+class UpdateLaunchRunner(QThread):
+    """Waits (up to update_swap.HANDSHAKE_TIMEOUT_SEC) for the swap script to
+    prove it is running. Emits a LaunchResult; on ok the caller must quit
+    right away - the script is waiting for this process to exit."""
+
+    launch_finished = Signal(object)
+
+    def __init__(self, staged: StagedUpdate, install_dir: Path, parent=None):
+        super().__init__(parent)
+        self._staged = staged
+        self._install_dir = install_dir
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        try:
+            result = launch_swap(self._staged, self._install_dir, should_stop=self.isInterruptionRequested)
+        except Exception as exc:
+            result = LaunchResult(ok=False, reason=REASON_SPAWN_ERROR, detail=f"{type(exc).__name__}: {exc}")
+        self.launch_finished.emit(result)

@@ -1,46 +1,67 @@
+import dataclasses
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QEventLoop, QThread, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QSystemTrayIcon,
     QToolButton,
     QVBoxLayout,
     QLabel,
     QWidget,
 )
 
-from . import style
-from .. import diagnostics, elevation, i18n, paths, report, restore_point, sysinfo, undo, uninstaller, updater, winget_updates
+from . import job_forms, style
+from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
+from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, intake, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
-from ..settings import Settings
+from ..settings import (
+    MAX_CUSTOM_PRESETS,
+    MAX_PRESET_NAME_LENGTH,
+    MAX_TECHNICIAN_NAME_LENGTH,
+    Settings,
+    save_settings,
+)
 from ..version import APP_VERSION
+
+# Keys of user-saved presets in _preset_buttons, kept apart from the
+# built-in PRESETS keys so a user can name a preset "quick_clean" safely.
+CUSTOM_PRESET_PREFIX = "custom:"
+CONSOLE_MAX_LINES = 20000
+HISTORY_MAX_ROWS = 5
 
 PRESETS: dict[str, list[str]] = {
     "quick_clean": [
@@ -50,7 +71,8 @@ PRESETS: dict[str, list[str]] = {
     "full_diagnostic": [
         "os_info", "computer_info", "bios_info", "cpu_info", "memory_info",
         "volumes", "physical_disks", "recent_hotfixes", "pending_reboot",
-        "eventlog_critical_7d", "bsod_summary", "disk_reliability_counters",
+        "eventlog_critical_7d", "bsod_summary", "crash_bugcheck_triage",
+        "whea_hardware_errors", "disk_reliability_counters",
         "defender_status", "top_cpu_processes", "sec_defender_status",
         "sec_firewall_status", "sec_uac_status",
     ],
@@ -63,6 +85,96 @@ PRESETS: dict[str, list[str]] = {
 }
 
 
+try:
+    # Qt 6.8+. requirements.txt still pins 6.7.2, where announcements are a
+    # silent no-op - the status bar text stays readable either way.
+    from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent
+except ImportError:  # pragma: no cover - depends on the installed PySide6
+    QAccessible = QAccessibleAnnouncementEvent = None
+
+
+def _announce_to_screen_reader(widget: QWidget, text: str) -> None:
+    # QStatusBar.showMessage() is silent for Narrator/NVDA - batch progress
+    # and the final outcome would only reach sighted users otherwise
+    # (research-accessibility.md Finding 4).
+    if QAccessibleAnnouncementEvent is None or not text:
+        return
+    QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(widget, text))
+
+
+class _DashboardTile(QFrame):
+    """Dashboard category tile. Was a QFrame with a patched mousePressEvent,
+    unreachable by Tab and silent for screen readers
+    (research-accessibility.md "keyboard-only operability")."""
+
+    activated = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Picked up by the "tile" focus rule in style.py.
+        self.setProperty("tile", "true")
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activated.emit()
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.activated.emit()
+            return
+        super().keyPressEvent(event)
+
+
+# Banner text for each step of an in-app update (see _begin_update_step).
+_UPDATE_PHASE_KEYS = {
+    "download": "update_downloading",
+    "stage": "update_preparing",
+    "launch": "update_starting",
+}
+
+
+def _thread_running(runner) -> bool:
+    # A finished QThread may already be deleteLater'd - its wrapper then
+    # raises RuntimeError, which just means "not running".
+    try:
+        return bool(runner.isRunning())
+    except (RuntimeError, AttributeError):
+        return False
+
+
+class _DiskHealthProbeRunner(QThread):
+    """The G13 disk health probe off the GUI thread: it launches PowerShell
+    and may take up to disk_health.PROBE_TIMEOUT_SEC on a dying disk.
+
+    The verdicts go into a plain list owned by the caller rather than a
+    signal argument or an attribute: the caller reads them after the thread
+    has finished, when this object may already be deleteLater'd."""
+
+    def __init__(self, probe, results: list, parent=None):
+        super().__init__(parent)
+        self._probe = probe
+        self._results = results
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        try:
+            verdicts = self._probe()
+        except Exception:  # noqa: BLE001 - any probe failure means "unknown"
+            verdicts = None
+        self._results.append(verdicts)
+
+
+def _score_state(score: int) -> str:
+    """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
+    if score >= 80:
+        return "good"
+    if score >= 60:
+        return "warn"
+    return "bad"
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -72,6 +184,7 @@ class MainWindow(QMainWindow):
         is_admin: bool,
         run_id: str,
         parent=None,
+        target: "target_user.TargetUser | None" = None,
     ):
         super().__init__(parent)
         self.assets_dir = assets_dir
@@ -79,6 +192,15 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.is_admin = is_admin
         self.run_id = run_id
+        # Whose hive per-user settings go to (research G25) - detected once:
+        # who is signed in does not change under a running batch, and a
+        # sign-out is caught by the commands themselves (hive not loaded).
+        self.target_user = target if target is not None else target_user.detect()
+        # main.py hands over the raw USB dir as assets_dir and the writable
+        # dir as state_dir - they only differ when resolve_writable_base_dir
+        # fell back to %TEMP% on the client machine, which the report must
+        # then say (research-reporting.md F4).
+        self._storage_fallback = Path(state_dir) != Path(assets_dir)
         self.modules, module_load_errors = load_all_modules(assets_dir / "Modules")
         if module_load_errors:
             QMessageBox.warning(
@@ -99,19 +221,79 @@ class MainWindow(QMainWindow):
         self._runner: ActionRunner | None = None
         self._restore_point_attempted = False
         self._pending_restore_point_runner: restore_point.RestorePointRunner | None = None
+        # A panel's own restore point (uninstaller, leftover cleanup, winget -
+        # G01) is kept apart from the batch's: overwriting one attribute
+        # with the other lost track of a running Checkpoint-Computer, so
+        # close waited for the wrong thread.
+        self._pending_panel_restore_point_runner: restore_point.RestorePointRunner | None = None
+        # Full registry hive backup (research G24): asked for on the review
+        # screen, made once per batch right before its first DESTRUCTIVE
+        # action; every folder made this session is named in undo.ps1.
+        self._hive_backup_requested = False
+        self._hive_backup_attempted = False
+        self._pending_hive_backup_runner: hive_backup.HiveBackupRunner | None = None
+        # Disk health probes (G13) still running - a cancelled one is left to
+        # finish on its own (PowerShell times out), and closeEvent waits for it.
+        self._disk_health_runners: list[_DiskHealthProbeRunner] = []
+        self._hive_backups: list[Path] = []
+        self._report_runner: report.ReportRunner | None = None
+        # A batch-end report of this run was written by this window - the
+        # forms and the timer, changed afterwards, rewrite it (G20).
+        self._report_written = False
+        # Such a change came while a report was being written: that report
+        # may have read the audit log before it, so one more rewrite follows.
+        self._report_refresh_pending = False
         self._batch_active = False
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
         self._undo_steps: list[str] = []
+        # action_id -> the state file its running `ops:` command (research
+        # G10) captures the previous state into; undo is generated from it.
+        self._ops_state_paths: dict[str, Path] = {}
+        # Non-SAFE changes that ran for real but have no undo_command -
+        # listed in undo.ps1 so it never implies everything was reversible.
+        self._irreversible_actions: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
+        # action_id -> the warning text the technician accepted for it on
+        # the batch review screen (research G12); _dispatch_action asks
+        # nothing more for these and quotes the text in the audit entry.
+        self._reviewed_warnings: dict[str, str] = {}
         self._recommended_action_ids: set[str] = set()
         self._summary_dialog: QDialog | None = None
         self._closed = False
+        # Per-run job details for the report header. Kept on self (not in a
+        # widget) so a language toggle's full UI rebuild doesn't lose them;
+        # the technician name lives in settings since it rarely changes.
+        self._job_client = ""
+        self._job_note = ""
+        # When the running batch (or its part since a restart report)
+        # started - its duration is logged at the end for the report's work
+        # time (research G20).
+        self._batch_started_at: float | None = None
+        self._tray_icon: QSystemTrayIcon | None = None
         self._cancel_requested = False
+        self._close_after_restore_point = False
         self._pending_update_info = None
         self._update_check_runner = None
         self._update_download_runner = None
+        self._update_download_dir: Path | None = None
+        self._update_stage_runner = None
+        self._update_launch_runner = None
+        # Handoff package with Windows diagnostics (G19) - minutes of
+        # msinfo32/dxdiag, so it runs off the GUI thread; one at a time.
+        self._handoff_runner: handoff.HandoffRunner | None = None
+        # True from the download until the updater's handshake has ended;
+        # _update_phase says which step runs (the banner text after a
+        # language toggle) and _update_progress what the bar last showed.
         self._update_in_progress = False
+        self._update_phase: str | None = None
+        self._update_progress = (0, 0)
+        # Verified and still on disk - a retry after a refusal or a failed
+        # hand-off installs it without downloading again.
+        self._staged_update = None
+        # The updater has proven it is running and is waiting for this
+        # process to exit: the close must neither ask nor linger.
+        self._closing_for_update = False
         self._cpu_load_sampler = sysinfo.CpuLoadSampler()
         self._static_info_runner = None
         self._ping_runner = None
@@ -120,6 +302,7 @@ class MainWindow(QMainWindow):
         self._hw_sensor_runner = None
         self._winget_scan_runner = None
         self._winget_update_runner = None
+        self._uninstall_runner = None
         self._ping_busy = False
         self._vpn_busy = False
         self._speed_test_busy = False
@@ -128,9 +311,53 @@ class MainWindow(QMainWindow):
         self._hw_sensor_timer = None
         self._ping_timer = None
         self._vpn_timer = None
+        # Quiet mode (G33) and the minimized window both stop polling; see
+        # _apply_polling_state. The status-bar indicator lives on the
+        # QMainWindow's status bar, which survives _build_ui rebuilds, so it
+        # is created once and only retranslated afterwards.
+        self._window_minimized = False
+        self._manual_update_check = False
+        self._quiet_status_label: QLabel | None = None
+        # The winget panel's hooks, rebound on every _build_ui: the first
+        # re-applies its auto-check timer (quiet mode and a minimized window
+        # both stop it), the second runs after a quiet-mode toggle.
+        self._winget_apply_auto_check = None
+        self._winget_on_quiet_mode_changed = None
+        # Set when quiet mode skipped the update check at start, so leaving
+        # quiet mode runs it - loud mode has no button for it.
+        self._startup_update_check_skipped = False
         self._undo_script_path: Path | None = None
+        # (len(_undo_steps), len(_irreversible_actions), len(_hive_backups))
+        # last written to undo.ps1 - the lists only ever grow, so the lengths
+        # identify it.
+        self._undo_written_state: tuple[int, int, int] | None = None
+        # Batches across a restart (research G03). The PC stays awake while a
+        # batch runs; tests swap in a recording KeepAwake.
+        self._keep_awake = batch_resume.KeepAwake()
+        # restarts_pc actions of this batch whose report + undo.ps1 were
+        # already written before they run.
+        self._pre_restart_prepared: set[str] = set()
+        # The action the resume file was saved for in this batch ("" = none).
+        self._resume_saved_for = ""
+        # The batch stopped for a restart_before_next action: after the
+        # report, tell the technician to restart and start PortableFix again.
+        self._restart_needed_after = ""
+        # A restarts_pc action succeeded - Windows is going down, so the
+        # report written just before it is the final one (a rewrite now could
+        # be cut off half-way and leave no report at all).
+        self._restart_report_path: Path | None = None
+        self._restarting = False
+        # The saved batch being continued (resume_batch), until it starts.
+        self._resuming: batch_resume.PendingBatch | None = None
+        # i18n key of the review note when resume_batch switched DRY-RUN.
+        self._resume_mode_note = ""
         self._build_ui()
-        self._start_update_check()
+        # Quiet mode: no GitHub request at start; the sysinfo panel has a
+        # button for an explicit check instead.
+        if self.settings.quiet_mode:
+            self._startup_update_check_skipped = True
+        else:
+            self._start_update_check()
         self._start_sysinfo_polling()
         # Bound to self (the window), not any widget rebuilt by _build_ui -
         # created once here rather than inside _build_ui, which reruns on
@@ -140,6 +367,38 @@ class MainWindow(QMainWindow):
         self._select_all_shortcut.activated.connect(self._on_select_all_shortcut)
         self._run_shortcut = QShortcut(QKeySequence("F5"), self)
         self._run_shortcut.activated.connect(self._on_run_shortcut)
+        self._extra_shortcuts = []
+        for keys, handler in (
+            ("Ctrl+F", self._on_search_shortcut),
+            ("Ctrl+S", self._on_save_preset_clicked),
+            ("Ctrl+J", self._open_job_dialog),
+            ("F1", self._show_shortcuts_help),
+        ):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(handler)
+            self._extra_shortcuts.append(shortcut)
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched is getattr(self, "search_box", None)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self.search_box.text()
+        ):
+            self.search_box.clear()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _on_search_shortcut(self) -> None:
+        self.search_box.setFocus()
+        self.search_box.selectAll()
+
+    def _show_shortcuts_help(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle(self._t("shortcuts_title"))
+        box.setText(self._t("shortcuts_body"))
+        box.setIcon(QMessageBox.Icon.Information)
+        box.open()
 
     def _on_select_all_shortcut(self) -> None:
         # Qt.WindowShortcut fires regardless of which child widget has focus,
@@ -159,7 +418,44 @@ class MainWindow(QMainWindow):
         self.run_selected_actions()
 
     def closeEvent(self, event) -> None:
-        if self._batch_active:
+        rp_runner = self._pending_restore_point_runner
+        waiting_key = "closing_waiting_restore_point"
+        if not _thread_running(rp_runner) and _thread_running(self._pending_panel_restore_point_runner):
+            rp_runner = self._pending_panel_restore_point_runner
+        if not _thread_running(rp_runner) and _thread_running(self._pending_hive_backup_runner):
+            # `reg save` of two hives can't be interrupted either and can take
+            # minutes on a slow stick - same non-blocking close.
+            rp_runner = self._pending_hive_backup_runner
+            waiting_key = "closing_waiting_hive_backup"
+        if rp_runner is not None and _thread_running(rp_runner):
+            # Checkpoint-Computer can take minutes and can't be interrupted.
+            # Blocking in closeEvent froze the window ("Not Responding" -
+            # an invitation to kill it from Task Manager before the throttle
+            # registry value is restored), and the restore point's result
+            # then dispatched the action it was guarding with no window
+            # left. Instead: cancel the batch, show why we're still here,
+            # and close for real once the restore point has finished.
+            if not self._close_after_restore_point:
+                if self._batch_active and not self._closing_for_update:
+                    proceed = QMessageBox.question(
+                        self,
+                        self._t("app_title"),
+                        self._t("confirm_close_during_batch"),
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if proceed != QMessageBox.Yes:
+                        event.ignore()
+                        return
+                self._close_after_restore_point = True
+                self._cancel_requested = True
+                self._queue = []
+                self.cancel_button.setEnabled(False)
+                self.run_button.setEnabled(False)
+                rp_runner.finished.connect(self.close)
+                self.statusBar().showMessage(self._t(waiting_key))
+            event.ignore()
+            return
+        if self._batch_active and not self._close_after_restore_point and not self._closing_for_update:
             proceed = QMessageBox.question(
                 self,
                 self._t("app_title"),
@@ -173,6 +469,9 @@ class MainWindow(QMainWindow):
         # callback fires after the C++ widgets are gone) so async batch-completion
         # handlers know not to touch self.run_button once the window is closing.
         self._closed = True
+        # Anything still finishing asynchronously (a restore point result, a
+        # runner's final signal) must not start new work once we're closing.
+        self._cancel_requested = True
         if self._console_window is not None:
             self._console_window.close()
         if self._sysinfo_timer is not None:
@@ -190,15 +489,37 @@ class MainWindow(QMainWindow):
             self._runner.cancel()
         if self._winget_update_runner is not None:
             self._winget_update_runner.request_stop()
+        if self._uninstall_runner is not None:
+            try:
+                self._uninstall_runner.requestInterruption()
+            except RuntimeError:
+                pass
+        update_runners = [
+            runner for runner in (
+                self._update_download_runner, self._update_stage_runner, self._update_launch_runner,
+                self._handoff_runner,
+                # Stops between programs once interrupted, but the uninstaller
+                # already running cannot be cut short - and an interactive one
+                # has no timeout (research G15): it waits for the technician's
+                # clicks, so a capped wait could destroy the live QThread.
+                self._uninstall_runner,
+            )
+            if runner is not None
+        ]
+        for runner in update_runners:
+            try:
+                runner.requestInterruption()
+            except RuntimeError:
+                pass
         # Destroying self while a runner's native thread is still mid-flight
         # is a use-after-free risk - wait for each to actually finish first.
         # A one-shot runner may already be auto-deleted by Qt once its thread
         # ended; that RuntimeError just means there's nothing left to wait for.
-        # Neither the speed test nor the update download can be cancelled
-        # mid-flight (both make one blocking, uninterruptible network call),
-        # so their wait must cover their real worst-case duration - a short
-        # timeout here would let closeEvent proceed while that QThread is
-        # still alive, which is the exact crash this loop exists to prevent.
+        # The speed test can't be cancelled mid-flight (one blocking,
+        # uninterruptible network call), so its wait must cover its real
+        # worst-case duration - a short timeout here would let closeEvent
+        # proceed while that QThread is still alive, which is the exact crash
+        # this loop exists to prevent.
         quick_runners = (
             self._static_info_runner,
             self._hw_sensor_runner,
@@ -206,11 +527,25 @@ class MainWindow(QMainWindow):
             self._vpn_runner,
             self._runner,
             self._update_check_runner,
-            self._pending_restore_point_runner,
         )
         slow_runners = (
             (self._speed_test_runner, 25_000),
-            (self._update_download_runner, updater.DOWNLOAD_TIMEOUT_SEC * 1000 + 5_000),
+            # Checkpoint-Computer can legitimately run for minutes (VSS on a
+            # slow disk); a 5s wait let closeEvent destroy the still-running
+            # QThread, aborting the process before create_restore_point could
+            # put the 24h throttle registry value back.
+            (self._pending_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
+            (self._pending_panel_restore_point_runner, restore_point.RESTORE_POINT_TIMEOUT_SEC * 1000 + 5_000),
+            (self._pending_hive_backup_runner, hive_backup.HIVE_SAVE_TIMEOUT_SEC * len(hive_backup.HIVES) * 1000 + 5_000),
+            # PowerShell is killed at its timeout, its pipes drained for a
+            # few seconds more - a live QThread must never be destroyed.
+            *(
+                (runner, (disk_health.PROBE_TIMEOUT_SEC + disk_health.KILL_DRAIN_TIMEOUT_SEC) * 1000 + 5_000)
+                for runner in self._disk_health_runners
+            ),
+            # Can't be interrupted mid-write, and it re-reads the whole
+            # session's audit log - allow for a slow USB stick.
+            (self._report_runner, 30_000),
             # These two were previously stored on the winget panel QWidget,
             # not self - closeEvent had no way to know about them, so a scan
             # or update still in flight left this process alive indefinitely.
@@ -234,14 +569,48 @@ class MainWindow(QMainWindow):
                 runner.wait(timeout_ms)
             except RuntimeError:
                 pass
+        # No cap: all of them stop within a chunk or a poll once interrupted
+        # (the handoff kills the report it is waiting on),
+        # and a capped wait that ran out would destroy a live QThread (the
+        # per-read socket timeout alone can exceed any sensible cap).
+        for runner in update_runners:
+            try:
+                runner.wait()
+            except RuntimeError:
+                pass
+        self._discard_update_download()
+        # Normally released with the batch's report; a close mid-batch must
+        # not leave this process holding the PC awake while it winds down.
+        self._keep_awake.release()
         super().closeEvent(event)
 
     def _t(self, key: str) -> str:
         return i18n.translate(key, self.settings.language)
 
+    def _build_target_user_banner(self) -> QLabel:
+        """Over-the-shoulder elevation (research G25): say up front that
+        user settings go to the signed-in client, not the technician. Hidden
+        when both are the same account or detection could not run."""
+        target = self.target_user
+        banner = QLabel("")
+        banner.setObjectName("targetUserBanner")
+        banner.setWordWrap(True)
+        process_user = target.process_user or target.process_sid or "?"
+        if target.differs:
+            user = target.target_user or target.target_sid or "?"
+            banner.setText(self._t("target_user_banner").format(user=user, process_user=process_user))
+            banner.setToolTip(self._t("target_user_banner_tooltip").format(
+                user=user, process_user=process_user, sid=target.target_sid or "?",
+            ))
+        elif target.status in (target_user.AMBIGUOUS, target_user.NO_USER):
+            banner.setText(self._t("target_user_unsure_banner").format(process_user=process_user))
+        banner.setAccessibleName(banner.text())
+        banner.setVisible(bool(banner.text()))
+        return banner
+
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
-        self.setStyleSheet(style.STYLE)
+        self.setStyleSheet(style.stylesheet())
         self.resize(1200, 760)
         central = QWidget(self)
         central.setObjectName("central")
@@ -270,6 +639,11 @@ class MainWindow(QMainWindow):
         self.restart_admin_button.clicked.connect(self._on_restart_as_admin)
         top_bar.addWidget(self.restart_admin_button)
         top_bar.addStretch(1)
+        self.job_button = self._make_selection_button(self._t("job_button"), self._open_job_dialog)
+        self.job_button.setObjectName("jobBtn")
+        self.job_button.setToolTip(self._t("job_tooltip"))
+        top_bar.addWidget(self.job_button)
+        self._refresh_job_button()
         self.dry_run_checkbox = QCheckBox(self._t("dry_run_toggle"))
         self.dry_run_checkbox.setChecked(self.settings.dry_run)
         self.dry_run_checkbox.toggled.connect(self._on_dry_run_toggled)
@@ -278,6 +652,9 @@ class MainWindow(QMainWindow):
         self.language_button.clicked.connect(self._on_toggle_language)
         top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
+
+        self.target_user_banner = self._build_target_user_banner()
+        root_layout.addWidget(self.target_user_banner)
 
         self.update_banner = QWidget()
         self.update_banner.setObjectName("updateBanner")
@@ -338,12 +715,18 @@ class MainWindow(QMainWindow):
         # Fixed 190px clipped longer entries (e.g. "Risk: REQUIRES_REBOOT")
         # behind a horizontal scrollbar - size to the longest actual label
         # instead so everything is readable without scrolling sideways.
-        # +56 covers the stylesheet's item padding (12px each side), list
-        # padding (6px each side) and the 3px selected/hover left border.
+        # +64 covers the stylesheet's item padding (12px each side) and
+        # margin (4px each side), list padding (6px each side) and border.
+        # Measured in bold: the selected item is rendered bold (see style.py),
+        # and measuring the regular weight elided the longest labels
+        # ("Odinstalovanie programov", "Riziko: REQUIRES_REBOOT") with "..."
+        # as soon as they were selected.
         self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        metrics = self.category_list.fontMetrics()
+        bold_font = QFont(self.category_list.font())
+        bold_font.setBold(True)
+        metrics = QFontMetrics(bold_font)
         widest_label = max((metrics.horizontalAdvance(label) for label in category_labels), default=0)
-        self.category_list.setFixedWidth(min(max(widest_label + 56, 190), 280))
+        self.category_list.setFixedWidth(min(max(widest_label + 64, 190), 300))
         body_layout.addWidget(self.category_list)
 
         center_layout = QVBoxLayout()
@@ -404,8 +787,32 @@ class MainWindow(QMainWindow):
         self.search_box.setPlaceholderText(self._t("search_placeholder"))
         self.search_box.setMaximumWidth(220)
         self.search_box.textChanged.connect(self._on_search_changed)
+        # Esc clears the search - handled on the box itself (eventFilter)
+        # rather than as a window-wide shortcut, which would also swallow
+        # Esc from dialogs and the console.
+        self.search_box.installEventFilter(self)
         preset_row.addWidget(self.search_box)
         center_layout.addLayout(preset_row)
+
+        # User-saved presets get their own row: sharing the built-in preset
+        # row squeezed the search box down to nothing once a couple existed.
+        # The inner sub-layout lets saving/deleting rebuild only these
+        # buttons, not the whole window.
+        custom_preset_row = QHBoxLayout()
+        custom_preset_row.setSpacing(6)
+        custom_preset_label = QLabel(self._t("custom_presets_label"))
+        custom_preset_label.setObjectName("selectionScope")
+        custom_preset_row.addWidget(custom_preset_label)
+        self._custom_preset_layout = QHBoxLayout()
+        self._custom_preset_layout.setSpacing(6)
+        self._custom_preset_layout.setContentsMargins(0, 0, 0, 0)
+        custom_preset_row.addLayout(self._custom_preset_layout)
+        self.save_preset_button = self._make_selection_button(self._t("preset_save_button"), self._on_save_preset_clicked)
+        self.save_preset_button.setEnabled(False)
+        custom_preset_row.addWidget(self.save_preset_button)
+        custom_preset_row.addStretch(1)
+        self._rebuild_custom_preset_buttons()
+        center_layout.addLayout(custom_preset_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -423,6 +830,8 @@ class MainWindow(QMainWindow):
                 self._category_module_action_counts.get(module.category, 0) + len(module.actions)
             )
         self._dashboard_tile_count_labels: dict[ModuleCategory, QLabel] = {}
+        self._dashboard_tiles: dict[ModuleCategory, _DashboardTile] = {}
+        self._category_i18n_keys = category_i18n_keys
         self._dashboard_score_label: QLabel | None = None
         for category in self._categories_order:
             if category == ModuleCategory.DASHBOARD:
@@ -607,6 +1016,10 @@ class MainWindow(QMainWindow):
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
+        # Unbounded, the console kept every line of every batch for the whole
+        # session (DISM/SFC alone emit thousands) - memory only ever grew.
+        # Full per-action output is still in the audit log and the report.
+        self.console.setMaximumBlockCount(CONSOLE_MAX_LINES)
         self._console_window: QDialog | None = None
         self._console_fullscreen = False
         self._console_splitter_sizes: list[int] | None = None
@@ -660,9 +1073,15 @@ class MainWindow(QMainWindow):
                 self._runner.output_line.connect(self.console.appendPlainText)
         if self._pending_update_info is not None:
             if self._update_in_progress:
-                self.update_banner_label.setText(self._t("update_downloading"))
+                self.update_banner_label.setText(self._t(_UPDATE_PHASE_KEYS.get(self._update_phase, "update_downloading")))
                 self.update_button.setEnabled(False)
                 self.update_dismiss_button.setEnabled(False)
+                # The rebuilt bar starts hidden - the download/stage/launch
+                # still running would otherwise look finished.
+                done, total = self._update_progress
+                self.progress_bar.setMaximum(total)
+                self.progress_bar.setValue(done)
+                self.progress_bar.setVisible(True)
             else:
                 self.update_banner_label.setText(
                     self._t("update_available_banner").format(version=self._pending_update_info.version)
@@ -691,8 +1110,15 @@ class MainWindow(QMainWindow):
             action.id,
             action.label(self.settings.language),
             action.description(self.settings.language),
-            action.command,
+            self._action_command_text(action),
         )).lower()
+
+    @staticmethod
+    def _action_command_text(action) -> str:
+        # An `ops:` action's command is kilobytes of generated engine code
+        # naming every op kind (ScheduledTask, sc.exe ...) - searching or
+        # reading it would say nothing about what this action changes.
+        return ops.describe(action.ops) if action.ops else action.command
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
@@ -735,10 +1161,23 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(self._t("search_matches_count").format(count=len(matched_ids)))
 
+    def _preset_action_ids(self, preset_key: str) -> list[str]:
+        if preset_key.startswith(CUSTOM_PRESET_PREFIX):
+            return self.settings.custom_presets.get(preset_key[len(CUSTOM_PRESET_PREFIX):], [])
+        return PRESETS.get(preset_key, [])
+
     def _apply_preset(self, preset_key: str) -> None:
-        wanted = [aid for aid in PRESETS[preset_key] if aid in self._action_checkboxes]
+        wanted = [aid for aid in self._preset_action_ids(preset_key) if aid in self._action_checkboxes]
         self._apply_selection(list(self._action_checkboxes), "none")
-        self._apply_selection(wanted, "all")
+        if preset_key.startswith(CUSTOM_PRESET_PREFIX):
+            # A custom preset is a snapshot of boxes the technician checked
+            # by hand, opt-out ones (drv_restore_backup, ...) included - the
+            # bulk "all" path would silently drop exactly those, so restore
+            # every saved id as-is.
+            for action_id in wanted:
+                self._action_checkboxes[action_id].setChecked(True)
+        else:
+            self._apply_selection(wanted, "all")
         # Exclusive QButtonGroup membership already unchecks the other two
         # preset buttons on a real click; set this one explicitly too so the
         # highlight is correct even when _apply_preset is called directly
@@ -760,6 +1199,7 @@ class MainWindow(QMainWindow):
     def _update_status_bar(self) -> None:
         selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         self.global_select_none_button.setEnabled(bool(selected))
+        self.save_preset_button.setEnabled(bool(selected))
         if self._batch_active:
             return
         if not selected:
@@ -794,7 +1234,7 @@ class MainWindow(QMainWindow):
             return
         window = QDialog(self)
         window.setWindowTitle(self._t("console_popout_title"))
-        window.setStyleSheet(style.STYLE)
+        window.setStyleSheet(style.stylesheet())
         window.resize(700, 400)
         window.setModal(False)
         layout = QVBoxLayout(window)
@@ -829,6 +1269,315 @@ class MainWindow(QMainWindow):
         self._preset_buttons[preset_key] = button
         return button
 
+    def _job_info(self) -> dict:
+        return {
+            "technician": self.settings.technician_name,
+            "client": self._job_client,
+            "note": self._job_note,
+        }
+
+    def _refresh_job_button(self) -> None:
+        client = self._job_client
+        if client:
+            shown = client if len(client) <= 24 else client[:23] + "…"
+            self.job_button.setText(self._t("job_button_set").format(client=shown))
+        else:
+            self.job_button.setText(self._t("job_button"))
+        self.job_button.setProperty("set", bool(client or self.settings.technician_name))
+        self.job_button.style().unpolish(self.job_button)
+        self.job_button.style().polish(self.job_button)
+
+    def _set_job(self, technician: str, client: str, note: str) -> None:
+        technician = technician.strip()[:MAX_TECHNICIAN_NAME_LENGTH]
+        if technician != self.settings.technician_name:
+            self.settings.technician_name = technician
+            self._persist_settings()
+        self._job_client = client.strip()[:120]
+        self._job_note = note.strip()[:2000]
+        self._refresh_job_button()
+
+    def _set_redact_for_client(self, checked: bool) -> None:
+        if checked == self.settings.redact_for_client:
+            return
+        self.settings.redact_for_client = checked
+        self._persist_settings()
+
+    def _open_job_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("job_dialog_title"))
+        dialog.setStyleSheet(style.stylesheet())
+        dialog.setMinimumWidth(420)
+        form = QFormLayout(dialog)
+        technician_edit = QLineEdit(self.settings.technician_name)
+        technician_edit.setObjectName("searchBox")
+        technician_edit.setMaxLength(MAX_TECHNICIAN_NAME_LENGTH)
+        client_edit = QLineEdit(self._job_client)
+        client_edit.setObjectName("searchBox")
+        client_edit.setMaxLength(120)
+        note_edit = QPlainTextEdit(self._job_note)
+        note_edit.setObjectName("actionDetailCommand")
+        note_edit.setFixedHeight(90)
+        form.addRow(self._t("job_technician_label"), technician_edit)
+        form.addRow(self._t("job_client_label"), client_edit)
+        form.addRow(self._t("job_note_label"), note_edit)
+        # Research G20: a setting, not part of the job - remembered like the
+        # technician's name, since it is the same choice on every visit.
+        redact_checkbox = QCheckBox(self._t("job_redact_label"))
+        redact_checkbox.setObjectName("jobRedact")
+        redact_checkbox.setChecked(self.settings.redact_for_client)
+        redact_checkbox.setToolTip(self._t("job_redact_tooltip"))
+        redact_checkbox.setAccessibleDescription(self._t("job_redact_tooltip"))
+        form.addRow("", redact_checkbox)
+        # Research G20: the manual work timer acts at once (it is a clock,
+        # not a field), the forms and the branding have dialogs of their own.
+        self._work_timer_widget = job_forms.WorkTimerWidget(
+            self.settings.language, self._run_audit_entries, self._log_work_timer, parent=dialog,
+        )
+        form.addRow(self._t("work_timer_label"), self._work_timer_widget)
+        extras = QHBoxLayout()
+        # Opened over the Job details window, not beside it.
+        forms_button = self._make_selection_button(self._t("job_forms_button"), lambda: self._open_forms_dialog(dialog))
+        forms_button.setToolTip(self._t("job_forms_tooltip"))
+        extras.addWidget(forms_button)
+        extras.addWidget(self._make_selection_button(self._t("job_branding_button"), lambda: self._open_branding_dialog(dialog)))
+        extras.addStretch(1)
+        form.addRow(extras)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        # Qt ships no Slovak translations for standard buttons - label it ourselves.
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self._t("dialog_cancel"))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        (client_edit if self.settings.technician_name else technician_edit).setFocus()
+        self._job_dialog = dialog
+        dialog.accepted.connect(
+            lambda: (
+                self._set_job(technician_edit.text(), client_edit.text(), note_edit.toPlainText()),
+                self._set_redact_for_client(redact_checkbox.isChecked()),
+            )
+        )
+        dialog.open()
+
+    def _run_audit_entries(self) -> list[dict]:
+        return report.read_audit_entries(self.state_dir, self.run_id)
+
+    def _log_work_timer(self, decision: str) -> None:
+        self._log_system_event(
+            intake.WORK_TIMER_EVENT, 0,
+            "Manual work timer started." if decision == intake.TIMER_START else "Manual work timer stopped.",
+            decision=decision,
+        )
+        self._refresh_report()
+
+    def _refresh_report(self) -> None:
+        """Rewrites the run's report after the forms or the timer changed
+        (G20). The hand-over is usually filled in after the last batch, when
+        the PC is tested and handed over - without this the report (and the
+        handoff zip that packs it) would stay as of the last batch end."""
+        if self._closed or self._batch_active or self._restarting:
+            # A running batch writes its own report at the end, from the
+            # same audit log; a restarting PC keeps the report written
+            # before it (see _run_next).
+            return
+        if self._report_runner is not None:
+            self._report_refresh_pending = True
+            return
+        if not self._report_written:
+            # No report yet - the first batch end writes one with the forms.
+            return
+        # The snapshots of the last batch, not a new one: the report
+        # describes the repair, and only the forms and the timer changed.
+        runner = report.ReportRunner(
+            self.state_dir, self.run_id, self.modules, self.settings.language,
+            self._snapshot_before, self._snapshot_after,
+            job=self._job_info(), storage_fallback=self._storage_fallback,
+            redact=self.settings.redact_for_client, branding=self.settings.branding_info(), parent=self,
+        )
+        runner.result_ready.connect(self._on_report_refreshed)
+        self._report_runner = runner
+        runner.start()
+
+    def _on_report_refreshed(self, html_path: Path | None, write_failed: bool) -> None:
+        self._report_runner = None
+        if self._closed:
+            return
+        if write_failed:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+        elif html_path is not None:
+            self.console.appendPlainText(self._t("report_refreshed"))
+        self._run_pending_report_refresh()
+
+    def _run_pending_report_refresh(self) -> None:
+        if self._report_refresh_pending:
+            self._report_refresh_pending = False
+            self._refresh_report()
+
+    def _open_forms_dialog(self, parent: QWidget | None = None) -> None:
+        entries = self._run_audit_entries()
+        saved_intake = intake.latest_intake(entries)
+        saved_outtake = intake.latest_outtake(entries)
+        dialog = job_forms.FormsDialog(
+            self.settings.language,
+            saved_intake[0] if saved_intake else None,
+            saved_outtake[0] if saved_outtake else None,
+            parent=parent or self,
+        )
+        self._forms_dialog = dialog
+        dialog.accepted.connect(lambda: self._save_forms(dialog.intake_form(), dialog.outtake_form()))
+        dialog.open()
+
+    def _save_forms(self, intake_form: intake.IntakeForm, outtake_form: intake.OuttakeForm) -> None:
+        # Logged only when changed: every save is kept in the audit log, and
+        # OK on an untouched dialog must not add a copy. A cleared form is
+        # logged too, so the report stops showing the old one.
+        entries = self._run_audit_entries()
+        changed = False
+        for kind, form, saved in (
+            (intake.INTAKE_EVENT, intake_form, intake.latest_intake(entries)),
+            (intake.OUTTAKE_EVENT, outtake_form, intake.latest_outtake(entries)),
+        ):
+            previous = saved[0] if saved else None
+            if form.is_empty() and previous is None:
+                continue
+            if previous is not None and form.to_dict() == previous.to_dict():
+                continue
+            self._log_system_event(kind, 0, intake.form_to_output(form))
+            changed = True
+        if changed:
+            self._refresh_report()
+
+    def _open_branding_dialog(self, parent: QWidget | None = None) -> None:
+        values = {
+            "company": self.settings.branding_company,
+            "company_id": self.settings.branding_company_id,
+            "contact": self.settings.branding_contact,
+            "logo": self.settings.branding_logo,
+        }
+        dialog = job_forms.BrandingDialog(self.settings.language, values, parent=parent or self)
+        self._branding_dialog = dialog
+        dialog.accepted.connect(lambda: self._set_branding(dialog.values()))
+        dialog.open()
+
+    def _set_branding(self, values: dict) -> None:
+        self.settings.branding_company = values.get("company", "")
+        self.settings.branding_company_id = values.get("company_id", "")
+        self.settings.branding_contact = values.get("contact", "")
+        self.settings.branding_logo = values.get("logo", "")
+        self._persist_settings()
+
+    def _log_batch_duration(self) -> None:
+        # The report sums these into the run's work time (G20). Reset, so a
+        # batch split by a restart report is counted once in two parts.
+        if self._batch_started_at is None:
+            return
+        seconds = time.monotonic() - self._batch_started_at
+        self._batch_started_at = time.monotonic()
+        entry = make_entry(
+            "_system", intake.BATCH_DURATION_EVENT, "", 0, intake.batch_duration_output(seconds),
+            self.settings.dry_run, self.run_id, elevated=self.is_admin,
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            # Bookkeeping only: the batch's own entries already said the
+            # disk write failed - one more "failed" line would be noise.
+            pass
+
+    def _notify_batch_finished(self) -> None:
+        # Long batches (DISM, SFC, chkdsk) run for many minutes - a technician
+        # usually switches to something else meanwhile. Flash the taskbar
+        # entry and, where a system tray exists, show a notification with the
+        # outcome. Nothing happens when the window is already in front.
+        if self.isActiveWindow():
+            return
+        ok_count = sum(1 for _, code in self._batch_results if code == 0)
+        failed = len(self._batch_results) - ok_count
+        QApplication.alert(self, 0)
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if self._tray_icon is None:
+            self._tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+            self._tray_icon.activated.connect(lambda _reason: (self.showNormal(), self.activateWindow()))
+        self._tray_icon.show()
+        self._tray_icon.showMessage(
+            self._t("batch_done_title"),
+            self._t("batch_done_message").format(ok=ok_count, failed=failed),
+            QSystemTrayIcon.MessageIcon.Warning if failed else QSystemTrayIcon.MessageIcon.Information,
+            8000,
+        )
+
+    def _rebuild_custom_preset_buttons(self) -> None:
+        while self._custom_preset_layout.count():
+            item = self._custom_preset_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                key = next((k for k, b in self._preset_buttons.items() if b is widget), None)
+                if key is not None:
+                    del self._preset_buttons[key]
+                self._preset_button_group.removeButton(widget)
+                widget.deleteLater()
+        for name, action_ids in self.settings.custom_presets.items():
+            button = self._make_preset_button(name, CUSTOM_PRESET_PREFIX + name)
+            button.setProperty("custom", True)
+            button.setToolTip(self._t("preset_custom_tooltip").format(count=len(action_ids)))
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, b=button, n=name: self._show_custom_preset_menu(b, n, pos)
+            )
+            self._custom_preset_layout.addWidget(button)
+
+    def _persist_settings(self) -> None:
+        # Saved right away (not only at exit) so a crash or a yanked USB
+        # stick doesn't lose a preset the technician just created.
+        try:
+            save_settings(self.state_dir, self.settings)
+        except OSError:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+
+    def _on_save_preset_clicked(self) -> None:
+        selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        if not selected:
+            return
+        name, ok = QInputDialog.getText(self, self._t("preset_save_title"), self._t("preset_save_prompt"))
+        self._save_custom_preset(name if ok else "", selected)
+
+    def _save_custom_preset(self, name: str, action_ids: list[str]) -> bool:
+        name = name.strip()[:MAX_PRESET_NAME_LENGTH]
+        if not name or not action_ids:
+            return False
+        presets = self.settings.custom_presets
+        if name in presets:
+            answer = QMessageBox.question(
+                self, self._t("preset_save_title"), self._t("preset_overwrite_confirm").format(name=name)
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        elif len(presets) >= MAX_CUSTOM_PRESETS:
+            QMessageBox.warning(
+                self, self._t("preset_save_title"), self._t("preset_limit_reached").format(max=MAX_CUSTOM_PRESETS)
+            )
+            return False
+        presets[name] = list(action_ids)
+        self._persist_settings()
+        self._rebuild_custom_preset_buttons()
+        button = self._preset_buttons.get(CUSTOM_PRESET_PREFIX + name)
+        if button is not None:
+            button.setChecked(True)
+        self.statusBar().showMessage(self._t("preset_saved").format(name=name, count=len(action_ids)), 5000)
+        return True
+
+    def _show_custom_preset_menu(self, button: QPushButton, name: str, pos) -> None:
+        menu = QMenu(self)
+        delete_action = menu.addAction(self._t("preset_delete").format(name=name))
+        if menu.exec(button.mapToGlobal(pos)) is delete_action:
+            self._delete_custom_preset(name)
+
+    def _delete_custom_preset(self, name: str) -> None:
+        if self.settings.custom_presets.pop(name, None) is None:
+            return
+        self._persist_settings()
+        self._rebuild_custom_preset_buttons()
+
     def _make_action_detail_toggle(self, action: ActionDef) -> tuple[QToolButton, QWidget]:
         # The tooltip only shows the description on hover and disappears on
         # any focus change - this toggle makes the same info (plus the raw
@@ -855,17 +1604,19 @@ class MainWindow(QMainWindow):
         description_label.setWordWrap(True)
         panel_layout.addWidget(description_label)
 
-        command_box = QPlainTextEdit(action.command)
+        command_box = QPlainTextEdit(self._action_command_text(action))
         command_box.setObjectName("actionDetailCommand")
         command_box.setReadOnly(True)
         command_box.setFixedHeight(60)
         panel_layout.addWidget(command_box)
 
-        if action.undo_command:
+        if action.has_undo:
             undo_label = QLabel(self._t("action_detail_undo_label"))
             undo_label.setObjectName("actionDetailLabel")
             panel_layout.addWidget(undo_label)
-            undo_box = QPlainTextEdit(action.undo_command)
+            # An ops action's undo only exists after it ran (it is made from
+            # the captured state) - say how it will restore instead.
+            undo_box = QPlainTextEdit(action.undo_command or self._t("action_detail_ops_undo"))
             undo_box.setObjectName("actionDetailCommand")
             undo_box.setReadOnly(True)
             undo_box.setFixedHeight(48)
@@ -908,24 +1659,57 @@ class MainWindow(QMainWindow):
             checked_preset.setChecked(False)
             self._preset_button_group.setExclusive(True)
         for action_id in action_ids:
-            if mode == "all":
-                # Recovery/restore-style actions (e.g. drv_restore_backup)
-                # opt out of blanket "select all" - they must be checked
-                # deliberately via their own checkbox, never swept in as a
-                # side effect of selecting everything in their category.
-                _, action = self._find_action(action_id)
-                checked = not action.exclude_from_select_all
-            elif mode == "none":
+            if mode == "none":
                 checked = False
             else:
+                # Recovery/restore-style actions (e.g. drv_restore_backup,
+                # hard_disable_rdp) opt out of every bulk sweep - "select
+                # all" and the select-by-risk buttons alike. They must be
+                # checked deliberately via their own checkbox; "MODERATE
+                # only" used to sweep four of them in as a side effect.
                 _, action = self._find_action(action_id)
-                checked = action.risk.value == mode
+                checked = not action.exclude_from_select_all and (mode == "all" or action.risk.value == mode)
             self._action_checkboxes[action_id].setChecked(checked)
+
+    def _build_snapshot_metrics_widget(self) -> QWidget | None:
+        rows = snapshot.compare_snapshots(self._snapshot_before, self._snapshot_after)
+        if not rows:
+            return None
+        box = QWidget()
+        box.setObjectName("summaryMetrics")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(0, 4, 0, 4)
+        box_layout.setSpacing(4)
+        heading = QLabel(self._t("snapshot_heading"))
+        heading.setObjectName("summaryHeader")
+        box_layout.addWidget(heading)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(3)
+        for index, row in enumerate(rows):
+            name = QLabel(self._t(row["label_key"]))
+            name.setObjectName("summaryMetricName")
+            values = QLabel(f"{row['before']} \u2192 {row['after']}")
+            values.setObjectName("selectionScope")
+            delta = QLabel(f"({row['delta']})" if row["delta"] else "")
+            delta.setObjectName("summaryMetricDelta")
+            delta.setProperty("trend", row["trend"] or "same")
+            grid.addWidget(name, index, 0)
+            grid.addWidget(values, index, 1)
+            grid.addWidget(delta, index, 2)
+        grid.setColumnStretch(3, 1)
+        box_layout.addLayout(grid)
+        if any(row["lower_bound"] for row in rows):
+            note = QLabel(self._t("snapshot_lower_bound_note"))
+            note.setObjectName("selectionScope")
+            box_layout.addWidget(note)
+        return box
 
     def _show_batch_summary(self, html_path: Path) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(self._t("batch_results_title"))
-        dialog.setStyleSheet(style.STYLE)
+        dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(18, 14, 18, 14)
@@ -939,18 +1723,12 @@ class MainWindow(QMainWindow):
         header.setObjectName("summaryHeader")
         layout.addWidget(header)
 
-        # Reuses the exact free-space delta computation report.py already
-        # does for the HTML report - the in-app dialog never showed it,
-        # only ok/fail counts, even though the numbers were already on self.
+        # Before -> after metrics, same rows (snapshot.compare_snapshots) as
+        # the report's "Before / after" table; only metrics known both times.
         if not self.settings.dry_run:
-            free_before = self._snapshot_before.get("free_gb")
-            free_after = self._snapshot_after.get("free_gb")
-            if isinstance(free_before, (int, float)) and isinstance(free_after, (int, float)):
-                diff = round(free_after - free_before, 2)
-                sign = "+" if diff >= 0 else ""
-                space_label = QLabel(self._t("summary_space_freed").format(delta=f"{sign}{diff} GB"))
-                space_label.setObjectName("selectionScope")
-                layout.addWidget(space_label)
+            metrics = self._build_snapshot_metrics_widget()
+            if metrics is not None:
+                layout.addWidget(metrics)
 
         if self.settings.dry_run:
             note = QLabel(self._t("dry_run_batch_note"))
@@ -1032,9 +1810,24 @@ class MainWindow(QMainWindow):
                 lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(undo_script_path)))
             )
             button_row.addWidget(open_undo_button)
+        diag_checkbox = self._make_handoff_diagnostics_checkbox()
+        button_row.addWidget(diag_checkbox)
+        handoff_button = self._make_selection_button(
+            self._t("handoff_button"),
+            lambda: self._save_handoff_package(self.run_id, dialog, diag_checkbox.isChecked()),
+        )
+        button_row.addWidget(handoff_button)
         layout.addLayout(button_row)
 
+        open_button.setDefault(True)
         dialog.show()
+        # A batch often finishes while the technician is elsewhere - bring the
+        # (non-modal) results forward and put keyboard focus on its primary
+        # button so Enter opens the report and a screen reader lands on it
+        # (research-accessibility.md Finding 7).
+        dialog.raise_()
+        dialog.activateWindow()
+        open_button.setFocus()
         self._summary_dialog = dialog
 
     def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog) -> None:
@@ -1069,10 +1862,16 @@ class MainWindow(QMainWindow):
         status_label = QLabel(self._t("winget_scanning"))
         status_label.setObjectName("wingetBanner")
         status_label.setProperty("state", "ok")
+        # The unavailable/failed messages carry a hint and run to a few
+        # lines; unwrapped they would stretch the whole dashboard card.
+        status_label.setWordWrap(True)
         panel_layout.addWidget(status_label)
 
-        def set_status(text: str, state: str) -> None:
+        def set_status(text: str, state: str, detail: str = "") -> None:
             status_label.setText(text)
+            # winget's own (localized) words on a failed scan - shown as-is,
+            # never parsed; cleared by every other status.
+            status_label.setToolTip(detail)
             status_label.setProperty("state", state)
             status_label.style().unpolish(status_label)
             status_label.style().polish(status_label)
@@ -1286,6 +2085,38 @@ class MainWindow(QMainWindow):
             select_row_widget.setVisible(True)
             update_button_state()
 
+        def describe_scan_error(error) -> str:
+            code = ""
+            if error.exit_code is not None:
+                code = self._t("winget_exit_code_suffix").format(code=error.exit_code_hex)
+            if error.kind == "unavailable":
+                key = "winget_unavailable_not_found" if error.reason == "not_found" else "winget_unavailable_cannot_start"
+                return self._t(key).format(code=code)
+            if error.reason == "timeout":
+                return self._t("winget_scan_timeout").format(seconds=winget_updates._SCAN_TIMEOUT_SEC)
+            if error.reason == "unparsed":
+                return self._t("winget_scan_unparsed_rows" if error.packages else "winget_scan_unparsed")
+            text = self._t("winget_scan_failed").format(code=code)
+            hint = {"sources": "winget_scan_hint_sources", "outdated": "winget_scan_hint_outdated"}.get(error.reason)
+            if hint:
+                text += " " + self._t(hint)
+            return text
+
+        def on_scan_failed(error) -> None:
+            # An empty list here used to read as "no updates" - a false
+            # all-clear on a PC where winget is missing or the scan broke.
+            # Rows winget still listed before failing are real updates, so
+            # they stay; the banner says the list may be incomplete.
+            packages = list(error.packages)
+            populate(packages)
+            text = describe_scan_error(error)
+            # Only when a list is actually shown - populate hides it when
+            # every partial row is on the ignore list.
+            ignored_ids = set(self.settings.winget_ignored_ids)
+            if any(p.id not in ignored_ids for p in packages):
+                text += " " + self._t("winget_scan_partial")
+            set_status(text, "warn", error.detail)
+
         def start_scan() -> None:
             set_status(self._t("winget_scanning"), "ok")
             list_scroll.setVisible(False)
@@ -1293,6 +2124,7 @@ class MainWindow(QMainWindow):
             runner = winget_updates.WingetScanRunner(parent=panel)
             self._winget_scan_runner = runner
             runner.scan_finished.connect(populate)
+            runner.scan_failed.connect(on_scan_failed)
             runner.start()
 
         def export_list() -> None:
@@ -1329,15 +2161,33 @@ class MainWindow(QMainWindow):
             minutes = auto_check_interval.currentData() if auto_check_checkbox.isChecked() else 0
             self.settings.winget_auto_check_minutes = minutes
             auto_check_interval.setEnabled(auto_check_checkbox.isChecked())
-            if minutes:
-                auto_check_timer.start(minutes * 60_000)
+            # Quiet mode keeps the saved interval but never scans on its
+            # own - winget refreshes its sources over the network. A
+            # minimized window doesn't scan either, like the sysinfo polling.
+            if minutes and not self.settings.quiet_mode and not self._window_minimized:
+                # Every window state change re-applies this; restarting an
+                # unchanged running timer would push the next scan back.
+                if not auto_check_timer.isActive() or auto_check_timer.interval() != minutes * 60_000:
+                    auto_check_timer.start(minutes * 60_000)
             else:
                 auto_check_timer.stop()
+
+        # True while the update confirmation (or the running-programs prompt,
+        # or the restore point before the update) is pending: the nested event
+        # loops still fire auto_check_timer, and a scan then would rebuild the
+        # rows under the pending answer.
+        confirm_state = {"open": False}
 
         def auto_check_tick() -> None:
             # A scan mid-batch would clear row_checkboxes/row_progress/
             # row_widgets out from under the update in progress (populate()
             # rebuilds them from scratch), visibly resetting the panel.
+            if confirm_state["open"]:
+                return
+            # A scan started now would be a long task the update hand-off
+            # has to refuse, or one the closing app has to wait for.
+            if self._update_in_progress or self._closing_for_update:
+                return
             runner = self._winget_update_runner
             if runner is None or not runner.isRunning():
                 start_scan()
@@ -1354,12 +2204,120 @@ class MainWindow(QMainWindow):
         auto_check_checkbox.toggled.connect(lambda _checked=False: apply_auto_check_setting())
         auto_check_interval.currentIndexChanged.connect(lambda _index=0: apply_auto_check_setting())
 
+        def on_quiet_mode_changed() -> None:
+            # The timer itself follows _apply_polling_state, which the
+            # toggle already ran. Leaving quiet mode brings back the scan it skipped at start -
+            # otherwise the panel keeps saying "click Refresh" in loud mode.
+            if not self.settings.quiet_mode and status_label.text() == self._t("winget_quiet_mode"):
+                auto_check_tick()
+
+        self._winget_apply_auto_check = apply_auto_check_setting
+        self._winget_on_quiet_mode_changed = on_quiet_mode_changed
+
         refresh_ignored_panel()
+
+        def winget_upgrade_command(package_id: str) -> str:
+            # Same argv as winget_updates._run_winget_upgrade; its
+            # "--location" retry, when needed, shows up in the output.
+            return (
+                f"winget upgrade --id {package_id} --silent --include-unknown "
+                "--accept-package-agreements --accept-source-agreements --disable-interactivity"
+            )
 
         def start_update() -> None:
             selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected_packages:
                 return
+            # The app update's hand-off checked for long tasks right before
+            # its handshake; one begun during it would hold up the exit the
+            # updater is waiting for.
+            if self._update_phase == "launch" or self._closing_for_update:
+                self.statusBar().showMessage(self._t("winget_update_blocked_by_app_update"))
+                return
+            # Installs a newer version with no way back - a MODERATE change
+            # by the catalog's own yardstick, confirmed like one.
+            risk = RiskLevel.MODERATE.value
+            upgrade_command = winget_upgrade_command
+
+            if self.settings.dry_run:
+                # Nothing is started: DRY-RUN must never install anything,
+                # so this only shows (and logs) what would have run.
+                console.setVisible(True)
+                console.appendPlainText(self._t("winget_update_dry_run_notice"))
+                for package in selected_packages:
+                    command = upgrade_command(package.id)
+                    console.appendPlainText(f"[DRY-RUN] {command}")
+                    self._log_panel_action("_winget", package.id, command, 0, f"[DRY-RUN] {command}", True, risk)
+                return
+            warning_text = self._t("winget_update_confirm_text").format(
+                count=len(selected_packages),
+                packages=self._panel_confirm_list(
+                    [f"{p.name}  {p.installed_version} → {p.available_version}" for p in selected_packages]
+                ),
+            )
+            confirm_state["open"] = True
+            try:
+                # Default No, like the uninstaller's: the installers run silently.
+                answer = QMessageBox.question(
+                    self, self._t("category_winget"), warning_text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+            finally:
+                confirm_state["open"] = False
+            if answer != QMessageBox.Yes:
+                # Logged like a declined catalog action (_dispatch_action).
+                for package in selected_packages:
+                    self._log_system_event(
+                        "risk_declined", None, "Technician declined the winget update confirmation - package not updated.",
+                        risk=risk, warned=True, warning_text=warning_text,
+                        subject=f"_winget/{package.id}", decision="declined",
+                    )
+                return
+            # An installer replacing files of a running program fails, asks
+            # for a reboot or kills it with unsaved work (research G01).
+            confirm_state["open"] = True
+            try:
+                closed = self._confirm_programs_closed(
+                    self._t("category_winget"), self._winget_running_targets(selected_packages),
+                    [f"_winget/{p.id}" for p in selected_packages], risk,
+                    "Technician cancelled the winget update - the program was still running, package not updated.",
+                )
+            finally:
+                confirm_state["open"] = False
+            if not closed:
+                return
+
+            def set_controls_enabled(enabled: bool) -> None:
+                update_btn.setEnabled(enabled)
+                select_all_btn.setEnabled(enabled)
+                select_none_btn.setEnabled(enabled)
+                refresh_btn.setEnabled(enabled)
+
+            def after_restore_point(proceed: bool) -> None:
+                confirm_state["open"] = False
+                if proceed and (self._update_phase == "launch" or self._closing_for_update):
+                    # The app update's hand-off began while the restore point
+                    # ran - same refusal as a click at that moment.
+                    self.statusBar().showMessage(self._t("winget_update_blocked_by_app_update"))
+                    proceed = False
+                if not proceed:
+                    set_controls_enabled(True)
+                    console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
+                    return
+                run_update(selected_packages, warning_text)
+
+            # Same safety net as a batch (G01): winget has no way back to the
+            # previous version, a restore point does.
+            set_controls_enabled(False)
+            confirm_state["open"] = True
+            if not self._start_panel_restore_point(
+                [f"_winget/{package.id}" for package in selected_packages], console, after_restore_point,
+            ):
+                confirm_state["open"] = False
+                set_controls_enabled(True)
+
+        def run_update(selected_packages: list, warning_text: str) -> None:
+            risk = RiskLevel.MODERATE.value
+            upgrade_command = winget_upgrade_command
             update_btn.setEnabled(False)
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
@@ -1406,10 +2364,24 @@ class MainWindow(QMainWindow):
                     ignore_btn.setVisible(False)
 
             def on_package_finished(package_id: str, ok: bool, output: str) -> None:
-                elapsed_timer.stop()
-                elapsed_state["package_id"] = None
                 package = package_by_id.get(package_id)
                 name = package.name if package is not None else package_id
+                # Recorded before any widget is touched, so a console error
+                # can never leave a real update out of the log.
+                self._log_panel_action(
+                    "_winget", package_id, upgrade_command(package_id), 0 if ok else 1, output,
+                    False, risk, True, warning_text,
+                )
+                # winget has no rollback to the previous version - undo.ps1
+                # says so rather than implying the update can be undone. A
+                # failed update is listed too: the installer may have run.
+                irreversible = f"[{risk}] {self._t('category_winget')}: {name} ({package_id})"
+                if not ok:
+                    irreversible += " - exit 1"
+                self._irreversible_actions.append(irreversible)
+                self._write_undo_script()
+                elapsed_timer.stop()
+                elapsed_state["package_id"] = None
                 status = self._t("status_ok") if ok else self._t("status_failed")
                 console.appendPlainText(f"[{status}] {name}")
                 if output:
@@ -1457,7 +2429,11 @@ class MainWindow(QMainWindow):
         import_btn.clicked.connect(lambda _checked=False: import_list())
         manage_ignored_btn.clicked.connect(lambda _checked=False: ignored_panel.setVisible(not ignored_panel.isVisible()))
 
-        start_scan()
+        if self.settings.quiet_mode:
+            # No automatic scan in quiet mode; Refresh still scans on click.
+            set_status(self._t("winget_quiet_mode"), "ok")
+        else:
+            start_scan()
         return panel
 
     def _build_dashboard_card(self, category_i18n_keys: dict) -> QFrame:
@@ -1477,16 +2453,24 @@ class MainWindow(QMainWindow):
         score_box.setSpacing(0)
         score_value = QLabel(self._t("dashboard_no_run_yet"))
         score_value.setObjectName("dashboardScoreValue")
+        # "none" until the first analysis - a big green "not run yet" read
+        # like a healthy result before anything had been checked.
+        score_value.setProperty("state", "none")
         score_caption = QLabel(self._t("dashboard_score_label"))
         score_caption.setObjectName("selectionScope")
         score_box.addWidget(score_value)
         score_box.addWidget(score_caption)
         self._dashboard_score_label = score_value
         top_row.addLayout(score_box)
-        analyze_button = QPushButton(self._t("dashboard_analyze_button"))
-        analyze_button.setObjectName("runButton")
-        analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
-        top_row.addWidget(analyze_button)
+        # Kept on self so batch start/end can lock it together with
+        # run_button - it starts a batch too. Its initial state matters when
+        # a language toggle rebuilds the dashboard while a batch, its report
+        # or an update download is still in flight.
+        self.dashboard_analyze_button = QPushButton(self._t("dashboard_analyze_button"))
+        self.dashboard_analyze_button.setObjectName("runButton")
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
+        self.dashboard_analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
+        top_row.addWidget(self.dashboard_analyze_button)
         top_row.addStretch(1)
         card_layout.addLayout(top_row)
 
@@ -1495,7 +2479,7 @@ class MainWindow(QMainWindow):
         tile_categories = [c for c in self._categories_order if c != ModuleCategory.DASHBOARD]
         columns = 4
         for index, category in enumerate(tile_categories):
-            tile = QFrame()
+            tile = _DashboardTile()
             tile.setObjectName("actionCard")
             tile.setCursor(Qt.CursorShape.PointingHandCursor)
             tile_layout = QVBoxLayout(tile)
@@ -1508,7 +2492,7 @@ class MainWindow(QMainWindow):
             tile_top.addWidget(name_label, 1)
             count_pill = QLabel("0")
             count_pill.setObjectName("countPill")
-            count_pill.setProperty("state", "ok")
+            count_pill.setProperty("state", "idle")
             tile_top.addWidget(count_pill)
             tile_layout.addLayout(tile_top)
             count = self._category_module_action_counts.get(category, 0)
@@ -1516,9 +2500,25 @@ class MainWindow(QMainWindow):
             sub_label.setObjectName("selectionScope")
             tile_layout.addWidget(sub_label)
             self._dashboard_tile_count_labels[category] = count_pill
-            tile.mousePressEvent = lambda _event, c=category: self._dashboard_tile_clicked(c)
+            self._dashboard_tiles[category] = tile
+            tile.setAccessibleDescription(self._t("a11y_dashboard_tile_hint"))
+            self._update_dashboard_tile_accessible_name(category)
+            tile.activated.connect(lambda c=category: self._dashboard_tile_clicked(c))
             grid.addWidget(tile, index // columns, index % columns)
         card_layout.addLayout(grid)
+
+        history_heading = QLabel(self._t("history_heading"))
+        history_heading.setObjectName("cardHeading")
+        card_layout.addWidget(history_heading)
+        # One choice for every history row's "Save client package" button.
+        self._history_handoff_diag_checkbox = self._make_handoff_diagnostics_checkbox()
+        card_layout.addWidget(self._history_handoff_diag_checkbox)
+        history_widget = QWidget()
+        self._history_layout = QVBoxLayout(history_widget)
+        self._history_layout.setContentsMargins(0, 0, 0, 0)
+        self._history_layout.setSpacing(4)
+        card_layout.addWidget(history_widget)
+        self._refresh_history()
 
         winget_heading = QLabel(self._t("category_winget"))
         winget_heading.setObjectName("cardHeading")
@@ -1528,20 +2528,201 @@ class MainWindow(QMainWindow):
         card_layout.addStretch(1)
         return card
 
+    def _update_dashboard_tile_accessible_name(self, category: ModuleCategory) -> None:
+        # The tile's text lives in child QLabels focus never reaches - fold
+        # name, recommended-fix count and action count into the tile itself.
+        tile = self._dashboard_tiles.get(category)
+        if tile is None:
+            return
+        name = self._t(self._category_i18n_keys.get(category, ""))
+        pill = self._dashboard_tile_count_labels.get(category)
+        findings = pill.text() if pill is not None else "0"
+        parts = [name, self._t("a11y_dashboard_tile_findings").format(count=findings)]
+        action_count = self._category_module_action_counts.get(category, 0)
+        if action_count:
+            parts.append(self._t("dashboard_actions_count").format(count=action_count))
+        tile.setAccessibleName(", ".join(parts))
+
     def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
         if category in self._categories_order:
             self.category_list.setCurrentRow(self._categories_order.index(category))
 
     def _run_dashboard_analysis(self) -> None:
+        # Checked before _apply_preset, not left to run_selected_actions:
+        # mid-batch the preset would still wipe the technician's checkbox
+        # selection even though no second batch starts.
+        if self._batch_start_blocked():
+            return
         if "full_diagnostic" in PRESETS:
             self._apply_preset("full_diagnostic")
             self.run_selected_actions()
 
+    def _refresh_history(self) -> None:
+        layout = getattr(self, "_history_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        runs = history.recent_runs(self.state_dir / "Reports", socket.gethostname(), limit=HISTORY_MAX_ROWS)
+        if not runs:
+            empty = QLabel(self._t("history_empty"))
+            empty.setObjectName("selectionScope")
+            layout.addWidget(empty)
+            return
+        for run in runs:
+            row = QFrame()
+            row.setObjectName("historyRow")
+            row.setProperty("failed", run.failed_count > 0)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 4, 6, 4)
+            row_layout.setSpacing(8)
+            text = QLabel(
+                self._t("history_row").format(
+                    date=run.display_date(), count=run.action_count, failed=run.failed_count
+                )
+            )
+            text.setObjectName("historyText")
+            row_layout.addWidget(text, 1)
+            if run.dry_run:
+                tag = QLabel(self._t("history_dry_run_tag"))
+                tag.setObjectName("summaryDryRunNote")
+                row_layout.addWidget(tag)
+            if run.html_path is not None:
+                open_button = self._make_selection_button(
+                    self._t("history_open"),
+                    lambda path=run.html_path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))),
+                )
+                row_layout.addWidget(open_button)
+            handoff_button = self._make_selection_button(
+                self._t("handoff_button"),
+                lambda rid=run.run_id: self._save_handoff_package(
+                    rid, include_diagnostics=self._history_handoff_diag_checkbox.isChecked()
+                ),
+            )
+            handoff_button.setProperty("handoffRunId", run.run_id)
+            row_layout.addWidget(handoff_button)
+            layout.addWidget(row)
+
+    def _make_handoff_diagnostics_checkbox(self) -> QCheckBox:
+        # Off by default and never remembered: the reports hold personal
+        # data (names, network config), so each package is a fresh choice.
+        checkbox = QCheckBox(self._t("handoff_include_diagnostics"))
+        checkbox.setObjectName("handoffDiagnostics")
+        checkbox.setChecked(False)
+        checkbox.setToolTip(self._t("handoff_include_diagnostics_tip"))
+        checkbox.setAccessibleDescription(self._t("handoff_include_diagnostics_tip"))
+        return checkbox
+
+    def _save_handoff_package(
+        self, run_id: str, parent: QWidget | None = None, include_diagnostics: bool = False
+    ) -> Path | None:
+        """Ask where to save the client handoff zip of one run and write it.
+
+        With diagnostics the zip is built by a worker thread and this returns
+        None at once - the result arrives in _on_handoff_result."""
+        if include_diagnostics and _thread_running(self._handoff_runner):
+            QMessageBox.information(parent or self, self._t("app_title"), self._t("handoff_diag_busy"))
+            return None
+        hostname = socket.gethostname()
+        default_path = self.state_dir / "Reports" / handoff.default_package_name(hostname, run_id)
+        dest, _ = QFileDialog.getSaveFileName(
+            parent or self, self._t("handoff_button"), str(default_path), "Zip (*.zip)"
+        )
+        if not dest:
+            return None
+        if include_diagnostics:
+            self._start_handoff_with_diagnostics(hostname, run_id, Path(dest), parent)
+            return None
+        try:
+            saved = handoff.build_handoff_zip(
+                self.state_dir, hostname, run_id, Path(dest), redact=self.settings.redact_for_client,
+            )
+        except ValueError:
+            QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
+            return None
+        except OSError as exc:
+            self.console.appendPlainText(self._t("handoff_failed"))
+            QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{exc}")
+            return None
+        self._show_handoff_saved(saved)
+        return saved
+
+    def _start_handoff_with_diagnostics(self, hostname: str, run_id: str, dest: Path, parent: QWidget | None) -> None:
+        # The reports only read the system, so DRY-RUN does not stop them -
+        # but the technician is told, and diagnostics/README.txt says so too.
+        if self.settings.dry_run:
+            self.console.appendPlainText(self._t("handoff_diag_dry_run_note"))
+        self.console.appendPlainText(self._t("handoff_diag_started"))
+        runner = handoff.HandoffRunner(
+            self.state_dir, hostname, run_id, dest, dry_run=self.settings.dry_run,
+            redact=self.settings.redact_for_client, parent=self,
+        )
+        runner.progress.connect(self._on_handoff_progress)
+        runner.result_ready.connect(
+            lambda saved, error, detail: self._on_handoff_result(saved, error, detail, parent)
+        )
+        self._handoff_runner = runner
+        runner.start()
+
+    def _on_handoff_progress(self, index: int, total: int, name: str) -> None:
+        if self._closed:
+            return
+        text = self._t("handoff_diag_progress").format(index=index, total=total, name=name)
+        self.statusBar().showMessage(text)
+        self.console.appendPlainText(text)
+
+    def _on_handoff_result(self, saved, error: str, detail: str, parent: QWidget | None) -> None:
+        self._handoff_runner = None
+        # Stopped because the window is closing: nothing left to tell.
+        if self._closed or error == "cancelled":
+            return
+        # The summary dialog may have been closed during the minutes the
+        # reports took - never parent a message box to a deleted widget.
+        if parent is not None:
+            try:
+                parent.isVisible()
+            except RuntimeError:
+                parent = None
+        self.statusBar().clearMessage()
+        if error == "no_files":
+            QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
+            return
+        if error:
+            self.console.appendPlainText(self._t("handoff_failed"))
+            QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{detail}")
+            return
+        self.console.appendPlainText(self._t("handoff_saved").format(path=saved))
+        self._show_handoff_saved(saved)
+
+    def _show_handoff_saved(self, saved: Path) -> None:
+        self.statusBar().showMessage(self._t("handoff_saved").format(path=saved), 15000)
+        button = getattr(self, "_handoff_folder_button", None)
+        if button is None:
+            button = QPushButton(self._t("handoff_open_folder"))
+            button.setObjectName("selectionBtn")
+            button.clicked.connect(self._open_handoff_folder)
+            self.statusBar().addPermanentWidget(button)
+            self._handoff_folder_button = button
+        button.setText(self._t("handoff_open_folder"))
+        button.setProperty("folder", str(saved.parent))
+        button.setVisible(True)
+
+    def _open_handoff_folder(self) -> None:
+        button = self._handoff_folder_button
+        QDesktopServices.openUrl(QUrl.fromLocalFile(button.property("folder")))
+        button.setVisible(False)
+
     def _refresh_dashboard(self) -> None:
+        self._refresh_history()
         if self._dashboard_score_label is not None:
             unique_recommended = len(self._recommended_action_ids)
             score = max(40, 100 - unique_recommended * 10)
             self._dashboard_score_label.setText(str(score))
+            self._dashboard_score_label.setProperty("state", _score_state(score))
+            self._dashboard_score_label.style().unpolish(self._dashboard_score_label)
+            self._dashboard_score_label.style().polish(self._dashboard_score_label)
         counts: dict[ModuleCategory, int] = {}
         for action_id in self._recommended_action_ids:
             try:
@@ -1555,6 +2736,7 @@ class MainWindow(QMainWindow):
             pill.setProperty("state", "warn" if needs_fix_count else "ok")
             pill.style().unpolish(pill)
             pill.style().polish(pill)
+            self._update_dashboard_tile_accessible_name(category)
 
     _AVATAR_COLORS = ["#5ee6ff", "#39c2ff", "#6bd4c2", "#8f7cff", "#4dd0e1", "#64b5f6"]
 
@@ -1580,6 +2762,39 @@ class MainWindow(QMainWindow):
             parts.append(program.install_date)
         return "  |  ".join(parts)
 
+    def _msi_log_dir(self) -> Path:
+        # msiexec's verbose log (/l*v) per product, next to the audit log -
+        # the first thing to read when an MSI uninstall fails.
+        return self.state_dir / "Logs" / f"{self.run_id}_msi"
+
+    def _uninstall_queue_line(self, program: "uninstaller.InstalledProgram", plan: "uninstall_plan.UninstallPlan") -> str:
+        if plan.kind in (uninstall_plan.KIND_NONE, uninstall_plan.KIND_UNSAFE):
+            return f"{program.name}  [{self._uninstall_no_run_text(plan)}]"
+        if plan.kind == uninstall_plan.KIND_INTERACTIVE:
+            return f"{program.name}  [{self._t('uninstaller_confirm_interactive_marker')}]"
+        kind = self._t(f"uninstaller_kind_{plan.kind}")
+        return f"{program.name}  [{self._t('uninstaller_confirm_silent_marker')}, {kind}]"
+
+    def _uninstall_no_run_text(self, plan: "uninstall_plan.UninstallPlan") -> str:
+        # Why a plan runs nothing: no command at all, or refused as unsafe.
+        if plan.kind == uninstall_plan.KIND_UNSAFE:
+            return self._t("uninstaller_unsafe_command")
+        return self._t("uninstaller_no_command")
+
+    def _uninstall_queue_summary(self, interactive: list, silent: list) -> list[str]:
+        # Which queue each program is in, shown before anything starts.
+        lines = []
+        if interactive:
+            lines.append(self._t("uninstaller_queue_interactive_heading").format(
+                count=len(interactive), programs=", ".join(p.name for p in interactive),
+            ))
+        if silent:
+            lines.append(self._t("uninstaller_queue_silent_heading").format(
+                count=len(silent), programs=", ".join(p.name for p in silent),
+                minutes=uninstaller.UNINSTALL_TIMEOUT_SEC // 60,
+            ))
+        return lines
+
     def _build_uninstaller_card(self) -> QFrame:
         card = QFrame()
         card.setObjectName("actionCard")
@@ -1601,6 +2816,9 @@ class MainWindow(QMainWindow):
         card_layout.addWidget(list_status_label)
 
         programs = uninstaller.list_installed_programs()
+        app_dir = str(paths.get_base_dir())
+        # name -> PROTECTED_* code (research G01): shown, never uninstallable.
+        protected: dict[str, str] = {}
         row_checkboxes: dict[str, QCheckBox] = {}
         row_widgets: dict[str, QWidget] = {}
         program_by_name: dict[str, uninstaller.InstalledProgram] = {}
@@ -1619,6 +2837,13 @@ class MainWindow(QMainWindow):
             tooltip = program.install_location or ""
             if program.publisher:
                 tooltip = f"{program.publisher}\n{tooltip}" if tooltip else program.publisher
+            reason = panel_safety.protected_reason(program, app_dir)
+            if reason is not None:
+                protected[program.name] = reason
+                checkbox.setText(f"{checkbox.text()}  [{self._t('uninstaller_protected_marker')}]")
+                checkbox.setEnabled(False)
+                reason_text = self._t(f"uninstaller_protected_{reason}")
+                tooltip = f"{reason_text}\n{tooltip}" if tooltip else reason_text
             checkbox.setToolTip(tooltip)
             row.addWidget(checkbox, 1)
             row_checkboxes[program.name] = checkbox
@@ -1658,7 +2883,10 @@ class MainWindow(QMainWindow):
         select_row = QHBoxLayout()
         select_all_btn = self._make_selection_button(
             self._t("select_all"),
-            lambda: [cb.setChecked(True) for name, cb in row_checkboxes.items() if not row_widgets[name].isHidden()],
+            lambda: [
+                cb.setChecked(True) for name, cb in row_checkboxes.items()
+                if not row_widgets[name].isHidden() and name not in protected
+            ],
         )
         select_row.addWidget(select_all_btn)
         select_none_btn = self._make_selection_button(
@@ -1698,22 +2926,122 @@ class MainWindow(QMainWindow):
             heading = QLabel(self._t("uninstaller_leftovers_heading"))
             heading.setObjectName("cardHeading")
             cleanup_layout.addWidget(heading)
-            orphan_checkboxes: dict[uninstaller.InstalledProgram, QCheckBox] = {}
+            # InstalledProgram is a plain (unhashable) dataclass - using it as
+            # the key raised TypeError. Where the entry lives is its identity.
+            orphan_checkboxes: dict[tuple[int, str], QCheckBox] = {}
+            orphan_by_key: dict[tuple[int, str], uninstaller.InstalledProgram] = {}
             for orphan in orphans:
+                key = (orphan.registry_hive, orphan.registry_path)
                 cb = QCheckBox(orphan.name)
-                cb.setChecked(True)
-                orphan_checkboxes[orphan] = cb
+                # Unchecked: every deleted entry is the technician's explicit
+                # pick, not a default they would have to notice and untick.
+                cb.setToolTip(f"{orphan.install_location or ''}\n{uninstaller.registry_key_name(*key)}")
+                orphan_checkboxes[key] = cb
+                orphan_by_key[key] = orphan
                 cleanup_layout.addWidget(cb)
             clean_button = QPushButton(self._t("uninstaller_clean_leftovers_button"))
             clean_button.setObjectName("selectionBtn")
 
             def do_clean() -> None:
+                chosen = [orphan_by_key[key] for key, cb in orphan_checkboxes.items() if cb.isChecked()]
+                if not chosen:
+                    return
+                console.setVisible(True)
+                risk = RiskLevel.DESTRUCTIVE.value
+
+                def delete_command(orphan: uninstaller.InstalledProgram) -> str:
+                    key_name = uninstaller.registry_key_name(orphan.registry_hive, orphan.registry_path)
+                    return f'reg delete "{key_name}" /f'
+
+                if self.settings.dry_run:
+                    console.appendPlainText(self._t("dry_run_batch_note"))
+                    for orphan in chosen:
+                        command = delete_command(orphan)
+                        console.appendPlainText(f"[DRY-RUN] {command}")
+                        self._log_panel_action(
+                            "_uninstaller", f"orphan_cleanup:{orphan.name}", command, 0, f"[DRY-RUN] {command}",
+                            True, risk,
+                        )
+                    return
+                warning_text = self._t("uninstaller_orphan_confirm_text").format(
+                    count=len(chosen),
+                    entries=self._panel_confirm_list([
+                        f"{o.name} ({uninstaller.registry_key_name(o.registry_hive, o.registry_path)})" for o in chosen
+                    ]),
+                )
+                answer = QMessageBox.warning(
+                    self, self._t("uninstaller_leftovers_heading"), warning_text,
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    for orphan in chosen:
+                        self._log_system_event(
+                            "risk_declined", None, "Technician declined the leftover registry cleanup - entry not deleted.",
+                            risk=risk, warned=True, warning_text=warning_text,
+                            subject=f"_uninstaller/orphan_cleanup:{orphan.name}", decision="declined",
+                        )
+                    return
+
+                def after_restore_point(proceed: bool) -> None:
+                    clean_button.setEnabled(True)
+                    if not proceed:
+                        console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
+                        return
+                    delete_chosen(chosen, warning_text)
+
+                # The .reg export covers each key; the restore point (G01)
+                # covers what a wrongly flagged entry's program still needed.
+                clean_button.setEnabled(False)
+                if not self._start_panel_restore_point(
+                    [f"_uninstaller/orphan_cleanup:{orphan.name}" for orphan in chosen], console, after_restore_point,
+                ):
+                    clean_button.setEnabled(True)
+
+            def delete_chosen(chosen: list, warning_text: str) -> None:
+                risk = RiskLevel.DESTRUCTIVE.value
+
+                def delete_command(orphan: uninstaller.InstalledProgram) -> str:
+                    key_name = uninstaller.registry_key_name(orphan.registry_hive, orphan.registry_path)
+                    return f'reg delete "{key_name}" /f'
+
+                backup_dir = self.state_dir / "Backups" / self.run_id
                 removed = 0
-                for orphan, cb in orphan_checkboxes.items():
-                    if cb.isChecked() and uninstaller.remove_registry_key(orphan.registry_hive, orphan.registry_path):
+                for orphan in chosen:
+                    command = delete_command(orphan)
+                    action_id = f"orphan_cleanup:{orphan.name}"
+                    backup_path = uninstaller.orphan_backup_path(backup_dir, orphan.name)
+                    # No backup, no delete: a wrongly flagged entry (e.g. a
+                    # program on a drive that reappears later) must stay
+                    # recoverable with "reg import".
+                    if not uninstaller.backup_registry_key(orphan.registry_hive, orphan.registry_path, backup_path):
+                        console.appendPlainText(self._t("uninstaller_orphan_backup_failed").format(name=orphan.name))
+                        self._log_panel_action(
+                            "_uninstaller", action_id, command, 1,
+                            f"Registry backup to {backup_path} failed - entry not deleted.",
+                            False, risk, True, warning_text,
+                        )
+                        continue
+                    deleted = uninstaller.remove_registry_key(orphan.registry_hive, orphan.registry_path)
+                    output = f"Backup: {backup_path}"
+                    if deleted:
                         removed += 1
+                        # The .reg backup makes this reversible - undo.ps1
+                        # re-imports it (PowerShell single-quote escaping).
+                        quoted = str(backup_path).replace("'", "''")
+                        self._undo_steps.append(f"reg import '{quoted}'")
+                    else:
+                        output += "\nDeleting the registry entry failed."
+                        console.appendPlainText(f"[{self._t('status_failed')}] {orphan.name}")
+                    self._log_panel_action(
+                        "_uninstaller", action_id, command, 0 if deleted else 1, output,
+                        False, risk, True, warning_text,
+                    )
                 console.appendPlainText(self._t("uninstaller_leftovers_removed").format(count=removed))
-                cleanup_container.setVisible(False)
+                if removed:
+                    self._write_undo_script()
+                # Rescan: deleted entries drop off the list, anything that
+                # failed or was left unticked stays for another try.
+                show_orphan_cleanup()
 
             clean_button.clicked.connect(lambda _checked=False: do_clean())
             cleanup_layout.addWidget(clean_button)
@@ -1723,17 +3051,150 @@ class MainWindow(QMainWindow):
             selected = [program_by_name[name] for name, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected:
                 return
+            risk = RiskLevel.DESTRUCTIVE.value
+            # Protected rows can't be ticked, but a checkbox can still be set
+            # programmatically - refuse here too, and say so on record.
+            refused = [p for p in selected if p.name in protected]
+            if refused:
+                selected = [p for p in selected if p.name not in protected]
+                lines = [f"{p.name} - {self._t('uninstaller_protected_' + protected[p.name])}" for p in refused]
+                console.setVisible(True)
+                for line in lines:
+                    console.appendPlainText(f"[{self._t('uninstaller_protected_marker')}] {line}")
+                for program in refused:
+                    self._log_system_event(
+                        "protected_program", None,
+                        f"Uninstall refused - protected program ({protected[program.name]}).",
+                        risk=risk, subject=f"_uninstaller/{program.name}",
+                    )
+                if not self.settings.dry_run:
+                    QMessageBox.information(
+                        self, self._t("uninstaller_confirm_title"),
+                        self._t("uninstaller_protected_refused").format(programs=self._panel_confirm_list(lines)),
+                    )
+                if not selected:
+                    return
+            # Built once (research G15): the installer type decides the
+            # silent switches and the queue, and the same plan is what the
+            # dialog shows, the runner runs and the audit log records.
+            plans = {p.name: uninstaller.program_plan(p, self._msi_log_dir()) for p in selected}
+            interactive_queue, silent_queue = uninstall_plan.split_queues(selected, plans)
+            selected = interactive_queue + silent_queue
+            if self.settings.dry_run:
+                # DRY-RUN never starts an uninstaller - it shows and logs the
+                # exact command each one would run, and the rows stay put.
+                console.setVisible(True)
+                console.appendPlainText(self._t("uninstaller_dry_run_notice"))
+                for line in self._uninstall_queue_summary(interactive_queue, silent_queue):
+                    console.appendPlainText(line)
+                for program in selected:
+                    command = plans[program.name].command
+                    console.appendPlainText(
+                        f"[DRY-RUN] {program.name}: {command or self._uninstall_no_run_text(plans[program.name])}"
+                    )
+                    self._log_panel_action(
+                        "_uninstaller", program.name, command, 0,
+                        f"[DRY-RUN] {command}" if command else "[DRY-RUN] No uninstall command found for this program.",
+                        True, risk,
+                    )
+                # Same next step as a real run: the leftover scan only reads
+                # the registry, and cleaning honours DRY-RUN as well.
+                show_orphan_cleanup()
+                return
+            # A silent uninstall runs with no uninstaller window at all -
+            # the only chance to stop it is this dialog, so say so; and say
+            # which queue each program is in (research G15).
+            warning_text = self._t("uninstaller_confirm_text").format(
+                count=len(selected),
+                programs=self._panel_confirm_list([self._uninstall_queue_line(p, plans[p.name]) for p in selected]),
+            ) + "\n\n" + self._t("uninstaller_confirm_queues_note").format(
+                minutes=uninstaller.UNINSTALL_TIMEOUT_SEC // 60,
+            )
+            answer = QMessageBox.warning(
+                self, self._t("uninstaller_confirm_title"), warning_text,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                # Logged like a declined catalog action (_dispatch_action).
+                for program in selected:
+                    self._log_system_event(
+                        "risk_declined", None, "Technician declined the uninstall confirmation - program not uninstalled.",
+                        risk=risk, warned=True, warning_text=warning_text,
+                        subject=f"_uninstaller/{program.name}", decision="declined",
+                    )
+                return
+            # A running program's uninstaller fails half-way or leaves files
+            # it could not delete (research G01) - ask to close it first.
+            if not self._confirm_programs_closed(
+                self._t("uninstaller_confirm_title"),
+                [(p.name, p, f"_uninstaller/{p.name}") for p in selected],
+                [f"_uninstaller/{p.name}" for p in selected], risk,
+                "Technician cancelled the uninstall - the program was still running, not uninstalled.",
+            ):
+                return
+
+            def set_controls_enabled(enabled: bool) -> None:
+                uninstall_button.setEnabled(enabled)
+                select_all_btn.setEnabled(enabled)
+                select_none_btn.setEnabled(enabled)
+
+            def after_restore_point(proceed: bool) -> None:
+                if not proceed:
+                    set_controls_enabled(True)
+                    console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
+                    return
+                run_uninstall(selected, plans, warning_text)
+
+            # An uninstall has no undo - the restore point is the way back.
+            set_controls_enabled(False)
+            if not self._start_panel_restore_point(
+                [f"_uninstaller/{program.name}" for program in selected], console, after_restore_point,
+            ):
+                set_controls_enabled(True)
+
+        def run_uninstall(selected: list, plans: dict, warning_text: str) -> None:
+            risk = RiskLevel.DESTRUCTIVE.value
+            # Still installed after msiexec 1618 - the row stays for a retry.
+            keep_rows: set[str] = set()
             uninstall_button.setEnabled(False)
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("uninstaller_running"))
-            runner = uninstaller.UninstallRunner(selected, parent=card)
-            card._uninstall_runner = runner  # keep a reference alive
+            for line in self._uninstall_queue_summary(*uninstall_plan.split_queues(selected, plans)):
+                console.appendPlainText(line)
+            # On self, not the card: closeEvent and the app update's hand-off
+            # guard must both know an uninstall is still running.
+            runner = uninstaller.UninstallRunner(selected, parent=card, plans=plans)
+            self._uninstall_runner = runner
 
-            def on_program_finished(name: str, ok: bool, output: str) -> None:
+            def on_program_finished(name: str, ok: bool, output: str, outcome: str) -> None:
+                # Recorded before any widget is touched, so a console error
+                # can never leave a real uninstall out of the log.
+                plan = plans.get(name)
+                command = plan.command if plan is not None else ""
+                self._log_panel_action(
+                    "_uninstaller", name, command, 0 if ok else 1, output, False, risk, True, warning_text,
+                )
+                # An uninstall has no rollback - undo.ps1 lists it under
+                # "NOT reversible" (a failed one too: it may have removed
+                # part of the program before failing).
+                # Not for a program with no uninstall command at all: nothing
+                # ran, so there is nothing to call irreversible.
+                if command:
+                    irreversible = f"[{risk}] {self._t('category_uninstaller')}: {name}"
+                    if not ok:
+                        irreversible += " - exit 1"
+                    self._irreversible_actions.append(irreversible)
+                    self._write_undo_script()
+                if outcome == uninstall_plan.OUTCOME_BUSY_RETRY:
+                    keep_rows.add(name)
                 status = self._t("status_ok") if ok else self._t("status_failed")
                 console.appendPlainText(f"[{status}] {name}")
+                # msiexec's 1605/1641/3010/1618 etc. in the technician's
+                # language; the English text for the audit stays in the output.
+                if outcome and outcome != uninstall_plan.OUTCOME_OK:
+                    console.appendPlainText(self._t(f"uninstaller_outcome_{outcome}"))
                 if output:
                     console.appendPlainText(output)
 
@@ -1742,6 +3203,8 @@ class MainWindow(QMainWindow):
                 select_all_btn.setEnabled(True)
                 select_none_btn.setEnabled(True)
                 for program in selected:
+                    if program.name in keep_rows:
+                        continue
                     row_checkboxes.pop(program.name, None)
                     row_widget = row_widgets.pop(program.name, None)
                     if row_widget is not None:
@@ -1756,10 +3219,182 @@ class MainWindow(QMainWindow):
         uninstall_button.clicked.connect(lambda _checked=False: start_uninstall())
         return card
 
+    def _log_panel_action(
+        self, module_id: str, action_id: str, command: str, exit_code: int | None, output: str,
+        dry_run: bool, risk: str, warned: bool = False, warning_text: str = "",
+    ) -> None:
+        # The uninstaller and winget panels change the system outside the
+        # batch queue (_dispatch_action / _on_action_finished), so they write
+        # their own entries - same log, same fields, same report.
+        entry = make_entry(
+            module_id, action_id, command, exit_code, output, dry_run, self.run_id,
+            risk=risk, warned=warned, elevated=self.is_admin, warning_text=warning_text,
+            **self.target_user.audit_fields(),
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+
+    def _start_panel_restore_point(self, subjects: list[str], console: QPlainTextEdit, on_done) -> bool:
+        """The panels' real runs get the batch's safety net (research G01):
+        one restore point before the change, through the same runner, logged
+        the same way, with the same "continue without it?" question when it
+        fails. on_done(proceed) is called once it is settled - never after
+        the window started closing. False when it could not be started (a
+        restore point is already being made); the caller then does nothing.
+        subjects: every program/package this one point guards - all of them
+        are logged, so the report does not read as if only the first had
+        a way back."""
+        if self.settings.dry_run:
+            # Callers never get here in DRY-RUN; a DRY-RUN must never create
+            # a restore point even if one did.
+            return False
+        if self._batch_active:
+            # The batch may reach its own restore point (or change the same
+            # programs) while this one runs - two Checkpoint-Computer calls
+            # at once each save and restore the 24h throttle value, and the
+            # second one can put back the first one's temporary 0 for good.
+            self.statusBar().showMessage(self._t("panel_blocked_by_batch"))
+            return False
+        if (
+            _thread_running(self._pending_restore_point_runner)
+            or _thread_running(self._pending_panel_restore_point_runner)
+            or _thread_running(self._pending_hive_backup_runner)
+        ):
+            # Windows makes one checkpoint at a time - a second one started
+            # now would fail and look like "System Restore is broken".
+            self.statusBar().showMessage(self._t("panel_restore_point_busy"))
+            return False
+        console.setVisible(True)
+        console.appendPlainText(self._t("panel_restore_point_running"))
+        runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
+        runner.result_ready.connect(
+            lambda success, detail, info, s=list(subjects), cb=on_done: self._on_panel_restore_point_checked(success, detail, info, s, cb)
+        )
+        self._pending_panel_restore_point_runner = runner
+        runner.start()
+        return True
+
+    def _on_panel_restore_point_checked(self, success: bool, detail: str, info: dict | None, subjects: list[str], on_done) -> None:
+        # The first subject keys the record (the "continue anyway?" answer
+        # pairs with it); the rest ride along for the report.
+        subject = subjects[0] if subjects else ""
+        self._log_restore_point_result(success, detail, info, subject, subjects if len(subjects) > 1 else None)
+        if self._closed or self._close_after_restore_point:
+            # The window is closing and only waited for this checkpoint -
+            # the uninstall/update it guarded must never start now.
+            return
+        proceed = True
+        if not success:
+            answer = QMessageBox.warning(
+                self, self._t("app_title"), self._t("restore_point_failed_confirm"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            proceed = answer == QMessageBox.Yes
+            # Same record as the batch's answer (research-reporting.md F3).
+            self._log_system_event(
+                "restore_point_decision", 0,
+                "Technician chose to continue without a restore point." if proceed
+                else "Technician declined to continue without a restore point - nothing was changed.",
+                warned=True, warning_text=self._t("restore_point_failed_confirm"),
+                subject=subject, decision="proceed" if proceed else "skip",
+            )
+        if proceed and self.settings.dry_run:
+            self.statusBar().showMessage(self._t("panel_cancelled_dry_run"))
+            # DRY-RUN was switched on during the minutes Checkpoint-Computer
+            # took - the batch re-checks it per action, so must the panel:
+            # the real uninstall/update it was about to start is dropped.
+            self._log_system_event(
+                "risk_declined", None,
+                "DRY-RUN was switched on while the restore point was being made - nothing was changed.",
+                subject=subject, decision="declined",
+            )
+            proceed = False
+        try:
+            on_done(proceed)
+        except RuntimeError:
+            # The panel's widgets were deleted meanwhile (C++ object gone) -
+            # nothing ran, and there is no panel left to show it in.
+            pass
+
+    def _winget_running_targets(self, packages: list) -> list[tuple[str, object, str]]:
+        # winget's package name is the program's Add/Remove Programs
+        # DisplayName, which is where the install folder/exe are recorded.
+        try:
+            by_name = {p.name.strip().lower(): p for p in uninstaller.list_installed_programs()}
+        except OSError:
+            return []
+        targets = []
+        for package in packages:
+            program = by_name.get(str(package.name).strip().lower())
+            if program is not None:
+                targets.append((package.name, program, f"_winget/{package.id}"))
+        return targets
+
+    def _confirm_programs_closed(
+        self, title: str, targets: list[tuple[str, object, str]], all_subjects: list[str], risk: str,
+        declined_output: str,
+    ) -> bool:
+        """Warn when a program about to be uninstalled/updated is running
+        (matched by process image path - research G01) and ask to close it
+        first. Retry checks again, Ignore continues (logged), Cancel stops
+        the whole run (every selected item logged as declined). True = go on."""
+        if not targets:
+            return True
+        while True:
+            processes = panel_safety.list_processes()
+            running: list[tuple[str, str, list]] = []
+            for label, program, subject in targets:
+                matches = panel_safety.running_matches(program, processes)
+                if matches:
+                    running.append((label, subject, matches))
+            if not running:
+                return True
+            lines = []
+            for label, _subject, matches in running:
+                names = sorted({f"{m.exe_name} (PID {m.pid})" for m in matches})
+                shown = ", ".join(names[:3]) + (" …" if len(names) > 3 else "")
+                lines.append(f"{label}: {shown}")
+            text = self._t("panel_running_programs_text").format(programs=self._panel_confirm_list(lines))
+            answer = QMessageBox.warning(
+                self, title, text, QMessageBox.Retry | QMessageBox.Ignore | QMessageBox.Cancel, QMessageBox.Cancel,
+            )
+            if answer == QMessageBox.Retry:
+                continue
+            if answer == QMessageBox.Ignore:
+                for _label, subject, _matches in running:
+                    self._log_system_event(
+                        "running_programs_decision", 0,
+                        "Technician chose to continue while the program was still running.",
+                        risk=risk, warned=True, warning_text=text, subject=subject, decision="proceed",
+                    )
+                return True
+            for subject in all_subjects:
+                self._log_system_event(
+                    "risk_declined", None, declined_output,
+                    risk=risk, warned=True, warning_text=text, subject=subject, decision="declined",
+                )
+            return False
+
+    def _panel_confirm_list(self, lines: list[str], limit: int = 20) -> str:
+        # Capped: a confirmation listing 150 programs grows taller than the
+        # screen and pushes its own Yes/No buttons out of reach.
+        shown = [f"• {line}" for line in lines[:limit]]
+        if len(lines) > limit:
+            shown.append(self._t("uninstaller_and_more").format(count=len(lines) - limit))
+        return "\n".join(shown)
+
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
 
     def _on_toggle_language(self) -> None:
+        if _thread_running(self._pending_panel_restore_point_runner):
+            # A panel's restore point (G01) finishes into that panel's
+            # widgets - a rebuild now would delete them under it.
+            self.statusBar().showMessage(self._t("panel_restore_point_busy"))
+            return
         # ponytail: keyboard-only/screen-reader users lose their place if a
         # full UI rebuild silently resets category and focus - remember and
         # restore both so a language switch doesn't strand them at the top.
@@ -1780,15 +3415,39 @@ class MainWindow(QMainWindow):
             if checkbox is not None:
                 checkbox.setFocus()
 
-    def _start_update_check(self) -> None:
+    def _start_update_check(self, manual: bool = False) -> None:
         if not getattr(sys, "frozen", False):
+            # From source there is no release to compare against - say so
+            # on an explicit click instead of silently doing nothing.
+            if manual:
+                self.statusBar().showMessage(self._t("update_check_dev_build"), 8000)
+            return
+        # Whatever starts a check now (a click, leaving quiet mode) covers
+        # the one skipped at start.
+        self._startup_update_check_skipped = False
+        if manual:
+            self._manual_update_check = True
+            self.statusBar().showMessage(self._t("update_check_running"), 8000)
+        # A click while the start-up check is still out just waits for its
+        # answer (now reported, since the flag is set) instead of asking twice.
+        if _thread_running(self._update_check_runner):
             return
         self._update_check_runner = updater.UpdateCheckRunner(APP_VERSION, parent=self)
         self._update_check_runner.check_finished.connect(self._on_update_check_finished)
         self._update_check_runner.start()
 
     def _on_update_check_finished(self, info) -> None:
-        if info is None:
+        manual = self._manual_update_check
+        self._manual_update_check = False
+        if self._closed:
+            return
+        # Only an explicit click answers "nothing new": the automatic check
+        # at start has always stayed silent.
+        if info is None and manual:
+            self.statusBar().showMessage(self._t("update_check_none"), 8000)
+        # A local update started with the developer switch may already be
+        # running when the release check comes back.
+        if info is None or self._update_in_progress:
             return
         self._pending_update_info = info
         self.update_banner_label.setText(self._t("update_available_banner").format(version=info.version))
@@ -1805,30 +3464,100 @@ class MainWindow(QMainWindow):
         self.close()
 
     def _on_update_button_clicked(self) -> None:
-        if self._batch_active:
+        if self._batch_active or self._update_in_progress:
             return
-        if self._pending_update_info is None:
+        info = self._pending_update_info
+        if info is None:
+            return
+        if self._reusable_stage() is not None:
+            # Downloaded and verified already (the last hand-off failed or
+            # was refused) - straight to the restart question.
+            self._confirm_and_launch_update()
             return
         confirmed = QMessageBox.question(
             self, self._t("app_title"),
-            self._t("update_confirm_download").format(version=self._pending_update_info.version),
+            self._t("update_confirm_download").format(version=info.version),
         )
         if confirmed != QMessageBox.Yes:
             return
-        dest_dir = Path(tempfile.mkdtemp(prefix="PortableFixUpdate_"))
-        self.update_banner_label.setText(self._t("update_downloading"))
+        self._start_update_download(info)
+
+    def start_local_update(self, zip_path: Path, sha256: str) -> None:
+        """Developer switch (--update-from-zip with PORTABLEFIX_DEV_UPDATE=1,
+        see main.py): feeds a local release zip through the same verify,
+        stage, confirm, hand-off and close steps as a downloaded one, so the
+        real updater can be tested before a release is published."""
+        if self._batch_active or self._update_in_progress:
+            return
+        zip_path = Path(zip_path)
+        info = updater.UpdateInfo(version=f"{zip_path.name} (dev)", package_url=str(zip_path), sha256_url=None, notes="")
+        self._pending_update_info = info
+        self._staged_update = None
+        self.update_banner.setVisible(True)
+        self._start_update_download(info, local_zip=zip_path, local_sha256=sha256)
+
+    def _begin_update_step(self, phase: str) -> None:
+        self._update_in_progress = True
+        self._update_phase = phase
+        self._update_progress = (0, 0)
+        self.update_banner_label.setText(self._t(_UPDATE_PHASE_KEYS[phase]))
+        self.update_banner_label.setToolTip("")
         self.update_button.setEnabled(False)
         self.update_dismiss_button.setEnabled(False)
-        self._update_in_progress = True
         self.progress_bar.setMaximum(0)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
-        self._update_download_runner = updater.UpdateDownloadRunner(self._pending_update_info, dest_dir, parent=self)
-        self._update_download_runner.download_finished.connect(self._on_update_download_finished)
-        self._update_download_runner.progress.connect(self._on_update_download_progress)
-        self._update_download_runner.start()
+
+    def _end_update_step(self) -> None:
+        self._update_in_progress = False
+        self._update_phase = None
+        self.progress_bar.setVisible(False)
+        self.update_button.setEnabled(True)
+        self.update_dismiss_button.setEnabled(True)
+        # A language toggle mid-update rebuilt the dashboard with Analyze
+        # locked (_build_dashboard_card) - nothing else would unlock it.
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
+
+    def _discard_update_download(self) -> None:
+        # The zip is gone once staged; the folder (or a zip that failed to
+        # download, verify or stage) would otherwise pile up in %TEMP%.
+        if self._update_download_dir is not None:
+            shutil.rmtree(self._update_download_dir, ignore_errors=True)
+            self._update_download_dir = None
+
+    def _reusable_stage(self):
+        staged = self._staged_update
+        info = self._pending_update_info
+        if staged is None or info is None or staged.version != info.version:
+            return None
+        if not (staged.stage_root / "App" / "PortableFix.exe").is_file():
+            # Removed meanwhile (by the updater, or by hand) - stage again.
+            self._staged_update = None
+            return None
+        return staged
+
+    def _start_update_download(self, info, local_zip: Path | None = None, local_sha256: str = "") -> None:
+        try:
+            dest_dir = Path(tempfile.mkdtemp(prefix="PortableFixUpdate_"))
+        except OSError as exc:
+            self.update_banner_label.setText(self._t("update_download_failed"))
+            self.update_banner_label.setToolTip(str(exc))
+            return
+        self._discard_update_download()
+        self._update_download_dir = dest_dir
+        self._begin_update_step("download")
+        runner = updater.UpdateDownloadRunner(info, dest_dir, parent=self, local_zip=local_zip, local_sha256=local_sha256)
+        self._update_download_runner = runner
+        runner.download_finished.connect(self._on_update_download_finished)
+        runner.progress.connect(self._on_update_download_progress)
+        runner.start()
 
     def _on_update_download_progress(self, downloaded: int, total: int) -> None:
+        # Staging reports through here too. A late signal from a step that
+        # already ended must not bring the hidden bar back.
+        if not self._update_in_progress:
+            return
+        self._update_progress = (downloaded, total) if total > 0 else (0, 0)
         if total > 0:
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(downloaded)
@@ -1838,39 +3567,145 @@ class MainWindow(QMainWindow):
             self.progress_bar.setMaximum(0)
 
     def _on_update_download_finished(self, zip_path, error: str) -> None:
+        if self._closed:
+            return
         info = self._pending_update_info
-        self._update_in_progress = False
-        self.progress_bar.setVisible(False)
-        self.update_button.setEnabled(True)
-        self.update_dismiss_button.setEnabled(True)
-        if not zip_path:
+        if not zip_path or info is None:
+            self._end_update_step()
+            self._discard_update_download()
             self.update_banner_label.setText(self._t("update_download_failed"))
+            # The technician's "why" (HTTP error, hash mismatch) without
+            # pushing a raw exception text into the banner itself.
+            self.update_banner_label.setToolTip(error)
             return
         install_dir = paths.get_base_dir()
         if not updater.is_writable(install_dir):
+            self._end_update_step()
+            self._discard_update_download()
             key = "update_needs_admin" if updater.needs_elevation_for_update(install_dir) else "update_not_writable"
             self.update_banner_label.setText(self._t(key))
+            return
+        self._staged_update = None
+        self._begin_update_step("stage")
+        runner = updater.UpdateStageRunner(Path(zip_path), install_dir, info.version, parent=self)
+        self._update_stage_runner = runner
+        runner.stage_finished.connect(self._on_update_stage_finished)
+        runner.progress.connect(self._on_update_download_progress)
+        runner.start()
+
+    def _on_update_stage_finished(self, staged, error: str) -> None:
+        if self._closed:
+            return
+        self._discard_update_download()
+        if staged is None:
+            self._end_update_step()
+            self.update_banner_label.setText(self._t("update_stage_failed"))
+            self.update_banner_label.setToolTip(error)
+            QMessageBox.warning(
+                self, self._t("app_title"),
+                self._t("update_stage_failed_detail").format(detail=error, url=updater.RELEASES_PAGE_URL),
+            )
+            return
+        self._staged_update = staged
+        self._confirm_and_launch_update()
+
+    def _long_running_tasks(self) -> list[str]:
+        """What would keep this process alive long after close() - the
+        updater waits for it to exit, and a close that takes minutes (winget
+        alone allows 5) would outlast that wait. Named for the refusal."""
+        tasks = []
+        if self._batch_active:
+            tasks.append(self._t("update_busy_batch"))
+        if self._report_runner is not None:
+            tasks.append(self._t("update_busy_report"))
+        if self._speed_test_busy or _thread_running(self._speed_test_runner):
+            tasks.append(self._t("update_busy_speed_test"))
+        # Not the winget scan: it only reads, starts on its own with the
+        # window (so it ran on every early "Update" click), and closeEvent
+        # waits at most 65 s for it - well inside the updater's 600 s.
+        if _thread_running(self._winget_update_runner):
+            tasks.append(self._t("update_busy_winget_update"))
+        if _thread_running(self._pending_restore_point_runner) or _thread_running(self._pending_panel_restore_point_runner):
+            tasks.append(self._t("update_busy_restore_point"))
+        if _thread_running(self._uninstall_runner):
+            tasks.append(self._t("update_busy_uninstall"))
+        return tasks
+
+    def _show_update_available(self) -> None:
+        info = self._pending_update_info
+        if info is not None:
+            self.update_banner_label.setText(self._t("update_available_banner").format(version=info.version))
+
+    def _confirm_and_launch_update(self) -> None:
+        self._end_update_step()
+        info = self._pending_update_info
+        staged = self._staged_update
+        if info is None or staged is None:
             return
         confirmed = QMessageBox.question(
             self, self._t("app_title"),
             self._t("update_confirm_restart").format(version=info.version),
         )
-        if confirmed != QMessageBox.Yes:
-            self.update_banner_label.setText(
-                self._t("update_available_banner").format(version=info.version)
+        if confirmed != QMessageBox.Yes or self._closed:
+            self._show_update_available()
+            return
+        # Checked after the question: its nested event loop keeps timers
+        # (the winget auto-check) running.
+        busy = self._long_running_tasks()
+        if busy:
+            self._show_update_available()
+            QMessageBox.warning(
+                self, self._t("app_title"),
+                self._t("update_busy_tasks").format(tasks="\n".join(f"• {task}" for task in busy)),
             )
             return
-        if not updater.apply_update(zip_path, install_dir):
-            self.update_banner_label.setText(self._t("update_apply_failed"))
+        self._begin_update_step("launch")
+        runner = updater.UpdateLaunchRunner(staged, paths.get_base_dir(), parent=self)
+        self._update_launch_runner = runner
+        runner.launch_finished.connect(self._on_update_launch_finished)
+        runner.start()
+
+    def _on_update_launch_finished(self, result) -> None:
+        if self._closed:
             return
-        self._quit_app()
+        if result.ok:
+            # The updater holds this process's handle and starts replacing
+            # App\ the moment it exits - no questions, no lingering.
+            self._closing_for_update = True
+            self._quit_app()
+            return
+        self._end_update_step()
+        self.update_banner_label.setText(self._t("update_apply_failed"))
+        if result.reason == updater.REASON_CANCELLED:
+            return
+        detail = (result.detail or "").strip()
+        if len(detail) > 800:
+            # The full launch-log tail is in the diagnostics file.
+            detail = "..." + detail[-800:]
+        log_dir = result.log_dir or updater.update_log_dir() or "%TEMP%\\PortableFixUpdate"
+        QMessageBox.warning(
+            self, self._t("app_title"),
+            self._t("update_launch_failed_detail").format(
+                reason=self._t(f"update_reason_{result.reason}"),
+                detail=detail,
+                log_dir=log_dir,
+                url=updater.RELEASES_PAGE_URL,
+            ),
+        )
 
     def _on_restart_as_admin(self) -> None:
         # In a frozen build sys.executable IS the app - no args needed. In
         # dev mode it's python.exe, which needs the script path re-passed or
         # elevating just opens a bare interpreter instead of restarting the app.
-        args = None if getattr(sys, "frozen", False) else sys.argv
-        result = elevation.relaunch_as_admin(sys.executable, args)
+        args = [] if getattr(sys, "frozen", False) else list(sys.argv)
+        # The elevated copy waits for this process (and the onefile
+        # bootloader, which still maps the exe) to exit before it takes the
+        # single-instance mutex - otherwise it lost that race and quit.
+        wait_pids = [os.getpid()]
+        parent_pid = update_swap.onefile_parent_pid()
+        if parent_pid:
+            wait_pids.append(parent_pid)
+        result = elevation.relaunch_as_admin(sys.executable, args, wait_pids=wait_pids)
         if result <= 32:
             QMessageBox.warning(
                 self,
@@ -1889,23 +3724,14 @@ class MainWindow(QMainWindow):
 
     def _skip_high_risk_actions_in_queue(self) -> None:
         def _is_high_risk(action_id: str) -> bool:
-            module, action = self._find_action(action_id)
-            return action.risk == RiskLevel.DESTRUCTIVE or module.category in (
-                ModuleCategory.REPAIR,
-                ModuleCategory.SECURITY,
-                ModuleCategory.DRIVER_UPDATES,
-                ModuleCategory.WINGET,
-            )
+            return preflight.needs_restore_point(*self._find_action(action_id))
 
         self._queue = [aid for aid in self._queue if not _is_high_risk(aid)]
 
     def _take_snapshot(self) -> dict:
-        system_drive = os.environ.get("SystemDrive", "C:") + "\\"
-        usage = shutil.disk_usage(system_drive)
-        return {
-            "free_gb": round(usage.free / (1024**3), 2),
-            "total_gb": round(usage.total / (1024**3), 2),
-        }
+        # GUI thread, at batch start and end - snapshot.py keeps it bounded
+        # (time-budgeted folder walks, no process spawns) and never raises.
+        return snapshot.take_snapshot(disk_usage=shutil.disk_usage)
 
     def _on_cancel_clicked(self) -> None:
         self._cancel_requested = True
@@ -1915,7 +3741,9 @@ class MainWindow(QMainWindow):
             self._runner.cancel()
 
     def _action_accessible_name(self, action: ActionDef, status_text: str = "") -> str:
-        name = f"{action.label(self.settings.language)} — risk: {action.risk.value}"
+        # "riziko"/"risk" translated - Narrator reads the whole name in the
+        # UI language, and a lone English word mid-sentence is jarring.
+        name = f"{action.label(self.settings.language)} — {self._t('a11y_risk')}: {action.risk.value}"
         if status_text:
             name += f", {status_text}"
         return name
@@ -1932,10 +3760,50 @@ class MainWindow(QMainWindow):
             _, action = self._find_action(action_id)
             checkbox.setAccessibleName(self._action_accessible_name(action, text))
 
+    def _batch_start_blocked(self) -> bool:
+        # A batch is running, the previous batch's report is still being
+        # written (see _run_next) or an update is downloading.
+        return self._batch_active or self._update_in_progress or self._report_runner is not None
+
     def run_selected_actions(self) -> None:
-        if self._update_in_progress:
+        # Mid-batch re-entry (the dashboard's Analyze button, a direct call)
+        # would overwrite _queue, reset _cancel_requested - un-cancelling a
+        # batch whose Cancel was clicked during its restore point - and start
+        # a second ActionRunner alongside the running one.
+        if self._batch_start_blocked():
             return
-        self._queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        resuming, self._resuming = self._resuming, None
+        queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        # Research G03: an action that restarts Windows at once runs last, so
+        # it cuts nothing off - and only after the report and undo.ps1 exist.
+        queue = batch_resume.order_restarting_last(queue, lambda aid: self._find_action(aid)[1].restarts_pc)
+        self._reviewed_warnings = {}
+        # Per batch, like the restore point: set only by this batch's review.
+        self._hive_backup_requested = False
+        self._hive_backup_attempted = False
+        if queue and (not self.settings.dry_run or resuming is not None):
+            # A DRY-RUN changes nothing, so it gets neither the pre-flight
+            # nor a confirmation - only a real batch is reviewed, once. A
+            # continued batch is always confirmed again: nothing runs by
+            # itself after a restart.
+            queue = self._review_batch(queue, resuming=resuming)
+            if queue is None:
+                return
+        self._pre_restart_prepared = set()
+        self._resume_saved_for = ""
+        self._restart_needed_after = ""
+        self._restart_report_path = None
+        self._restarting = False
+        if resuming is not None and queue:
+            # Consumed once the continued batch starts; declining it on the
+            # review screen leaves it for another try until it goes stale.
+            batch_resume.discard_pending(self.state_dir)
+            self._log_system_event(
+                "resumed_after_reboot", 0,
+                f"Continuing the batch after a restart ({len(queue)} action(s): {', '.join(queue)}).",
+                subject=self._restart_subject(resuming.restart_after),
+            )
+        self._queue = queue
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
@@ -1946,14 +3814,277 @@ class MainWindow(QMainWindow):
             self._set_action_status(action_id, "", "")
         if self._queue:
             self._batch_active = True
-            self._snapshot_before = self._take_snapshot()
+            self._batch_started_at = time.monotonic()
+            self._keep_awake.acquire()
+            # A continued batch compares against the PC as it was before its
+            # first half - one report for the whole job.
+            if resuming is not None and resuming.snapshot_before:
+                self._snapshot_before = resuming.snapshot_before
+            else:
+                self._snapshot_before = self._take_snapshot()
             self.run_button.setEnabled(False)
+            self.dashboard_analyze_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
         self._run_next()
+
+    def resume_batch(self, pending: batch_resume.PendingBatch) -> None:
+        """Continues a batch saved before a restart (research G03). main.py
+        asked the technician first; this selects what was left and opens the
+        review screen - the batch starts only when it is confirmed there."""
+        if self._batch_start_blocked():
+            return
+        known = [aid for aid in pending.action_ids if aid in self._action_checkboxes]
+        missing = [aid for aid in pending.action_ids if aid not in self._action_checkboxes]
+        if missing:
+            # An update between the halves dropped or renamed an action.
+            self._log_system_event(
+                "resume_skipped", None,
+                f"Not in this version's catalog, not continued: {', '.join(missing)}.",
+            )
+        if not known:
+            batch_resume.discard_pending(self.state_dir)
+            return
+        job = pending.job
+        self._set_job(job.get("technician") or self.settings.technician_name, job.get("client", ""), job.get("note", ""))
+        # Same run_id: undo.ps1 is rewritten for it, so it must keep the
+        # first half's steps (and the hive backups it points to).
+        self._undo_steps = list(pending.undo_steps) + self._undo_steps
+        self._irreversible_actions = list(pending.irreversible) + self._irreversible_actions
+        # Saved relative to the state dir, so a new USB drive letter after
+        # the restart is followed; one that is still missing is said aloud -
+        # undo.ps1 would point at a backup that is not there.
+        hive_backups = batch_resume.hive_paths_on_load(self.state_dir, pending.hive_backups)
+        missing_hives = [str(path) for path in hive_backups if not path.exists()]
+        if missing_hives:
+            self._log_system_event(
+                "resume_hive_backup_missing", None,
+                f"Registry hive backup of the first half not found: {', '.join(missing_hives)}.",
+            )
+            self.console.appendPlainText(self._t("resume_hive_backup_missing").format(paths=", ".join(missing_hives)))
+        self._hive_backups = hive_backups + self._hive_backups
+        self._resume_mode_note = ""
+        if self.settings.dry_run != pending.dry_run:
+            # The continued batch runs in the mode of its first half - but
+            # never silently: the review screen says the mode was switched.
+            self.dry_run_checkbox.setChecked(pending.dry_run)
+            self._resume_mode_note = "review_note_resumed_dry_run" if pending.dry_run else "review_note_resumed_real_run"
+            self.console.appendPlainText(self._t(self._resume_mode_note))
+        self._apply_selection(list(self._action_checkboxes), "none")
+        for action_id in known:
+            self._action_checkboxes[action_id].setChecked(True)
+        self._resuming = pending
+        self.run_selected_actions()
+        # A review that was cancelled (or never shown) leaves the selection
+        # in place for the technician, but never a stale "resuming" flag.
+        self._resuming = None
+        self._resume_mode_note = ""
+
+    def _preflight_busy_tasks(self) -> list[str]:
+        # System-changing jobs of this window that would run side by side
+        # with the batch (two package/servicing operations at once fail in
+        # confusing ways), and an update replacing the install right now.
+        tasks = []
+        if _thread_running(self._winget_update_runner):
+            tasks.append(self._t("update_busy_winget_update"))
+        if _thread_running(self._uninstall_runner):
+            tasks.append(self._t("update_busy_uninstall"))
+        if _thread_running(self._pending_panel_restore_point_runner):
+            # A panel's restore point (G01): the batch's own would collide
+            # with it - Windows makes one checkpoint at a time.
+            tasks.append(self._t("update_busy_restore_point"))
+        if update_swap.update_mutex_present():
+            tasks.append(self._t("preflight_busy_update"))
+        return tasks
+
+    def _preflight_probes(self) -> preflight.Probes:
+        return preflight.system_probes(is_admin=lambda: self.is_admin, busy_tasks=self._preflight_busy_tasks)
+
+    def _ask_batch_review(self, review: BatchReview) -> ReviewDecision:
+        # Its own method so a test can replace the whole screen; the dialog
+        # itself is driven through BatchReviewDialog.exec in the GUI tests.
+        return BatchReviewDialog(review, parent=self).ask()
+
+    def _probe_disk_health(self, probe) -> tuple[list | None, bool]:
+        """Runs the disk health probe on a worker thread behind a busy
+        dialog with Cancel; returns (verdicts, cancelled). The GUI stays
+        responsive meanwhile - the probe can take up to
+        disk_health.PROBE_TIMEOUT_SEC when the storage stack hangs, which
+        a dying disk's often does. Tests inject `probe` via Probes.disk_health."""
+        self._disk_health_runners = [r for r in self._disk_health_runners if _thread_running(r)]
+        results: list = []
+        loop = QEventLoop()
+        runner = _DiskHealthProbeRunner(probe, results, parent=self)
+        # Queued on purpose: a probe that finishes before loop.exec() starts
+        # must still quit the loop (a direct quit() before exec() is lost).
+        runner.finished.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
+        dialog = QProgressDialog(
+            self._t("preflight_disk_probe_running").format(seconds=disk_health.PROBE_TIMEOUT_SEC),
+            self._t("preflight_disk_probe_cancel"), 0, 0, self,
+        )
+        dialog.setWindowTitle(self._t("app_title"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        # The Cancel button emits canceled; Esc / the title bar's close
+        # reject the dialog instead - both mean the same "not now".
+        cancel_asked: list[bool] = []
+        for signal in (dialog.canceled, dialog.rejected):
+            signal.connect(lambda: cancel_asked.append(True))
+            signal.connect(loop.quit)
+        self._disk_health_runners.append(runner)
+        runner.start()
+        dialog.show()
+        loop.exec()
+        # A verdict that arrived together with the click still counts.
+        cancelled = bool(cancel_asked) and not results
+        dialog.close()
+        dialog.deleteLater()
+        if cancelled:
+            return None, True
+        return (results[0] if results else None), False
+
+    def _restart_subject(self, action_id: str) -> str:
+        try:
+            module, _ = self._find_action(action_id)
+        except KeyError:
+            return action_id
+        return f"{module.module_id}/{action_id}"
+
+    def _action_label(self, action_id: str) -> str:
+        return self._find_action(action_id)[1].label(self.settings.language)
+
+    def _restart_notes(self, queue: list[str], resuming: batch_resume.PendingBatch | None) -> tuple[str, ...]:
+        """What the review screen says about restarts in this batch (G03)."""
+        notes = []
+        if resuming is not None:
+            notes.append(self._t("review_note_resumed").format(count=len(queue)))
+            if self._resume_mode_note:
+                notes.append(self._t(self._resume_mode_note))
+        restarting = [aid for aid in queue if self._find_action(aid)[1].restarts_pc]
+        if restarting:
+            notes.append(self._t("review_note_restarts_last").format(
+                actions=", ".join(self._action_label(aid) for aid in restarting),
+            ))
+        split = batch_resume.plan_restart_split(
+            queue,
+            lambda aid: self._find_action(aid)[1].restarts_pc,
+            lambda aid: self._find_action(aid)[1].restart_before_next,
+        )
+        if split.waiting_ids:
+            notes.append(self._t("review_note_waits_for_restart").format(
+                action=self._action_label(split.restart_action_id),
+                actions=", ".join(self._action_label(aid) for aid in split.waiting_ids),
+                hours=int(batch_resume.MAX_RESUME_AGE.total_seconds() // 3600),
+            ))
+        return tuple(notes)
+
+    def _review_batch(self, queue: list[str], resuming: batch_resume.PendingBatch | None = None) -> list[str] | None:
+        """Pre-flight + the one review screen (research G11/G12). Returns
+        the queue to run - without the declined actions - or None when the
+        technician cancelled the batch."""
+        items = [self._find_action(aid) for aid in queue]
+        profile = preflight.profile_for(items)
+        probes = self._preflight_probes()
+        if profile.stresses_disk:
+            verdicts, cancelled = self._probe_disk_health(probes.disk_health)
+            if cancelled or self._closed:
+                # Cancel on the busy dialog = "not now": the batch does not
+                # start (skipping the probe would silently skip the G13 gate).
+                outcome = (
+                    "Technician cancelled the batch before the review screen." if cancelled
+                    else "The window was closed before the review screen."
+                )
+                self._log_system_event(
+                    "batch_review", None, f"Pre-flight: disk health check cancelled. {outcome}", decision="cancelled",
+                )
+                return None
+            probes = dataclasses.replace(probes, disk_health=lambda: verdicts)
+        result = preflight.run_preflight(profile, probes)
+        review = build_review(
+            items, result, self.settings.language,
+            hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,
+            notes=self._restart_notes(queue, resuming),
+        )
+        if not review.needs_confirmation:
+            return queue
+        decision = self._ask_batch_review(review)
+        if self._closed and decision.confirmed:
+            # The window went away behind the modal screen - a batch must
+            # never start now (it would run unlogged and outlive the app).
+            decision = ReviewDecision(confirmed=False, declined=[i for i in review.items if i.warning_text])
+        issues_text = "\n".join(issue.text(self.settings.language) for issue in result.issues)
+        if not decision.confirmed:
+            outcome, decision_value = "Technician cancelled the batch on the review screen.", "cancelled"
+        elif decision.overrode_blockers:
+            outcome, decision_value = "Technician confirmed the batch and overrode the pre-flight blockers.", "override"
+        else:
+            outcome, decision_value = "Technician confirmed the batch on the review screen.", "confirmed"
+        if decision.confirmed and decision.hive_backup:
+            outcome += " Full registry hive backup requested before the first DESTRUCTIVE action."
+        # The pre-flight result and the answer go on record either way - an
+        # override is exactly what a later dispute is about.
+        self._log_system_event(
+            "batch_review", 0 if decision.confirmed else None, f"{result.summary()} {outcome}",
+            warned=bool(result.issues), warning_text=issues_text, decision=decision_value,
+        )
+        for item in decision.declined:
+            # Same record as a "No" in the old per-action box (research-reporting.md F2).
+            self._log_system_event(
+                "risk_declined", None, "Technician declined the risk confirmation - action not run.",
+                risk=item.risk.value, warned=True, warning_text=item.warning_text,
+                subject=item.subject, decision="declined",
+            )
+        if not decision.confirmed:
+            return None
+        declined_ids = {item.action_id for item in decision.declined}
+        self._hive_backup_requested = decision.hive_backup
+        # SAFE actions were reviewed too (with no text to quote).
+        self._reviewed_warnings = {
+            item.action_id: item.warning_text for item in review.items if item.action_id not in declined_ids
+        }
+        return [aid for aid in queue if aid not in declined_ids]
+
+    def _on_report_ready(self, html_path: Path | None, write_failed: bool) -> None:
+        self._report_runner = None
+        if html_path is not None:
+            self._report_written = True
+        # The batch is over (report written or not): sleep is allowed again.
+        self._keep_awake.release()
+        if not self._closed:
+            self.run_button.setEnabled(True)
+            self.dashboard_analyze_button.setEnabled(True)
+            self.language_button.setEnabled(True)
+            if write_failed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+        self._refresh_dashboard()
+        if not self._closed:
+            self._notify_batch_finished()
+        if html_path is not None and not self._closed:
+            # batch_done_message says "the report is ready" - only
+            # true on this branch.
+            ok_count = sum(1 for _, code in self._batch_results if code == 0)
+            _announce_to_screen_reader(self, self._t("batch_done_message").format(
+                ok=ok_count, failed=len(self._batch_results) - ok_count,
+            ))
+            self._show_batch_summary(html_path)
+        if self._restart_needed_after and not self._closed:
+            self._notify_restart_needed()
+        self._run_pending_report_refresh()
+
+    def _notify_restart_needed(self) -> None:
+        # Own method so a test can see it without a real modal box.
+        pending = batch_resume.load_pending(self.state_dir)
+        count = len(pending.action_ids) if pending is not None else 0
+        text = self._t("restart_needed_to_continue").format(
+            action=self._action_label(self._restart_needed_after), count=count,
+        )
+        self.console.appendPlainText(text)
+        QMessageBox.information(self, self._t("app_title"), text)
 
     def _app_dir_intact(self) -> bool:
         # Cheap existence check, not a deep scan - Modules/ is the canary
@@ -1967,32 +4098,60 @@ class MainWindow(QMainWindow):
         if not self._queue:
             if self._batch_active:
                 self._batch_active = False
+                self._log_batch_duration()
+                self._batch_started_at = None
+                # A confirmation covers this batch only, never a later run.
+                self._reviewed_warnings = {}
                 if not self._closed:
-                    self.run_button.setEnabled(True)
+                    # run/language stay disabled until the report is written
+                    # (_on_report_ready): a second batch now would append to
+                    # the audit log the report thread is reading and race it
+                    # for the same report files.
                     self.cancel_button.setEnabled(False)
-                    self.language_button.setEnabled(True)
                     self.progress_bar.setValue(self._queue_total)
                     self.progress_bar.setVisible(False)
                     self._apply_selection(list(self._action_checkboxes), "none")
                     self._update_status_bar()
+                if self._restarting and self._restart_report_path is not None:
+                    # Windows is restarting (a restarts_pc action succeeded):
+                    # the report written right before it stays the final one
+                    # - rewriting it now could be cut off half-way. The
+                    # action's own result is in the audit log, and a
+                    # continued batch writes the full report under the same
+                    # run_id.
+                    self._on_report_ready(self._restart_report_path, False)
+                    return
                 snapshot_after = self._take_snapshot()
                 self._snapshot_after = snapshot_after
-                try:
-                    html_path, _ = report.generate_report(
-                        self.state_dir,
-                        self.run_id,
-                        self.modules,
-                        self.settings.language,
-                        self._snapshot_before,
-                        snapshot_after,
-                    )
-                except OSError:
-                    html_path = None
-                    if not self._closed:
-                        self.console.appendPlainText(self._t("disk_write_failed"))
-                self._refresh_dashboard()
-                if html_path is not None and not self._closed:
-                    self._show_batch_summary(html_path)
+                report_args = (
+                    self.state_dir,
+                    self.run_id,
+                    self.modules,
+                    self.settings.language,
+                    self._snapshot_before,
+                    snapshot_after,
+                )
+                report_kwargs = {
+                    "job": self._job_info(), "storage_fallback": self._storage_fallback,
+                    "redact": self.settings.redact_for_client,
+                    "branding": self.settings.branding_info(),
+                }
+                if self._closed:
+                    # closeEvent has already waited on every runner, so a
+                    # thread started now could outlive the window (Qt aborts
+                    # on a destroyed running QThread) - with no UI left to
+                    # stall, just write the report here.
+                    try:
+                        html_path, _ = report.generate_report(*report_args, **report_kwargs)
+                    except OSError:
+                        self._on_report_ready(None, True)
+                    else:
+                        self._on_report_ready(html_path, False)
+                    return
+                runner = report.ReportRunner(*report_args, **report_kwargs, parent=self)
+                runner.result_ready.connect(self._on_report_ready)
+                self._report_runner = runner
+                runner.start()
             return
         if not self._app_dir_intact():
             # The app's own install folder (or its Modules/ subfolder) has
@@ -2013,6 +4172,7 @@ class MainWindow(QMainWindow):
                 "queued action - batch stopped for safety.",
                 self.settings.dry_run,
                 self.run_id,
+                **self.target_user.audit_fields(),
             )
             try:
                 append_entry(self.state_dir, self.run_id, entry)
@@ -2026,57 +4186,110 @@ class MainWindow(QMainWindow):
         module, action = self._find_action(action_id)
         position = self._queue_total - len(self._queue)
         if not self._closed:
-            self.statusBar().showMessage(
-                self._t("status_bar_running").format(
-                    pos=position, total=self._queue_total, label=action.label(self.settings.language)
-                )
+            running_text = self._t("status_bar_running").format(
+                pos=position, total=self._queue_total, label=action.label(self.settings.language)
             )
+            self.statusBar().showMessage(running_text)
+            _announce_to_screen_reader(self, running_text)
             self.progress_bar.setValue(position - 1)
 
-        needs_restore_point = action.risk == RiskLevel.DESTRUCTIVE or module.category in (
-            ModuleCategory.REPAIR,
-            ModuleCategory.SECURITY,
-            ModuleCategory.DRIVER_UPDATES,
-            ModuleCategory.WINGET,
-        )
+        needs_restore_point = preflight.needs_restore_point(module, action)
         if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
+            panel_runner = self._pending_panel_restore_point_runner
+            if _thread_running(panel_runner):
+                # Pre-flight refuses a batch while a panel's restore point
+                # runs, and panels refuse one during a batch - this is the
+                # last line: never two checkpoints at once. Wait for it -
+                # polled, since its finished signal may already have fired
+                # between the check and a connect.
+                self._queue.insert(0, action_id)
+                QTimer.singleShot(500, self._run_next)
+                return
             self._restore_point_attempted = True
-            try:
-                self._undo_script_path = undo.create_undo_script(
-                    self.state_dir, self.run_id, steps=list(reversed(self._undo_steps))
-                )
-            except OSError:
-                if not self._closed:
-                    self.console.appendPlainText(self._t("disk_write_failed"))
+            self._write_undo_script()
             rp_runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
             rp_runner.result_ready.connect(
-                lambda success, detail, m=module, a=action: self._on_restore_point_checked(success, detail, m, a)
+                lambda success, detail, info, m=module, a=action: self._on_restore_point_checked(success, detail, m, a, info)
             )
             self._pending_restore_point_runner = rp_runner
             rp_runner.start()
             return
 
+        self._proceed_to_action(module, action)
+
+    def _proceed_to_action(self, module: ModuleDef, action: ActionDef) -> None:
+        # After the restore point: the requested hive backup (G24) is written
+        # right before the batch's first DESTRUCTIVE action - not earlier, so
+        # it holds the state that action is about to change.
+        if (
+            action.risk == RiskLevel.DESTRUCTIVE
+            and self._hive_backup_requested
+            and not self._hive_backup_attempted
+            and not self.settings.dry_run
+            and not self._closed
+        ):
+            self._hive_backup_attempted = True
+            dest = hive_backup.backup_dir(self.state_dir, self.run_id)
+            self.console.appendPlainText(self._t("hive_backup_running").format(path=dest))
+            runner = hive_backup.HiveBackupRunner(dest, parent=self)
+            runner.result_ready.connect(
+                lambda success, detail, result, m=module, a=action: self._on_hive_backup_finished(success, detail, result, m, a)
+            )
+            self._pending_hive_backup_runner = runner
+            runner.start()
+            return
         self._dispatch_action(module, action)
 
-    def _on_restore_point_checked(self, success: bool, detail: str, module: ModuleDef, action: ActionDef) -> None:
-        output = "System Restore Point created." if success else (
-            f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
+    def _on_hive_backup_finished(self, success: bool, detail: str, result, module: ModuleDef, action: ActionDef) -> None:
+        dest = getattr(result, "dest_dir", None)
+        subject = f"{module.module_id}/{action.id}"
+        if success:
+            output = f"Registry hive backup saved: {dest} ({', '.join(h + hive_backup.HIVE_FILE_SUFFIX for h in hive_backup.HIVES)})."
+        else:
+            output = f"Registry hive backup failed: {detail}" if detail else "Registry hive backup failed."
+        self._log_system_event(
+            "hive_backup", 0 if success else 1, output,
+            command=hive_backup.command_text(dest) if dest is not None else "", subject=subject,
         )
-        entry = make_entry(
-            "_system",
-            "restore_point",
-            f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
-            0 if success else 1,
-            output,
-            self.settings.dry_run,
-            self.run_id,
-            elevated=self.is_admin,
-        )
-        try:
-            append_entry(self.state_dir, self.run_id, entry)
-        except OSError:
-            if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+        if success and dest is not None:
+            self._hive_backups.append(Path(dest))
+            self._write_undo_script()
+        if self._cancel_requested:
+            # Cancel (or a close) came while reg save ran - like the restore
+            # point, the action it was guarding must never run.
+            self._run_next()
+            return
+        if not self._closed:
+            self.console.appendPlainText(
+                self._t("hive_backup_done").format(path=dest) if success else self._t("hive_backup_failed_console")
+            )
+        if not success:
+            proceed = QMessageBox.warning(
+                self, self._t("app_title"), self._t("hive_backup_failed_confirm"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            self._log_system_event(
+                "hive_backup_decision", 0,
+                "Technician chose to continue without the registry hive backup." if proceed == QMessageBox.Yes
+                else "Technician declined to continue without the registry hive backup - DESTRUCTIVE actions skipped.",
+                warned=True, warning_text=self._t("hive_backup_failed_confirm"),
+                subject=subject, decision="proceed" if proceed == QMessageBox.Yes else "skip",
+            )
+            if proceed != QMessageBox.Yes:
+                # The backup guarded the DESTRUCTIVE actions only - the rest
+                # of the batch keeps its restore point and runs.
+                self._queue = [
+                    aid for aid in self._queue if self._find_action(aid)[1].risk != RiskLevel.DESTRUCTIVE
+                ]
+                self._run_next()
+                return
+        self._dispatch_action(module, action)
+
+    def _on_restore_point_checked(
+        self, success: bool, detail: str, module: ModuleDef, action: ActionDef, info: dict | None = None,
+    ) -> None:
+        subject = f"{module.module_id}/{action.id}"
+        self._log_restore_point_result(success, detail, info, subject)
         if self._cancel_requested:
             # Cancel was clicked while the restore point was still being
             # created - the action it was guarding must never run, and
@@ -2090,32 +4303,180 @@ class MainWindow(QMainWindow):
                 self._t("restore_point_failed_confirm"),
                 QMessageBox.Yes | QMessageBox.No,
             )
+            # "Continue without a safety net" is exactly what a later dispute
+            # is about - record the answer explicitly (research-reporting.md F3).
+            self._log_system_event(
+                "restore_point_decision", 0,
+                "Technician chose to continue without a restore point." if proceed == QMessageBox.Yes
+                else "Technician declined to continue without a restore point - high-risk actions skipped.",
+                warned=True, warning_text=self._t("restore_point_failed_confirm"),
+                subject=subject, decision="proceed" if proceed == QMessageBox.Yes else "skip",
+            )
             if proceed != QMessageBox.Yes:
                 self._skip_high_risk_actions_in_queue()
                 self._run_next()
                 return
+        self._proceed_to_action(module, action)
+
+    def _log_restore_point_result(
+        self, success: bool, detail: str, info: dict | None, subject: str, subjects: list[str] | None = None,
+    ) -> None:
+        # One record for every restore point, the batch's and a panel's (G01).
+        # info: the created point's identity (restore_point.parse_restore_point_output),
+        # {} / None when it could not be looked up.
+        sequence = (info or {}).get("sequence_number") if success else None
+        output = "System Restore Point created." if success else (
+            f"System Restore Point creation failed: {detail}" if detail else "System Restore Point creation failed."
+        )
+        if sequence is not None:
+            output = f"System Restore Point created (#{sequence})."
+        self._log_system_event(
+            "restore_point", 0 if success else 1, output,
+            command=f"Checkpoint-Computer -Description 'PortableFix {self.run_id}'",
+            subject=subject, restore_point_sequence=sequence,
+            restore_point_created=(info or {}).get("creation_time", "") if success else "",
+            subjects=subjects,
+        )
+
+    def _log_system_event(self, action_id: str, exit_code: int | None, output: str, **fields) -> None:
+        # Safety facts about the run (restore point, the technician's answers
+        # to safety prompts) go in the same audit log as the actions, under
+        # the "_system" module report.py lists in its safety section.
+        entry = make_entry(
+            "_system", action_id, fields.pop("command", ""), exit_code, output,
+            self.settings.dry_run, self.run_id, elevated=self.is_admin,
+            **{**self.target_user.audit_fields(), **fields},
+        )
+        try:
+            append_entry(self.state_dir, self.run_id, entry)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+
+    def _save_resume(self, restart_action_id: str) -> bool:
+        """Saves what is still queued to the resume file (G03). False when
+        it could not be written - the technician is told the rest must be
+        started by hand."""
+        pending = batch_resume.PendingBatch(
+            run_id=self.run_id,
+            action_ids=list(self._queue),
+            dry_run=self.settings.dry_run,
+            restart_after=restart_action_id,
+            job=self._job_info(),
+            undo_steps=list(self._undo_steps),
+            irreversible=list(self._irreversible_actions),
+            hive_backups=batch_resume.saved_hive_paths(self.state_dir, self._hive_backups),
+            snapshot_before=self._snapshot_before,
+        )
+        try:
+            batch_resume.save_pending(self.state_dir, pending)
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("resume_save_failed"))
+            return False
+        self._resume_saved_for = restart_action_id
+        return True
+
+    def _log_restart_pending(self, module: ModuleDef, action: ActionDef, saved: bool, immediate: bool) -> None:
+        waiting = ", ".join(self._queue)
+        if immediate:
+            output = f"{action.id} restarts Windows immediately - report and undo.ps1 written before it runs."
+        else:
+            output = f"{action.id} succeeded and needs a restart before the rest of the batch - batch stopped."
+        if self._queue:
+            output += (
+                f" Saved to continue after the restart: {waiting}." if saved
+                else f" Could not save the rest of the batch ({waiting}) - start it again by hand after the restart."
+            )
+        self._log_system_event(
+            "restart_pending", 0, output, risk=action.risk.value, subject=f"{module.module_id}/{action.id}",
+        )
+
+    def _prepare_for_restart(self, module: ModuleDef, action: ActionDef) -> None:
+        """Before an action that restarts Windows at once (G03): what is still
+        queued goes to the resume file, then undo.ps1, the audit record and
+        the report are written - the action runs only once they exist."""
+        self._pre_restart_prepared.add(action.id)
+        saved = self._save_resume(action.id) if self._queue else False
+        self._log_restart_pending(module, action, saved, immediate=True)
+        # The PC may not come back to this process: the time so far goes in
+        # the report written now.
+        self._log_batch_duration()
+        self._write_undo_script()
+        self.console.appendPlainText(self._t("restart_writing_report").format(action=action.label(self.settings.language)))
+        # Everything up to this point, snapshot included - the PC may not
+        # come back to this process.
+        self._snapshot_after = self._take_snapshot()
+        runner = report.ReportRunner(
+            self.state_dir, self.run_id, self.modules, self.settings.language,
+            self._snapshot_before, self._snapshot_after,
+            job=self._job_info(), storage_fallback=self._storage_fallback,
+            redact=self.settings.redact_for_client, branding=self.settings.branding_info(), parent=self,
+        )
+        runner.result_ready.connect(
+            lambda html_path, write_failed, m=module, a=action: self._on_pre_restart_report_ready(html_path, write_failed, m, a)
+        )
+        self._report_runner = runner
+        runner.start()
+
+    def _on_pre_restart_report_ready(self, html_path, write_failed: bool, module: ModuleDef, action: ActionDef) -> None:
+        self._report_runner = None
+        if write_failed and not self._closed:
+            self.console.appendPlainText(self._t("disk_write_failed"))
+        if self._cancel_requested or self._closed:
+            # Cancelled while the report was written: the restart never
+            # comes, so there is nothing to continue after it.
+            if self._resume_saved_for == action.id:
+                batch_resume.discard_pending(self.state_dir)
+                self._resume_saved_for = ""
+            self._run_next()
+            return
+        self._restart_report_path = html_path
         self._dispatch_action(module, action)
 
     def _dispatch_action(self, module: ModuleDef, action: ActionDef) -> None:
-        if action.risk == RiskLevel.DESTRUCTIVE:
+        if self._closed:
+            # Never start an action (or pop its confirmation) after the
+            # window is gone - it would run unlogged and outlive the app.
+            return
+        if action.restarts_pc and not self.settings.dry_run and action.id not in self._pre_restart_prepared:
+            # A DRY-RUN only previews - nothing restarts, nothing to prepare.
+            self._prepare_for_restart(module, action)
+            return
+        warning_text = ""
+        confirmed = QMessageBox.Yes
+        if action.id in self._reviewed_warnings:
+            # Confirmed on the batch review screen - quote what was shown there.
+            warning_text = self._reviewed_warnings[action.id]
+        elif self.settings.dry_run:
+            # A DRY-RUN previews and changes nothing - nothing to confirm.
+            pass
+        elif action.risk == RiskLevel.DESTRUCTIVE:
+            warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_destructive_action')}"
             confirmed = QMessageBox.warning(
                 self,
                 self._t("app_title"),
-                f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_destructive_action')}",
+                warning_text,
                 QMessageBox.Yes | QMessageBox.No,
             )
-            if confirmed != QMessageBox.Yes:
-                self._run_next()
-                return
         elif action.risk != RiskLevel.SAFE:
+            warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}"
             confirmed = QMessageBox.question(
                 self,
                 self._t("app_title"),
-                f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}",
+                warning_text,
             )
-            if confirmed != QMessageBox.Yes:
-                self._run_next()
-                return
+        if warning_text and confirmed != QMessageBox.Yes:
+            # A "No" is as much a part of the record as a "Yes" - without it
+            # the log can't show the technician was warned and backed off
+            # (research-reporting.md F2).
+            self._log_system_event(
+                "risk_declined", None, "Technician declined the risk confirmation - action not run.",
+                risk=action.risk.value, warned=True, warning_text=warning_text,
+                subject=f"{module.module_id}/{action.id}", decision="declined",
+            )
+            self._run_next()
+            return
 
         app_dir = paths.get_base_dir()
         temp_protect = paths.compute_temp_protected_child(app_dir)
@@ -2146,9 +4507,20 @@ class MainWindow(QMainWindow):
             action_temp_protect = temp_protect
 
         if self.settings.dry_run and action.preview_command:
-            plan = build_execution_plan(action.preview_command, dry_run=False, temp_protect=action_temp_protect)
+            plan = build_execution_plan(
+                action.preview_command, dry_run=False, temp_protect=action_temp_protect, target_user=self.target_user,
+            )
         else:
-            plan = build_execution_plan(action.command, self.settings.dry_run, temp_protect=action_temp_protect)
+            ops_state = None
+            if action.ops and not self.settings.dry_run:
+                # A fresh file per run of the action: a second run in the
+                # same session must not overwrite the first capture.
+                ops_state = ops.state_file_path(self.state_dir, self.run_id, action.id)
+                self._ops_state_paths[action.id] = ops_state
+            plan = build_execution_plan(
+                action.command, self.settings.dry_run, temp_protect=action_temp_protect, ops_state=ops_state,
+                target_user=self.target_user,
+            )
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()
@@ -2160,20 +4532,24 @@ class MainWindow(QMainWindow):
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)
         runner.finished_with_code.connect(
-            lambda code, m=module.module_id, a=action.id, c=action.command, r=runner: self._on_action_finished(
-                m, a, c, code, r
+            lambda code, m=module.module_id, a=action.id, c=action.command, r=runner, w=warning_text: self._on_action_finished(
+                m, a, c, code, r, w
             )
         )
         runner.start()
 
     def _on_action_finished(
-        self, module_id: str, action_id: str, command: str, exit_code: int, runner: ActionRunner
+        self, module_id: str, action_id: str, command: str, exit_code: int, runner: ActionRunner,
+        warning_text: str = "",
     ) -> None:
         output = "\n".join(runner.captured_output)
         _, action = self._find_action(action_id)
+        # warned/warning_text come from the dialog _dispatch_action actually
+        # showed and the technician accepted, not re-derived from the risk.
         entry = make_entry(
             module_id, action_id, command, exit_code, output, self.settings.dry_run, self.run_id,
-            risk=action.risk.value, warned=action.risk != RiskLevel.SAFE, elevated=self.is_admin,
+            risk=action.risk.value, warned=bool(warning_text), elevated=self.is_admin,
+            warning_text=warning_text, **self.target_user.audit_fields(),
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -2190,17 +4566,113 @@ class MainWindow(QMainWindow):
         elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
-        if not self.settings.dry_run and exit_code == 0:
-            if action.undo_command:
-                self._undo_steps.append(action.undo_command)
-                try:
-                    self._undo_script_path = undo.create_undo_script(
-                        self.state_dir, self.run_id, steps=list(reversed(self._undo_steps))
-                    )
-                except OSError:
-                    if not self._closed:
-                        self.console.appendPlainText(self._t("disk_write_failed"))
+        if not self.settings.dry_run:
+            if action.ops:
+                self._record_ops_undo(action, exit_code)
+            elif exit_code == 0 and action.undo_command:
+                undo_step = action.undo_command
+                if "$__pfUser" in undo_step:
+                    # undo.ps1 runs later, maybe as someone else entirely -
+                    # it must restore the same profile the change went to.
+                    # Unknown target: no prelude, so clear what an earlier
+                    # step's prelude left in undo.ps1's one shared scope -
+                    # this step then falls back to HKCU: as it did at run time.
+                    undo_step = (
+                        self.target_user.prelude()
+                        or "Remove-Variable __pfUserHive,__pfUserSid -EA SilentlyContinue; "
+                    ) + undo_step
+                self._undo_steps.append(undo_step)
+                self._write_undo_script()
+            elif not action.undo_command and action.risk != RiskLevel.SAFE:
+                # A failed run may still have changed part of the system, so
+                # it is listed too - with its exit code, not hidden.
+                entry_text = f"[{action.risk.value}] {action.label(self.settings.language)} ({action.id})"
+                if exit_code != 0:
+                    entry_text += f" - exit {exit_code}"
+                self._irreversible_actions.append(entry_text)
+                self._write_undo_script()
+            self._after_restart_action(action, exit_code)
         self._run_next()
+
+    def _record_ops_undo(self, action: ActionDef, exit_code: int) -> None:
+        """Undo for an `ops:` action (research G10), generated from the state
+        its command captured. Also after a failure: the ops that did apply
+        before it are in the capture, and restoring one that never applied
+        writes back what is already there."""
+        state_path = self._ops_state_paths.pop(action.id, None)
+        try:
+            step = ops.undo_step(action.id, action.ops, state_path)
+        except ops.OpsStateError as exc:
+            step = None
+            problem = str(exc)
+        else:
+            if step is None and exit_code != 0:
+                # Refused before capturing anything - so nothing changed.
+                return
+            problem = "the state file with the previous values is missing"
+        if step is not None:
+            self._undo_steps.append(step)
+        else:
+            entry_text = f"[{action.risk.value}] {action.label(self.settings.language)} ({action.id}) - {problem}"
+            if exit_code != 0:
+                entry_text += f" - exit {exit_code}"
+            self._irreversible_actions.append(entry_text)
+        self._write_undo_script()
+
+    def _after_restart_action(self, action: ActionDef, exit_code: int) -> None:
+        """Research G03, after a real run of an action: stop the batch where
+        a restart has to come first; the rest waits in the resume file."""
+        if action.restarts_pc:
+            if exit_code == 0:
+                # Windows is restarting right now - never start the next
+                # action; what was left is already in the resume file.
+                self._restarting = True
+                self._queue = []
+            elif self._resume_saved_for == action.id:
+                # It failed, so no restart comes - carry on with the rest here.
+                batch_resume.discard_pending(self.state_dir)
+                self._resume_saved_for = ""
+            return
+        if action.restart_before_next and exit_code == 0 and self._queue and not self._cancel_requested:
+            module, _ = self._find_action(action.id)
+            saved = self._save_resume(action.id)
+            self._log_restart_pending(module, action, saved, immediate=False)
+            if saved:
+                self._restart_needed_after = action.id
+            self._queue = []
+
+    def _write_undo_script(self) -> None:
+        # LIFO order puts the newest step at the top, so each change is a
+        # rewrite - but only an actual change: every later batch's
+        # pre-restore-point write used to rewrite an identical file. The
+        # exists() check keeps a deleted Backups/ from staying missing.
+        state = (len(self._undo_steps), len(self._irreversible_actions), len(self._hive_backups))
+        if (
+            state == self._undo_written_state
+            and self._undo_script_path is not None
+            and self._undo_script_path.exists()
+        ):
+            return
+        try:
+            self._undo_script_path = undo.create_undo_script(
+                self.state_dir, self.run_id, steps=list(reversed(self._undo_steps)),
+                irreversible=self._irreversible_actions, hive_backups=self._hive_backups,
+            )
+            self._undo_written_state = state
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
+        # A batch saved for after a restart under this run_id rewrites
+        # undo.ps1 from its own copy of these lists - keep that copy in step
+        # with every change made since, or the continued batch drops them.
+        try:
+            batch_resume.sync_undo(
+                self.state_dir, self.run_id, undo_steps=self._undo_steps, irreversible=self._irreversible_actions,
+                hive_backups=batch_resume.saved_hive_paths(self.state_dir, self._hive_backups),
+            )
+        except OSError:
+            if not self._closed:
+                self.console.appendPlainText(self._t("disk_write_failed"))
 
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
@@ -2212,6 +4684,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
 
         self._sysinfo_labels: dict[str, QLabel] = {}
+
+        self.quiet_mode_checkbox = QCheckBox(self._t("quiet_mode_toggle"))
+        self.quiet_mode_checkbox.setToolTip(self._t("quiet_mode_tooltip"))
+        self.quiet_mode_checkbox.setChecked(self.settings.quiet_mode)
+        self.quiet_mode_checkbox.toggled.connect(self._on_quiet_mode_toggled)
+        layout.addWidget(self.quiet_mode_checkbox)
 
         def add_row(key: str, label_key: str, tooltip: str | None = None, long: bool = False) -> None:
             caption = QLabel(self._t(label_key))
@@ -2257,9 +4735,30 @@ class MainWindow(QMainWindow):
         add_row("ping", "sysinfo_ping")
         add_row("vpn", "sysinfo_vpn", long=True)
 
+        # Shown only in quiet mode: the explicit replacements for what the
+        # background timers and the start-up update check would do.
+        self.quiet_mode_hint_label = QLabel(self._t("quiet_mode_manual_hint"))
+        self.quiet_mode_hint_label.setObjectName("selectionScope")
+        self.quiet_mode_hint_label.setWordWrap(True)
+        layout.addWidget(self.quiet_mode_hint_label)
+        self.check_network_button = self._make_selection_button(
+            self._t("quiet_mode_check_network_button"), self._on_check_network_clicked
+        )
+        self.check_network_button.setObjectName("panelBtn")
+        self.check_network_button.setToolTip(self._t("quiet_mode_manual_tooltip"))
+        layout.addWidget(self.check_network_button)
+        self.check_updates_button = self._make_selection_button(
+            self._t("quiet_mode_check_updates_button"), self._on_check_updates_clicked
+        )
+        self.check_updates_button.setObjectName("panelBtn")
+        self.check_updates_button.setToolTip(self._t("quiet_mode_manual_tooltip"))
+        layout.addWidget(self.check_updates_button)
+
         self.speed_test_button = self._make_selection_button(
             self._t("sysinfo_speed_test_button"), self._on_speed_test_clicked
         )
+        self.speed_test_button.setObjectName("panelBtn")
+        self.speed_test_button.setToolTip(self._t("quiet_mode_manual_tooltip"))
         layout.addWidget(self.speed_test_button)
         self.speed_test_result_label = QLabel("")
         self.speed_test_result_label.setWordWrap(True)
@@ -2268,14 +4767,94 @@ class MainWindow(QMainWindow):
         export_diag_button = self._make_selection_button(
             self._t("export_diagnostics_button"), self._on_export_diagnostics_clicked
         )
+        export_diag_button.setObjectName("panelBtn")
         layout.addWidget(export_diag_button)
 
         report_bug_button = self._make_selection_button(
             self._t("report_bug_button"), self._on_report_bug_clicked
         )
+        report_bug_button.setObjectName("panelBtn")
         layout.addWidget(report_bug_button)
         layout.addStretch(1)
+        self._apply_quiet_mode_ui()
         return panel
+
+    def _apply_quiet_mode_ui(self) -> None:
+        quiet = self.settings.quiet_mode
+        self.quiet_mode_hint_label.setVisible(quiet)
+        self.check_network_button.setVisible(quiet)
+        self.check_updates_button.setVisible(quiet)
+        for key in ("ping", "vpn"):
+            label = self._sysinfo_labels[key]
+            if quiet:
+                label.setText(self._t("quiet_mode_value"))
+            elif label.text() == self._t("quiet_mode_value"):
+                # The next tick fills it in; until then don't claim "off".
+                label.setText(self._t("sysinfo_loading"))
+        if self._quiet_status_label is None:
+            self._quiet_status_label = QLabel()
+            self._quiet_status_label.setObjectName("selectionScope")
+            self.statusBar().addPermanentWidget(self._quiet_status_label)
+        self._quiet_status_label.setText(self._t("quiet_mode_status_on" if quiet else "quiet_mode_status_off"))
+        # Its own text: the panel tooltip points at "the buttons below".
+        self._quiet_status_label.setToolTip(self._t("quiet_mode_status_tooltip"))
+
+    def _on_quiet_mode_toggled(self, checked: bool) -> None:
+        if checked == self.settings.quiet_mode:
+            return
+        self.settings.quiet_mode = checked
+        self._persist_settings()
+        self._apply_quiet_mode_ui()
+        self._apply_polling_state()
+        if self._winget_on_quiet_mode_changed is not None:
+            self._winget_on_quiet_mode_changed()
+        if not checked and self._startup_update_check_skipped:
+            self._start_update_check()
+
+    def _on_check_network_clicked(self) -> None:
+        # One ping and one VPN check on an explicit click; the busy flags
+        # keep a double click from stacking runners.
+        self._on_ping_tick()
+        self._on_vpn_tick()
+
+    def _on_check_updates_clicked(self) -> None:
+        self._start_update_check(manual=True)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        # hasattr: a state change can arrive before __init__ set up polling.
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "_vpn_timer"):
+            self._window_minimized = self.isMinimized()
+            self._apply_polling_state()
+
+    def _apply_polling_state(self) -> None:
+        """Starts or stops each sysinfo timer to match the window and quiet
+        mode: nothing polls while minimized (nobody sees the values, and the
+        sensor and VPN checks spawn processes), and the network ones (ping,
+        VPN) never run on their own in quiet mode. The winget auto-check
+        timer follows the same rules."""
+        if self._closed:
+            return
+        visible = not self._window_minimized
+        network = visible and not self.settings.quiet_mode
+        for timer, tick, active in (
+            (self._sysinfo_timer, self._on_sysinfo_tick, visible),
+            (self._hw_sensor_timer, self._on_hw_sensor_tick, visible),
+            (self._ping_timer, self._on_ping_tick, network),
+            (self._vpn_timer, self._on_vpn_tick, network),
+        ):
+            if timer is None:
+                continue
+            if active and not timer.isActive():
+                timer.start()
+                # Fresh values right away instead of one interval late.
+                tick()
+            elif not active and timer.isActive():
+                timer.stop()
+        # The winget auto-check follows the same two rules; its timer lives
+        # in the panel, so the panel re-applies it.
+        if self._winget_apply_auto_check is not None:
+            self._winget_apply_auto_check()
 
     def _on_export_diagnostics_clicked(self) -> None:
         default_name = f"PortableFix-diagnostics-{self.run_id}.zip"
@@ -2299,20 +4878,20 @@ class MainWindow(QMainWindow):
         self._static_info_runner.static_info_ready.connect(self._on_static_info_ready)
         self._static_info_runner.start()
 
+        # Only created and given their interval here; _apply_polling_state
+        # below starts the ones the current mode allows (quiet mode leaves
+        # ping and VPN stopped) and fires each started one once.
         self._sysinfo_timer = QTimer(self)
         self._sysinfo_timer.timeout.connect(self._on_sysinfo_tick)
-        self._sysinfo_timer.start(2000)
-        self._on_sysinfo_tick()
+        self._sysinfo_timer.setInterval(2000)
 
         self._hw_sensor_timer = QTimer(self)
         self._hw_sensor_timer.timeout.connect(self._on_hw_sensor_tick)
-        self._hw_sensor_timer.start(2500)
-        self._on_hw_sensor_tick()
+        self._hw_sensor_timer.setInterval(2500)
 
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._on_ping_tick)
-        self._ping_timer.start(4000)
-        self._on_ping_tick()
+        self._ping_timer.setInterval(4000)
 
         # VPN state doesn't change on a 4s cadence like ping does, and unlike
         # ping.exe, checking it spawns a full powershell.exe - a much longer
@@ -2320,8 +4899,8 @@ class MainWindow(QMainWindow):
         # every few seconds for the whole session.
         self._vpn_timer = QTimer(self)
         self._vpn_timer.timeout.connect(self._on_vpn_tick)
-        self._vpn_timer.start(60_000)
-        self._on_vpn_tick()
+        self._vpn_timer.setInterval(60_000)
+        self._apply_polling_state()
 
     def _on_static_info_ready(self, info: sysinfo.StaticInfo) -> None:
         if self._closed:

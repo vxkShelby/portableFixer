@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from portablefix import sysinfo
 
 
@@ -193,18 +195,64 @@ def test_init_hardware_monitor_retries_with_a_different_assets_dir(tmp_path):
     assert "not bundled" in second_error
 
 
-def test_ping_once_parses_time_from_ping_output():
+_PING_FIXTURES = Path(__file__).parent / "fixtures" / "ping"
+
+# Captured ping.exe outputs, stored as UTF-8 and re-encoded here to the OEM
+# code page the console prints them in on that Windows display language.
+_PING_CASES = [
+    ("en_reply.txt", "cp437", 21.0),
+    ("en_sub_ms.txt", "cp437", 1.0),
+    ("en_timeout.txt", "cp437", None),
+    ("en_unreachable.txt", "cp437", None),
+    ("sk_reply.txt", "cp852", 14.0),
+    ("sk_sub_ms.txt", "cp852", 1.0),
+    ("sk_timeout.txt", "cp852", None),
+    ("de_reply.txt", "cp850", 23.0),
+    ("de_unreachable.txt", "cp850", None),
+    ("fr_reply.txt", "cp850", 18.0),
+    ("ru_reply.txt", "cp866", 35.0),
+    ("ja_reply.txt", "cp932", 9.0),
+]
+
+
+def _ping_fixture(name: str, codepage: str) -> bytes:
+    # Bytes, not read_text: keep ping.exe's CRLF line endings as captured.
+    return (_PING_FIXTURES / name).read_bytes().decode("utf-8").encode(codepage)
+
+
+@pytest.mark.parametrize("name, codepage, expected", _PING_CASES)
+def test_parse_ping_latency_is_locale_free(name, codepage, expected):
+    # The old parser looked for the English "time=" - on Slovak ("čas="),
+    # German ("Zeit="), French ("temps=18 ms") etc. the ping row was always N/A.
+    assert sysinfo.parse_ping_latency(_ping_fixture(name, codepage)) == expected
+
+
+def test_parse_ping_latency_ignores_statistics_lines_without_a_reply():
+    # "Minimum = 14ms" in the summary must not pass for a reply.
+    assert sysinfo.parse_ping_latency(b"    Minimum = 14ms, Maximum = 14ms, Average = 14ms\r\n") is None
+    assert sysinfo.parse_ping_latency(b"") is None
+
+
+@pytest.mark.parametrize("name, codepage, expected", _PING_CASES)
+def test_ping_once_parses_localized_ping_output(name, codepage, expected):
     fake = MagicMock()
-    fake.stdout = (
-        "Pinging 8.8.8.8 with 32 bytes of data:\n"
-        "Reply from 8.8.8.8: bytes=32 time=21ms TTL=115\n"
-    )
-    with patch("portablefix.sysinfo.subprocess.run", return_value=fake):
-        assert sysinfo.ping_once() == 21.0
+    fake.stdout = _ping_fixture(name, codepage)
+    with patch("portablefix.sysinfo.subprocess.run", return_value=fake) as run:
+        assert sysinfo.ping_once() == expected
+    args, kwargs = run.call_args
+    # Raw bytes: decoding the OEM code page as text could garble or raise.
+    assert not kwargs.get("text") and "encoding" not in kwargs
+    # IPv4 only - an IPv6 reply line carries no "TTL=" to anchor on.
+    assert args[0][:2] == ["ping", "-4"]
 
 
 def test_ping_once_returns_none_on_timeout():
     with patch("portablefix.sysinfo.subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("ping", 2)):
+        assert sysinfo.ping_once() is None
+
+
+def test_ping_once_returns_none_when_ping_is_missing():
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=FileNotFoundError("ping")):
         assert sysinfo.ping_once() is None
 
 
@@ -285,3 +333,20 @@ def test_run_upload_test_computes_mbps_from_elapsed_time():
 def test_run_upload_test_returns_none_on_failure():
     with patch("portablefix.sysinfo.urllib.request.urlopen", side_effect=OSError("network down")):
         assert sysinfo.run_upload_test() is None
+
+
+def test_sysinfo_powershell_calls_use_the_absolute_powershell_path(monkeypatch):
+    # A broken PATH must not blank the RAM speed/disk health/VPN tiles while
+    # powershell.exe sits in System32 - same lookup as the action executor.
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return MagicMock(stdout="")
+
+    exe = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    monkeypatch.setattr(sysinfo, "powershell_executable", lambda: exe)
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=fake_run):
+        sysinfo._get_ram_speed_and_disk_health()
+        sysinfo.check_vpn_status()
+    assert [argv[0] for argv in calls] == [exe, exe]

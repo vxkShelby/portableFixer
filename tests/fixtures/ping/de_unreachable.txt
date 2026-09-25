@@ -1,0 +1,7 @@
+
+Ping wird ausgeführt für 8.8.8.8 mit 32 Bytes Daten:
+Antwort von 192.168.178.20: Zielhost nicht erreichbar.
+
+Ping-Statistik für 8.8.8.8:
+    Pakete: Gesendet = 1, Empfangen = 1, Verloren = 0
+    (0% Verlust),

@@ -2,53 +2,57 @@ module_id: m22_deep_cleanup
 category: CLEANUP
 actions:
   - id: leftover_uninstall_keys_report
-    label_sk: "Osamotene polozky odinstalacie v registri"
+    label_sk: "Osamotené položky odinštalácie v registri"
     label_en: "Orphaned uninstall registry entries"
     risk: SAFE
     command: "$paths = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'; $orphans = foreach ($p in $paths) { Get-ItemProperty -Path $p -EA SilentlyContinue | Where-Object { $_.DisplayName -and $_.InstallLocation -and -not (Test-Path -LiteralPath $_.InstallLocation) } }; if ($orphans) { $orphans | Select-Object DisplayName, InstallLocation, PSChildName | Format-Table -AutoSize -Wrap; Write-Output ('Found ' + $orphans.Count + ' orphaned uninstall registry entrie(s) - install folder no longer exists.') } else { Write-Output 'No orphaned uninstall registry entries found.' }"
-    description_sk: "Najde polozky Uninstall v registri, ktorych InstallLocation priecinok uz na disku neexistuje - pozostatok po nedokoncenej/zlyhanej odinstalacii. Polozka na vymenitelnom/sietovom disku sa moze zobrazit aj vtedy, ak je disk len docasne odpojeny. Nic nemeni, pripadne mazanie v registri (regedit) je na pouzivatelovi."
+    description_sk: "Nájde položky Uninstall v registri, ktorých priečinok InstallLocation už na disku neexistuje - pozostatok po nedokončenej/zlyhanej odinštalácii. Položka na vymeniteľnom/sieťovom disku sa môže zobraziť aj vtedy, ak je disk len dočasne odpojený. Nič nemení; prípadné mazanie v registri (regedit) je na používateľovi."
     description_en: "Finds Uninstall registry entries whose InstallLocation folder no longer exists on disk - a leftover from a botched/incomplete uninstall. An entry on a removable/network drive can also show up here if that drive is just temporarily disconnected. Changes nothing; removing anything via regedit is left to the user to review."
 
   - id: duplicate_files_report
-    label_sk: "Duplicitne subory (podla obsahu)"
+    label_sk: "Duplicitné súbory (podľa obsahu)"
     label_en: "Duplicate files (by content)"
     risk: SAFE
     command: "$top = Get-ChildItem -LiteralPath $env:USERPROFILE -Force -EA SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }; $files = foreach ($item in $top) { if ($item.PSIsContainer) { Get-ChildItem -LiteralPath $item.FullName -Recurse -File -Force -EA SilentlyContinue | Where-Object { $_.Length -gt 1MB } } elseif ($item.Length -gt 1MB) { $item } }; $groups = $files | Group-Object Length | Where-Object { $_.Count -gt 1 }; $dupes = @{}; foreach ($g in $groups) { foreach ($f in $g.Group) { $h = $null; try { $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -EA Stop).Hash } catch { }; if (-not $h) { continue }; if (-not $dupes.ContainsKey($h)) { $dupes[$h] = @() }; $dupes[$h] += $f.FullName } }; $realDupes = $dupes.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }; if ($realDupes) { $totalWasted = 0; foreach ($d in $realDupes) { $size = (Get-Item -LiteralPath $d.Value[0]).Length; $totalWasted += $size * ($d.Value.Count - 1); Write-Output ('--- ' + $d.Value.Count + ' copies (' + [math]::Round($size/1MB,1) + ' MB each) ---'); $d.Value | ForEach-Object { Write-Output \"  $_\" } }; Write-Output ('Total space recoverable by removing duplicates: ' + [math]::Round($totalWasted/1GB,2) + ' GB') } else { Write-Output 'No duplicate files found (scanned files over 1 MB under your user profile).' }"
     inactivity_timeout_sec: 900
-    description_sk: "Najde duplicitne subory (podla SHA256 hashu) v $env:USERPROFILE, iba subory nad 1 MB. Preskakuje stare kompatibilne junctions (napr. 'Application Data'), aby sa ten isty subor nepocital dvakrat. Rozsah je zamerne obmedzeny na profil pouzivatela kvoli casu; ktoru kopiu ponechat, si vyberie pouzivatel sam. Nic nemaze, len report."
+    description_sk: "Nájde duplicitné súbory väčšie ako 1 MB (podľa hashu SHA256) v $env:USERPROFILE. Preskakuje staré junctions pre spätnú kompatibilitu (napr. 'Application Data'), aby sa ten istý súbor nezapočítal dvakrát. Rozsah je kvôli rýchlosti zámerne obmedzený na profil používateľa; ktorú kópiu ponechať, si vyberie používateľ sám. Nič nemaže, slúži len na prehľad."
     description_en: "Finds duplicate files (by SHA256 hash) under $env:USERPROFILE, only files over 1 MB. Skips legacy compatibility junctions (e.g. 'Application Data') so the same file isn't counted twice. Scope is deliberately bounded to the user profile for speed; choosing which copy to keep is left to the user. Deletes nothing, report only."
 
   - id: broken_shortcuts_report
-    label_sk: "Nefunkcne odkazy (.lnk)"
+    label_sk: "Nefunkčné odkazy (.lnk)"
     label_en: "Broken shortcuts (.lnk)"
     risk: SAFE
     command: "$sh = New-Object -ComObject WScript.Shell; $searchPaths = @((Join-Path $env:USERPROFILE 'Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu'), [Environment]::GetFolderPath('CommonStartMenu')) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique; $broken = @(); foreach ($p in $searchPaths) { Get-ChildItem $p -Filter '*.lnk' -Recurse -File -EA SilentlyContinue | ForEach-Object { try { $target = $sh.CreateShortcut($_.FullName).TargetPath; if ($target -and -not (Test-Path -LiteralPath $target)) { $broken += [PSCustomObject]@{ Shortcut = $_.FullName; Target = $target } } } catch {} } }; if ($broken) { $broken | Format-Table -AutoSize -Wrap; Write-Output ('Found ' + $broken.Count + ' broken shortcut(s) pointing to a missing target.') } else { Write-Output 'No broken shortcuts found.' }"
-    description_sk: "Skontroluje odkazy (.lnk) na Ploche a v ponuke Start (aktualny pouzivatel aj vsetci pouzivatelia), ci ich ciel este existuje. Ciel na vymenitelnom alebo sietovom disku moze byt len docasne odpojeny, preto ziadne automaticke mazanie. Nic nemeni."
+    description_sk: "Skontroluje odkazy (.lnk) na Ploche a v ponuke Štart (aktuálny používateľ aj všetci používatelia), či ich cieľ ešte existuje. Cieľ na vymeniteľnom alebo sieťovom disku môže byť len dočasne odpojený, preto sa nič automaticky nemaže. Nič nemení."
     description_en: "Checks shortcuts (.lnk) on the Desktop and in the Start Menu (current user and all users) for a target that no longer exists. A target on a removable or network drive may just be temporarily disconnected, so there is no automatic deletion. Changes nothing."
 
   - id: shortcut_hijack_report
-    label_sk: "Unesene odkazy (podozrivy argument v .lnk)"
+    label_sk: "Unesené odkazy (podozrivý argument v .lnk)"
     label_en: "Hijacked shortcuts (suspicious .lnk argument)"
     risk: SAFE
     command: "$sh = New-Object -ComObject WScript.Shell; $searchPaths = @((Join-Path $env:USERPROFILE 'Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu'), [Environment]::GetFolderPath('CommonStartMenu')) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique; $suspect = @(); foreach ($p in $searchPaths) { Get-ChildItem $p -Filter '*.lnk' -Recurse -File -EA SilentlyContinue | ForEach-Object { try { $link = $sh.CreateShortcut($_.FullName); $target = $link.TargetPath; $linkArgs = $link.Arguments; if ($target -and $linkArgs -and (Split-Path $target -Leaf) -match '^(chrome|msedge|firefox|iexplore)\\.exe$' -and $linkArgs -match 'https?://' -and $linkArgs -notmatch '--app(-id)?=') { $suspect += [PSCustomObject]@{ Shortcut = $_.FullName; Target = $target; Arguments = $linkArgs } } } catch {} } }; if ($suspect) { $suspect | Format-Table -AutoSize -Wrap; Write-Output ('Found ' + $suspect.Count + ' shortcut(s) launching a browser with a URL argument appended - a common adware/hijack pattern. Open Properties on each and clear the Target field after the .exe path if unwanted.') } else { Write-Output 'No hijacked shortcuts found.' }"
-    description_sk: "Skontroluje odkazy (.lnk) na Ploche a v ponuke Start, ci niektory nespusta prehliadac (chrome/msedge/firefox/iexplore) s pripojenou URL adresou v argumentoch - typicky priznak adware/browser hijackeru, ktory takto vnucuje domovsku stranku. Odkaz, ktory ste si sami vytvorili pre webovu aplikaciu (\"Nainstalovat ako aplikaciu\"), nie je unosom, aj ked vzoru vseobecne zodpoveda - typicky argument --app= je z tejto kontroly vynechany. Nic nemeni, oprava (vymazanie argumentu vo Vlastnostiach odkazu) je na pouzivatelovi."
+    description_sk: "Skontroluje odkazy (.lnk) na Ploche a v ponuke Štart, či niektorý nespúšťa prehliadač (chrome/msedge/firefox/iexplore) s URL adresou pripojenou k argumentom - typický príznak adware/browser hijackeru, ktorý takto vnucuje domovskú stránku. Odkaz, ktorý ste si sami vytvorili pre webovú aplikáciu (\"Nainštalovať ako aplikáciu\"), nie je únos, hoci tomuto vzoru všeobecne zodpovedá - typický argument --app= sa preto z kontroly vynecháva. Nič nemení; oprava (vymazanie argumentu vo Vlastnostiach odkazu) je na používateľovi."
     description_en: "Checks shortcuts (.lnk) on the Desktop and in the Start Menu for one that launches a browser (chrome/msedge/firefox/iexplore) with a URL appended to the arguments - a common adware/browser-hijack pattern used to force a homepage. A shortcut you deliberately created for a web app (Chrome/Edge's \"Install as app\") is not a hijack even though it generally matches this pattern - the typical --app= argument is excluded from this check. Changes nothing; fixing it (clearing the argument via the shortcut's Properties) is left to the user."
 
   - id: disk_space_by_folder_report
-    label_sk: "Analyza volneho miesta (najvacsie priecinky)"
+    label_sk: "Analýza miesta na disku (najväčšie priečinky)"
     label_en: "Disk space analysis (largest folders)"
     risk: SAFE
     command: "$root = $env:SystemDrive + '\\'; $top = Get-ChildItem -LiteralPath $root -Directory -Force -EA SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }; $sizes = foreach ($dir in $top) { try { $size = (Get-ChildItem -LiteralPath $dir.FullName -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum -EA SilentlyContinue).Sum } catch { $size = $null }; if ($size) { Write-Output ($dir.FullName + ': ' + [math]::Round($size/1GB,2) + ' GB'); [PSCustomObject]@{ Folder = $dir.FullName; SizeGB = [math]::Round($size/1GB,2) } } }; Write-Output '--- Top 15 largest ---'; $sizes | Sort-Object SizeGB -Descending | Select-Object -First 15 | Format-Table -AutoSize; Write-Output 'Top-level folder sizes on the system drive, largest first (skips folders it cannot read).'"
     inactivity_timeout_sec: 600
-    description_sk: "Zmeria velkost kazdeho priecinka v koreni systemoveho disku ($env:SystemDrive) a zobrazi 15 najvacsich - pomoze najst, kde sa miesto na disku stratilo. Preskakuje priecinky bez pristupovych prav aj junctions/symlinky (aby sa nepocitali opakovane alebo donekonecna). Nic nemeni, len report."
+    description_sk: "Zmeria veľkosť každého priečinka v koreni systémového disku ($env:SystemDrive) a zobrazí 15 najväčších - pomôže zistiť, kam sa podelo miesto na disku. Preskakuje priečinky bez prístupových práv aj junctions/symlinky (aby sa nepočítali opakovane alebo donekonečna). Nič nemení, slúži len na prehľad."
     description_en: "Measures the size of every top-level folder on the system drive ($env:SystemDrive) and shows the 15 largest - helps find where disk space went. Skips folders it can't read as well as junctions/symlinks (so they aren't counted repeatedly or endlessly). Changes nothing, report only."
 
   - id: wipe_free_space
-    label_sk: "Bezpecne prepisanie volneho miesta (system. disk)"
+    label_sk: "Bezpečné prepísanie voľného miesta (systémový disk)"
     label_en: "Securely wipe free space (system drive)"
     risk: MODERATE
+    changes_system: false  # overwrites free space only, no system state changes
+    # G13: cipher /w writes all free space three times - as hard on a
+    # dying disk as a defrag, so the pre-flight asks for its health first.
+    stresses_disk: true
     command: "$target = \"$env:SystemDrive\\\"; $out = & cipher (\"/w:\" + $target) 2>&1; $exitCode = $LASTEXITCODE; if ($exitCode -eq 0) { Write-Output ('Free space on ' + $target + ' securely wiped (previously deleted file remnants overwritten). Can take a long time on large/mostly-full drives.') } else { Write-Output ('cipher /w failed: ' + (($out | Select-Object -Last 3) -join ' ')); exit 1 }"
     inactivity_timeout_sec: 1800
     hard_cap_sec: 21600
-    description_sk: "Prepise pozostatky predtym vymazanych suborov vo volnom mieste systemoveho disku ($env:SystemDrive) pomocou vstavaneho cipher /w. Nedotyka sa existujucich suborov, len volneho miesta - voci aktualnym datam nedestruktivne. Na velkych/temer plnych diskoch moze bezat velmi dlho (az niekolko hodin)."
+    description_sk: "Prepíše pozostatky predtým vymazaných súborov vo voľnom mieste systémového disku ($env:SystemDrive) pomocou vstavaného príkazu cipher /w. Nedotýka sa existujúcich súborov, len voľného miesta - aktuálne dáta nepoškodí. Na veľkých/takmer plných diskoch môže bežať veľmi dlho (až niekoľko hodín)."
     description_en: "Overwrites remnants of previously deleted files in the free space of the system drive ($env:SystemDrive) using the built-in cipher /w. Does not touch existing files, only free space - non-destructive to current data. Can take a very long time on large/mostly-full drives (up to several hours)."

@@ -1,0 +1,6 @@
+
+Príkaz ping na 8.8.8.8 s 32 bajtmi údajov:
+Časový limit žiadosti vypršal.
+
+Štatistika príkazu ping pre 8.8.8.8:
+    Pakety: odoslané = 1, prijaté = 0, stratené = 1 (strata 100%),

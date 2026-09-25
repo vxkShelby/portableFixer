@@ -113,6 +113,36 @@ def compute_windir_temp_protected_child(app_dir: Path) -> Path | None:
     return _compute_protected_child(app_dir, Path(windir) / "Temp", resolve_windir_temp_root())
 
 
+def _fallback_state_dirs() -> list[Path]:
+    roots: list[Path] = []
+    try:
+        roots.append(Path(tempfile.gettempdir()))
+    except OSError:
+        # gettempdir() raises FileNotFoundError when none of its candidate
+        # directories is usable - it must not end the search for a fallback.
+        pass
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        roots.append(Path(local_appdata))
+    try:
+        roots.append(Path.home())
+    except (OSError, RuntimeError):
+        pass
+    return [root / "PortableFix" for root in roots]
+
+
+def _is_usable_dir(directory: Path) -> bool:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        # mkdir(exist_ok=True) succeeds on an existing read-only folder, so
+        # actually write something before trusting it with logs/reports.
+        with tempfile.TemporaryFile(dir=directory):
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def resolve_writable_base_dir(base_dir: Path) -> tuple[Path, bool]:
     probe = base_dir / ".write_test"
     try:
@@ -121,12 +151,30 @@ def resolve_writable_base_dir(base_dir: Path) -> tuple[Path, bool]:
         probe.unlink(missing_ok=True)
         return base_dir, False
     except OSError:
-        fallback = Path(tempfile.gettempdir()) / "PortableFix"
-        try:
-            fallback.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise RuntimeError(
-                f"Neither {base_dir} nor the %TEMP% fallback ({fallback}) is writable. "
-                "Check the TEMP environment variable."
-            ) from exc
-        return fallback, True
+        pass
+    # %TEMP% first (what the fallback banner promises), then per-user
+    # locations: a redirected/dead TEMP on a broken machine used to be a
+    # hard "Startup failed" even though the user profile was fine.
+    candidates = _fallback_state_dirs()
+    for fallback in candidates:
+        if _is_usable_dir(fallback):
+            return fallback, True
+    tried = ", ".join(str(c) for c in candidates) or "%TEMP%"
+    raise RuntimeError(
+        f"Neither {base_dir} nor any fallback folder ({tried}) is writable. "
+        "Check the TEMP environment variable."
+    )
+
+
+def powershell_executable() -> str:
+    """Windows PowerShell 5.1 by absolute path when it's where Windows always
+    puts it, bare "powershell" (PATH lookup) otherwise. A broken/overwritten
+    PATH is exactly the kind of machine this tool gets pointed at, and with
+    a bare name every action - and the updater - failed with "not found"
+    while powershell.exe sat in its usual place the whole time."""
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if system_root:
+        candidate = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return "powershell"

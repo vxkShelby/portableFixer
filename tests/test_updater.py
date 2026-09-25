@@ -6,12 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from portablefix import update_swap
 from portablefix import updater as updater_module
 from portablefix.updater import (
+    UpdateCheckRunner,
+    UpdateDownloadRunner,
     UpdateInfo,
     UpdateVerificationError,
-    apply_update,
-    build_swap_script,
     check_for_update,
     download_update,
     is_newer,
@@ -300,101 +301,6 @@ def test_download_update_raises_when_no_sha256_asset(tmp_path):
     assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
 
 
-def test_apply_update_writes_ps1_script_with_utf8_bom(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
-    install_dir = tmp_path / "install"
-    install_dir.mkdir()
-
-    apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
-
-    scripts = list(tmp_path.glob("portablefix_update_*.ps1"))
-    assert len(scripts) == 1
-    assert scripts[0].read_bytes()[:3] == b"\xef\xbb\xbf"
-
-
-def test_apply_update_breaks_away_from_parent_job_object(tmp_path, monkeypatch):
-    # Regression test: without CREATE_BREAKAWAY_FROM_JOB, the swap script
-    # dies with the parent when the parent is inside a Job Object with
-    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (e.g. launched from Windows
-    # Terminal) - the update then silently never happens.
-    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
-    calls = []
-    monkeypatch.setattr(
-        updater_module.subprocess, "Popen", lambda *a, **k: calls.append(k) or MagicMock()
-    )
-    install_dir = tmp_path / "install"
-    install_dir.mkdir()
-
-    apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
-
-    assert len(calls) == 1
-    flags = calls[0]["creationflags"]
-    assert flags & updater_module.subprocess.CREATE_BREAKAWAY_FROM_JOB
-
-
-def test_apply_update_redirects_popen_stdout_and_stderr_to_a_launch_log(tmp_path, monkeypatch):
-    # DETACHED_PROCESS gives the child no console/inherited std handles - an
-    # unredirected startup failure (e.g. an execution-policy refusal) prints
-    # to nowhere and is silently lost. The log dir/file must exist BEFORE
-    # Popen runs (created here in Python), since the failure this is meant
-    # to diagnose can happen before the script's own first line ever runs.
-    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
-    calls = []
-    monkeypatch.setattr(
-        updater_module.subprocess, "Popen", lambda *a, **k: calls.append(k) or MagicMock()
-    )
-    install_dir = tmp_path / "install"
-    install_dir.mkdir()
-
-    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
-
-    assert result is True
-    assert len(calls) == 1
-    assert calls[0]["stdout"] is not None
-    assert calls[0]["stdout"].closed
-    assert calls[0]["stderr"] == updater_module.subprocess.STDOUT
-    assert calls[0]["stdin"] == updater_module.subprocess.DEVNULL
-    log_files = list((tmp_path / "PortableFixUpdate").glob("popen_launch_*.log"))
-    assert len(log_files) == 1
-
-
-def test_apply_update_returns_true_on_success(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: MagicMock())
-    install_dir = tmp_path / "install"
-    install_dir.mkdir()
-
-    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
-
-    assert result is True
-
-
-def test_apply_update_returns_false_without_spawning_when_not_writable(tmp_path, monkeypatch):
-    popen_calls = []
-    monkeypatch.setattr(updater_module.subprocess, "Popen", lambda *a, **k: popen_calls.append(1))
-
-    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=tmp_path / "missing_install_dir")
-
-    assert result is False
-    assert popen_calls == []
-
-
-def test_apply_update_returns_false_when_popen_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
-    install_dir = tmp_path / "install"
-    install_dir.mkdir()
-
-    def raise_oserror(*a, **k):
-        raise OSError("no such file")
-
-    monkeypatch.setattr(updater_module.subprocess, "Popen", raise_oserror)
-
-    result = apply_update(zip_path=tmp_path / "PortableFix-update.zip", install_dir=install_dir)
-
-    assert result is False
-
-
 def test_is_writable_true_for_writable_directory(tmp_path):
     assert is_writable(tmp_path) is True
 
@@ -439,347 +345,6 @@ def test_is_writable_false_under_protected_path_even_though_probe_write_would_su
     assert is_writable(protected) is False
 
 
-def test_build_swap_script_parses_as_valid_powershell():
-    import os
-    import subprocess
-
-    script = build_swap_script(
-        current_pid=12345,
-        install_dir=Path(r"C:\Users\test\USB Fixer"),
-        zip_path=Path(r"C:\Users\test\AppData\Local\Temp\PortableFix-update.zip"),
-    )
-    env = os.environ.copy()
-    env["PFCMD"] = script
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         "[scriptblock]::Create($env:PFCMD) | Out-Null; Write-Output OK"],
-        env=env, capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    assert "OK" in result.stdout, result.stderr
-
-
-def test_build_swap_script_quotes_paths_with_spaces():
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\Users\test\USB Fixer"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "'C:\\Users\\test\\USB Fixer\\App'" in script
-
-
-def test_build_swap_script_single_quotes_do_not_interpolate_dollar_sign():
-    # PowerShell interpolates $variables inside double-quoted strings but
-    # never inside single-quoted ones - a literal '$' is a legal NTFS path
-    # character (e.g. a username) that would otherwise silently truncate
-    # the path. Verified two ways: the raw script text uses single quotes
-    # around the $-containing path, and the script actually parses.
-    import os
-    import subprocess
-
-    install_dir = Path(r"C:\Users\Jane$Doe\USB Fixer")
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=install_dir,
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "'C:\\Users\\Jane$Doe\\USB Fixer\\App'" in script
-    assert '"C:\\Users\\Jane$Doe' not in script
-
-    env = os.environ.copy()
-    env["PFCMD"] = script
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         "[scriptblock]::Create($env:PFCMD) | Out-Null; Write-Output OK"],
-        env=env, capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    assert "OK" in result.stdout, result.stderr
-
-
-def test_build_swap_script_escapes_embedded_single_quote_in_path():
-    install_dir = Path(r"C:\Users\O'Brien\USB Fixer")
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=install_dir,
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "O''Brien" in script
-
-
-def test_build_swap_script_restores_backup_folders_if_swap_fails_to_verify():
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert (
-        "if ((Test-Path 'C:\\App\\App\\PortableFix.exe') -and (Test-Path 'C:\\App\\Modules') "
-        "-and (Get-ChildItem -Path 'C:\\App\\Modules' -EA SilentlyContinue) "
-        "-and (Test-Path 'C:\\App\\Vendor') -and (Get-ChildItem -Path 'C:\\App\\Vendor' -EA SilentlyContinue)) {"
-    ) in script
-    assert "Move-Item -Path 'C:\\App\\App.old' -Destination 'C:\\App\\App' -Force" in script
-    assert "Move-Item -Path 'C:\\App\\Modules.old' -Destination 'C:\\App\\Modules' -Force" in script
-    assert "Move-Item -Path 'C:\\App\\Vendor.old' -Destination 'C:\\App\\Vendor' -Force" in script
-
-
-def test_build_swap_script_swaps_vendor_folder_with_backup(tmp_path):
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "if (Test-Path 'C:\\App\\Vendor') { Move-Item -Path 'C:\\App\\Vendor' -Destination 'C:\\App\\Vendor.old' -Force }" in script
-    assert 'if (Test-Path "$stagedRoot\\Vendor") { Move-Item -Path "$stagedRoot\\Vendor" -Destination \'C:\\App\\Vendor\' -Force }' in script
-
-
-def test_build_swap_script_rejects_zip_entries_that_escape_the_stage_directory():
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "-not $_.FullName.StartsWith($stageFull)" in script
-    assert "exit 1" in script
-
-
-def test_build_swap_script_preserves_settings_json_across_the_swap():
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "settings.json" in script
-    assert "settings.json.bak" in script
-
-
-def test_build_swap_script_retries_deleting_the_zip():
-    # Expand-Archive can hold the zip handle open a moment after returning;
-    # a single Remove-Item can silently no-op on that transient lock.
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert script.count("Remove-Item -Path 'C:\\Temp\\PortableFix-update.zip'") == 1
-    assert "for ($i = 0; $i -lt 30; $i++)" in script
-
-
-def test_build_swap_script_relaunches_before_cleaning_up_temp_files():
-    # A freshly-downloaded zip can sit under AV scanning for many seconds;
-    # the relaunch must never wait on that cleanup finishing first.
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\App\\PortableFix.exe'")
-    zip_cleanup_pos = script.index("Remove-Item -Path 'C:\\Temp\\PortableFix-update.zip'")
-    assert relaunch_pos < zip_cleanup_pos
-
-
-def test_build_swap_script_expands_the_downloaded_zip():
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "Expand-Archive" in script
-    assert "'C:\\Temp\\PortableFix-update.zip'" in script
-
-
-def test_build_swap_script_handles_non_ascii_path_component():
-    # Proves the non-ASCII path embeds correctly into the generated script
-    # text (string-level round trip). This does NOT prove PowerShell's own
-    # ANSI/UTF-8 decoding of the .ps1 file on disk - that depends on the
-    # system codepage and isn't testable from here; the BOM added in
-    # apply_update (utf-8-sig) is what makes powershell.exe -File decode it
-    # as UTF-8 regardless of codepage.
-    install_dir = Path(r"C:\Users\Ondřej Čučko\USB Fixer")
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=install_dir,
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert str(install_dir) in script
-
-
-def test_build_swap_script_contains_pid_wait_loop():
-    script = build_swap_script(
-        current_pid=54321,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "54321" in script
-    assert "Get-Process" in script
-
-
-def test_build_swap_script_logs_to_a_temp_file_under_pid(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater_module.tempfile, "gettempdir", lambda: str(tmp_path))
-    script = build_swap_script(
-        current_pid=999,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "update_log_999.txt" in script
-    assert "PortableFixUpdate" in script
-    assert "function Log(" in script
-
-
-def test_build_swap_script_aborts_without_swapping_if_process_still_running_after_wait():
-    # If the old exe hasn't exited by the time the wait loop gives up, its
-    # files are still locked - Move-Item would fail silently. The script
-    # must set the abort flag BEFORE touching App/Modules/Vendor, rather
-    # than proceeding into a doomed swap.
-    script = build_swap_script(
-        current_pid=42,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    abort_pos = script.index("ABORT: pid 42 did not exit")
-    first_move_pos = script.index("Move-Item -Path 'C:\\App\\App' -Destination 'C:\\App\\App.old'")
-    assert abort_pos < first_move_pos
-    swap_aborted_pos = script.index("$swapAborted = $true", abort_pos)
-    assert swap_aborted_pos < first_move_pos
-
-
-def test_build_swap_script_skips_relaunch_on_pid_wait_abort():
-    # $swapAborted means the OLD process is still alive right now (that's
-    # the abort condition) - relaunching would spawn a second instance that
-    # immediately loses to the single-instance mutex in main.py and exits
-    # silently, which is exactly "clicked restart, nothing happened, still
-    # old version". An earlier version of this test asserted the opposite
-    # (relaunch must always fire) - that was true only before main.py
-    # gained a single-instance mutex; unconditional relaunch is what broke
-    # the update flow once that mutex existed.
-    script = build_swap_script(
-        current_pid=42,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    abort_pos = script.index("ABORT: pid 42 did not exit")
-    guard_pos = script.index("if (-not $swapAborted) {\n    Log \"relaunching via")
-    assert abort_pos < guard_pos
-    # the abort branch must not exit the script early
-    relaunch_pos = script.index("Start-Process -FilePath 'C:\\App\\App\\PortableFix.exe'")
-    assert "\n    exit 1\n" not in script[abort_pos:relaunch_pos]
-    assert "skipping relaunch - old process is still running" in script
-
-
-def test_build_swap_script_verifies_relaunch_and_falls_back(tmp_path):
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "$relaunchOk = [bool](Get-Process -EA SilentlyContinue | Where-Object { $_.Path -eq 'C:\\App\\App\\PortableFix.exe' })" in script
-    assert "if (-not $relaunchOk) {" in script
-    assert "retrying once" in script
-
-
-def _make_release_zip(tmp_path: Path, exe_marker: bytes = b"new-exe") -> Path:
-    # Mirrors the real release contract: one top-level folder containing
-    # App/, Data/, Modules/, Vendor/, PortableFix.cmd.
-    import shutil
-
-    src = tmp_path / "zip_src" / "PortableFix"
-    (src / "App").mkdir(parents=True)
-    (src / "App" / "PortableFix.exe").write_bytes(exe_marker)
-    (src / "Modules").mkdir()
-    (src / "Modules" / "mod.dll").write_bytes(b"m")
-    (src / "Vendor").mkdir()
-    (src / "Vendor" / "vendor.dll").write_bytes(b"v")
-    (src / "Data").mkdir()
-    (src / "Data" / "settings.json").write_text("{}")
-    (src / "PortableFix.cmd").write_text("@echo off\n")
-    zip_path = tmp_path / "PortableFix-update.zip"
-    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=src.parent)
-    return zip_path
-
-
-def _make_old_install(install_dir: Path) -> None:
-    (install_dir / "App").mkdir(parents=True)
-    (install_dir / "App" / "PortableFix.exe").write_bytes(b"old-exe")
-    (install_dir / "Modules").mkdir()
-    (install_dir / "Modules" / "mod.dll").write_bytes(b"old-m")
-    (install_dir / "Vendor").mkdir()
-    (install_dir / "Vendor" / "vendor.dll").write_bytes(b"old-v")
-    (install_dir / "Data").mkdir()
-    (install_dir / "Data" / "settings.json").write_text('{"k": "v"}')
-    (install_dir / "PortableFix.cmd").write_text("@echo off\n")
-
-
-def _run_script(script_text: str, tmp_path: Path) -> None:
-    import subprocess
-
-    script_path = tmp_path / "swap.ps1"
-    script_path.write_text(script_text, encoding="utf-8-sig")
-    subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
-        capture_output=True, text=True, timeout=60,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-
-
-def test_swap_script_actually_replaces_old_files_end_to_end(tmp_path):
-    # None of the other build_swap_script tests ever RUN the script - they
-    # only assert substrings in the generated text or that it parses. This
-    # actually executes it against a real fake install, proving the swap
-    # logic itself (not just its syntax) works.
-    install_dir = tmp_path / "install"
-    _make_old_install(install_dir)
-    zip_path = _make_release_zip(tmp_path)
-    # current_pid must already be a dead pid so the wait loop exits immediately.
-    dead_pid = 999_999
-    script = build_swap_script(current_pid=dead_pid, install_dir=install_dir, zip_path=zip_path)
-
-    _run_script(script, tmp_path)
-
-    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"new-exe"
-    assert (install_dir / "Modules" / "mod.dll").exists()
-    assert (install_dir / "Vendor" / "vendor.dll").exists()
-    assert not (install_dir / "App.old").exists()
-
-
-def test_swap_script_aborts_without_false_positive_when_old_app_dir_is_locked(tmp_path):
-    # Reproduces the actual bug: if moving the old App folder out of the way
-    # fails (here simulated by holding a file open inside it, standing in
-    # for AV scanning / a lingering handle from the just-exited process),
-    # Move-Item into the still-occupied destination NESTS the new files
-    # instead of replacing them - so the old exe must be left in place
-    # rather than the script reporting a false "verified OK".
-    install_dir = tmp_path / "install"
-    _make_old_install(install_dir)
-    zip_path = _make_release_zip(tmp_path)
-    dead_pid = 999_998
-    script = build_swap_script(current_pid=dead_pid, install_dir=install_dir, zip_path=zip_path)
-
-    locked_file = install_dir / "App" / "PortableFix.exe"
-    with open(locked_file, "r+b"):
-        _run_script(script, tmp_path)
-
-    # Old exe must still be exactly the old one - not silently "verified"
-    # against new content nested one level deeper.
-    assert locked_file.read_bytes() == b"old-exe"
-
-
-def test_build_swap_script_restarts_via_portablefix_exe_directly():
-    # Relaunch must target the GUI exe directly, not PortableFix.cmd - a
-    # Start-Process on the .cmd goes through cmd.exe, whose console window
-    # isn't reliably hidden on Windows 11 with Windows Terminal as the
-    # default terminal app (see build_swap_script's relaunch comment).
-    script = build_swap_script(
-        current_pid=1,
-        install_dir=Path(r"C:\App"),
-        zip_path=Path(r"C:\Temp\PortableFix-update.zip"),
-    )
-    assert "Start-Process -FilePath 'C:\\App\\App\\PortableFix.exe'" in script
-    assert "Start-Process -FilePath 'C:\\App\\PortableFix.cmd'" not in script
-
-
-from portablefix.updater import UpdateCheckRunner, UpdateDownloadRunner
-
-
 def test_update_check_runner_emits_none_when_no_update(qtbot):
     with patch("portablefix.updater.check_for_update", return_value=None):
         runner = UpdateCheckRunner("1.0.0")
@@ -811,7 +376,7 @@ def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
 def test_update_download_runner_forwards_progress_signal(qtbot, tmp_path):
     info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
 
-    def fake_download_update(info, dest_dir, on_progress=None):
+    def fake_download_update(info, dest_dir, on_progress=None, should_stop=None):
         on_progress(50, 100)
         on_progress(100, 100)
         return tmp_path / "PortableFix-update.zip"
@@ -825,6 +390,70 @@ def test_update_download_runner_forwards_progress_signal(qtbot, tmp_path):
     assert progress_calls == [(50, 100), (100, 100)]
 
 
+def test_download_update_stops_between_chunks_and_deletes_the_partial_file(tmp_path):
+    # Closing the app mid-download used to wait out the whole download (or
+    # destroy its QThread); now it stops at the next chunk.
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+    mock_resp = MagicMock()
+    mock_resp.read.side_effect = [b"a" * 10, b"b" * 10, b""]
+    mock_resp.getheader.return_value = "20"
+    mock_resp.__enter__.return_value = mock_resp
+    stop_after = iter([False, True])
+
+    with patch("portablefix.updater.urllib.request.urlopen", return_value=mock_resp) as urlopen:
+        with pytest.raises(updater_module.UpdateDownloadCancelled):
+            download_update(info, tmp_path / "dest", should_stop=lambda: next(stop_after))
+
+    assert mock_resp.read.call_count == 1
+    assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
+    # The .sha256 manifest is never fetched for a cancelled download.
+    assert urlopen.call_count == 1
+
+
+def test_copy_local_update_copies_and_verifies_without_touching_the_source(tmp_path):
+    source = tmp_path / "PortableFix-Portable.zip"
+    source.write_bytes(b"release" * 1000)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    progress = []
+
+    copied = updater_module.copy_local_update(
+        source, digest.upper(), tmp_path / "dest", on_progress=lambda d, t: progress.append((d, t)),
+    )
+
+    assert copied == tmp_path / "dest" / "PortableFix-update.zip"
+    assert copied.read_bytes() == source.read_bytes()
+    assert source.exists()
+    assert progress[-1] == (7000, 7000)
+
+
+@pytest.mark.parametrize("sha256", ["", "abc", "0" * 64])
+def test_copy_local_update_refuses_a_missing_or_wrong_hash(tmp_path, sha256):
+    source = tmp_path / "p.zip"
+    source.write_bytes(b"zip")
+
+    with pytest.raises(UpdateVerificationError):
+        updater_module.copy_local_update(source, sha256, tmp_path / "dest")
+
+    assert not (tmp_path / "dest" / "PortableFix-update.zip").exists()
+
+
+def test_update_download_runner_copies_a_local_zip_for_the_dev_switch(qtbot, tmp_path):
+    source = tmp_path / "p.zip"
+    source.write_bytes(b"zip")
+    info = UpdateInfo(version="p.zip (dev)", package_url=str(source), sha256_url=None, notes="")
+    runner = UpdateDownloadRunner(
+        info, tmp_path / "dest", local_zip=source, local_sha256=hashlib.sha256(b"zip").hexdigest(),
+    )
+    with qtbot.waitSignal(runner.download_finished, timeout=5000) as blocker:
+        runner.start()
+    assert blocker.args == [tmp_path / "dest" / "PortableFix-update.zip", ""]
+
+
 def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
     info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
     with patch("portablefix.updater.download_update", side_effect=UpdateVerificationError("bad hash")):
@@ -832,3 +461,208 @@ def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
         with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
             runner.start()
     assert blocker.args == [None, "bad hash"]
+
+
+@pytest.mark.parametrize("manifest", [b"", b"   \n", b"not-a-hash  PortableFix-Portable.zip"])
+def test_download_update_rejects_empty_or_malformed_manifest(tmp_path, manifest):
+    # Previously an empty manifest raised IndexError instead of a
+    # verification error, and a non-hash token was compared as-is.
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(b"fake-zip-content")
+        return _mock_response(manifest)
+
+    dest = tmp_path / "dest"
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(UpdateVerificationError):
+            download_update(info, dest)
+    assert not (dest / "PortableFix-update.zip").exists()
+
+
+def test_download_update_accepts_uppercase_manifest_hash_with_filename(tmp_path):
+    content = b"fake-zip-content"
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+    manifest = f"{hashlib.sha256(content).hexdigest().upper()}  PortableFix-Portable.zip\n".encode()
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(content)
+        return _mock_response(manifest)
+
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        result_path = download_update(info, tmp_path / "dest")
+    assert result_path.read_bytes() == content
+
+
+# --- Resilience of the update swap (docs/research/research-resilience.md 5.2-5.4, 4.3, 1.2) ---
+
+
+def test_recover_interrupted_swap_restores_only_missing_live_folders(tmp_path):
+    (tmp_path / "Modules.old").mkdir()
+    (tmp_path / "Modules.old" / "m.yaml").write_text("x")
+    (tmp_path / "Vendor").mkdir()
+    (tmp_path / "Vendor.old").mkdir()
+
+    restored = updater_module.recover_interrupted_swap(tmp_path)
+
+    assert restored == ["Modules"]
+    assert (tmp_path / "Modules" / "m.yaml").exists()
+    assert (tmp_path / "Vendor.old").exists()  # live Vendor present - left alone
+
+
+def test_consume_update_status_reads_once_then_deletes(tmp_path):
+    (tmp_path / "Data").mkdir()
+    updater_module.update_status_path(tmp_path).write_text("rolled_back\r\n", encoding="ascii")
+
+    assert updater_module.consume_update_status(tmp_path) == "rolled_back"
+    assert updater_module.consume_update_status(tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    "status, restored, expected",
+    [
+        (None, [], None),
+        ("ok", [], None),
+        ("in_progress", [], "update_status_interrupted"),
+        (None, ["Modules"], "update_status_interrupted"),
+        ("aborted", [], "update_status_failed"),
+        ("rolled_back", [], "update_status_failed"),
+        ("rollback_failed", [], "update_status_rollback_failed"),
+        ("ok_sums_stale", [], "update_status_sums_stale"),
+        # The app handed off, but the updater died before it wrote anything.
+        ("handed_off", [], "update_status_incomplete"),
+    ],
+)
+def test_update_status_message_key(status, restored, expected):
+    assert updater_module.update_status_message_key(status, restored) == expected
+
+
+def test_launcher_cmd_restores_app_folder_stranded_as_app_old():
+    # Without App\PortableFix.exe there is no Python code left to run any
+    # recovery - the launcher is the only thing that can put App.old back.
+    cmd = (Path(__file__).resolve().parent.parent / "PortableFix.cmd").read_text(encoding="utf-8")
+    restore = 'if not exist "%~dp0App\\" if exist "%~dp0App.old\\PortableFix.exe" move "%~dp0App.old" "%~dp0App"'
+    assert restore in cmd
+    assert cmd.index(restore) < cmd.rindex('"%~dp0App\\PortableFix.exe"')
+
+
+def test_launcher_cmd_never_rereads_itself_after_the_app_exits():
+    # cmd.exe waits on the app, then reads its next command from the batch
+    # file by byte offset - from the NEW launcher once an update replaced it.
+    # Starting the app and leaving on one line means nothing is read again.
+    root = Path(__file__).resolve().parent.parent
+    lines = [line for line in (root / "PortableFix.cmd").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert lines[-1] == '"%~dp0App\\PortableFix.exe" %* & exit /b'
+    assert "*.cmd text eol=crlf" in (root / ".gitattributes").read_text(encoding="utf-8").splitlines()
+
+
+def test_installer_starts_the_app_in_the_install_root_and_ships_data_by_allowlist():
+    iss = (Path(__file__).resolve().parent.parent / "installer" / "PortableFix.iss").read_text(encoding="utf-8")
+    # A current directory of App\ blocks the update's App -> App.old rename.
+    assert 'WorkingDir: "{app}\\App"' not in iss
+    assert iss.count('WorkingDir: "{app}";') == 3  # both shortcuts and the post-install launch
+    # The build machine's settings.json must never reach a user's install.
+    assert "Data\\*" not in iss
+    for name in update_swap.DATA_ALLOWLIST:
+        assert f'Source: "{{#RepoRoot}}\\Data\\{name}"; DestDir: "{{app}}\\Data"' in iss
+    for section in ("[InstallDelete]", "[UninstallDelete]"):
+        body = iss.split(section, 1)[1].split("\n[", 1)[0]
+        for name in ("_update_stage", "App.old", "Modules.old", "Vendor.old"):
+            assert f'Type: filesandordirs; Name: "{{app}}\\{name}"' in body, (section, name)
+
+
+def test_release_zip_ships_the_icon_and_data_by_allowlist():
+    script = (Path(__file__).resolve().parent.parent / "scripts" / "build_release_zip.ps1").read_text(encoding="utf-8")
+    assert 'Copy-Item "$root\\portablefix.ico" -Destination $stage' in script
+    allowlist = ", ".join(f'"{name}"' for name in update_swap.DATA_ALLOWLIST)
+    assert f"foreach ($name in @({allowlist}))" in script
+    assert 'Copy-Item "$root\\Data"' not in script
+
+
+def test_swap_backups_use_the_names_startup_recovery_restores(tmp_path):
+    # The swap script, recover_interrupted_swap and PortableFix.cmd must agree
+    # on X.old - a stick pulled mid-swap is only recoverable if they do.
+    from portablefix.update_swap import StagedUpdate, write_swap_job
+
+    staged = StagedUpdate(stage_dir=tmp_path / "_update_stage", stage_root=tmp_path / "_update_stage" / "PortableFix",
+                          file_count=0, byte_count=0)
+    job = write_swap_job(staged, tmp_path, [1], tmp_path / "logs")
+    for folder in json.loads(job.job_path.read_text(encoding="ascii"))["Folders"]:
+        assert Path(folder["Backup"]) == tmp_path / f"{folder['Name']}.old"
+        Path(folder["Backup"]).mkdir()
+    assert updater_module.recover_interrupted_swap(tmp_path) == ["App", "Modules", "Vendor"]
+
+
+def test_update_stage_runner_emits_the_staged_update(qtbot, tmp_path):
+    staged = updater_module.StagedUpdate(stage_dir=tmp_path, stage_root=tmp_path, file_count=1, byte_count=1)
+    calls = []
+
+    def fake_stage(zip_path, install_dir, should_stop=None, progress=None, version=None):
+        calls.append(version)
+        progress(50, 100)
+        return staged
+
+    with patch("portablefix.updater.stage_update", side_effect=fake_stage):
+        runner = updater_module.UpdateStageRunner(tmp_path / "u.zip", tmp_path, version="1.12.0")
+        progress = []
+        runner.progress.connect(lambda d, t: progress.append((d, t)))
+        with qtbot.waitSignal(runner.stage_finished, timeout=5000) as blocker:
+            runner.start()
+    assert blocker.args == [staged, ""]
+    assert calls == ["1.12.0"]
+    assert progress == [(50, 100)]
+
+
+def test_update_stage_runner_reports_progress_of_huge_packages_in_kib(qtbot, tmp_path):
+    def fake_stage(zip_path, install_dir, should_stop=None, progress=None, version=None):
+        progress(3 * 2**30, 4 * 2**30)
+        return None
+
+    with patch("portablefix.updater.stage_update", side_effect=fake_stage):
+        runner = updater_module.UpdateStageRunner(tmp_path / "u.zip", tmp_path)
+        progress = []
+        runner.progress.connect(lambda d, t: progress.append((d, t)))
+        with qtbot.waitSignal(runner.stage_finished, timeout=5000):
+            runner.start()
+    assert progress == [(3 * 2**20, 4 * 2**20)]
+
+
+def test_update_stage_runner_emits_the_error_text(qtbot, tmp_path):
+    with patch("portablefix.updater.stage_update", side_effect=updater_module.UpdateStageError("no Vendor")):
+        runner = updater_module.UpdateStageRunner(tmp_path / "u.zip", tmp_path)
+        with qtbot.waitSignal(runner.stage_finished, timeout=5000) as blocker:
+            runner.start()
+    assert blocker.args == [None, "no Vendor"]
+
+
+def test_update_launch_runner_emits_the_launch_result(qtbot, tmp_path):
+    result = updater_module.LaunchResult(ok=True, route="direct")
+    with patch("portablefix.updater.launch_swap", return_value=result) as launch:
+        runner = updater_module.UpdateLaunchRunner(object(), tmp_path)
+        with qtbot.waitSignal(runner.launch_finished, timeout=5000) as blocker:
+            runner.start()
+    assert blocker.args == [result]
+    assert launch.call_args.kwargs["should_stop"] is not None
+
+
+def test_update_launch_runner_turns_an_unexpected_error_into_a_failed_result(qtbot, tmp_path):
+    with patch("portablefix.updater.launch_swap", side_effect=ValueError("boom")):
+        runner = updater_module.UpdateLaunchRunner(object(), tmp_path)
+        with qtbot.waitSignal(runner.launch_finished, timeout=5000) as blocker:
+            runner.start()
+    (result,) = blocker.args
+    assert result.ok is False
+    assert result.reason == updater_module.REASON_SPAWN_ERROR
+    assert "boom" in result.detail
