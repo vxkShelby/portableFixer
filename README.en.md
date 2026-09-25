@@ -161,7 +161,9 @@ PowerShell.
   charge capacity, health in % and the cycle count. Verdict: GOOD above
   80 %, CAUTION 60 - 80 %, REPLACE below 60 %. With several batteries
   the worst one decides. A desktop gets NO BATTERY, firmware without
-  capacities UNKNOWN. *Schedule RAM test at next restart*
+  capacities UNKNOWN; a full charge capacity of 0 next to a valid design
+  capacity often means a dead battery, and the output says so.
+  *Schedule RAM test at next restart*
   (REQUIRES_REBOOT, not in "Select all") does what mdsched.exe does,
   without its dialog: `bcdedit /bootsequence {memdiag}` sets a one-time
   boot into the Windows Memory Diagnostic. **The PC is not restarted** -

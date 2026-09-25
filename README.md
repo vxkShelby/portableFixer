@@ -157,7 +157,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   hneď zmaže. Pre každú batériu vypíše menovitú a plnú kapacitu, zdravie
   v % a počet cyklov. Verdikt: GOOD nad 80 %, CAUTION 60 - 80 %,
   REPLACE pod 60 %. Pri viacerých batériách rozhoduje najhoršia.
-  Stolný počítač dostane NO BATTERY a firmvér bez kapacít UNKNOWN.
+  Stolný počítač dostane NO BATTERY a firmvér bez kapacít UNKNOWN;
+  plná kapacita 0 pri platnej menovitej často znamená mŕtvu batériu
+  a výpis na to upozorní.
   *Naplánovanie testu pamäte RAM pri reštarte* (REQUIRES_REBOOT, nie je
   vo „Vybrať všetko“) robí to isté ako mdsched.exe, ale bez dialógu:
   `bcdedit /bootsequence {memdiag}` nastaví jednorazový štart Windows

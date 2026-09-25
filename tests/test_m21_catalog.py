@@ -222,6 +222,15 @@ def test_battery_without_usable_capacities_is_unknown(tmp_path, design, full):
     assert "cycles unknown" in result.stdout
 
 
+@pytest.mark.parametrize("design, full, hint", [("60000", "0", True), ("0", "0", False), ("0", "40000", False)])
+def test_battery_zero_full_charge_hints_at_a_dead_battery(tmp_path, design, full, hint):
+    # The verdict stays UNKNOWN, but a zero full charge next to a valid
+    # design capacity is usually a dead battery the technician must not miss.
+    result, _, _ = _run_battery(tmp_path, report=_report(_battery(design=design, full=full)))
+    assert _verdict(result.stdout).startswith("VERDICT: UNKNOWN")
+    assert ("often means a dead battery" in result.stdout) is hint
+
+
 def test_battery_multi_battery_laptop_takes_the_worst(tmp_path):
     report = _report(_battery(full="57000", battery_id="INT"), _battery(full="30000", battery_id="EXT", cycles=None))
     result, _, temp = _run_battery(tmp_path, report=report)
@@ -286,11 +295,13 @@ OTHER_GUID = "{466f5a88-0af2-4f76-9038-095b170dc21c}"
 
 
 def _run_bcd(tmp_path, command, memdiag_exit=0, set_exit=0, set_takes_effect=True, hive_readable=True,
-             pending=False, delete_exit=0, element_denied=False, other_sequence=False):
+             pending=False, delete_exit=0, element_denied=False, other_sequence=False, subkey_denied=False):
     """bcdedit and the BCD registry hive: pending = {memdiag} already in the
     one-time boot sequence (other_sequence = another entry is);
     set_takes_effect = a successful /bootsequence really lands in the hive;
-    element_denied = the bootsequence element exists but cannot be read."""
+    element_denied = the bootsequence element exists but cannot be read;
+    subkey_denied = Test-Path cannot see the 24000002 subkey because reading
+    it is denied (Get-Item then fails with an access error, not "not found")."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     log = tmp_path / "calls.log"
     lg = _ps_quote(str(log))
@@ -316,10 +327,15 @@ def _run_bcd(tmp_path, command, memdiag_exit=0, set_exit=0, set_takes_effect=Tru
         f"Add-Content -Path {lg} -Value ('get ' + $LiteralPath + ' ' + $Name); "
         f"if ({_ps_bool(element_denied)}) {{ throw [System.Security.SecurityException]::new('Prístup odmietnutý.') }}; "
         "if ($global:pfSeq) { [pscustomobject]@{ Element = $global:pfSeq } } }",
+        # Only asked when Test-Path said the subkey is not there.
+        "function Get-Item { [CmdletBinding()] param([string] $LiteralPath) "
+        f"Add-Content -Path {lg} -Value ('item ' + $LiteralPath); "
+        f"if ({_ps_bool(subkey_denied)}) {{ throw [System.Security.SecurityException]::new('Prístup odmietnutý.') }}; "
+        "throw [System.Management.Automation.ItemNotFoundException]::new('Cesta neexistuje.') }",
         "function Restart-Computer { exit 96 }",
         "function shutdown.exe { exit 96 }",
     ]
-    names = ["bcdedit.exe", "Test-Path", "Get-ItemProperty", "Restart-Computer", "shutdown.exe"]
+    names = ["bcdedit.exe", "Test-Path", "Get-ItemProperty", "Get-Item", "Restart-Computer", "shutdown.exe"]
     result = _run_ps(stubs, names, command)
     assert result.returncode != 96, "the action tried to restart the PC"
     return result, _calls(log)
@@ -357,6 +373,9 @@ def test_mem_test_schedule_without_memdiag_entry_schedules_nothing(tmp_path):
     assert result.returncode == 1
     assert _bcdedit_calls(calls) == ["bcdedit /enum {memdiag}"]
     assert "exit code 1" in result.stdout
+    # bcdedit fails the same way without elevation - the message must not
+    # blame only a missing entry.
+    assert "not readable (needs administrator" in result.stdout
 
 
 def test_mem_test_schedule_bcdedit_failure_exits_non_zero(tmp_path):
@@ -392,6 +411,7 @@ def test_mem_test_schedule_preview_reports_missing_memdiag(tmp_path):
     result, calls = _run_bcd(tmp_path, _action(SCHEDULE_ID).preview_command, memdiag_exit=1)
     assert result.returncode == 0
     assert "would fail and schedule nothing" in result.stdout
+    assert "not readable (needs administrator" in result.stdout
     assert _bcdedit_calls(calls) == ["bcdedit /enum {memdiag}"]
 
 
@@ -436,6 +456,20 @@ def test_mem_test_schedule_unreadable_sequence_element_is_not_a_failure(tmp_path
     assert "not verifiable" in result.stdout
     preview, _ = _run_bcd(tmp_path / "p", _action(SCHEDULE_ID).preview_command, pending=True, element_denied=True)
     assert "next restart: unknown" in preview.stdout
+
+
+def test_mem_test_schedule_denied_sequence_subkey_is_not_a_false_failure(tmp_path):
+    # Test-Path answers $false for a subkey it may not read; only a real
+    # "not found" from Get-Item means the sequence did not land.
+    result, calls = _run_bcd(tmp_path, _action(SCHEDULE_ID).command, set_takes_effect=False, subkey_denied=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "not verifiable" in result.stdout
+    assert any(c.startswith("item ") and c.endswith("\\24000002") for c in calls)
+    preview, _ = _run_bcd(tmp_path / "p", _action(SCHEDULE_ID).preview_command, subkey_denied=True)
+    assert "next restart: unknown" in preview.stdout
+    undo, calls = _run_bcd(tmp_path / "u", _action(SCHEDULE_ID).undo_command, subkey_denied=True)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert _bcdedit_calls(calls) == ["bcdedit /deletevalue {bootmgr} bootsequence"]
 
 
 def test_mem_test_schedule_fails_when_another_boot_sequence_stays(tmp_path):
