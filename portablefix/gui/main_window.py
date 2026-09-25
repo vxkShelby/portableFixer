@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from . import style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
+from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -236,6 +236,9 @@ class MainWindow(QMainWindow):
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
         self._undo_steps: list[str] = []
+        # action_id -> the state file its running `ops:` command (research
+        # G10) captures the previous state into; undo is generated from it.
+        self._ops_state_paths: dict[str, Path] = {}
         # Non-SAFE changes that ran for real but have no undo_command -
         # listed in undo.ps1 so it never implies everything was reversible.
         self._irreversible_actions: list[str] = []
@@ -1066,8 +1069,15 @@ class MainWindow(QMainWindow):
             action.id,
             action.label(self.settings.language),
             action.description(self.settings.language),
-            action.command,
+            self._action_command_text(action),
         )).lower()
+
+    @staticmethod
+    def _action_command_text(action) -> str:
+        # An `ops:` action's command is kilobytes of generated engine code
+        # naming every op kind (ScheduledTask, sc.exe ...) - searching or
+        # reading it would say nothing about what this action changes.
+        return ops.describe(action.ops) if action.ops else action.command
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
@@ -1414,17 +1424,19 @@ class MainWindow(QMainWindow):
         description_label.setWordWrap(True)
         panel_layout.addWidget(description_label)
 
-        command_box = QPlainTextEdit(action.command)
+        command_box = QPlainTextEdit(self._action_command_text(action))
         command_box.setObjectName("actionDetailCommand")
         command_box.setReadOnly(True)
         command_box.setFixedHeight(60)
         panel_layout.addWidget(command_box)
 
-        if action.undo_command:
+        if action.has_undo:
             undo_label = QLabel(self._t("action_detail_undo_label"))
             undo_label.setObjectName("actionDetailLabel")
             panel_layout.addWidget(undo_label)
-            undo_box = QPlainTextEdit(action.undo_command)
+            # An ops action's undo only exists after it ran (it is made from
+            # the captured state) - say how it will restore instead.
+            undo_box = QPlainTextEdit(action.undo_command or self._t("action_detail_ops_undo"))
             undo_box.setObjectName("actionDetailCommand")
             undo_box.setReadOnly(True)
             undo_box.setFixedHeight(48)
@@ -4250,7 +4262,15 @@ class MainWindow(QMainWindow):
         if self.settings.dry_run and action.preview_command:
             plan = build_execution_plan(action.preview_command, dry_run=False, temp_protect=action_temp_protect)
         else:
-            plan = build_execution_plan(action.command, self.settings.dry_run, temp_protect=action_temp_protect)
+            ops_state = None
+            if action.ops and not self.settings.dry_run:
+                # A fresh file per run of the action: a second run in the
+                # same session must not overwrite the first capture.
+                ops_state = ops.state_file_path(self.state_dir, self.run_id, action.id)
+                self._ops_state_paths[action.id] = ops_state
+            plan = build_execution_plan(
+                action.command, self.settings.dry_run, temp_protect=action_temp_protect, ops_state=ops_state,
+            )
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()
@@ -4297,7 +4317,9 @@ class MainWindow(QMainWindow):
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
         if not self.settings.dry_run:
-            if exit_code == 0 and action.undo_command:
+            if action.ops:
+                self._record_ops_undo(action, exit_code)
+            elif exit_code == 0 and action.undo_command:
                 self._undo_steps.append(action.undo_command)
                 self._write_undo_script()
             elif not action.undo_command and action.risk != RiskLevel.SAFE:
@@ -4310,6 +4332,31 @@ class MainWindow(QMainWindow):
                 self._write_undo_script()
             self._after_restart_action(action, exit_code)
         self._run_next()
+
+    def _record_ops_undo(self, action: ActionDef, exit_code: int) -> None:
+        """Undo for an `ops:` action (research G10), generated from the state
+        its command captured. Also after a failure: the ops that did apply
+        before it are in the capture, and restoring one that never applied
+        writes back what is already there."""
+        state_path = self._ops_state_paths.pop(action.id, None)
+        try:
+            step = ops.undo_step(action.id, action.ops, state_path)
+        except ops.OpsStateError as exc:
+            step = None
+            problem = str(exc)
+        else:
+            if step is None and exit_code != 0:
+                # Refused before capturing anything - so nothing changed.
+                return
+            problem = "the state file with the previous values is missing"
+        if step is not None:
+            self._undo_steps.append(step)
+        else:
+            entry_text = f"[{action.risk.value}] {action.label(self.settings.language)} ({action.id}) - {problem}"
+            if exit_code != 0:
+                entry_text += f" - exit {exit_code}"
+            self._irreversible_actions.append(entry_text)
+        self._write_undo_script()
 
     def _after_restart_action(self, action: ActionDef, exit_code: int) -> None:
         """Research G03, after a real run of an action: stop the batch where

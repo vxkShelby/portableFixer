@@ -2,9 +2,11 @@ from pathlib import Path
 
 import yaml
 
+from . import ops as ops_engine
 from .models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 
-REQUIRED_ACTION_FIELDS = ("id", "label_sk", "label_en", "risk", "command")
+# Plus exactly one of "command" and "ops" (research G10).
+REQUIRED_ACTION_FIELDS = ("id", "label_sk", "label_en", "risk")
 
 
 class ModuleLoadError(ValueError):
@@ -37,6 +39,42 @@ def _optional_bool(path: Path, action_id: str, raw: dict, key: str) -> bool | No
     if not isinstance(value, bool):
         raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} {value!r} (expected true or false)")
     return value
+
+
+def _command_or_ops(path: Path, action_id: str, raw: dict, risk: RiskLevel, changes_system: bool | None):
+    """(command, preview_command, undo_command, ops) of one action: either
+    the hand-written command, or everything generated from `ops:`."""
+    has_command = "command" in raw
+    has_ops = "ops" in raw
+    if has_command == has_ops:
+        raise ModuleLoadError(f"{path}: action '{action_id}' must have either 'command' or 'ops' (exactly one)")
+    if has_command:
+        if "ops_message" in raw:
+            raise ModuleLoadError(f"{path}: action '{action_id}' has ops_message but no ops")
+        if not isinstance(raw["command"], str) or not raw["command"].strip():
+            raise ModuleLoadError(f"{path}: action '{action_id}' has an empty command")
+        return raw["command"], raw.get("preview_command"), raw.get("undo_command"), []
+    for generated in ("preview_command", "undo_command"):
+        if generated in raw:
+            # A hand-written undo next to ops would restore a fixed default
+            # over the exact captured state - the thing ops exist to avoid.
+            raise ModuleLoadError(
+                f"{path}: action '{action_id}' has ops, so its {generated} is generated - remove it"
+            )
+    if risk == RiskLevel.SAFE or changes_system is False:
+        # Every op changes the system: it needs a confirmation and the
+        # restore point like any other change.
+        raise ModuleLoadError(
+            f"{path}: action '{action_id}' has ops, which change the system - it cannot be SAFE "
+            "or set changes_system: false"
+        )
+    try:
+        op_list = ops_engine.parse_ops(raw["ops"])
+        message = ops_engine.check_message(raw.get("ops_message"))
+        command, preview_command = ops_engine.build(action_id, op_list, message)
+    except ops_engine.OpsError as exc:
+        raise ModuleLoadError(f"{path}: action '{action_id}': {exc}") from None
+    return command, preview_command, None, op_list
 
 
 def load_module(actions_yaml_path: Path) -> ModuleDef:
@@ -74,9 +112,10 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
         action_id = raw["id"]
         if not isinstance(action_id, str) or not action_id:
             raise ModuleLoadError(f"{actions_yaml_path}: action id must be a non-empty string, got {action_id!r}")
-        if not isinstance(raw["command"], str) or not raw["command"].strip():
-            raise ModuleLoadError(f"{actions_yaml_path}: action '{action_id}' has an empty command")
         changes_system = _optional_bool(actions_yaml_path, action_id, raw, "changes_system")
+        command, preview_command, undo_command, op_list = _command_or_ops(
+            actions_yaml_path, action_id, raw, risk, changes_system,
+        )
         if changes_system is False and risk == RiskLevel.DESTRUCTIVE:
             # A DESTRUCTIVE action always gets the restore point - there is
             # no "irreversible but not worth a safety net".
@@ -97,11 +136,11 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 label_sk=raw["label_sk"],
                 label_en=raw["label_en"],
                 risk=risk,
-                command=raw["command"],
+                command=command,
                 description_sk=raw.get("description_sk", ""),
                 description_en=raw.get("description_en", ""),
-                preview_command=raw.get("preview_command"),
-                undo_command=raw.get("undo_command"),
+                preview_command=preview_command,
+                undo_command=undo_command,
                 inactivity_timeout_sec=_optional_positive_int(
                     actions_yaml_path, action_id, raw, "inactivity_timeout_sec"
                 ),
@@ -113,6 +152,7 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 stresses_disk=_optional_bool(actions_yaml_path, action_id, raw, "stresses_disk") is True,
                 restarts_pc=restarts_pc,
                 restart_before_next=restart_before_next,
+                ops=op_list,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

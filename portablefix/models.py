@@ -54,6 +54,16 @@ class ActionDef:
     # against: when it succeeds, the batch stops and what is left is offered
     # again on the next start of PortableFix (research G03).
     restart_before_next: bool = False
+    # Declarative operations (research G10, portablefix/ops.py) instead of a
+    # hand-written command. When set, command and preview_command are
+    # generated from them, and undo is generated after the run from the
+    # state it captured - so undo_command stays None and has_undo is the
+    # question to ask.
+    ops: list = field(default_factory=list)
+
+    @property
+    def has_undo(self) -> bool:
+        return bool(self.undo_command or self.ops)
 
     def label(self, language: str) -> str:
         return self.label_en if language == "en" else self.label_sk

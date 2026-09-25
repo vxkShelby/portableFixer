@@ -103,15 +103,15 @@ def warning_text_for(action: ActionDef, language: str) -> str:
     if action.risk == RiskLevel.SAFE:
         return ""
     if action.risk == RiskLevel.DESTRUCTIVE:
-        # A few DESTRUCTIVE actions do have an undo_command - never claim
+        # A few DESTRUCTIVE actions do have an undo - never claim
         # "cannot be undone" for them.
-        key = "review_note_destructive_undo" if action.undo_command else "review_note_destructive"
+        key = "review_note_destructive_undo" if action.has_undo else "review_note_destructive"
     else:
         key = "review_note_risky"
     text = f"[{action.risk.value}] {action.label(language)}\n\n{i18n.translate(key, language)}"
     if action.risk == RiskLevel.REQUIRES_REBOOT:
         text += " " + i18n.translate("review_note_reboot", language)
-    if not action.undo_command and action.risk != RiskLevel.DESTRUCTIVE:
+    if not action.has_undo and action.risk != RiskLevel.DESTRUCTIVE:
         text += " " + i18n.translate("review_note_no_undo", language)
     return text
 
@@ -128,7 +128,7 @@ def build_review(
             label=action.label(language),
             risk=action.risk,
             warning_text=warning_text_for(action, language),
-            irreversible=action.risk != RiskLevel.SAFE and not action.undo_command,
+            irreversible=action.risk != RiskLevel.SAFE and not action.has_undo,
             needs_reboot=action.risk == RiskLevel.REQUIRES_REBOOT,
             restore_point=preflight.needs_restore_point(module, action),
         ))

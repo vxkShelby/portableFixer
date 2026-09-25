@@ -103,20 +103,23 @@ def test_m09_catalog_undo_commands_on_all_moderate_and_reboot_actions():
         "tune_pause_background_services",
         "storage_sense_enable",
     ):
-        assert by_id[undoable].undo_command is not None, undoable
+        # has_undo: the migrated registry tweaks (research G10) generate
+        # their undo from the state they capture instead of an undo_command.
+        assert by_id[undoable].has_undo, undoable
     assert by_id["tune_power_plan_report"].undo_command is None
     assert by_id["tune_startup_apps_report"].undo_command is None
 
 
-def test_m09_catalog_new_tweaks_refresh_backup_on_every_run():
-    # These three follow the "always overwrite" backup pattern (not the
-    # older "only on first run" one that lost data between two runs) -
-    # confirm none of them guard the backup write with a Test-Path check.
+def test_m09_catalog_new_tweaks_capture_state_on_every_run():
+    # These three used to keep one backup in %ProgramData% (first "only on
+    # first run", later "always overwrite"); as ops (research G10) every run
+    # captures its own state file, so neither loss can happen.
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
     for action_id in ("tune_gpu_hardware_scheduling", "tune_foreground_priority", "tune_disable_game_dvr"):
-        command = by_id[action_id].command
-        assert "if (-not (Test-Path $bk))" not in command, action_id
+        action = by_id[action_id]
+        assert action.ops and action.undo_command is None, action_id
+        assert "ProgramData" not in action.command, action_id
 
 
 def test_m09_catalog_power_undo_restores_balanced_plan():
@@ -650,3 +653,144 @@ def test_m09_catalog_scripts_parse_without_powershell_7_only_syntax(tmp_path):
     )
     assert "PARSE_DONE" in result.stdout, result.stdout + result.stderr
     assert [line for line in result.stdout.splitlines() if line.startswith("ERR")] == []
+
+
+
+# --- G10 declarative ops -----------------------------------------------------
+#
+# The registry tweaks whose undo used to write a fixed Windows default (or a
+# single %ProgramData% backup) are `ops:` now: every run captures the exact
+# previous state and undo restores it. They run here against the in-memory
+# machine of tests/ops_rig.py.
+
+from ops_rig import Machine, command_with_state  # noqa: E402
+
+from portablefix import ops  # noqa: E402
+
+MIGRATED_TO_OPS = {
+    "tune_visual_effects_performance",
+    "tune_end_task_taskbar",
+    "tune_sticky_keys_disable",
+    "tune_classic_context_menu",
+    "tune_gpu_hardware_scheduling",
+    "tune_foreground_priority",
+    "tune_disable_game_dvr",
+}
+
+
+def test_m09_registry_tweaks_are_declarative_ops_with_generated_preview():
+    module = load_module(CATALOG_PATH)
+    with_ops = {a.id for a in module.actions if a.ops}
+    assert with_ops == MIGRATED_TO_OPS
+    for action in module.actions:
+        if action.ops:
+            assert action.undo_command is None and action.has_undo, action.id
+            assert action.preview_command == ops.preview_script(action.ops), action.id
+            assert action.risk != RiskLevel.SAFE, action.id
+
+
+def test_m09_migrated_actions_keep_their_settings():
+    by_id = {a.id: a for a in load_module(CATALOG_PATH).actions}
+
+    def settings(action_id):
+        return {(op.path, op.name): (op.type, op.value) for op in by_id[action_id].ops}
+
+    advanced = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
+    assert settings("tune_visual_effects_performance") == {
+        ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects", "VisualFXSetting"): ("DWord", 2),
+        ("HKCU\\Control Panel\\Desktop\\WindowMetrics", "MinAnimate"): ("String", "0"),
+        (advanced, "TaskbarAnimations"): ("DWord", 0),
+        (advanced, "ListviewAlphaSelect"): ("DWord", 0),
+        (advanced, "ListviewShadow"): ("DWord", 0),
+        ("HKCU\\Software\\Microsoft\\Windows\\DWM", "EnableTransparency"): ("DWord", 0),
+    }
+    assert settings("tune_end_task_taskbar") == {(advanced + "\\TaskbarDeveloperSettings", "TaskbarEndTask"): ("DWord", 1)}
+    assert settings("tune_sticky_keys_disable") == {("HKCU\\Control Panel\\Accessibility\\StickyKeys", "Flags"): ("String", "506")}
+    assert settings("tune_classic_context_menu") == {
+        ("HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32", "(default)"): ("String", ""),
+    }
+    assert settings("tune_gpu_hardware_scheduling") == {
+        ("HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers", "HwSchMode"): ("DWord", 2),
+    }
+    assert settings("tune_foreground_priority") == {
+        ("HKLM\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl", "Win32PrioritySeparation"): ("DWord", 38),
+    }
+    assert settings("tune_disable_game_dvr") == {
+        ("HKCU\\System\\GameConfigStore", "GameDVR_Enabled"): ("DWord", 0),
+        ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR", "AppCaptureEnabled"): ("DWord", 0),
+    }
+
+
+def test_m09_migrated_descriptions_promise_the_exact_undo_not_a_default():
+    by_id = {a.id: a for a in load_module(CATALOG_PATH).actions}
+    for action_id in MIGRATED_TO_OPS:
+        action = by_id[action_id]
+        for text in (action.description_sk, action.description_en):
+            assert "(58)" not in text and "automatic mode" not in text and "automatický režim" not in text, action_id
+            assert "zálohovan" not in text and "backed-up" not in text, action_id
+        if any(op.path.startswith("HKCU\\") for op in action.ops):
+            assert "HKCU" in action.description_sk and "HKCU" in action.description_en, action_id
+
+
+def _customer_machine(tmp_path, action):
+    """A PC where every value the action sets already holds a customer's
+    own setting of another type - the case a fixed-default undo got wrong."""
+    registry = {}
+    for index, op in enumerate(action.ops):
+        registry.setdefault(op.path, {})[op.name] = ("String", f"custom-{index}")
+    return Machine(tmp_path, registry=registry)
+
+
+def _fresh_machine(tmp_path):
+    # Only the first level under the hives exists: every deeper key the
+    # action needs is created by it, and undo must take all of them away.
+    return Machine(tmp_path, registry={"HKCU\\Software": {}, "HKCU\\System": {}, "HKCU\\Control Panel": {},
+                                       "HKLM\\SYSTEM\\CurrentControlSet\\Control": {}})
+
+
+@pytest.mark.parametrize("action_id", sorted(MIGRATED_TO_OPS))
+@pytest.mark.parametrize("machine_kind", ["customer", "fresh"])
+def test_m09_migrated_action_round_trip_restores_the_exact_previous_state(tmp_path, action_id, machine_kind):
+    action = _action(action_id)
+    machine = _customer_machine(tmp_path, action) if machine_kind == "customer" else _fresh_machine(tmp_path)
+    before = machine.registry()
+    state_path = ops.state_file_path(tmp_path, "run1", action_id)
+    result = machine.run(command_with_state(action.command, state_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    for op in action.ops:
+        assert machine.values(op.path)[op.name] == (op.type, op.value), op
+    assert "Previous state saved to" in result.stdout
+
+    step = ops.undo_step(action_id, action.ops, state_path)
+    result = machine.run(step)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FAILED" not in result.stdout
+    assert machine.registry() == before
+
+
+def test_m09_migrated_action_prints_its_message_and_what_changed(tmp_path):
+    action = _action("tune_end_task_taskbar")
+    machine = _fresh_machine(tmp_path)
+    result = machine.run(command_with_state(action.command, ops.state_file_path(tmp_path, "r", action.id)))
+    assert "TaskbarEndTask: absent -> 1 (DWord)" in result.stdout
+    assert "End Task added to taskbar right-click menu (takes effect after Explorer restart/sign-in)." in result.stdout
+    result = machine.run(action.preview_command)
+    assert (
+        "Would skip: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings"
+        "\\TaskbarEndTask is already 1 (DWord) - unchanged."
+    ) in result.stdout
+
+
+def test_m09_sticky_keys_undo_after_two_runs_returns_the_customer_value(tmp_path):
+    # The old backup was written only on the first run and fell back to the
+    # Windows default (58) without it; each run now has its own capture.
+    action = _action("tune_sticky_keys_disable")
+    machine = Machine(tmp_path, registry={"HKCU\\Control Panel\\Accessibility\\StickyKeys": {"Flags": ("String", "511")}})
+    steps = []
+    for _ in range(2):
+        path = ops.state_file_path(tmp_path, "run1", action.id)
+        assert machine.run(command_with_state(action.command, path)).returncode == 0
+        steps.append(ops.undo_step(action.id, action.ops, path))
+    for step in reversed(steps):
+        assert machine.run(step).returncode == 0
+    assert machine.values("HKCU\\Control Panel\\Accessibility\\StickyKeys") == {"Flags": ("String", "511")}
