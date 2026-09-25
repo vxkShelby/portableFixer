@@ -64,7 +64,7 @@ def test_m17_catalog_reports_guard_against_suppressed_error_exit_code_1():
     # code to 1 even though nothing actually failed. Each report guards this.
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    assert "if (Test-Path $ffDir)" in by_id["browser_extensions_report"].command
+    assert "if (Test-Path -LiteralPath $ffDir -PathType Container)" in by_id["browser_extensions_report"].command
     assert "'--- End ---'" in by_id["browser_policy_report"].command
     assert "'--- End ---'" in by_id["browser_homepage_search_report"].command
 
@@ -279,6 +279,33 @@ def test_m17_homepage_report_shows_every_profile_of_every_browser(tmp_path):
     assert out.rstrip().endswith("--- End ---")
 
 
+def test_m17_homepage_report_falls_back_to_the_search_engine_short_name(tmp_path):
+    # Current Chromium mostly drops default_search_provider.name; the engine's
+    # name lives only in template_url_data.short_name.
+    local = tmp_path / "Local"
+    _prefs(local / "Google" / "Chrome" / "User Data" / "Default", {
+        "default_search_provider_data": {"template_url_data": {
+            "short_name": "HijackSearch", "url": "http://search.hijacker.example/?q={searchTerms}"}},
+    })
+    result, _ = _run_browser_ps(tmp_path, _m17("browser_homepage_search_report").command, local, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Default search: HijackSearch" in result.stdout.splitlines(), result.stdout
+
+
+def test_m17_extensions_report_finds_firefox_profiles_under_a_path_with_brackets(tmp_path):
+    # A user name with [ ] must not turn the Firefox profile path into a
+    # wildcard that silently matches nothing.
+    roaming = tmp_path / "Roaming [x]"
+    p = roaming / "Mozilla" / "Firefox" / "Profiles" / "a1.default-release"
+    p.mkdir(parents=True)
+    (p / "extensions.json").write_text(json.dumps({"addons": [{"defaultLocale": {"name": "uBlock"}, "active": True}]}),
+                                       encoding="utf-8")
+    result, _ = _run_browser_ps(tmp_path, _m17("browser_extensions_report").command, tmp_path / "Local", roaming)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--- Firefox / a1.default-release (1 extensions) ---" in result.stdout, result.stdout
+    assert "  enabled   uBlock" in result.stdout.splitlines(), result.stdout
+
+
 def _reset_tree(local: Path, rel: str) -> Path:
     root = local.joinpath(*rel.split("/"))
     _chromium_profile(root / "Default")
@@ -305,6 +332,9 @@ def test_m17_profile_reset_refuses_while_the_browser_runs_and_changes_nothing(tm
     assert result.returncode == 1, result.stdout + result.stderr
     assert f"{label} is running - refusing to reset the profile" in result.stdout
     assert "Nothing was changed." in result.stdout
+    # Startup boost keeps msedge alive with every window closed and out of the
+    # tray - "close Edge" alone would send the technician into the same refusal.
+    assert ("Startup boost" in result.stdout) == (proc == "msedge"), result.stdout
     assert sorted(p.name for p in root.iterdir()) == before
     assert (root / "Default" / "Preferences").exists()
     assert stops == []

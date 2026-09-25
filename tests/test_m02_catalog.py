@@ -552,8 +552,22 @@ def test_browser_cache_sweep_skips_and_names_a_running_browser_without_closing_i
         "Skipped, browser running (close it completely, including background apps in the tray, and run again): "
         "Chrome, Opera, Opera GX, Firefox"
     ) in out, out
+    assert "Startup boost" not in out, out  # Edge was not running
     assert "Swept 15 cache folder(s), skipped/locked: 0, freed 15 MB" in out, out
     assert stops == []  # never closed
+
+
+def test_browser_cache_sweep_a_running_edge_points_at_startup_boost(tmp_path):
+    # Startup boost keeps msedge running with every window closed and not in
+    # the tray, so "close it completely" alone does not unblock the sweep.
+    t = _browser_tree(tmp_path)
+    result, stops = _run_browser_ps(tmp_path, _sweep_action().command, t["local"], t["roaming"], running=("msedge",))
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    _assert_untouched(t["edge_default"])
+    assert "Skipped, browser running (close it completely, including background apps in the tray, and run again): Edge" in out
+    assert "Startup boost" in out and "Task Manager" in out, out
+    assert stops == []
 
 
 def test_browser_cache_sweep_a_running_but_absent_browser_is_not_reported(tmp_path):
