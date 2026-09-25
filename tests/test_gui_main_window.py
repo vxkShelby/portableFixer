@@ -4574,7 +4574,9 @@ def test_closing_during_an_uninstall_waits_for_the_running_one_and_skips_the_res
 
     window.close()
 
-    assert waits == [(uninstaller.UNINSTALL_TIMEOUT_SEC * 1000 + 10_000,)]
+    # Uncapped (research G15): an interactive uninstaller has no timeout, so
+    # any cap could run out and destroy the live QThread.
+    assert waits == [()]
     assert runner.isFinished()
     assert ran == ["One"]
 
@@ -6938,3 +6940,139 @@ def test_resume_rebases_hive_backups_and_reports_a_missing_one(qtbot, tmp_path, 
     [event] = _system_events(audit_log_path(tmp_path, "run_resume_hive"), "resume_hive_backup_missing")
     assert str(gone) in event["output"] and str(present) not in event["output"]
     assert i18n.translate("resume_hive_backup_missing", "en").format(paths=str(gone)) in window.console.toPlainText()
+
+
+# --- research G15: silent uninstall, two queues, msiexec exit codes ---------------------------
+
+_G15_GUID_A = "{AAAAAAAA-1111-2222-3333-444444444444}"
+_G15_GUID_B = "{BBBBBBBB-1111-2222-3333-444444444444}"
+
+
+def _g15_msi_program(name, guid):
+    import dataclasses
+
+    return dataclasses.replace(
+        _fake_installed_program(name, plain=f"MsiExec.exe /I{guid}"), windows_installer=True,
+    )
+
+
+def _g15_wait_for_uninstall(qtbot, window, card, log_path, count):
+    from portablefix.gui.main_window import _thread_running
+
+    button = _panel_button(card, window._t("uninstaller_uninstall_button"))
+
+    def done() -> bool:
+        entries = [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+        return button.isEnabled() and len(entries) == count
+
+    qtbot.waitUntil(done, timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._uninstall_runner), timeout=10000)
+    return [e for e in _audit_entries(log_path) if e["module_id"] == "_uninstaller"]
+
+
+def test_uninstaller_dry_run_shows_both_queues_and_the_msi_silent_command(qtbot, tmp_path, monkeypatch):
+    from portablefix import uninstaller
+
+    msi = _g15_msi_program("Msi App", _G15_GUID_A)
+    loud = _fake_installed_program("Loud App", plain="loud.exe")
+    monkeypatch.setattr(uninstaller, "UninstallRunner", _refuse_runner("UninstallRunner"))
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g15_dry", [msi, loud], dry_run=True)
+
+    _panel_checkbox(card, "Msi App").setChecked(True)
+    _panel_checkbox(card, "Loud App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    console_text = _panel_console_text(card)
+    assert window._t("uninstaller_queue_interactive_heading").format(count=1, programs="Loud App") in console_text
+    assert window._t("uninstaller_queue_silent_heading").format(
+        count=1, programs="Msi App", minutes=uninstaller.UNINSTALL_TIMEOUT_SEC // 60,
+    ) in console_text
+    entries = [e for e in _audit_entries(audit_log_path(tmp_path, "run_g15_dry")) if e["module_id"] == "_uninstaller"]
+    # Interactive queue first, then the silent one.
+    assert [e["action_id"] for e in entries] == ["Loud App", "Msi App"]
+    msi_command = entries[1]["command"]
+    log_file = tmp_path / "Logs" / "run_g15_dry_msi" / f"msi_uninstall_{_G15_GUID_A.strip('{}')}.log"
+    assert f"msiexec.exe /x {_G15_GUID_A} /qn /norestart /l*v" in msi_command
+    assert str(log_file) in msi_command
+    # The registry's "MsiExec.exe /I{...}" (maintenance dialog) never runs.
+    assert "/I{" not in msi_command
+    assert all(e["dry_run"] is True for e in entries)
+    assert entries[0]["command"] == "loud.exe"
+
+
+def test_uninstaller_confirm_names_each_queue_and_runs_interactive_first_without_timeout(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point, uninstall_plan, uninstaller
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
+    inno = _fake_installed_program("Inno App", plain=r"C:\App\unins000.exe")
+    loud = _fake_installed_program("Loud App", plain="loud.exe")
+    seen = []
+
+    def fake_uninstall(program, timeout_sec=None, plan=None):
+        seen.append((program.name, timeout_sec, plan.command))
+        return uninstall_plan.UninstallResult(True, "", 0, uninstall_plan.OUTCOME_OK)
+
+    monkeypatch.setattr(uninstaller, "uninstall_program", fake_uninstall)
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g15_queues", [inno, loud], dry_run=False)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: shown.append(text) or QMessageBox.Yes)
+
+    _panel_checkbox(card, "Inno App").setChecked(True)
+    _panel_checkbox(card, "Loud App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    log_path = audit_log_path(tmp_path, "run_g15_queues")
+    entries = _g15_wait_for_uninstall(qtbot, window, card, log_path, 2)
+
+    lines = shown[0].splitlines()
+    interactive_marker = window._t("uninstaller_confirm_interactive_marker")
+    silent_marker = window._t("uninstaller_confirm_silent_marker")
+    assert any("Loud App" in line and interactive_marker in line and silent_marker not in line for line in lines)
+    assert any(
+        "Inno App" in line and silent_marker in line and window._t("uninstaller_kind_inno") in line for line in lines
+    )
+    assert window._t("uninstaller_confirm_queues_note").format(
+        minutes=uninstaller.UNINSTALL_TIMEOUT_SEC // 60,
+    ) in shown[0]
+    inno_command = r"C:\App\unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+    # The interactive one first and with no timeout; the silent one keeps it.
+    assert seen == [("Loud App", None, "loud.exe"), ("Inno App", uninstaller.UNINSTALL_TIMEOUT_SEC, inno_command)]
+    assert {e["action_id"]: e["command"] for e in entries} == {"Loud App": "loud.exe", "Inno App": inno_command}
+    assert all(e["warning_text"] == shown[0] for e in entries)
+    console_text = _panel_console_text(card)
+    assert window._t("uninstaller_queue_interactive_heading").format(count=1, programs="Loud App") in console_text
+
+
+def test_uninstaller_msi_busy_keeps_the_row_and_reboot_required_is_shown(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix import restore_point, uninstall_plan, uninstaller
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
+    busy = _g15_msi_program("Busy App", _G15_GUID_A)
+    reboot = _g15_msi_program("Reboot App", _G15_GUID_B)
+    results = {
+        "Busy App": uninstall_plan.UninstallResult(
+            False, "msiexec 1618: another installation is in progress", 1618, uninstall_plan.OUTCOME_BUSY_RETRY,
+        ),
+        "Reboot App": uninstall_plan.UninstallResult(
+            True, "msiexec 3010: uninstalled", 3010, uninstall_plan.OUTCOME_REBOOT_REQUIRED,
+        ),
+    }
+    monkeypatch.setattr(uninstaller, "uninstall_program", lambda p, *a, **k: results[p.name])
+    window, card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_g15_codes", [busy, reboot], dry_run=False)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.Yes)
+
+    _panel_checkbox(card, "Busy App").setChecked(True)
+    _panel_checkbox(card, "Reboot App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    entries = _g15_wait_for_uninstall(qtbot, window, card, audit_log_path(tmp_path, "run_g15_codes"), 2)
+
+    console_text = _panel_console_text(card)
+    assert window._t("uninstaller_outcome_busy_retry") in console_text
+    assert window._t("uninstaller_outcome_reboot_required") in console_text
+    by_name = {e["action_id"]: e for e in entries}
+    assert by_name["Busy App"]["exit_code"] == 1 and "1618" in by_name["Busy App"]["output"]
+    assert by_name["Reboot App"]["exit_code"] == 0 and "3010" in by_name["Reboot App"]["output"]
+    # 1618: still installed - the row stays for a retry; 3010: removed.
+    qtbot.waitUntil(lambda: not any(cb.text().startswith("Reboot App") for cb in card.findChildren(QCheckBox)))
+    assert any(cb.text().startswith("Busy App") for cb in card.findChildren(QCheckBox))

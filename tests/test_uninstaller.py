@@ -1,3 +1,4 @@
+import sys
 import winreg
 
 import pytest
@@ -130,33 +131,33 @@ def test_uninstall_program_prefers_quiet_string_over_plain():
         QuietUninstallString="cmd /c echo QUIET",
     )
     program = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)[0]
-    ok, output = uninstaller.uninstall_program(program)
-    assert ok is True
-    assert "QUIET" in output
-    assert "PLAIN" not in output
+    result = uninstaller.uninstall_program(program)
+    assert result.ok is True
+    assert "QUIET" in result.output
+    assert "PLAIN" not in result.output
 
 
 def test_uninstall_program_falls_back_to_plain_string():
     _make_entry("App1", DisplayName="Test App", UninstallString="cmd /c echo PLAIN")
     program = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)[0]
-    ok, output = uninstaller.uninstall_program(program)
-    assert ok is True
-    assert "PLAIN" in output
+    result = uninstaller.uninstall_program(program)
+    assert result.ok is True
+    assert "PLAIN" in result.output
 
 
 def test_uninstall_program_returns_false_when_no_uninstall_command():
     _make_entry("App1", DisplayName="Test App")
     program = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)[0]
-    ok, message = uninstaller.uninstall_program(program)
-    assert ok is False
-    assert "No uninstall command" in message
+    result = uninstaller.uninstall_program(program)
+    assert result.ok is False
+    assert "No uninstall command" in result.output
 
 
 def test_uninstall_program_reports_failure_on_nonzero_exit():
     _make_entry("App1", DisplayName="Test App", UninstallString="cmd /c exit 1")
     program = uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)[0]
-    ok, _ = uninstaller.uninstall_program(program)
-    assert ok is False
+    result = uninstaller.uninstall_program(program)
+    assert result.ok is False and result.exit_code == 1
 
 
 def _program(name: str, **fields) -> uninstaller.InstalledProgram:
@@ -320,3 +321,73 @@ def test_uninstall_runner_stops_between_programs_once_interrupted(qtbot, monkeyp
         release.set()
     runner.wait(10000)
     assert ran == ["One"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads the real registry")
+def test_list_installed_programs_reads_installer_type_hints():
+    # Research G15: WindowsInstaller=1, Inno's own "Inno Setup: ..." values
+    # and an NSIS mention anywhere in the entry pick the silent switches.
+    _make_entry("{AAAAAAAA-1111-2222-3333-444444444444}", DisplayName="Msi App", WindowsInstaller=1)
+    _make_entry("App2", DisplayName="Inno App", **{"Inno Setup: App Path": r"C:\Inno"})
+    _make_entry("App3", DisplayName="Nsis App", Comments="Made with NSIS")
+    _make_entry("App4", DisplayName="Plain App", WindowsInstaller=0)
+    programs = {p.name: p for p in uninstaller.list_installed_programs(reg_paths=_TEST_REG_PATHS)}
+    assert programs["Msi App"].windows_installer is True
+    assert programs["Inno App"].inno_setup is True
+    assert programs["Nsis App"].nsis_marker is True
+    plain = programs["Plain App"]
+    assert (plain.windows_installer, plain.inno_setup, plain.nsis_marker) == (False, False, False)
+
+
+def test_uninstall_program_never_goes_through_a_shell(monkeypatch):
+    # Registry text reaches CreateProcess as argv - no "cmd /c" wrapper that
+    # would give "&" a meaning.
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return _completed(args, 0)
+
+    monkeypatch.setattr(uninstaller.uninstall_plan.subprocess, "run", fake_run)
+    program = _program("App", uninstall_string=r'"C:\App\remove.exe" & calc')
+    result = uninstaller.uninstall_program(program)
+    assert result.ok is True
+    args, kwargs = calls[0]
+    assert args == [r"C:\App\remove.exe", "&", "calc"] and kwargs["shell"] is False
+
+
+def test_program_command_is_the_planned_silent_command():
+    guid = "{AAAAAAAA-1111-2222-3333-444444444444}"
+    program = _program("Msi", uninstall_string=f"MsiExec.exe /I{guid}", windows_installer=True)
+    command = uninstaller.program_command(program)
+    assert command.endswith(f"msiexec.exe /x {guid} /qn /norestart")
+    assert "/I" not in command
+    assert uninstaller.program_command(_program("None")) is None
+
+
+def test_uninstall_runner_uses_the_timeout_only_for_the_silent_queue(qtbot, monkeypatch):
+    from portablefix import uninstall_plan
+
+    seen = []
+
+    def fake_uninstall(program, timeout_sec=None, plan=None):
+        seen.append((program.name, timeout_sec, plan.kind))
+        busy = program.name == "Busy"
+        return uninstall_plan.UninstallResult(not busy, "", 0, "busy_retry" if busy else "ok")
+
+    monkeypatch.setattr(uninstaller, "uninstall_program", fake_uninstall)
+    plans = {
+        "Clicky": uninstall_plan.UninstallPlan(uninstall_plan.KIND_INTERACTIVE, ("u.exe",), False),
+        "Busy": uninstall_plan.UninstallPlan(uninstall_plan.KIND_MSI, ("msiexec.exe",), True),
+    }
+    runner = uninstaller.UninstallRunner([_program("Clicky"), _program("Busy")], plans=plans)
+    finished = []
+    runner.program_finished.connect(lambda *args: finished.append(args))
+    with qtbot.waitSignal(runner.all_finished, timeout=10000):
+        runner.start()
+    runner.wait(10000)
+    assert seen == [
+        ("Clicky", None, uninstall_plan.KIND_INTERACTIVE),
+        ("Busy", uninstaller.UNINSTALL_TIMEOUT_SEC, uninstall_plan.KIND_MSI),
+    ]
+    assert finished == [("Clicky", True, "", "ok"), ("Busy", False, "", "busy_retry")]
