@@ -183,7 +183,7 @@ def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_prope
     )
     windows = tmp / "Windows"
     env = {
-        "SystemRoot": str(windows), "windir": str(windows),
+        "SystemRoot": str(windows),
         "ProgramData": str(tmp / "ProgramData"), "APPDATA": str(tmp / "AppData"),
         "PFTEST": str(tmp / "tools"),
     }
@@ -329,7 +329,7 @@ def signed_view(tmp_path_factory):
     tasks = [
         ("\\Vendor\\", "Updater", "Ready", [{"Execute": str(app), "Arguments": "/bg"}]),
         ("\\Microsoft\\Windows\\Maintenance\\", "WinSAT", "Ready",
-         [{"Execute": "%windir%\\system32\\rundll32.exe", "Arguments": "shell32.dll,Maintain"}]),
+         [{"Execute": "%SystemRoot%\\system32\\rundll32.exe", "Arguments": "shell32.dll,Maintain"}]),
         ("\\Vendor\\", "Old", "Disabled", [{"Execute": str(vendor / "disabled.exe")}]),
         ("\\Vendor\\", "ComOnly", "Ready", [{"ClassId": "{0F87369F-A4E5-4CFC-BD3E-73E6154572DD}"}]),
     ]
