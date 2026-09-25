@@ -345,6 +345,27 @@ PowerShell.
 
 ## Safety mechanisms
 
+- **Signed-in user's profile:** when the technician elevates with their
+  own admin account (the client stays signed in), PortableFix runs as a
+  different account than the one that owns the desktop. At start it
+  compares the owner SID of `explorer.exe` in its own session (over RDP
+  that is the RDP session, not the console; without explorer the WTS
+  session user decides) with the SID of its own process. When they
+  differ, a strip under the top bar says "User settings will go to the
+  profile of <user> (signed in), not the technician's profile". Every
+  action gets `$__pfUserHive` (`Registry::HKEY_USERS\<SID>`, the own
+  account's hive when nothing differs) and `$__pfUserSid`. The M13
+  actions that change user settings (Start suggestions, web results,
+  Copilot, advertising ID, Explorer ads, the reinstall block, Recall)
+  write to that hive; run on their own outside PortableFix they use
+  `HKCU:`. If the user has signed out meanwhile (hive not loaded), the
+  action changes nothing, prints "Profile hive not loaded, skipped" and
+  fails (the hive is never loaded with `reg load`). The target user and
+  SID are in the audit log for every action and event, in the report
+  header next to the job details, and `undo.ps1` reverts the change in
+  the same profile. When the signed-in user cannot be determined for
+  sure (explorer under several accounts), the strip says so and settings
+  go to the own profile.
 - **Risk levels:** every action is tagged SAFE / MODERATE / DESTRUCTIVE /
   REQUIRES_REBOOT. MODERATE and above need confirmation; DESTRUCTIVE
   gets an extra irreversibility warning.
@@ -740,6 +761,13 @@ retry on failure, instead of the whole file at once.
 
 ## Known limitations
 
+- Only the M13 actions use the signed-in user's hive (`$__pfUserHive`)
+  so far. HKCU in other modules still means the account PortableFix runs
+  as: M12 *proxy reset* (and its check), M16 (add-ins, Outlook profile),
+  M08 *restore Task Manager and Regedit*, the reports in M01, M05 (ESU),
+  M07, M17, M22, the M18 backup folders and the M09 tweaks (Storage
+  Sense and ESU at least print whose profile they use). AppX removal
+  in M13 applies to the process's account.
 - Undo only covers actions with a static reversible command; DISM/SFC/chkdsk
   repairs are inherently irreversible (covered by the restore point instead).
 - Undo for combined actions (e.g. stopping 4 services at once) is only

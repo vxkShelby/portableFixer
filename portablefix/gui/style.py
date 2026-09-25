@@ -466,6 +466,13 @@ QLabel#wingetBanner[state="warn"] {
     border: 1px solid rgba(255, 176, 32, 90);
     color: #d6e2f0;
 }
+QLabel#targetUserBanner {
+    background-color: rgba(255, 176, 32, 22);
+    border: 1px solid rgba(255, 176, 32, 90);
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: #d6e2f0;
+}
 QLabel#wingetBanner[state="ok"] {
     background: transparent;
     border: none;

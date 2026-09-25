@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from . import style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, undo, uninstaller, update_swap, updater, winget_updates
+from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstaller, update_swap, updater, winget_updates
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner, build_execution_plan
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         is_admin: bool,
         run_id: str,
         parent=None,
+        target: "target_user.TargetUser | None" = None,
     ):
         super().__init__(parent)
         self.assets_dir = assets_dir
@@ -191,6 +192,10 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.is_admin = is_admin
         self.run_id = run_id
+        # Whose hive per-user settings go to (research G25) - detected once:
+        # who is signed in does not change under a running batch, and a
+        # sign-out is caught by the commands themselves (hive not loaded).
+        self.target_user = target if target is not None else target_user.detect()
         # main.py hands over the raw USB dir as assets_dir and the writable
         # dir as state_dir - they only differ when resolve_writable_base_dir
         # fell back to %TEMP% on the client machine, which the report must
@@ -567,6 +572,27 @@ class MainWindow(QMainWindow):
     def _t(self, key: str) -> str:
         return i18n.translate(key, self.settings.language)
 
+    def _build_target_user_banner(self) -> QLabel:
+        """Over-the-shoulder elevation (research G25): say up front that
+        user settings go to the signed-in client, not the technician. Hidden
+        when both are the same account or detection could not run."""
+        target = self.target_user
+        banner = QLabel("")
+        banner.setObjectName("targetUserBanner")
+        banner.setWordWrap(True)
+        process_user = target.process_user or target.process_sid or "?"
+        if target.differs:
+            user = target.target_user or target.target_sid or "?"
+            banner.setText(self._t("target_user_banner").format(user=user, process_user=process_user))
+            banner.setToolTip(self._t("target_user_banner_tooltip").format(
+                user=user, process_user=process_user, sid=target.target_sid or "?",
+            ))
+        elif target.status in (target_user.AMBIGUOUS, target_user.NO_USER):
+            banner.setText(self._t("target_user_unsure_banner").format(process_user=process_user))
+        banner.setAccessibleName(banner.text())
+        banner.setVisible(bool(banner.text()))
+        return banner
+
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
         self.setStyleSheet(style.stylesheet())
@@ -611,6 +637,9 @@ class MainWindow(QMainWindow):
         self.language_button.clicked.connect(self._on_toggle_language)
         top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
+
+        self.target_user_banner = self._build_target_user_banner()
+        root_layout.addWidget(self.target_user_banner)
 
         self.update_banner = QWidget()
         self.update_banner.setObjectName("updateBanner")
@@ -2983,6 +3012,7 @@ class MainWindow(QMainWindow):
         entry = make_entry(
             module_id, action_id, command, exit_code, output, dry_run, self.run_id,
             risk=risk, warned=warned, elevated=self.is_admin, warning_text=warning_text,
+            **self.target_user.audit_fields(),
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -4089,7 +4119,8 @@ class MainWindow(QMainWindow):
         # the "_system" module report.py lists in its safety section.
         entry = make_entry(
             "_system", action_id, fields.pop("command", ""), exit_code, output,
-            self.settings.dry_run, self.run_id, elevated=self.is_admin, **fields,
+            self.settings.dry_run, self.run_id, elevated=self.is_admin,
+            **{**self.target_user.audit_fields(), **fields},
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -4248,9 +4279,13 @@ class MainWindow(QMainWindow):
             action_temp_protect = temp_protect
 
         if self.settings.dry_run and action.preview_command:
-            plan = build_execution_plan(action.preview_command, dry_run=False, temp_protect=action_temp_protect)
+            plan = build_execution_plan(
+                action.preview_command, dry_run=False, temp_protect=action_temp_protect, target_user=self.target_user,
+            )
         else:
-            plan = build_execution_plan(action.command, self.settings.dry_run, temp_protect=action_temp_protect)
+            plan = build_execution_plan(
+                action.command, self.settings.dry_run, temp_protect=action_temp_protect, target_user=self.target_user,
+            )
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()
@@ -4279,7 +4314,7 @@ class MainWindow(QMainWindow):
         entry = make_entry(
             module_id, action_id, command, exit_code, output, self.settings.dry_run, self.run_id,
             risk=action.risk.value, warned=bool(warning_text), elevated=self.is_admin,
-            warning_text=warning_text,
+            warning_text=warning_text, **self.target_user.audit_fields(),
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -4298,7 +4333,12 @@ class MainWindow(QMainWindow):
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
         if not self.settings.dry_run:
             if exit_code == 0 and action.undo_command:
-                self._undo_steps.append(action.undo_command)
+                undo_step = action.undo_command
+                if "$__pfUser" in undo_step:
+                    # undo.ps1 runs later, maybe as someone else entirely -
+                    # it must restore the same profile the change went to.
+                    undo_step = self.target_user.prelude() + undo_step
+                self._undo_steps.append(undo_step)
                 self._write_undo_script()
             elif not action.undo_command and action.risk != RiskLevel.SAFE:
                 # A failed run may still have changed part of the system, so
