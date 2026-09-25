@@ -219,8 +219,21 @@ def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_prope
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
     env_lines = [f"$env:{name} = {_ps_quote(value)}" for name, value in env.items()]
+    # Windows PowerShell 5.1 (.NET Framework) cannot load an assembly once
+    # SystemRoot points elsewhere ("The given assembly name or codebase ...
+    # mscorlib.dll was invalid"). Everything the command loads lazily - the
+    # error-message resources, the autoloaded Utility module behind
+    # Get-FileHash, the hashing classes - is loaded before the redirect.
+    warm_up = [
+        "Import-Module Microsoft.PowerShell.Utility, Microsoft.PowerShell.Management, Microsoft.PowerShell.Security",
+        "$null = Get-Command Get-FileHash",
+        "$null = [Security.Cryptography.SHA256]::Create()",
+        "try { throw [System.UnauthorizedAccessException]::new('x') } catch { $null = $_ | Out-String; $null = $_.Exception.GetType().Name }",
+        "try { Get-Item -LiteralPath (Join-Path $PSHOME 'pf-missing') -EA Stop } catch { $null = $_ | Out-String }",
+        "try { throw 'x' } catch { $null = $_ | Out-String }",
+    ]
     script = "; ".join(
-        ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + env_lines + stubs + [guard, _signed_view_command()]
+        ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + warm_up + env_lines + stubs + [guard, _signed_view_command()]
     )
     result = subprocess.run(
         [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
