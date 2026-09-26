@@ -92,7 +92,8 @@ PowerShell.
   `undo.ps1` and report as the window. `--export-preset <name> <file.json>`
   saves a preset to a file; the file may also carry `"items"` (item ids for
   per-item actions). Exit codes follow Tron: 0 OK, 1 error, 2 warning
-  (something was skipped), 3 unsupported Windows, 4 restart pending,
+  (something was skipped, or a diagnostic found a problem), 3 unsupported
+  Windows, 4 restart pending,
   5 running from %TEMP%.
 - **Custom actions (`UserModules/`):** catalogs in
   `UserModules/<id>/actions.yaml` (same format as `Modules/`) load next to

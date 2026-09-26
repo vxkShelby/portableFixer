@@ -91,7 +91,8 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   bod obnovenia, `undo.ps1` aj report ako z okna. `--export-preset <názov>
   <súbor.json>` uloží predvoľbu do súboru; v súbore môže byť aj `"items"`
   (ID položiek pre akcie s výberom položiek). Exit kódy podľa Tronu: 0 OK,
-  1 chyba, 2 varovanie (niečo sa preskočilo), 3 nepodporovaný Windows,
+  1 chyba, 2 varovanie (niečo sa preskočilo alebo diagnostika našla
+  problém), 3 nepodporovaný Windows,
   4 čaká sa na reštart, 5 spustené z %TEMP%.
 - **Vlastné akcie (`UserModules/`):** katalógy v `UserModules/<id>/actions.yaml`
   (rovnaký formát ako `Modules/`) sa načítajú vedľa vstavaných, v okne aj v

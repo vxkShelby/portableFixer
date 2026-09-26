@@ -10,7 +10,8 @@ Every action goes through portablefix/action_service.py like in the window,
 so the audit log, undo.ps1 and the report are the same files.
 
 Exit codes follow Tron's convention: 0 OK, 1 error (an action failed or the
-run was refused), 2 warning (something was skipped), 3 unsupported OS,
+run was refused), 2 warning (something was skipped, or a diagnostic found
+a problem - an Attention/Critical finding, research G02), 3 unsupported OS,
 4 a restart is pending (before or after the run), 5 running from %TEMP%.
 
 A preset file is {"name": "...", "actions": [ids], "items": {id: [item ids]}};
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import action_service, intake, paths, preflight, report, restore_point, snapshot, undo
+from . import action_service, health, intake, paths, preflight, report, restore_point, snapshot, undo
 from . import items as items_mod
 from .audit_log import append_entry, make_entry
 from .executor import PlanRun
@@ -164,6 +165,7 @@ class _Run:
         self.undo_steps: list[str] = []
         self.irreversible: list[str] = []
         self.checks: dict[str, str] = {}
+        self.findings: dict[str, dict] = {}
         self.selected: dict[str, list[str]] = {}
         self.failed = False
         self.warned = False
@@ -326,6 +328,10 @@ class _Run:
         )
         entry.command = prepared.plan.display_command
         self._append(entry)
+        for finding in entry.findings:
+            self.findings.pop(finding["id"], None)
+            self.findings[finding["id"]] = finding
+            self.say(f"[PortableFix] Finding {finding['id']}: {finding['severity']} - {finding['msg_en']}")
         if run.check_state and code == 0:
             self.checks[action.id] = run.check_state
         if not self.dry_run and not run.skipped_applied:
@@ -394,7 +400,9 @@ class _Run:
             return EXIT_ERROR
         if self.reboot_pending:
             return EXIT_REBOOT_PENDING
-        return EXIT_WARNING if self.warned else EXIT_OK
+        # A problem a diagnostic found (latest state per finding) is what an
+        # RMM that ran the preset wants to hear about.
+        return EXIT_WARNING if self.warned or health.problems(self.findings) else EXIT_OK
 
 
 def say(line: str) -> None:

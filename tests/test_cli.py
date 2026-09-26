@@ -42,6 +42,11 @@ actions:
     items_command: "Write-Output '{\\"id\\": \\"a1\\"}'; Write-Output '{\\"id\\": \\"b2\\"}'"
     command: "foreach ($i in $__pfItems) { Write-Output ('did ' + $i); Write-Output ('PFJSON:{\\"undo\\": {\\"id\\": \\"' + $i + '\\"}}') }"
     undo_command: "Write-Output ('undo ' + $__pfItem)"
+  - id: cli_diag_problem
+    label_sk: Diagnostika
+    label_en: Diagnostic
+    risk: SAFE
+    command: "Write-Output 'PFJSON:{\\"findings\\": [{\\"id\\": \\"disk.health\\", \\"severity\\": \\"attention\\", \\"area\\": \\"disk\\", \\"msg_sk\\": \\"x\\", \\"msg_en\\": \\"Disk warning\\"}]}'"
   - id: cli_restart_first
     label_sk: Reštart potom
     label_en: Restart after
@@ -168,6 +173,13 @@ def test_per_item_action_gets_only_the_preset_ids_still_listed(app, tmp_path):
     assert entry["items"] == ["b2"]
     undo = (tmp_path / "out" / "Backups" / run_id / "undo.ps1").read_text(encoding="utf-8-sig")
     assert "$__pfItem = 'b2'" in undo and "'a1'" not in undo
+
+
+def test_a_problem_finding_is_a_warning_exit(app, tmp_path):
+    # Research G02: an RMM that ran a diagnostic preset hears about problems.
+    code, lines, _ = _run(app, tmp_path, "--preset", _preset(tmp_path, ["cli_diag_problem"]), "--live")
+    assert code == cli.EXIT_WARNING, lines
+    assert "[PortableFix] Finding disk.health: attention - Disk warning" in lines
 
 
 def test_per_item_action_without_ids_in_the_preset_is_skipped(app, tmp_path):
