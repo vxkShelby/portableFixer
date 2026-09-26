@@ -218,7 +218,39 @@ def _start_dev_update(window, args: StartupArgs, install_dir: Path) -> None:
     window.start_local_update(Path(args.update_zip), args.update_sha256)
 
 
+def _attach_parent_console() -> None:
+    # The frozen exe is a windowed app: started from cmd/PowerShell it has
+    # no stdout, so the headless run borrows the parent's console, if any.
+    # A caller that redirected the output already gave it a stdout.
+    if sys.stdout is not None or not getattr(sys, "frozen", False):
+        return
+    if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+        try:
+            sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+        except OSError:
+            pass
+
+
+def _main_cli() -> int:
+    """The headless run (research G21, portablefix/cli.py) - same mutexes as
+    the window, so it never runs beside a window or an update."""
+    from portablefix import cli
+
+    _attach_parent_console()
+    if update_swap.update_mutex_present():
+        cli.say("[PortableFix] An update is being installed - try again in a minute.")
+        return cli.EXIT_ERROR
+    if not _acquire_single_instance_lock():
+        cli.say("[PortableFix] PortableFix is already running.")
+        return cli.EXIT_ERROR
+    return cli.run(sys.argv)
+
+
 def main() -> int:
+    from portablefix.cli import wants_cli
+
+    if wants_cli(sys.argv):
+        return _main_cli()
     args = _parse_startup_args(sys.argv)
     sys.argv[:] = args.argv
     _leave_app_folder(args)
