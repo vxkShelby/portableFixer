@@ -45,6 +45,17 @@ def test_anything_but_a_clean_applied_runs_the_command(check):
     assert run.captured_output == ["RAN"]
 
 
+def test_a_successful_run_is_checked_again_so_the_state_is_the_one_after_it(tmp_path):
+    # The snapshot keeps this state: the next visit compares with it (drift).
+    flag = tmp_path / "flag.txt"
+    check = _plan(f"if (Test-Path -LiteralPath '{flag}') {{ 'APPLIED' }} else {{ 'NOT_APPLIED' }}")
+    run = PlanRun(_plan(f"Set-Content -LiteralPath '{flag}' -Value x"), check_plan=check)
+    assert run.run() == 0 and run.skipped_applied is False
+    assert run.check_state == "APPLIED"
+    failed = PlanRun(_plan("exit 4"), check_plan=_plan("'NOT_APPLIED'"))
+    assert failed.run() == 4 and failed.check_state == "NOT_APPLIED"
+
+
 def test_a_dry_run_never_checks():
     run = PlanRun(build_execution_plan("x", dry_run=True), check_plan=_plan("Write-Output 'APPLIED'"))
     assert run.run() == 0 and run.skipped_applied is False

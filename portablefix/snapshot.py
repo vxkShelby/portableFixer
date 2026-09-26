@@ -220,7 +220,7 @@ _INVENTORY_RUN_KEYS = (
     ("HKCU", "user", r"Software\Microsoft\Windows\CurrentVersion\Run"),
 )
 _SERVICES_KEY = r"SYSTEM\CurrentControlSet\Services"
-INVENTORY_TIME_BUDGET_SEC = 0.15
+INVENTORY_TIME_BUDGET_SEC = 0.3
 INVENTORY_MAX_ENTRIES = 2000
 
 
@@ -232,7 +232,9 @@ def _winreg_services(system_root: str, deadline: float, clock) -> list[str]:
     found = []
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _SERVICES_KEY, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as root:
         index = 0
-        while clock() < deadline:
+        while True:
+            if clock() >= deadline:
+                raise TimeoutError("services: over the time budget")
             try:
                 name = winreg.EnumKey(root, index)
             except OSError:
@@ -270,16 +272,16 @@ def _startup_files(env) -> list[str]:
 
 def _task_files(system_root: str, deadline: float, clock) -> list[str]:
     """Scheduled tasks outside \\Microsoft\\, from the task store's file
-    tree (reading it needs admin rights; without them this is empty)."""
+    tree. Raises when any folder of it cannot be read (it needs admin
+    rights) or the time budget runs out - a partial list is no inventory."""
     root = os.path.join(system_root, "System32", "Tasks")
     found = []
     stack = [root]
-    while stack and clock() < deadline:
+    while stack:
+        if clock() >= deadline:
+            raise TimeoutError("tasks: over the time budget")
         folder = stack.pop()
-        try:
-            entries = list(os.scandir(folder))
-        except OSError:
-            continue
+        entries = list(os.scandir(folder))
         for entry in entries:
             relative = entry.path[len(root):]
             if relative.lower().startswith("\\microsoft"):
@@ -299,32 +301,22 @@ def autostart_inventory(*, env=None, read_values=_winreg_values, services=None, 
     """Names of what starts with Windows (research G04): Run values, Startup
     folder files, scheduled tasks outside \\Microsoft\\ and automatic
     third-party services - names only, so the report can show what is new
-    since the last visit. Bounded by INVENTORY_TIME_BUDGET_SEC; None when
-    nothing at all could be read."""
+    since the last visit. Bounded by INVENTORY_TIME_BUDGET_SEC.
+
+    None unless every part was read in full: a list missing, say, the tasks
+    (not elevated) or the services (over the time budget) would make all of
+    them look new at the next visit."""
     env = os.environ if env is None else env
     deadline = clock() + INVENTORY_TIME_BUDGET_SEC
     system_root = env.get("SystemRoot") or env.get("windir") or ""
     found: list[str] = []
-    readable = False
-    for hive, source, subkey in _INVENTORY_RUN_KEYS:
-        try:
-            values = read_values(hive, subkey)
-        except OSError:
-            continue
-        readable = True
-        found.extend(f"Run ({source}): {name}" for name in (values or {}) if name)
-    startup = _startup_files(env)
-    found.extend(startup)
-    for probe in (
-        services or (lambda: _winreg_services(system_root, deadline, clock)),
-        tasks or (lambda: _task_files(system_root, deadline, clock)),
-    ):
-        try:
-            found.extend(probe())
-            readable = True
-        except Exception:
-            continue
-    if not readable and not startup:
+    try:
+        for hive, source, subkey in _INVENTORY_RUN_KEYS:
+            found.extend(f"Run ({source}): {name}" for name in (read_values(hive, subkey) or {}) if name)
+        found.extend(_startup_files(env))
+        found.extend((services or (lambda: _winreg_services(system_root, deadline, clock)))())
+        found.extend((tasks or (lambda: _task_files(system_root, deadline, clock)))())
+    except Exception:  # noqa: BLE001 - any unreadable part: no inventory
         return None
     return sorted(set(found))[:INVENTORY_MAX_ENTRIES]
 

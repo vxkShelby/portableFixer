@@ -54,6 +54,7 @@ from ..settings import (
     MAX_CUSTOM_PRESETS,
     MAX_PRESET_NAME_LENGTH,
     MAX_TECHNICIAN_NAME_LENGTH,
+    PRESETS,
     Settings,
     save_settings,
 )
@@ -64,27 +65,6 @@ from ..version import APP_VERSION
 CUSTOM_PRESET_PREFIX = "custom:"
 CONSOLE_MAX_LINES = 20000
 HISTORY_MAX_ROWS = 5
-
-PRESETS: dict[str, list[str]] = {
-    "quick_clean": [
-        "user_temp", "system_temp", "recycle_bin", "prefetch", "wer_reports",
-        "thumbnail_cache", "directx_shader_cache", "browser_cache_sweep",
-    ],
-    "full_diagnostic": [
-        "os_info", "computer_info", "bios_info", "cpu_info", "memory_info",
-        "volumes", "physical_disks", "recent_hotfixes", "pending_reboot",
-        "eventlog_critical_7d", "bsod_summary", "crash_bugcheck_triage",
-        "whea_hardware_errors", "disk_reliability_counters",
-        "defender_status", "top_cpu_processes", "sec_defender_status",
-        "sec_firewall_status", "sec_uac_status",
-    ],
-    "privacy_debloat": [
-        "debloat_disable_telemetry", "debloat_disable_suggestions",
-        "debloat_disable_web_search", "debloat_disable_copilot",
-        "debloat_disable_widgets", "debloat_disable_advertising_id",
-        "debloat_disable_diagtrack", "debloat_disable_ceip_tasks",
-    ],
-}
 
 
 try:
@@ -4743,11 +4723,12 @@ class MainWindow(QMainWindow):
             payloads=payloads, item_ids=item_ids, decision=action_service.ALREADY_APPLIED if skipped else "",
         )
         if action.check_command and not self.settings.dry_run:
-            # Research G09: what the pre-run check found - or, after a real
-            # change, nothing until the next check looks again.
+            # Research G09: after a success the runner checked again, so this
+            # is the state now (kept for the snapshot's drift); after a
+            # failure the earlier answer may be stale - the next check looks.
             state = getattr(runner, "check_state", None)
-            if skipped or (state and exit_code != 0):
-                self._check_results[action_id] = "APPLIED" if skipped else state
+            if state and exit_code == 0:
+                self._check_results[action_id] = state
             else:
                 self._check_results.pop(action_id, None)
             if not self._closed:

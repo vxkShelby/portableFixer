@@ -150,7 +150,8 @@ class PlanRun:
 
     check_plan (research G09): the action's "already applied?" check, run
     first; when it answers APPLIED the plan itself never runs, skipped_applied
-    is set and the run counts as a success."""
+    is set and the run counts as a success. After a successful run it is
+    asked again, so check_state is the state after the run."""
 
     def __init__(
         self, plan: ExecutionPlan, inactivity_timeout_sec: int | None = None, hard_cap_sec: int | None = None,
@@ -184,14 +185,17 @@ class PlanRun:
             except OSError:
                 pass
 
-    def _run_check(self, emit) -> bool:
-        """True when the check says the change is already in place."""
+    def _check(self) -> str:
         check = PlanRun(self._check_plan, inactivity_timeout_sec=CHECK_INACTIVITY_SEC, hard_cap_sec=CHECK_HARD_CAP_SEC)
         self._check_run = check
         code = check.run()
         self._check_run = None
         self.check_state = parse_check_state(check.captured_output) if code == 0 else "UNKNOWN"
-        if self.check_state != "APPLIED":
+        return self.check_state
+
+    def _run_check(self, emit) -> bool:
+        """True when the check says the change is already in place."""
+        if self._check() != "APPLIED":
             return False
         line = "[PortableFix] Already applied - nothing to do (state check: APPLIED). Skipped."
         self.captured_output.append(line)
@@ -274,6 +278,11 @@ class PlanRun:
             if self.cancel_requested:
                 emit("[PortableFix] Action cancelled by user.")
                 return CANCELLED_EXIT_CODE
+            if process.returncode == 0 and self._check_plan is not None:
+                # Looked at again after the change: check_state is then what
+                # is in place now, which the snapshot keeps so the next visit
+                # sees what Windows turned back (G09 drift).
+                self._check()
             return process.returncode
         except Exception:
             self._watchdog_stop.set()

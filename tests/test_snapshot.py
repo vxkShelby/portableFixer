@@ -375,8 +375,7 @@ def test_autostart_inventory_names_run_values_startup_files_tasks_and_services(t
     }
 
     def read_values(hive, subkey):
-        if "WOW6432Node" in subkey:
-            raise OSError("no such key")
+        # A missing key is None (as _winreg_values), not an error.
         return runs.get((hive, subkey))
 
     inventory = autostart_inventory(
@@ -399,6 +398,24 @@ def test_autostart_inventory_is_none_when_nothing_is_readable():
         raise OSError("denied")
 
     assert autostart_inventory(env={}, read_values=no_registry, services=broken, tasks=broken) is None
+
+
+def test_autostart_inventory_is_none_when_one_part_is_missing():
+    # A partial list (tasks unreadable without admin, services cut off by
+    # the time budget) would make everything it missed look new next time.
+    from portablefix.snapshot import autostart_inventory
+
+    def denied():
+        raise PermissionError("tasks need admin")
+
+    def ok(hive, subkey):
+        return {"Tray": "x"}
+
+    assert autostart_inventory(env={}, read_values=ok, services=lambda: [], tasks=denied) is None
+    ticks = iter([0.0, 0.0, 99.0])
+    assert autostart_inventory(
+        env={"SystemRoot": "C:\\Windows"}, read_values=ok, tasks=lambda: [], clock=lambda: next(ticks, 99.0),
+    ) is None
 
 
 def test_new_autostart_entries_compares_with_the_last_visit():
