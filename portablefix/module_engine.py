@@ -41,6 +41,24 @@ def _optional_bool(path: Path, action_id: str, raw: dict, key: str) -> bool | No
     return value
 
 
+def _optional_command(path: Path, action_id: str, raw: dict, key: str) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ModuleLoadError(f"{path}: action '{action_id}' has an empty or non-text {key}")
+    return value
+
+
+def _items_command(path: Path, action_id: str, raw: dict) -> str | None:
+    """Research G05: the SAFE listing command of a per-item action."""
+    items_command = _optional_command(path, action_id, raw, "items_command")
+    if items_command is not None and "ops" in raw:
+        # ops: act on fixed values; items are picked at run time.
+        raise ModuleLoadError(f"{path}: action '{action_id}' cannot have both items_command and ops")
+    return items_command
+
+
 def _command_or_ops(path: Path, action_id: str, raw: dict, risk: RiskLevel, changes_system: bool | None):
     """(command, preview_command, undo_command, ops) of one action: either
     the hand-written command, or everything generated from `ops:`."""
@@ -113,9 +131,23 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
         if not isinstance(action_id, str) or not action_id:
             raise ModuleLoadError(f"{actions_yaml_path}: action id must be a non-empty string, got {action_id!r}")
         changes_system = _optional_bool(actions_yaml_path, action_id, raw, "changes_system")
+        items_command = _items_command(actions_yaml_path, action_id, raw)
         command, preview_command, undo_command, op_list = _command_or_ops(
             actions_yaml_path, action_id, raw, risk, changes_system,
         )
+        check_command = _optional_command(actions_yaml_path, action_id, raw, "check_command")
+        if op_list:
+            if check_command is not None:
+                raise ModuleLoadError(
+                    f"{actions_yaml_path}: action '{action_id}' has ops, so its check_command is generated - remove it"
+                )
+            check_command = ops_engine.check_script(op_list)
+        elif check_command is not None and (risk == RiskLevel.SAFE or items_command is not None):
+            # A read-only action has nothing to be "already applied"; a
+            # per-item action is checked item by item in its own listing.
+            raise ModuleLoadError(
+                f"{actions_yaml_path}: action '{action_id}' cannot have a check_command (SAFE or per-item action)"
+            )
         if changes_system is False and risk == RiskLevel.DESTRUCTIVE:
             # A DESTRUCTIVE action always gets the restore point - there is
             # no "irreversible but not worth a safety net".
@@ -153,6 +185,8 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                 restarts_pc=restarts_pc,
                 restart_before_next=restart_before_next,
                 ops=op_list,
+                items_command=items_command,
+                check_command=check_command,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)

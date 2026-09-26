@@ -7,8 +7,9 @@ try:
     from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
     from portablefix.gui.batch_review import BatchReviewDialog
+    from portablefix.gui.items_dialog import ItemsDialog
 except ImportError:  # pragma: no cover - non-GUI environments
-    QThread = QMessageBox = QInputDialog = QFileDialog = BatchReviewDialog = None
+    QThread = QMessageBox = QInputDialog = QFileDialog = BatchReviewDialog = ItemsDialog = None
 
 # Threads that outlived even the teardown wait: kept referenced for the rest
 # of the session, because dropping them would abort the whole process.
@@ -49,6 +50,8 @@ def _no_blocking_modal_dialogs(monkeypatch):
     # The pre-run review screen (G12) is modal too; tests that expect it
     # answer it through BatchReviewDialog.exec themselves.
     monkeypatch.setattr(BatchReviewDialog, "exec", _refuse("BatchReviewDialog.exec"))
+    # So is the per-item checklist (G05).
+    monkeypatch.setattr(ItemsDialog, "exec", _refuse("ItemsDialog.exec"))
 
 
 @pytest.fixture(autouse=True)

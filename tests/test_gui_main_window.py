@@ -7272,3 +7272,132 @@ def test_uninstaller_unsafe_batch_command_is_refused_in_the_confirmation_and_the
     assert any("Bat App" in line and window._t("uninstaller_unsafe_command") in line for line in shown[0].splitlines())
     assert entry["exit_code"] == 1 and entry["command"] == "" and started == []
     assert window._t("uninstaller_outcome_unsafe_command") in _panel_console_text(card)
+
+
+ITEMS_YAML = """
+module_id: m02_cleanup
+category: CLEANUP
+actions:
+  - id: pick_things
+    label_sk: "Vybrat veci"
+    label_en: "Pick things"
+    risk: MODERATE
+    items_command: 'Write-Output ''listing...''; Write-Output ''{"id":"a","label":"Alpha"}''; Write-Output ''{"id":"b","label":"Beta","detail":"C:\\\\b.exe"}'''
+    command: 'foreach ($i in $__pfItems) { Write-Output (''<'' + $i + ''>''); Write-Output (''PFJSON:{"undo":{"id":"'' + $i + ''","prior":{"n":7}}}'') }'
+    undo_command: 'Write-Output (''undo '' + $__pfItem + '' '' + $__pfPrior.n)'
+"""
+
+
+def test_per_item_action_runs_on_the_picked_items_only_with_one_undo_line_each(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_items", yaml=ITEMS_YAML)
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    reviews = _answer_review(monkeypatch)
+    offered = []
+
+    def ask(action, listed):
+        offered.append([(i.id, i.label, i.detail) for i in listed])
+        return ["b"]
+
+    monkeypatch.setattr(window, "_ask_items", ask)
+    _check(window, "pick_things")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert offered == [[("a", "Alpha", ""), ("b", "Beta", "C:\\b.exe")]]
+    assert any("items picked (1): b" in note for note in reviews[0].review.notes)
+    console = window.console.toPlainText()
+    assert "<b>" in console and "<a>" not in console and "PFJSON" not in console
+    [entry] = [e for e in _audit_entries(audit_log_path(tmp_path, "run_items")) if e["module_id"] != "_system"]
+    assert entry["items"] == ["b"] and "PFJSON" not in entry["output"]
+    assert (tmp_path / "Backups" / "run_items" / "items" / "pick_things.txt").read_text(encoding="utf-8") == "b\n"
+    undo_text = (tmp_path / "Backups" / "run_items" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "$__pfItem = 'b'; $__pfPrior = @{ n = 7 }" in undo_text
+    assert "$__pfItem = 'a'" not in undo_text and "NOT reversible" not in undo_text
+
+
+def test_per_item_action_with_nothing_picked_is_skipped_and_cancel_stops_the_batch(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_items_none", yaml=ITEMS_YAML)
+    answers = [[], None]
+    monkeypatch.setattr(window, "_ask_items", lambda action, listed: answers.pop(0))
+    monkeypatch.setattr(window, "_review_batch", lambda queue, resuming=None: pytest.fail("reviewed an empty batch"))
+    for _ in range(2):
+        _check(window, "pick_things")
+        window.run_selected_actions()
+        _wait_batch_idle(qtbot, window)
+    assert "no item was picked" in window.console.toPlainText()
+    assert _executed_action_ids(audit_log_path(tmp_path, "run_items_none")) == []
+    assert answers == []
+
+
+def test_items_dialog_starts_with_nothing_checked(qtbot):
+    from portablefix.gui.items_dialog import ItemsDialog
+    from portablefix.items import Item
+
+    dialog = ItemsDialog("t", "intro", [Item("a", "A", "d", "MODERATE"), Item("b", "B")],
+                         {"select_all": "all", "select_none": "none"})
+    qtbot.addWidget(dialog)
+    assert dialog.chosen_ids() == []
+    assert dialog.list_widget.item(0).text() == "A  [MODERATE]\n    d"
+    dialog._set_all(__import__("PySide6.QtCore", fromlist=["Qt"]).Qt.CheckState.Checked)
+    assert dialog.chosen_ids() == ["a", "b"]
+
+
+CHECK_YAML = """
+module_id: m02_cleanup
+category: CLEANUP
+actions:
+  - id: set_thing
+    label_sk: "Nastavit vec"
+    label_en: "Set thing"
+    risk: MODERATE
+    check_command: "Write-Output 'APPLIED'"
+    command: "Write-Output 'set-thing-ran'"
+    undo_command: "Write-Output 'undo-set-thing'"
+  - id: other_thing
+    label_sk: "Ina vec"
+    label_en: "Other thing"
+    risk: MODERATE
+    check_command: "Write-Output 'NOT_APPLIED'"
+    command: "Write-Output 'other-thing-ran'"
+"""
+
+
+def test_batch_skips_an_already_applied_action_and_records_the_skip(qtbot, tmp_path, monkeypatch):
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_check_skip", yaml=CHECK_YAML)
+    monkeypatch.setattr(window, "_show_batch_summary", lambda path: None)
+    _answer_review(monkeypatch)
+    _check(window, "set_thing", "other_thing")
+
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    console = window.console.toPlainText()
+    assert "set-thing-ran" not in console and "other-thing-ran" in console
+    entries = {e["action_id"]: e for e in _audit_entries(audit_log_path(tmp_path, "run_check_skip")) if e["module_id"] != "_system"}
+    assert entries["set_thing"]["decision"] == "already_applied" and entries["set_thing"]["exit_code"] == 0
+    assert entries["other_thing"]["decision"] == ""
+    # Nothing changed, so nothing to undo; the other action ran for real.
+    undo_text = (tmp_path / "Backups" / "run_check_skip" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "undo-set-thing" not in undo_text
+    assert window._check_results == {"set_thing": "APPLIED"}
+    assert window._action_status_labels["set_thing"].text() == "already set – skipped"
+    report_json = next((tmp_path / "Reports").glob("*_run_check_skip.json"))
+    actions = {a["action_id"]: a for a in json.loads(report_json.read_text(encoding="utf-8"))["actions"]}
+    assert actions["set_thing"]["already_applied"] is True and actions["other_thing"]["already_applied"] is False
+
+
+def test_opening_a_category_fills_the_check_chips_in_the_background(qtbot, tmp_path, monkeypatch):
+    from portablefix.models import ModuleCategory
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_check_chips", yaml=CHECK_YAML)
+    assert window._action_check_chips["set_thing"].text() == ""
+    window.category_list.setCurrentRow(window._categories_order.index(ModuleCategory.CLEANUP))
+    qtbot.waitUntil(lambda: len(window._check_results) == 2, timeout=20000)
+    assert window._check_results == {"set_thing": "APPLIED", "other_thing": "NOT_APPLIED"}
+    assert window._action_check_chips["set_thing"].text() == "✓ already set"
+    assert window._action_check_chips["other_thing"].text() == "not set"
+    # Checked once per session - opening the category again starts nothing.
+    window.category_list.setCurrentRow(0)
+    window.category_list.setCurrentRow(window._categories_order.index(ModuleCategory.CLEANUP))
+    assert window._check_queue == [] and not window._check_pending

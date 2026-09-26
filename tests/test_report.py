@@ -1662,3 +1662,30 @@ def test_report_runner_passes_branding_through(tmp_path, monkeypatch):
     monkeypatch.setattr(report, "generate_report", lambda *a, **kw: captured.update(kw) or (tmp_path / "r.html", None))
     report.ReportRunner(tmp_path, "run_x", [], "en", {}, {}, branding={"company": "Servis"}).run()
     assert captured["branding"] == {"company": "Servis"}
+
+
+def test_report_lists_autostart_entries_new_since_the_last_visit(tmp_path):
+    import socket
+
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    old = {"run_id": "old_as", "generated_at": "2026-01-01T00:00:00+00:00", "actions": [],
+           "snapshot_after": {"autostart": ["Run (user): Old", "Task: \\Kept"]}}
+    (reports_dir / f"{socket.gethostname()}_old_as.json").write_text(json.dumps(old), encoding="utf-8")
+    append_entry(tmp_path, "run_as", make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_as"))
+
+    html_path, json_path = generate_report(
+        tmp_path, "run_as", _fixture_modules(), "en",
+        snapshot_before={"autostart": ["Run (user): <New>", "Task: \\Kept"]}, snapshot_after={},
+    )
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["new_autostart"] == {"previous_run_id": "old_as", "entries": ["Run (user): <New>"]}
+    content = html_path.read_text(encoding="utf-8")
+    assert "New autostart entries since the last visit" in content
+    assert "<li>Run (user): &lt;New&gt;</li>" in content
+
+
+def test_report_has_no_autostart_section_without_an_inventory_from_the_last_visit(tmp_path):
+    append_entry(tmp_path, "run_as2", make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_as2"))
+    data = build_report_data(tmp_path, "run_as2", _fixture_modules(), "en", {"autostart": ["x"]}, {})
+    assert "new_autostart" not in data

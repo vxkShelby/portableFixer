@@ -47,6 +47,12 @@ class AuditEntry:
     target_user: str = ""
     target_user_sid: str = ""
     target_user_status: str = ""
+    # The exact ids a per-item action (research G05) was run on; [] = not
+    # a per-item action.
+    items: list[str] = field(default_factory=list)
+    # Structured findings the action reported (research G02,
+    # portablefix/pfjson.py), already validated.
+    findings: list[dict] = field(default_factory=list)
 
 
 def make_entry(
@@ -69,6 +75,8 @@ def make_entry(
     target_user: str = "",
     target_user_sid: str = "",
     target_user_status: str = "",
+    items: list[str] | None = None,
+    findings: list[dict] | None = None,
 ) -> AuditEntry:
     return AuditEntry(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -92,6 +100,8 @@ def make_entry(
         target_user=target_user,
         target_user_sid=target_user_sid,
         target_user_status=target_user_status,
+        items=list(items or []),
+        findings=list(findings or []),
     )
 
 

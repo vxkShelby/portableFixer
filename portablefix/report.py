@@ -14,7 +14,7 @@ from . import intake, redaction
 from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
-from .snapshot import compare_snapshots
+from .snapshot import compare_snapshots, new_autostart_entries
 
 
 def _find_action(modules: list[ModuleDef], module_id: str, action_id: str) -> ActionDef | None:
@@ -386,6 +386,11 @@ def build_report_data(
                 "warned": entry.get("warned"),
                 "warning_text": entry.get("warning_text", ""),
                 "elevated": entry.get("elevated"),
+                # Research G09: skipped by the "already applied?" check.
+                "already_applied": entry.get("decision") == "already_applied",
+                # Research G05 / G02: the ids it ran on, what it found.
+                "items": entry.get("items") if isinstance(entry.get("items"), list) else [],
+                "findings": entry.get("findings") if isinstance(entry.get("findings"), list) else [],
             }
         )
     hostname = socket.gethostname()
@@ -430,7 +435,29 @@ def build_report_data(
     branding_data = branding_mod.clean_branding(branding)
     if branding_data:
         data["branding"] = branding_data
+    # Research G04: what starts with Windows now that did not at the last
+    # visit - measured on arrival (snapshot_before), before this run's work.
+    if previous is not None:
+        new_autostart = new_autostart_entries(previous.get("snapshot_after"), snapshot_before)
+        if new_autostart is not None:
+            data["new_autostart"] = {"previous_run_id": previous.get("run_id"), "entries": new_autostart}
+        # Research G09: applied at the last visit, not any more on arrival.
+        drift = _check_drift(previous.get("snapshot_after"), snapshot_before)
+        if drift:
+            data["drift"] = [
+                {"action_id": aid, "label": (_find_action_by_id(modules, aid).label(language)
+                                             if _find_action_by_id(modules, aid) else aid)}
+                for aid in drift
+            ]
     return data
+
+
+def _check_drift(previous_snapshot, current_snapshot) -> list[str]:
+    before = previous_snapshot.get("checks") if isinstance(previous_snapshot, dict) else None
+    now = current_snapshot.get("checks") if isinstance(current_snapshot, dict) else None
+    if not isinstance(before, dict) or not isinstance(now, dict):
+        return []
+    return sorted(aid for aid, state in now.items() if state == "NOT_APPLIED" and before.get(aid) == "APPLIED")
 
 
 def _build_intake(entries: list[dict], language: str) -> dict:
@@ -809,6 +836,9 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
     exit_note = "" if ok else f'<span class="mod">{html.escape(_exit_text(a["exit_code"], language))}</span>'
     # a.get(): report JSON written before these fields existed has no key.
     warned_tag = f'<span class="warned-tag">{t("report_warned_tag")}</span>' if a.get("warned") else ""
+    if a.get("already_applied"):
+        # Research G09: skipped because the check found it already in place.
+        warned_tag += f'<span class="dry-tag">{t("report_already_applied")}</span>'
     warn_text = ""
     if a.get("warned") and a.get("warning_text"):
         # The exact copy the technician accepted - the report is the
@@ -1357,6 +1387,20 @@ def _render_html(data: dict) -> str:
             f"({html.escape(_format_timestamp(comparison['previous_generated_at']))})<br>"
             f"{t('report_free_space_change')}: {delta_txt}<br>"
             f"{t('report_actions_then_now')}: {comparison['previous_action_count']} &rarr; {comparison['action_count']}</div></section>"
+        )
+    new_autostart = data.get("new_autostart")
+    if isinstance(new_autostart, dict) and isinstance(new_autostart.get("entries"), list):
+        entries = [e for e in new_autostart["entries"] if isinstance(e, str)]
+        body = (
+            "<ul>" + "".join(f"<li>{html.escape(e)}</li>" for e in entries) + "</ul>" if entries
+            else f"<p class=\"empty\">{t('report_new_autostart_none')}</p>"
+        )
+        comparison_section += f"<section><h2>{t('report_new_autostart')}</h2>{body}</section>"
+    drift = [d for d in data.get("drift") or [] if isinstance(d, dict)]
+    if drift:
+        comparison_section += (
+            f"<section><h2>{t('report_drift')}</h2><p>{t('report_drift_intro')}</p><ul>"
+            + "".join(f"<li>{html.escape(str(d.get('label', '')))}</li>" for d in drift) + "</ul></section>"
         )
 
     return f"""<!DOCTYPE html>

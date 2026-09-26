@@ -60,6 +60,15 @@ class ActionDef:
     # state it captured - so undo_command stays None and has_undo is the
     # question to ask.
     ops: list = field(default_factory=list)
+    # Per-item selection (research G05, portablefix/items.py): a SAFE
+    # listing command printing one JSON object per item. When set, `command`
+    # applies the change to the ids the technician picked ($__pfItems) and
+    # `undo_command`, if any, restores ONE item ($__pfItem, $__pfPrior).
+    items_command: str | None = None
+    # "Already applied?" (research G09): a SAFE command whose last line is
+    # APPLIED, NOT_APPLIED or UNKNOWN. A real batch run skips an APPLIED
+    # action (and records the skip); generated for every `ops:` action.
+    check_command: str | None = None
 
     @property
     def has_undo(self) -> bool:

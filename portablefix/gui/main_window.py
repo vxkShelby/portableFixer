@@ -43,9 +43,11 @@ from PySide6.QtWidgets import (
 
 from . import job_forms, style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
-from .. import batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, intake, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
+from .items_dialog import ItemsDialog
+from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, intake, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
+from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
-from ..executor import ActionRunner, build_execution_plan
+from ..executor import ActionRunner
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..module_engine import load_all_modules
 from ..settings import (
@@ -166,6 +168,38 @@ class _DiskHealthProbeRunner(QThread):
         self._results.append(verdicts)
 
 
+class _CheckRunner(QThread):
+    """Research G09: the state checks of one category, one after another,
+    off the GUI thread. stop() kills the PowerShell running now."""
+
+    state_ready = Signal(str, str)
+
+    def __init__(self, jobs: list, target, parent=None):
+        super().__init__(parent)
+        self._jobs = jobs
+        self._target = target
+        self._holder: list = []
+        self.finished.connect(self.deleteLater)
+
+    def run(self) -> None:
+        for action_id, action in self._jobs:
+            if self.isInterruptionRequested():
+                break
+            self._holder = []
+            try:
+                state = action_service.check_state(action, self._target, self._holder)
+            except Exception:  # noqa: BLE001 - a failed check just means "unknown"
+                state = "UNKNOWN"
+            if self.isInterruptionRequested():
+                break
+            self.state_ready.emit(action_id, state)
+
+    def stop(self) -> None:
+        self.requestInterruption()
+        for run in list(self._holder):
+            run.cancel()
+
+
 def _score_state(score: int) -> str:
     """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
     if score >= 80:
@@ -250,6 +284,17 @@ class MainWindow(QMainWindow):
         # action_id -> the state file its running `ops:` command (research
         # G10) captures the previous state into; undo is generated from it.
         self._ops_state_paths: dict[str, Path] = {}
+        # action_id -> the item ids the technician picked for a per-item
+        # action (research G05) in the running batch.
+        self._selected_items: dict[str, list[str]] = {}
+        # Research G09: action_id -> APPLIED / NOT_APPLIED / UNKNOWN from the
+        # last state check this session, the chips showing them, and the
+        # background checks still to run.
+        self._check_results: dict[str, str] = {}
+        self._action_check_chips: dict[str, QLabel] = {}
+        self._check_pending: set[str] = set()
+        self._check_queue: list[str] = []
+        self._check_runner: "_CheckRunner | None" = None
         # Non-SAFE changes that ran for real but have no undo_command -
         # listed in undo.ps1 so it never implies everything was reversible.
         self._irreversible_actions: list[str] = []
@@ -487,6 +532,12 @@ class MainWindow(QMainWindow):
         self._queue = []
         if self._runner is not None:
             self._runner.cancel()
+        self._check_queue = []
+        if self._check_runner is not None:
+            try:
+                self._check_runner.stop()
+            except RuntimeError:
+                pass
         if self._winget_update_runner is not None:
             self._winget_update_runner.request_stop()
         if self._uninstall_runner is not None:
@@ -530,6 +581,8 @@ class MainWindow(QMainWindow):
         )
         slow_runners = (
             (self._speed_test_runner, 25_000),
+            # A state check (G09) was just killed; its pipe drains at once.
+            (self._check_runner, 15_000),
             # Checkpoint-Computer can legitimately run for minutes (VSS on a
             # slow disk); a 5s wait let closeEvent destroy the still-running
             # QThread, aborting the process before create_restore_point could
@@ -911,6 +964,15 @@ class MainWindow(QMainWindow):
                     status_label.setObjectName("actionStatus")
                     self._action_status_labels[action.id] = status_label
                     row.addWidget(status_label)
+                    if action.check_command:
+                        # Research G09: "already applied?" - filled in by the
+                        # background check when this category is shown.
+                        check_chip = QLabel("")
+                        check_chip.setObjectName("actionStatus")
+                        check_chip.setProperty("checkChip", True)
+                        self._action_check_chips[action.id] = check_chip
+                        row.addWidget(check_chip)
+                        self._set_check_chip(action.id, self._check_results.get(action.id))
                     row.addStretch(1)
                     detail_toggle, detail_panel = self._make_action_detail_toggle(action)
                     self._action_detail_toggles[action.id] = detail_toggle
@@ -1099,6 +1161,54 @@ class MainWindow(QMainWindow):
             return
         for index, widget in enumerate(self._nav_row_order):
             widget.setHidden(index != row)
+        if 0 <= row < len(self._categories_order):
+            self._start_checks(self._category_action_ids.get(self._categories_order[row], []))
+
+    # --- "already applied?" status chips (research G09) ----------------------
+
+    def _start_checks(self, action_ids: list[str]) -> None:
+        """Runs the state checks of the shown category's actions in the
+        background, once per session (a batch that changes an action clears
+        its answer); each answer lands on the action's chip."""
+        jobs = []
+        for action_id in action_ids:
+            try:
+                _, action = self._find_action(action_id)
+            except KeyError:
+                continue
+            if action.check_command and action_id not in self._check_results and action_id not in self._check_pending:
+                jobs.append(action_id)
+        self._check_pending.update(jobs)
+        self._check_queue.extend(jobs)
+        self._pump_checks()
+
+    def _pump_checks(self) -> None:
+        if self._closed or _thread_running(self._check_runner) or not self._check_queue:
+            return
+        jobs, self._check_queue = self._check_queue, []
+        runner = _CheckRunner([(aid, self._find_action(aid)[1]) for aid in jobs], self.target_user, parent=self)
+        runner.state_ready.connect(self._on_check_state)
+        runner.finished.connect(self._pump_checks)
+        self._check_runner = runner
+        runner.start()
+
+    def _on_check_state(self, action_id: str, state: str) -> None:
+        self._check_pending.discard(action_id)
+        if self._closed:
+            return
+        self._check_results[action_id] = state
+        self._set_check_chip(action_id, state)
+
+    def _set_check_chip(self, action_id: str, state: str | None) -> None:
+        chip = self._action_check_chips.get(action_id)
+        if chip is None:
+            return
+        key = {"APPLIED": "check_applied", "NOT_APPLIED": "check_not_applied", "UNKNOWN": "check_unknown"}.get(state or "")
+        chip.setText(self._t(key) if key else "")
+        chip.setToolTip(self._t("check_tooltip") if key else "")
+        chip.setProperty("state", {"APPLIED": "ok", "NOT_APPLIED": "running"}.get(state or "", ""))
+        chip.style().unpolish(chip)
+        chip.style().polish(chip)
 
     def _action_search_haystack(self, action) -> str:
         # Label alone misses power-user searches like "sfc" or "dism" - those
@@ -3731,7 +3841,9 @@ class MainWindow(QMainWindow):
     def _take_snapshot(self) -> dict:
         # GUI thread, at batch start and end - snapshot.py keeps it bounded
         # (time-budgeted folder walks, no process spawns) and never raises.
-        return snapshot.take_snapshot(disk_usage=shutil.disk_usage)
+        # The state checks known so far ride along (G09): the report compares
+        # them with the last visit to show what Windows turned back.
+        return snapshot.take_snapshot(disk_usage=shutil.disk_usage, checks=self._check_results)
 
     def _on_cancel_clicked(self) -> None:
         self._cancel_requested = True
@@ -3777,6 +3889,11 @@ class MainWindow(QMainWindow):
         # Research G03: an action that restarts Windows at once runs last, so
         # it cuts nothing off - and only after the report and undo.ps1 exist.
         queue = batch_resume.order_restarting_last(queue, lambda aid: self._find_action(aid)[1].restarts_pc)
+        # Research G05: per-item actions ask which items first - the review
+        # screen then shows what was picked.
+        queue = self._choose_items(queue)
+        if queue is None:
+            return
         self._reviewed_warnings = {}
         # Per batch, like the restore point: set only by this batch's review.
         self._hive_backup_requested = False
@@ -3914,17 +4031,24 @@ class MainWindow(QMainWindow):
         responsive meanwhile - the probe can take up to
         disk_health.PROBE_TIMEOUT_SEC when the storage stack hangs, which
         a dying disk's often does. Tests inject `probe` via Probes.disk_health."""
+        return self._run_in_background(
+            probe, self._t("preflight_disk_probe_running").format(seconds=disk_health.PROBE_TIMEOUT_SEC),
+            self._t("preflight_disk_probe_cancel"),
+        )
+
+    def _run_in_background(self, func, text: str, cancel_text: str, on_cancel=None) -> tuple[object, bool]:
+        """func() on a worker thread behind a busy dialog with Cancel;
+        returns (result, cancelled). The GUI stays responsive meanwhile.
+        on_cancel runs when the technician cancels (e.g. kills the process
+        func is waiting on); the thread itself is left to finish."""
         self._disk_health_runners = [r for r in self._disk_health_runners if _thread_running(r)]
         results: list = []
         loop = QEventLoop()
-        runner = _DiskHealthProbeRunner(probe, results, parent=self)
+        runner = _DiskHealthProbeRunner(func, results, parent=self)
         # Queued on purpose: a probe that finishes before loop.exec() starts
         # must still quit the loop (a direct quit() before exec() is lost).
         runner.finished.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
-        dialog = QProgressDialog(
-            self._t("preflight_disk_probe_running").format(seconds=disk_health.PROBE_TIMEOUT_SEC),
-            self._t("preflight_disk_probe_cancel"), 0, 0, self,
-        )
+        dialog = QProgressDialog(text, cancel_text, 0, 0, self)
         dialog.setWindowTitle(self._t("app_title"))
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setMinimumDuration(0)
@@ -3945,8 +4069,84 @@ class MainWindow(QMainWindow):
         dialog.close()
         dialog.deleteLater()
         if cancelled:
+            if on_cancel is not None:
+                on_cancel()
             return None, True
         return (results[0] if results else None), False
+
+    def _list_items(self, action: ActionDef) -> tuple[list | None, bool]:
+        """(items or None when the listing failed, cancelled) - research G05."""
+        holder: list = []
+
+        def cancel() -> None:
+            for run in holder:
+                run.cancel()
+
+        return self._run_in_background(
+            lambda: action_service.list_items(action, self.target_user, holder),
+            self._t("items_listing").format(action=action.label(self.settings.language)),
+            self._t("preflight_disk_probe_cancel"), on_cancel=cancel,
+        )
+
+    def _ask_items(self, action: ActionDef, listed: list) -> list[str] | None:
+        # Its own method so a test can answer it; the dialog itself is
+        # driven through ItemsDialog in the GUI tests.
+        label = action.label(self.settings.language)
+        dialog = ItemsDialog(
+            self._t("items_dialog_title").format(action=label), self._t("items_dialog_intro"), listed,
+            {"select_all": self._t("items_select_all"), "select_none": self._t("items_select_none")}, parent=self,
+        )
+        try:
+            return dialog.ask()
+        finally:
+            dialog.deleteLater()
+
+    def _choose_items(self, queue: list[str]) -> list[str] | None:
+        """Research G05: lists the items of every per-item action in the
+        queue and asks which of them to use. Returns the queue without the
+        actions that got nothing to work on, or None when the technician
+        cancelled the batch."""
+        self._selected_items = {}
+        result: list[str] = []
+        for action_id in queue:
+            module, action = self._find_action(action_id)
+            if not action.items_command:
+                result.append(action_id)
+                continue
+            label = action.label(self.settings.language)
+            listed, cancelled = self._list_items(action)
+            if cancelled or self._closed:
+                return None
+            if listed is None:
+                self.console.appendPlainText(self._t("items_list_failed").format(action=label))
+                continue
+            if not listed:
+                self.console.appendPlainText(self._t("items_none_found").format(action=label))
+                continue
+            chosen = self._ask_items(action, listed)
+            if chosen is None or self._closed:
+                return None
+            try:
+                chosen = items_mod.check_ids(chosen, allowed={item.id for item in listed})
+            except items_mod.ItemsError:
+                chosen = []
+            if not chosen:
+                self.console.appendPlainText(self._t("items_none_chosen").format(action=label))
+                continue
+            self._selected_items[action_id] = chosen
+            result.append(action_id)
+        return result
+
+    def _items_notes(self, queue: list[str]) -> tuple[str, ...]:
+        """What the review screen says about the items picked (G05)."""
+        notes = []
+        for action_id in queue:
+            chosen = self._selected_items.get(action_id)
+            if chosen:
+                notes.append(self._t("review_note_items").format(
+                    action=self._action_label(action_id), count=len(chosen), items=", ".join(chosen),
+                ))
+        return tuple(notes)
 
     def _restart_subject(self, action_id: str) -> str:
         try:
@@ -4008,7 +4208,7 @@ class MainWindow(QMainWindow):
         review = build_review(
             items, result, self.settings.language,
             hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,
-            notes=self._restart_notes(queue, resuming),
+            notes=self._restart_notes(queue, resuming) + self._items_notes(queue),
         )
         if not review.needs_confirmation:
             return queue
@@ -4478,49 +4678,34 @@ class MainWindow(QMainWindow):
             self._run_next()
             return
 
-        app_dir = paths.get_base_dir()
-        temp_protect = paths.compute_temp_protected_child(app_dir)
-        windir_temp_protect = paths.compute_windir_temp_protected_child(app_dir)
-        if action.id == "user_temp" and temp_protect is not None and temp_protect == paths.resolve_temp_root():
-            # The app's own root IS %TEMP% itself, or %TEMP% is redirected
-            # via a junction/symlink so a resolved-path comparison could
-            # never match PowerShell's unresolved view of it - either way
-            # there's no single safe child to exclude, so refuse to run
-            # this action at all rather than risk wiping the app out from
-            # under itself.
-            QMessageBox.warning(self, self._t("app_title"), self._t("user_temp_blocked_app_is_temp_root"))
+        # The app's own root IS %TEMP% itself, or %TEMP% is redirected via a
+        # junction/symlink so a resolved-path comparison could never match
+        # PowerShell's unresolved view of it - either way there's no single
+        # safe child to exclude, so refuse to run the temp cleanup at all
+        # rather than risk wiping the app out from under itself.
+        action_temp_protect, refusal = action_service.temp_protection(action, paths.get_base_dir())
+        if refusal:
+            QMessageBox.warning(self, self._t("app_title"), self._t(refusal))
             self._run_next()
             return
-        if (
-            action.id == "system_temp"
-            and windir_temp_protect is not None
-            and windir_temp_protect == paths.resolve_windir_temp_root()
-        ):
-            # Same refusal, mirrored for %WINDIR%\Temp.
-            QMessageBox.warning(self, self._t("app_title"), self._t("system_temp_blocked_app_is_temp_root"))
+        item_ids = self._selected_items.get(action.id, []) if action.items_command else None
+        if action.items_command and not item_ids:
+            # Research G05: nothing picked (or the list could not be read) -
+            # the action has nothing to work on.
             self._run_next()
             return
-
-        if action.id == "system_temp":
-            action_temp_protect = windir_temp_protect
-        else:
-            action_temp_protect = temp_protect
-
-        if self.settings.dry_run and action.preview_command:
-            plan = build_execution_plan(
-                action.preview_command, dry_run=False, temp_protect=action_temp_protect, target_user=self.target_user,
+        try:
+            prepared = action_service.prepare_plan(
+                action, dry_run=self.settings.dry_run, state_dir=self.state_dir, run_id=self.run_id,
+                target_user=self.target_user, temp_protect=action_temp_protect, item_ids=item_ids,
             )
-        else:
-            ops_state = None
-            if action.ops and not self.settings.dry_run:
-                # A fresh file per run of the action: a second run in the
-                # same session must not overwrite the first capture.
-                ops_state = ops.state_file_path(self.state_dir, self.run_id, action.id)
-                self._ops_state_paths[action.id] = ops_state
-            plan = build_execution_plan(
-                action.command, self.settings.dry_run, temp_protect=action_temp_protect, ops_state=ops_state,
-                target_user=self.target_user,
-            )
+        except (OSError, items_mod.ItemsError):
+            self.console.appendPlainText(self._t("disk_write_failed"))
+            self._run_next()
+            return
+        plan = prepared.plan
+        if prepared.ops_state is not None:
+            self._ops_state_paths[action.id] = prepared.ops_state
 
         self._set_action_status(action.id, "running", self._t("status_running"))
         self._action_start_times[action.id] = time.monotonic()
@@ -4528,6 +4713,9 @@ class MainWindow(QMainWindow):
             plan, parent=self,
             inactivity_timeout_sec=action.inactivity_timeout_sec,
             hard_cap_sec=action.hard_cap_sec,
+            # Research G09: a real run first asks whether the change is
+            # already in place and skips it (on record) when it is.
+            check_plan=action_service.check_plan(action, dry_run=self.settings.dry_run, target_user=self.target_user),
         )
         self._runner = runner
         runner.output_line.connect(self.console.appendPlainText)
@@ -4544,13 +4732,27 @@ class MainWindow(QMainWindow):
     ) -> None:
         output = "\n".join(runner.captured_output)
         _, action = self._find_action(action_id)
+        payloads = list(getattr(runner, "pfjson", None) or [])
+        item_ids = self._selected_items.get(action_id, []) if action.items_command else []
+        skipped = bool(getattr(runner, "skipped_applied", False))
         # warned/warning_text come from the dialog _dispatch_action actually
         # showed and the technician accepted, not re-derived from the risk.
-        entry = make_entry(
-            module_id, action_id, command, exit_code, output, self.settings.dry_run, self.run_id,
-            risk=action.risk.value, warned=bool(warning_text), elevated=self.is_admin,
-            warning_text=warning_text, **self.target_user.audit_fields(),
+        entry = action_service.audit_entry(
+            module_id, action, exit_code, list(runner.captured_output), dry_run=self.settings.dry_run,
+            run_id=self.run_id, elevated=self.is_admin, warning_text=warning_text, target_user=self.target_user,
+            payloads=payloads, item_ids=item_ids, decision=action_service.ALREADY_APPLIED if skipped else "",
         )
+        if action.check_command and not self.settings.dry_run:
+            # Research G09: what the pre-run check found - or, after a real
+            # change, nothing until the next check looks again.
+            state = getattr(runner, "check_state", None)
+            if skipped or (state and exit_code != 0):
+                self._check_results[action_id] = "APPLIED" if skipped else state
+            else:
+                self._check_results.pop(action_id, None)
+            if not self._closed:
+                self._set_check_chip(action_id, self._check_results.get(action_id))
+        entry.command = command
         try:
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
@@ -4565,59 +4767,26 @@ class MainWindow(QMainWindow):
                 )
         elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
+        if skipped:
+            status_text = self._t("status_already_applied")
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
         if not self.settings.dry_run:
-            if action.ops:
-                self._record_ops_undo(action, exit_code)
-            elif exit_code == 0 and action.undo_command:
-                undo_step = action.undo_command
-                if "$__pfUser" in undo_step:
-                    # undo.ps1 runs later, maybe as someone else entirely -
-                    # it must restore the same profile the change went to.
-                    # Unknown target: no prelude, so clear what an earlier
-                    # step's prelude left in undo.ps1's one shared scope -
-                    # this step then falls back to HKCU: as it did at run time.
-                    undo_step = (
-                        self.target_user.prelude()
-                        or "Remove-Variable __pfUserHive,__pfUserSid -EA SilentlyContinue; "
-                    ) + undo_step
-                self._undo_steps.append(undo_step)
-                self._write_undo_script()
-            elif not action.undo_command and action.risk != RiskLevel.SAFE:
-                # A failed run may still have changed part of the system, so
-                # it is listed too - with its exit code, not hidden.
-                entry_text = f"[{action.risk.value}] {action.label(self.settings.language)} ({action.id})"
-                if exit_code != 0:
-                    entry_text += f" - exit {exit_code}"
-                self._irreversible_actions.append(entry_text)
-                self._write_undo_script()
-            self._after_restart_action(action, exit_code)
+            if not skipped:
+                # Shared with the headless CLI (research G21): undo_command,
+                # ops state (G10) and per-item undo (G05) decided in one place.
+                outcome = action_service.undo_outcome(
+                    action, exit_code, language=self.settings.language, target_user=self.target_user,
+                    ops_state=self._ops_state_paths.pop(action.id, None), item_ids=item_ids, payloads=payloads,
+                )
+                if outcome.steps or outcome.irreversible:
+                    self._undo_steps.extend(outcome.steps)
+                    if outcome.irreversible:
+                        self._irreversible_actions.append(outcome.irreversible)
+                    self._write_undo_script()
+            # A skipped action changed nothing, so no restart comes after it -
+            # for the restart bookkeeping it is a run that did not succeed.
+            self._after_restart_action(action, 1 if skipped else exit_code)
         self._run_next()
-
-    def _record_ops_undo(self, action: ActionDef, exit_code: int) -> None:
-        """Undo for an `ops:` action (research G10), generated from the state
-        its command captured. Also after a failure: the ops that did apply
-        before it are in the capture, and restoring one that never applied
-        writes back what is already there."""
-        state_path = self._ops_state_paths.pop(action.id, None)
-        try:
-            step = ops.undo_step(action.id, action.ops, state_path)
-        except ops.OpsStateError as exc:
-            step = None
-            problem = str(exc)
-        else:
-            if step is None and exit_code != 0:
-                # Refused before capturing anything - so nothing changed.
-                return
-            problem = "the state file with the previous values is missing"
-        if step is not None:
-            self._undo_steps.append(step)
-        else:
-            entry_text = f"[{action.risk.value}] {action.label(self.settings.language)} ({action.id}) - {problem}"
-            if exit_code != 0:
-                entry_text += f" - exit {exit_code}"
-            self._irreversible_actions.append(entry_text)
-        self._write_undo_script()
 
     def _after_restart_action(self, action: ActionDef, exit_code: int) -> None:
         """Research G03, after a real run of an action: stop the batch where
