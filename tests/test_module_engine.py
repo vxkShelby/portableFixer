@@ -274,33 +274,17 @@ def test_load_module_without_hard_cap_sec_defaults_to_none(tmp_path):
     assert module.actions[0].hard_cap_sec is None
 
 
-def test_load_module_parses_problem_keywords_and_recommended_action_ids(tmp_path):
+@pytest.mark.parametrize("extra", [
+    "    problem_keywords:\n      - \"BAD STATE\"\n",
+    "    recommended_action_ids:\n      - a2\n",
+])
+def test_load_module_refuses_the_retired_keyword_rules(tmp_path, extra):
+    # Research G02: replaced by PFJSON findings - a catalog still using them
+    # must fail loudly instead of silently losing its recommendation.
     yaml_path = tmp_path / "actions.yaml"
-    yaml_path.write_text(
-        "module_id: m_test\n"
-        "actions:\n"
-        "  - id: a1\n"
-        "    label_sk: \"Akcia 1\"\n"
-        "    label_en: \"Action 1\"\n"
-        "    risk: SAFE\n"
-        "    command: \"Write-Output 'hi'\"\n"
-        "    problem_keywords:\n"
-        "      - \"BAD STATE\"\n"
-        "    recommended_action_ids:\n"
-        "      - a2\n",
-        encoding="utf-8",
-    )
-    module = load_module(yaml_path)
-    assert module.actions[0].problem_keywords == ["BAD STATE"]
-    assert module.actions[0].recommended_action_ids == ["a2"]
-
-
-def test_load_module_without_problem_keywords_defaults_to_empty_lists(tmp_path):
-    yaml_path = tmp_path / "actions.yaml"
-    yaml_path.write_text(VALID_YAML, encoding="utf-8")
-    module = load_module(yaml_path)
-    assert module.actions[0].problem_keywords == []
-    assert module.actions[0].recommended_action_ids == []
+    yaml_path.write_text(VALID_YAML + extra, encoding="utf-8")
+    with pytest.raises(ModuleLoadError, match="PFJSON findings"):
+        load_module(yaml_path)
 
 
 def test_load_module_parses_exclude_from_select_all(tmp_path):
@@ -368,8 +352,6 @@ def test_load_module_rejects_malformed_structure(tmp_path, content):
         "    inactivity_timeout_sec: \"600\"\n",
         "    hard_cap_sec: true\n",
         "    hard_cap_sec: -5\n",
-        "    problem_keywords: \"slow\"\n",
-        "    recommended_action_ids: [1, 2]\n",
     ],
 )
 def test_load_module_rejects_invalid_field_types(tmp_path, extra):

@@ -227,11 +227,7 @@ actions:
     label_sk: "Kontrola"
     label_en: "Check"
     risk: SAFE
-    command: "Write-Output 'STATE: BROKEN'"
-    problem_keywords:
-      - "STATE: BROKEN"
-    recommended_action_ids:
-      - fix_it
+    command: 'Write-Output ''STATE: BROKEN''; Write-Output ''PFJSON:{"findings": [{"id": "disk.test", "severity": "critical", "area": "disk", "msg_sk": "Zle", "msg_en": "Broken", "fix": ["fix_it"]}]}'''
   - id: fix_it
     label_sk: "Oprava"
     label_en: "Fix"
@@ -249,7 +245,18 @@ def test_diagnostic_action_with_matching_output_recommends_fix(qtbot, tmp_path):
     window.run_selected_actions()
 
     qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
-    assert "fix_it" in window._recommended_action_ids
+    # Research G02: the finding (not a keyword in the text) recommends the
+    # fix, lands in the audit log and turns the Disk area critical.
+    assert window._recommended_ids() == ["fix_it"]
+    entries = [json.loads(line) for line in audit_log_path(base_dir, "testrun").read_text(encoding="utf-8").splitlines()]
+    diag = next(e for e in entries if e["action_id"] == "diag_check")
+    assert [f["id"] for f in diag["findings"]] == ["disk.test"]
+    assert "PFJSON" not in diag["output"]
+    window._refresh_dashboard()
+    _, state_label, reason_label, fix_button = window._health_tiles["disk"]
+    assert state_label.property("state") == "critical"
+    assert "Zle" in reason_label.text() or "Broken" in reason_label.text()
+    assert not fix_button.isHidden()
 
 
 def test_diagnostic_action_with_no_matching_output_recommends_nothing(qtbot, tmp_path):
@@ -261,7 +268,7 @@ def test_diagnostic_action_with_no_matching_output_recommends_nothing(qtbot, tmp
     window.run_selected_actions()
 
     qtbot.waitUntil(lambda: not window._batch_active, timeout=10000)
-    assert window._recommended_action_ids == set()
+    assert window._recommended_ids() == []
 
 
 _USER_TEMP_ACTIONS_YAML = """
@@ -2676,30 +2683,31 @@ def test_normal_mode_keeps_custom_theme(qtbot, tmp_path, monkeypatch):
     assert window.styleSheet() == style.STYLE
 
 
-def test_score_state_buckets():
-    from portablefix.gui.main_window import _score_state
-
-    assert _score_state(100) == "good"
-    assert _score_state(80) == "good"
-    assert _score_state(79) == "warn"
-    assert _score_state(60) == "warn"
-    assert _score_state(40) == "bad"
-
-
-def test_dashboard_score_is_neutral_until_analysis_then_colored(qtbot, tmp_path):
-    # A big green "not run yet" used to look like a healthy result before
-    # anything had been checked; count pills also showed a green "0".
+def test_dashboard_health_areas_are_unknown_until_findings_then_explained(qtbot, tmp_path):
+    # Research G02: no score formula - every area is Unknown until a
+    # diagnostic reports on it, then shows its verdict and the reason.
     base_dir = _make_base_dir(tmp_path)
-    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_score")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True,
+                        run_id="run_score")
     qtbot.addWidget(window)
-    assert window._dashboard_score_label.property("state") == "none"
+    assert all(t[1].property("state") == "unknown" for t in window._health_tiles.values())
     assert all(p.property("state") == "idle" for p in window._dashboard_tile_count_labels.values())
 
-    window._recommended_action_ids = {"a", "b", "c"}
+    window._findings = {
+        "security.uac": {"id": "security.uac", "severity": "attention", "area": "security", "msg_sk": "s",
+                         "msg_en": "UAC prompts are weakened", "fix": ["hello"]},
+        "disk.health": {"id": "disk.health", "severity": "ok", "area": "disk", "msg_sk": "s", "msg_en": "Healthy",
+                        "fix": []},
+    }
     window._refresh_dashboard()
-    assert window._dashboard_score_label.text() == "70"
-    assert window._dashboard_score_label.property("state") == "warn"
-    assert all(p.property("state") in ("ok", "warn") for p in window._dashboard_tile_count_labels.values())
+    tile, state, reason, fix = window._health_tiles["security"]
+    assert state.property("state") == "attention" and state.text() == "Attention"
+    assert reason.text() == "UAC prompts are weakened" and not fix.isHidden()
+    assert "Security: Attention" in tile.accessibleName()
+    assert window._health_tiles["disk"][1].property("state") == "ok" and window._health_tiles["disk"][3].isHidden()
+    assert window._health_tiles["battery"][1].property("state") == "unknown"
+    fix.click()
+    assert window._action_checkboxes["hello"].isChecked()
 
 
 def _two_action_base_dir(tmp_path):
@@ -3157,7 +3165,8 @@ def test_dashboard_tile_accessible_name_follows_recommended_count(qtbot, tmp_pat
     _write_module(tmp_path, "m02_cleanup", "CLEANUP", "clean_action")
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id="run_tiles2")
     qtbot.addWidget(window)
-    window._recommended_action_ids = {"clean_action"}
+    window._findings = {"x": {"id": "x", "severity": "attention", "area": "disk", "msg_sk": "m", "msg_en": "m",
+                              "fix": ["clean_action"]}}
 
     window._refresh_dashboard()
 
@@ -7380,7 +7389,9 @@ def test_batch_skips_an_already_applied_action_and_records_the_skip(qtbot, tmp_p
     # Nothing changed, so nothing to undo; the other action ran for real.
     undo_text = (tmp_path / "Backups" / "run_check_skip" / "undo.ps1").read_text(encoding="utf-8-sig")
     assert "undo-set-thing" not in undo_text
-    assert window._check_results == {"set_thing": "APPLIED"}
+    # other_thing ran and was checked again (its stub check still answers
+    # NOT_APPLIED) - the state after the run is what the snapshot keeps.
+    assert window._check_results == {"set_thing": "APPLIED", "other_thing": "NOT_APPLIED"}
     assert window._action_status_labels["set_thing"].text() == "already set – skipped"
     report_json = next((tmp_path / "Reports").glob("*_run_check_skip.json"))
     actions = {a["action_id"]: a for a in json.loads(report_json.read_text(encoding="utf-8"))["actions"]}

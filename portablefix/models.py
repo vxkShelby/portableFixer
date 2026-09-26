@@ -34,8 +34,6 @@ class ActionDef:
     undo_command: str | None = None
     inactivity_timeout_sec: int | None = None
     hard_cap_sec: int | None = None
-    problem_keywords: list[str] = field(default_factory=list)
-    recommended_action_ids: list[str] = field(default_factory=list)
     exclude_from_select_all: bool = False
     # Does the action change persistent system state (registry, services,
     # drivers, installed software, system files)? Decides the restore point

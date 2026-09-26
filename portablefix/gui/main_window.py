@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 from . import job_forms, style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
 from .items_dialog import ItemsDialog
-from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, hive_backup, history, i18n, intake, ops, panel_safety, paths, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
+from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, health, hive_backup, history, i18n, intake, ops, panel_safety, paths, pfjson, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner
@@ -180,15 +180,6 @@ class _CheckRunner(QThread):
             run.cancel()
 
 
-def _score_state(score: int) -> str:
-    """Color bucket for the dashboard score (see dashboardScoreValue in style.py)."""
-    if score >= 80:
-        return "good"
-    if score >= 60:
-        return "warn"
-    return "bad"
-
-
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -283,7 +274,10 @@ class MainWindow(QMainWindow):
         # the batch review screen (research G12); _dispatch_action asks
         # nothing more for these and quotes the text in the audit entry.
         self._reviewed_warnings: dict[str, str] = {}
-        self._recommended_action_ids: set[str] = set()
+        # Research G02: finding id -> the latest finding this session (a
+        # later "ok" replaces an earlier problem); the dashboard's health
+        # areas and the recommended fixes come from these.
+        self._findings: dict[str, dict] = {}
         self._summary_dialog: QDialog | None = None
         self._closed = False
         # Per-run job details for the report header. Kept on self (not in a
@@ -865,7 +859,7 @@ class MainWindow(QMainWindow):
         self._dashboard_tile_count_labels: dict[ModuleCategory, QLabel] = {}
         self._dashboard_tiles: dict[ModuleCategory, _DashboardTile] = {}
         self._category_i18n_keys = category_i18n_keys
-        self._dashboard_score_label: QLabel | None = None
+        self._health_tiles: dict = {}
         for category in self._categories_order:
             if category == ModuleCategory.DASHBOARD:
                 self._category_action_ids[category] = []
@@ -1844,7 +1838,9 @@ class MainWindow(QMainWindow):
         rows_scroll.setWidget(rows_container)
         layout.addWidget(rows_scroll)
 
-        recommended_ids = [aid for aid in self._recommended_action_ids if aid in self._action_checkboxes]
+        # Fixes of the problems still open - not the ones this batch just ran.
+        succeeded = {aid for aid, code in self._batch_results if code == 0}
+        recommended_ids = [aid for aid in self._recommended_ids() if aid not in succeeded]
         if recommended_ids:
             rec_header = QLabel(self._t("recommended_fixes_title"))
             rec_header.setObjectName("summaryHeader")
@@ -1920,9 +1916,10 @@ class MainWindow(QMainWindow):
         open_button.setFocus()
         self._summary_dialog = dialog
 
-    def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog) -> None:
+    def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog | None) -> None:
         if not action_ids:
-            dialog.close()
+            if dialog is not None:
+                dialog.close()
             return
         self._apply_selection(list(self._action_checkboxes), "none")
         self._apply_selection(action_ids, "all")
@@ -1931,7 +1928,8 @@ class MainWindow(QMainWindow):
             if wanted_set.intersection(self._category_action_ids.get(category, [])):
                 self.category_list.setCurrentRow(index)
                 break
-        dialog.close()
+        if dialog is not None:
+            dialog.close()
 
     def _build_winget_updates_panel(self) -> QWidget:
         panel = QWidget()
@@ -2537,21 +2535,39 @@ class MainWindow(QMainWindow):
         heading.setObjectName("cardHeading")
         card_layout.addWidget(heading)
 
+        # Research G02: one verdict per health area from the findings the
+        # diagnostics reported - no score formula. Unknown until checked.
+        health_grid = QGridLayout()
+        health_grid.setSpacing(10)
+        self._health_tiles = {}
+        for index, area in enumerate(pfjson.AREAS):
+            tile = QFrame()
+            tile.setObjectName("actionCard")
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(10, 8, 10, 8)
+            tile_layout.setSpacing(2)
+            name_label = QLabel(self._t(f"health_area_{area}"))
+            name_label.setObjectName("cardHeading")
+            state_label = QLabel()
+            state_label.setObjectName("healthState")
+            reason_label = QLabel()
+            reason_label.setObjectName("selectionScope")
+            reason_label.setWordWrap(True)
+            fix_button = QPushButton(self._t("health_fix_button"))
+            fix_button.setObjectName("selectionBtn")
+            fix_button.setVisible(False)
+            fix_button.clicked.connect(lambda _checked=False, a=area: self._apply_recommended_selection(
+                self._health_fixes(a), None))
+            for widget in (name_label, state_label, reason_label, fix_button):
+                tile_layout.addWidget(widget)
+            tile_layout.addStretch(1)
+            self._health_tiles[area] = (tile, state_label, reason_label, fix_button)
+            health_grid.addWidget(tile, index // 4, index % 4)
+        card_layout.addLayout(health_grid)
+        self._refresh_health_tiles()
+
         top_row = QHBoxLayout()
         top_row.setSpacing(16)
-        score_box = QVBoxLayout()
-        score_box.setSpacing(0)
-        score_value = QLabel(self._t("dashboard_no_run_yet"))
-        score_value.setObjectName("dashboardScoreValue")
-        # "none" until the first analysis - a big green "not run yet" read
-        # like a healthy result before anything had been checked.
-        score_value.setProperty("state", "none")
-        score_caption = QLabel(self._t("dashboard_score_label"))
-        score_caption.setObjectName("selectionScope")
-        score_box.addWidget(score_value)
-        score_box.addWidget(score_caption)
-        self._dashboard_score_label = score_value
-        top_row.addLayout(score_box)
         # Kept on self so batch start/end can lock it together with
         # run_button - it starts a batch too. Its initial state matters when
         # a language toggle rebuilds the dashboard while a batch, its report
@@ -2804,17 +2820,38 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(button.property("folder")))
         button.setVisible(False)
 
+    def _recommended_ids(self) -> list[str]:
+        """Fixes of the open problems the findings reported (research G02)."""
+        return health.recommended_fixes(self._findings, known_ids=self._action_checkboxes)
+
+    def _health_fixes(self, area: str) -> list[str]:
+        problems = {fid: f for fid, f in self._findings.items() if f.get("area") == area}
+        return health.recommended_fixes(problems, known_ids=self._action_checkboxes)
+
+    def _refresh_health_tiles(self) -> None:
+        verdicts = health.area_verdicts(self._findings)
+        message_key = "msg_en" if self.settings.language == "en" else "msg_sk"
+        for area, (tile, state_label, reason_label, fix_button) in self._health_tiles.items():
+            verdict = verdicts[area]
+            state = verdict["state"]
+            state_label.setText(self._t(f"health_state_{state}"))
+            state_label.setProperty("state", state)
+            state_label.style().unpolish(state_label)
+            state_label.style().polish(state_label)
+            # The reasons, worst first - the evidence behind the verdict.
+            reasons = [f.get(message_key) or f.get("msg_en", "") for f in verdict["findings"]]
+            reason_label.setText("\n".join(reasons) if reasons else self._t("health_unknown_reason"))
+            fix_button.setVisible(state in ("attention", "critical") and bool(self._health_fixes(area)))
+            tile.setAccessibleName(
+                f"{self._t(f'health_area_{area}')}: {self._t(f'health_state_{state}')}. {reason_label.text()}"
+            )
+
     def _refresh_dashboard(self) -> None:
         self._refresh_history()
-        if self._dashboard_score_label is not None:
-            unique_recommended = len(self._recommended_action_ids)
-            score = max(40, 100 - unique_recommended * 10)
-            self._dashboard_score_label.setText(str(score))
-            self._dashboard_score_label.setProperty("state", _score_state(score))
-            self._dashboard_score_label.style().unpolish(self._dashboard_score_label)
-            self._dashboard_score_label.style().polish(self._dashboard_score_label)
+        if getattr(self, "_health_tiles", None):
+            self._refresh_health_tiles()
         counts: dict[ModuleCategory, int] = {}
-        for action_id in self._recommended_action_ids:
+        for action_id in self._recommended_ids():
             try:
                 module, _ = self._find_action(action_id)
             except KeyError:
@@ -3904,7 +3941,6 @@ class MainWindow(QMainWindow):
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
-        self._recommended_action_ids = set()
         self._summary_dialog = None
         self._cancel_requested = False
         for action_id in self._queue:
@@ -4710,7 +4746,6 @@ class MainWindow(QMainWindow):
         self, module_id: str, action_id: str, command: str, exit_code: int, runner: ActionRunner,
         warning_text: str = "",
     ) -> None:
-        output = "\n".join(runner.captured_output)
         _, action = self._find_action(action_id)
         payloads = list(getattr(runner, "pfjson", None) or [])
         item_ids = self._selected_items.get(action_id, []) if action.items_command else []
@@ -4740,12 +4775,10 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
         self._batch_results.append((action_id, exit_code))
-        if action.problem_keywords and action.recommended_action_ids:
-            output_lower = output.lower()
-            if any(keyword.lower() in output_lower for keyword in action.problem_keywords):
-                self._recommended_action_ids.update(
-                    rid for rid in action.recommended_action_ids if rid in self._action_checkboxes
-                )
+        for finding in entry.findings:
+            # Newest last, so health.latest_findings-style order holds.
+            self._findings.pop(finding["id"], None)
+            self._findings[finding["id"]] = finding
         elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         if skipped:

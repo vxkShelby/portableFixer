@@ -23,13 +23,6 @@ def _optional_positive_int(path: Path, action_id: str, raw: dict, key: str) -> i
     return value
 
 
-def _string_list(path: Path, action_id: str, raw: dict, key: str) -> list[str]:
-    value = raw.get(key, [])
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} (expected a list of strings)")
-    return value
-
-
 def _optional_bool(path: Path, action_id: str, raw: dict, key: str) -> bool | None:
     value = raw.get(key)
     if value is None:
@@ -130,6 +123,14 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
         action_id = raw["id"]
         if not isinstance(action_id, str) or not action_id:
             raise ModuleLoadError(f"{actions_yaml_path}: action id must be a non-empty string, got {action_id!r}")
+        for retired in ("problem_keywords", "recommended_action_ids"):
+            if retired in raw:
+                # Research G02: substring rules broke on localized Windows;
+                # the command prints PFJSON findings with their fixes now.
+                raise ModuleLoadError(
+                    f"{actions_yaml_path}: action '{action_id}': {retired} was replaced by PFJSON findings "
+                    "(portablefix/pfjson.py)"
+                )
         changes_system = _optional_bool(actions_yaml_path, action_id, raw, "changes_system")
         items_command = _items_command(actions_yaml_path, action_id, raw)
         command, preview_command, undo_command, op_list = _command_or_ops(
@@ -177,8 +178,6 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                     actions_yaml_path, action_id, raw, "inactivity_timeout_sec"
                 ),
                 hard_cap_sec=_optional_positive_int(actions_yaml_path, action_id, raw, "hard_cap_sec"),
-                problem_keywords=_string_list(actions_yaml_path, action_id, raw, "problem_keywords"),
-                recommended_action_ids=_string_list(actions_yaml_path, action_id, raw, "recommended_action_ids"),
                 exclude_from_select_all=raw.get("exclude_from_select_all", False) is True,
                 changes_system=changes_system,
                 stresses_disk=_optional_bool(actions_yaml_path, action_id, raw, "stresses_disk") is True,

@@ -25,6 +25,8 @@ PRESETS: dict[str, list[str]] = {
         "whea_hardware_errors", "disk_reliability_counters",
         "defender_status", "top_cpu_processes", "sec_defender_status",
         "sec_firewall_status", "sec_uac_status",
+        # The rest of the dashboard's health areas (research G02).
+        "battery_wear", "boot_safe_mode_status", "drv_problem_devices", "drv_gpu_info",
     ],
     "privacy_debloat": [
         "debloat_disable_telemetry", "debloat_disable_suggestions",

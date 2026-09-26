@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from . import branding as branding_mod
-from . import intake, redaction
+from . import health, intake, redaction
 from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
@@ -420,6 +420,15 @@ def build_report_data(
         "elevated": _summarize_elevation(entries),
         "target_user": _summarize_target_user(entries),
         "storage_fallback": bool(storage_fallback),
+        # Research G02: Found / Fixed / Recommended atop report.html, from
+        # the findings the diagnostics reported - and every area's verdict.
+        "client_summary": health.client_summary(
+            actions, language,
+            label_of=lambda aid: _find_action_by_id(modules, aid).label(language) if _find_action_by_id(modules, aid) else None,
+        ),
+        "health_areas": {
+            area: verdict["state"] for area, verdict in health.area_verdicts(health.latest_findings(actions)).items()
+        },
     }
     # Research G20, each key only when there is something to show - an
     # unused form adds nothing to the report.
@@ -587,6 +596,12 @@ h1 { color: #7aa2f7; font-size: 22px; margin: 0 0 4px 0; }
 .chip.fail .num { color: #f7768e; }
 .chip.dry .num { color: #e0af68; }
 .chip .lbl { font-size: 11px; color: #9aa5ce; text-transform: uppercase; }
+.client-summary .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.client-summary .cols > div { background: #24283b; border-radius: 8px; padding: 8px 14px; }
+.client-summary h3 { margin: 4px 0; font-size: 14px; }
+.client-summary ul { margin: 4px 0; padding-left: 18px; }
+.sev.critical { color: #f7768e; font-weight: bold; }
+.sev.attention { color: #e0af68; font-weight: bold; }
 .card { background: #24283b; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px;
         border-left: 3px solid transparent; scroll-margin-top: 16px; }
 .card.fail { border-left: 3px solid #f7768e; }
@@ -692,6 +707,9 @@ table.summary td.check-na { color: #9aa5ce; }
   .banner { background: #fff; color: #111; border: 1px solid #9a6700; border-left: 4px solid #9a6700; }
   .banner.redacted { background: #fff; color: #111; border-color: #555; }
   .warned-tag { color: #9a6700; }
+  .client-summary .cols > div { background: #fff; border: 1px solid #bbb; }
+  .sev.critical { color: #c0392b; }
+  .sev.attention { color: #9a6700; }
   .warn-text { color: #444; }
   .rp-fail { color: #c0392b; }
   .events { background: #fff; border: 1px solid #bbb; }
@@ -1316,6 +1334,36 @@ def _render_toolbar(language: str) -> str:
     )
 
 
+def _render_client_summary(summary, language: str) -> str:
+    """Research G02: what the client reads first - found, fixed, recommended."""
+    if not isinstance(summary, dict):
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    def column(key: str, rows: list, none_key: str, text) -> str:
+        items = "".join(f"<li>{text(r)}</li>" for r in rows if isinstance(r, dict))
+        body = f"<ul>{items}</ul>" if items else f'<p class="empty">{t(none_key)}</p>'
+        return f"<div><h3>{t(key)}</h3>{body}</div>"
+
+    def found(row) -> str:
+        severity = str(row.get("severity", ""))
+        return (f'<span class="sev {html.escape(severity)}">{t("health_state_" + severity) if severity in ("attention", "critical") else ""}</span> '
+                f'{html.escape(str(row.get("message", "")))}')
+
+    def action(row) -> str:
+        return html.escape(str(row.get("label") or row.get("action_id") or ""))
+
+    return (
+        f'<section class="client-summary"><h2>{t("report_client_summary")}</h2><div class="cols">'
+        + column("report_summary_found", summary.get("found") or [], "report_summary_none_found", found)
+        + column("report_summary_fixed", summary.get("fixed") or [], "report_summary_none_fixed", action)
+        + column("report_summary_recommended", summary.get("recommended") or [], "report_summary_none_recommended", action)
+        + "</div></section>"
+    )
+
+
 def _render_html(data: dict) -> str:
     language = data.get("language", "sk")
 
@@ -1416,6 +1464,7 @@ def _render_html(data: dict) -> str:
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
 {t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}{extra_meta}</div>
+{_render_client_summary(data.get('client_summary'), language)}
 <div class="chips">
 <div class="chip"><span class="num">{len(actions)}</span><span class="lbl">{t('report_chip_actions')}</span></div>
 <div class="chip ok"><span class="num">{ok_count}</span><span class="lbl">{t('report_chip_ok')}</span></div>

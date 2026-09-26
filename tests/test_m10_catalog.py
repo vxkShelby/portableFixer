@@ -152,10 +152,10 @@ def test_m10_catalog_restart_problem_devices_skips_intentionally_disabled_and_st
 
 
 def test_m10_catalog_problem_devices_recommends_restart_action():
+    # Research G02: a PFJSON finding carries the fix (tests/test_findings_catalog.py).
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    assert by_id["drv_problem_devices"].recommended_action_ids == ["drv_restart_problem_devices"]
-    assert by_id["drv_problem_devices"].problem_keywords == ["Error"]
+    assert "fix = @('drv_restart_problem_devices')" in by_id["drv_problem_devices"].command
 
 
 def test_m10_catalog_gpu_info_reads_real_vram_and_flags_basic_display_adapter():
@@ -167,8 +167,7 @@ def test_m10_catalog_gpu_info_reads_real_vram_and_flags_basic_display_adapter():
     assert "HardwareInformation.qwMemorySize" in action.command
     keyword = "Microsoft Basic Display Adapter is active"
     assert keyword in action.command
-    assert action.problem_keywords == [keyword]
-    assert action.recommended_action_ids == ["drv_install_updates"]
+    assert "fix = @('drv_install_updates')" in action.command
 
 
 def test_m10_catalog_network_adapter_versions_lists_physical_adapters_only():

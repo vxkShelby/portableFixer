@@ -9,10 +9,8 @@ key and sc.exe are shadowed by functions (functions win command lookup) and
 the script exits 97 unless every name really resolves to the stub, so a test
 never disables anything real. HKLM Run keys are only read."""
 
-import json
 import os
 import shutil
-import subprocess
 import uuid
 import winreg
 from pathlib import Path
