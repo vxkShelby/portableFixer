@@ -25,11 +25,13 @@ def release_files(exe: bytes = NEW_EXE) -> dict[str, bytes]:
 
 
 def sums_for(files: dict[str, bytes], skip: tuple[str, ...] = ()) -> bytes:
-    # Same coverage as scripts/generate_sha256sums.py: App/ and Modules/.
+    # Same coverage as scripts/generate_sha256sums.py: App/, Modules/, Vendor/.
+    from portablefix.integrity import TARGET_DIRS
+
     lines = [
         f"{hashlib.sha256(data).hexdigest()}  {rel}\n"
         for rel, data in sorted(files.items())
-        if rel.split("/")[0] in ("App", "Modules") and rel not in skip
+        if rel.split("/")[0] in TARGET_DIRS and rel not in skip
     ]
     return "".join(lines).encode("ascii")
 

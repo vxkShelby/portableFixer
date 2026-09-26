@@ -34,8 +34,6 @@ class ActionDef:
     undo_command: str | None = None
     inactivity_timeout_sec: int | None = None
     hard_cap_sec: int | None = None
-    problem_keywords: list[str] = field(default_factory=list)
-    recommended_action_ids: list[str] = field(default_factory=list)
     exclude_from_select_all: bool = False
     # Does the action change persistent system state (registry, services,
     # drivers, installed software, system files)? Decides the restore point
@@ -60,6 +58,15 @@ class ActionDef:
     # state it captured - so undo_command stays None and has_undo is the
     # question to ask.
     ops: list = field(default_factory=list)
+    # Per-item selection (research G05, portablefix/items.py): a SAFE
+    # listing command printing one JSON object per item. When set, `command`
+    # applies the change to the ids the technician picked ($__pfItems) and
+    # `undo_command`, if any, restores ONE item ($__pfItem, $__pfPrior).
+    items_command: str | None = None
+    # "Already applied?" (research G09): a SAFE command whose last line is
+    # APPLIED, NOT_APPLIED or UNKNOWN. A real batch run skips an APPLIED
+    # action (and records the skip); generated for every `ops:` action.
+    check_command: str | None = None
 
     @property
     def has_undo(self) -> bool:
@@ -77,3 +84,6 @@ class ModuleDef:
     module_id: str
     actions: list[ActionDef]
     category: ModuleCategory = ModuleCategory.DIAGNOSTICS
+    # From UserModules/ (research G32): the shop's own, not shipped with
+    # PortableFix - badged "custom" in the window and the report.
+    custom: bool = False

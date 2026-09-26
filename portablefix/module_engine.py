@@ -23,13 +23,6 @@ def _optional_positive_int(path: Path, action_id: str, raw: dict, key: str) -> i
     return value
 
 
-def _string_list(path: Path, action_id: str, raw: dict, key: str) -> list[str]:
-    value = raw.get(key, [])
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} (expected a list of strings)")
-    return value
-
-
 def _optional_bool(path: Path, action_id: str, raw: dict, key: str) -> bool | None:
     value = raw.get(key)
     if value is None:
@@ -39,6 +32,24 @@ def _optional_bool(path: Path, action_id: str, raw: dict, key: str) -> bool | No
     if not isinstance(value, bool):
         raise ModuleLoadError(f"{path}: action '{action_id}' has invalid {key} {value!r} (expected true or false)")
     return value
+
+
+def _optional_command(path: Path, action_id: str, raw: dict, key: str) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ModuleLoadError(f"{path}: action '{action_id}' has an empty or non-text {key}")
+    return value
+
+
+def _items_command(path: Path, action_id: str, raw: dict) -> str | None:
+    """Research G05: the SAFE listing command of a per-item action."""
+    items_command = _optional_command(path, action_id, raw, "items_command")
+    if items_command is not None and "ops" in raw:
+        # ops: act on fixed values; items are picked at run time.
+        raise ModuleLoadError(f"{path}: action '{action_id}' cannot have both items_command and ops")
+    return items_command
 
 
 def _command_or_ops(path: Path, action_id: str, raw: dict, risk: RiskLevel, changes_system: bool | None):
@@ -112,10 +123,32 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
         action_id = raw["id"]
         if not isinstance(action_id, str) or not action_id:
             raise ModuleLoadError(f"{actions_yaml_path}: action id must be a non-empty string, got {action_id!r}")
+        for retired in ("problem_keywords", "recommended_action_ids"):
+            if retired in raw:
+                # Research G02: substring rules broke on localized Windows;
+                # the command prints PFJSON findings with their fixes now.
+                raise ModuleLoadError(
+                    f"{actions_yaml_path}: action '{action_id}': {retired} was replaced by PFJSON findings "
+                    "(portablefix/pfjson.py)"
+                )
         changes_system = _optional_bool(actions_yaml_path, action_id, raw, "changes_system")
+        items_command = _items_command(actions_yaml_path, action_id, raw)
         command, preview_command, undo_command, op_list = _command_or_ops(
             actions_yaml_path, action_id, raw, risk, changes_system,
         )
+        check_command = _optional_command(actions_yaml_path, action_id, raw, "check_command")
+        if op_list:
+            if check_command is not None:
+                raise ModuleLoadError(
+                    f"{actions_yaml_path}: action '{action_id}' has ops, so its check_command is generated - remove it"
+                )
+            check_command = ops_engine.check_script(op_list)
+        elif check_command is not None and (risk == RiskLevel.SAFE or items_command is not None):
+            # A read-only action has nothing to be "already applied"; a
+            # per-item action is checked item by item in its own listing.
+            raise ModuleLoadError(
+                f"{actions_yaml_path}: action '{action_id}' cannot have a check_command (SAFE or per-item action)"
+            )
         if changes_system is False and risk == RiskLevel.DESTRUCTIVE:
             # A DESTRUCTIVE action always gets the restore point - there is
             # no "irreversible but not worth a safety net".
@@ -145,26 +178,43 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
                     actions_yaml_path, action_id, raw, "inactivity_timeout_sec"
                 ),
                 hard_cap_sec=_optional_positive_int(actions_yaml_path, action_id, raw, "hard_cap_sec"),
-                problem_keywords=_string_list(actions_yaml_path, action_id, raw, "problem_keywords"),
-                recommended_action_ids=_string_list(actions_yaml_path, action_id, raw, "recommended_action_ids"),
                 exclude_from_select_all=raw.get("exclude_from_select_all", False) is True,
                 changes_system=changes_system,
                 stresses_disk=_optional_bool(actions_yaml_path, action_id, raw, "stresses_disk") is True,
                 restarts_pc=restarts_pc,
                 restart_before_next=restart_before_next,
                 ops=op_list,
+                items_command=items_command,
+                check_command=check_command,
             )
         )
     return ModuleDef(module_id=module_id, actions=actions, category=category)
 
 
-def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
+USER_MODULES_DIR = "UserModules"
+
+
+def load_catalog(assets_dir: Path) -> tuple[list[ModuleDef], list[str]]:
+    """Modules/ plus the shop's own UserModules/ (research G32) - a folder
+    the updater never replaces, its modules marked custom. A user module
+    cannot reuse a built-in module or action id: the built-in one wins."""
+    return load_all_modules(Path(assets_dir) / "Modules", Path(assets_dir) / USER_MODULES_DIR)
+
+
+def load_all_modules(modules_dir: Path, user_modules_dir: Path | None = None) -> tuple[list[ModuleDef], list[str]]:
     modules: list[ModuleDef] = []
     errors: list[str] = []
     seen_action_ids: dict[str, Path] = {}
-    for path in sorted(modules_dir.glob("*/actions.yaml")):
+    seen_module_ids: dict[str, Path] = {}
+    paths = [(path, False) for path in sorted(modules_dir.glob("*/actions.yaml"))]
+    if user_modules_dir is not None:
+        paths += [(path, True) for path in sorted(user_modules_dir.glob("*/actions.yaml"))]
+    for path, custom in paths:
         try:
             module = load_module(path)
+            module.custom = custom
+            if module.module_id in seen_module_ids:
+                raise ModuleLoadError(f"module_id '{module.module_id}' already used by {seen_module_ids[module.module_id]}")
             ids_in_module = [a.id for a in module.actions]
             same_file_dupes = {i for i in ids_in_module if ids_in_module.count(i) > 1}
             if same_file_dupes:
@@ -177,6 +227,7 @@ def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
                 )
             for action in module.actions:
                 seen_action_ids[action.id] = path
+            seen_module_ids[module.module_id] = path
             modules.append(module)
         except (ModuleLoadError, yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             errors.append(f"{path}: {exc}")

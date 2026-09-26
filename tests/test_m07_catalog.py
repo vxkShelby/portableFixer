@@ -15,16 +15,21 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m07_autoruns" / "actions.yaml"
 
 
-def test_m07_catalog_loads_8_actions_in_diagnostics_category():
+def test_m07_catalog_loads_9_actions_in_diagnostics_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m07_autoruns"
     assert module.category == ModuleCategory.DIAGNOSTICS
-    assert len(module.actions) == 8
+    assert len(module.actions) == 9
 
 
-def test_m07_catalog_all_actions_safe_readonly():
+def test_m07_catalog_all_actions_safe_readonly_except_the_reversible_disable():
+    # G04 step 2 (autoruns_disable_items, tests/test_m07_disable_items.py)
+    # is the one action that changes anything - per item, with undo.
     module = load_module(CATALOG_PATH)
     for action in module.actions:
+        if action.id == "autoruns_disable_items":
+            assert action.risk == RiskLevel.MODERATE and action.items_command and action.undo_command
+            continue
         assert action.risk == RiskLevel.SAFE
         assert action.undo_command is None
 
@@ -41,6 +46,7 @@ def test_m07_catalog_covers_all_autostart_surfaces():
         "autoruns_ifeo_debuggers",
         "autoruns_unquoted_service_paths",
         "autoruns_thirdparty_signed_view",
+        "autoruns_disable_items",
     }
 
 

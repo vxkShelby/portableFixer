@@ -39,23 +39,24 @@ def test_action_ids_unique_across_all_catalogs():
             seen[action.id] = module.module_id
 
 
-def test_recommended_action_ids_reference_real_actions_and_are_never_self_or_empty():
+def test_finding_fixes_reference_real_actions_and_are_never_self():
+    # Research G02: the fix ids a PFJSON finding points at (`fix = @(...)`
+    # in the command) must be actions the catalog has, or the one-click fix
+    # is a dead end.
+    import re
+
     modules, errors = load_all_modules(MODULES_DIR)
     assert errors == []
     all_ids = {action.id for module in modules for action in module.actions}
+    found = 0
     for module in modules:
         for action in module.actions:
-            # Both-or-neither: a diagnostic with problem_keywords but no fix
-            # to point at is a dead end for the user, and the reverse
-            # (recommended_action_ids with no keywords to trigger it) can
-            # never fire - either is a sign the catalog entry is half-done.
-            assert bool(action.problem_keywords) == bool(action.recommended_action_ids), (
-                f"{module.module_id}/{action.id}: problem_keywords and recommended_action_ids "
-                "must both be set or both be empty"
-            )
-            for rid in action.recommended_action_ids:
-                assert rid in all_ids, f"{module.module_id}/{action.id}: recommended_action_ids references unknown id '{rid}'"
-                assert rid != action.id, f"{module.module_id}/{action.id}: recommends itself"
+            for group in re.findall(r"fix = @\(([^)]*)\)", action.command):
+                for rid in re.findall(r"'([^']+)'", group):
+                    found += 1
+                    assert rid in all_ids, f"{module.module_id}/{action.id}: finding fix references unknown id '{rid}'"
+                    assert rid != action.id, f"{module.module_id}/{action.id}: recommends itself"
+    assert found >= 5
 
 
 def test_no_action_keys_off_known_localized_tool_output():

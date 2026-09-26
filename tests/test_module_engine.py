@@ -274,33 +274,17 @@ def test_load_module_without_hard_cap_sec_defaults_to_none(tmp_path):
     assert module.actions[0].hard_cap_sec is None
 
 
-def test_load_module_parses_problem_keywords_and_recommended_action_ids(tmp_path):
+@pytest.mark.parametrize("extra", [
+    "    problem_keywords:\n      - \"BAD STATE\"\n",
+    "    recommended_action_ids:\n      - a2\n",
+])
+def test_load_module_refuses_the_retired_keyword_rules(tmp_path, extra):
+    # Research G02: replaced by PFJSON findings - a catalog still using them
+    # must fail loudly instead of silently losing its recommendation.
     yaml_path = tmp_path / "actions.yaml"
-    yaml_path.write_text(
-        "module_id: m_test\n"
-        "actions:\n"
-        "  - id: a1\n"
-        "    label_sk: \"Akcia 1\"\n"
-        "    label_en: \"Action 1\"\n"
-        "    risk: SAFE\n"
-        "    command: \"Write-Output 'hi'\"\n"
-        "    problem_keywords:\n"
-        "      - \"BAD STATE\"\n"
-        "    recommended_action_ids:\n"
-        "      - a2\n",
-        encoding="utf-8",
-    )
-    module = load_module(yaml_path)
-    assert module.actions[0].problem_keywords == ["BAD STATE"]
-    assert module.actions[0].recommended_action_ids == ["a2"]
-
-
-def test_load_module_without_problem_keywords_defaults_to_empty_lists(tmp_path):
-    yaml_path = tmp_path / "actions.yaml"
-    yaml_path.write_text(VALID_YAML, encoding="utf-8")
-    module = load_module(yaml_path)
-    assert module.actions[0].problem_keywords == []
-    assert module.actions[0].recommended_action_ids == []
+    yaml_path.write_text(VALID_YAML + extra, encoding="utf-8")
+    with pytest.raises(ModuleLoadError, match="PFJSON findings"):
+        load_module(yaml_path)
 
 
 def test_load_module_parses_exclude_from_select_all(tmp_path):
@@ -368,8 +352,6 @@ def test_load_module_rejects_malformed_structure(tmp_path, content):
         "    inactivity_timeout_sec: \"600\"\n",
         "    hard_cap_sec: true\n",
         "    hard_cap_sec: -5\n",
-        "    problem_keywords: \"slow\"\n",
-        "    recommended_action_ids: [1, 2]\n",
     ],
 )
 def test_load_module_rejects_invalid_field_types(tmp_path, extra):
@@ -445,3 +427,37 @@ def test_destructive_action_cannot_opt_out_of_the_restore_point(tmp_path):
     path.write_text(_yaml_with("    changes_system: false\n", risk="DESTRUCTIVE"), encoding="utf-8")
     with pytest.raises(ModuleLoadError, match="DESTRUCTIVE"):
         load_module(path)
+
+
+def _write_catalog(folder, module_id, action_id):
+    (folder / module_id).mkdir(parents=True)
+    (folder / module_id / "actions.yaml").write_text(
+        f"module_id: {module_id}\nactions:\n  - id: {action_id}\n    label_sk: X\n    label_en: X\n"
+        "    risk: SAFE\n    command: \"Write-Output 'x'\"\n",
+        encoding="utf-8",
+    )
+
+
+def test_load_catalog_adds_user_modules_marked_custom_and_built_ins_win(tmp_path):
+    # Research G32: UserModules/ survives updates; its modules are badged
+    # custom and may not reuse a built-in module or action id.
+    from portablefix.module_engine import load_catalog
+
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    _write_catalog(tmp_path / "UserModules", "shop_tools", "shop_action")
+    _write_catalog(tmp_path / "UserModules", "shop_clash", "shipped")
+    _write_catalog(tmp_path / "UserModules", "m01_diag", "other")
+    modules, errors = load_catalog(tmp_path)
+    by_id = {m.module_id: m for m in modules}
+    assert set(by_id) == {"m01_diag", "shop_tools"}
+    assert by_id["shop_tools"].custom is True and by_id["m01_diag"].custom is False
+    assert by_id["m01_diag"].actions[0].id == "shipped"
+    assert len(errors) == 2 and all("UserModules" in e for e in errors)
+
+
+def test_load_catalog_without_user_modules_folder(tmp_path):
+    from portablefix.module_engine import load_catalog
+
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    modules, errors = load_catalog(tmp_path)
+    assert [m.module_id for m in modules] == ["m01_diag"] and errors == []

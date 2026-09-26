@@ -1662,3 +1662,76 @@ def test_report_runner_passes_branding_through(tmp_path, monkeypatch):
     monkeypatch.setattr(report, "generate_report", lambda *a, **kw: captured.update(kw) or (tmp_path / "r.html", None))
     report.ReportRunner(tmp_path, "run_x", [], "en", {}, {}, branding={"company": "Servis"}).run()
     assert captured["branding"] == {"company": "Servis"}
+
+
+def test_report_lists_autostart_entries_new_since_the_last_visit(tmp_path):
+    import socket
+
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    old = {"run_id": "old_as", "generated_at": "2026-01-01T00:00:00+00:00", "actions": [],
+           "snapshot_after": {"autostart": ["Run (user): Old", "Task: \\Kept"]}}
+    (reports_dir / f"{socket.gethostname()}_old_as.json").write_text(json.dumps(old), encoding="utf-8")
+    append_entry(tmp_path, "run_as", make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_as"))
+
+    html_path, json_path = generate_report(
+        tmp_path, "run_as", _fixture_modules(), "en",
+        snapshot_before={"autostart": ["Run (user): <New>", "Task: \\Kept"]}, snapshot_after={},
+    )
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["new_autostart"] == {"previous_run_id": "old_as", "entries": ["Run (user): <New>"]}
+    content = html_path.read_text(encoding="utf-8")
+    assert "New autostart entries since the last visit" in content
+    assert "<li>Run (user): &lt;New&gt;</li>" in content
+
+
+def test_report_has_no_autostart_section_without_an_inventory_from_the_last_visit(tmp_path):
+    append_entry(tmp_path, "run_as2", make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_as2"))
+    data = build_report_data(tmp_path, "run_as2", _fixture_modules(), "en", {"autostart": ["x"]}, {})
+    assert "new_autostart" not in data
+
+
+def test_report_opens_with_the_client_summary_from_findings(tmp_path):
+    # Research G02: Found / Fixed / Recommended from structured findings.
+    diag = ActionDef(id="diag", label_sk="Diag", label_en="Disk check", risk=RiskLevel.SAFE, command="x")
+    fix = ActionDef(id="fix_disk", label_sk="Oprava", label_en="Repair the disk", risk=RiskLevel.MODERATE, command="y")
+    other = ActionDef(id="fix_uac", label_sk="UAC", label_en="Restore UAC", risk=RiskLevel.MODERATE, command="z")
+    modules = [ModuleDef(module_id="m01", actions=[diag, fix, other])]
+    findings = [
+        {"id": "disk.health", "severity": "critical", "area": "disk", "msg_sk": "Disk zlyháva", "msg_en": "Disk <failing>", "fix": ["fix_disk"]},
+        {"id": "security.uac", "severity": "attention", "area": "security", "msg_sk": "UAC", "msg_en": "UAC weakened", "fix": ["fix_uac"]},
+        {"id": "boot.safe_mode", "severity": "ok", "area": "boot", "msg_sk": "OK", "msg_en": "Normal boot", "fix": []},
+    ]
+    append_entry(tmp_path, "run_cs", make_entry("m01", "diag", "x", 0, "out", False, "run_cs", risk="SAFE", findings=findings))
+    append_entry(tmp_path, "run_cs", make_entry("m01", "fix_disk", "y", 0, "ok", False, "run_cs", risk="MODERATE"))
+
+    html_path, json_path = generate_report(tmp_path, "run_cs", modules, "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    summary = data["client_summary"]
+    assert [f["id"] for f in summary["found"]] == ["disk.health", "security.uac"]
+    assert summary["fixed"] == [{"action_id": "fix_disk", "label": "Repair the disk"}]
+    assert summary["recommended"] == [{"action_id": "fix_uac", "label": "Restore UAC"}]
+    assert data["health_areas"]["disk"] == "critical" and data["health_areas"]["boot"] == "ok"
+    assert data["health_areas"]["battery"] == "unknown"
+    content = html_path.read_text(encoding="utf-8")
+    assert content.index("Client summary") < content.index('<div class="chips">')
+    assert "Disk &lt;failing&gt;" in content and "Restore UAC" in content
+
+
+def test_dry_run_findings_do_not_count_in_the_summary(tmp_path):
+    findings = [{"id": "disk.health", "severity": "critical", "area": "disk", "msg_sk": "x", "msg_en": "x", "fix": []}]
+    append_entry(tmp_path, "run_dr", make_entry("m02_cleanup", "user_temp", "c", 0, "o", True, "run_dr", findings=findings))
+    data = build_report_data(tmp_path, "run_dr", _fixture_modules(), "en", {}, {})
+    assert data["client_summary"]["found"] == [] and data["health_areas"]["disk"] == "unknown"
+
+
+def test_report_badges_actions_from_user_modules(tmp_path):
+    # Research G32: the shop's own actions are marked in the report.
+    shop = ActionDef(id="shop_fix", label_sk="Dielna", label_en="Shop fix", risk=RiskLevel.SAFE, command="x")
+    modules = _fixture_modules() + [ModuleDef(module_id="shop_tools", actions=[shop], custom=True)]
+    append_entry(tmp_path, "run_cu", make_entry("shop_tools", "shop_fix", "x", 0, "ok", False, "run_cu"))
+    append_entry(tmp_path, "run_cu", make_entry("m02_cleanup", "user_temp", "c", 0, "ok", False, "run_cu"))
+    html_path, json_path = generate_report(tmp_path, "run_cu", modules, "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert [a["custom"] for a in data["actions"]] == [True, False]
+    assert html_path.read_text(encoding="utf-8").count(">custom</span>") == 1

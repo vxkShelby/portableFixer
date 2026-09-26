@@ -6,7 +6,9 @@ from PySide6.QtCore import QThread, Signal
 # Re-exported: callers and tests have always imported these from here.
 from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums  # noqa: F401
 
-TARGET_DIRS = ("App", "Modules")
+# Vendor/ too (research G32): its DLLs are loaded into the process. Never
+# UserModules/ - the shop's own actions are not in the release manifest.
+TARGET_DIRS = ("App", "Modules", "Vendor")
 
 
 def _iter_real_files(root: Path):

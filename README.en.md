@@ -63,10 +63,43 @@ PowerShell.
   **custom** ones - select actions, click **+ Save selection**, name it.
   Custom presets are written to `Data/settings.json` immediately (not only
   on exit), travel with the USB drive and are deleted via right-click.
-- **Dashboard:** system score after an analysis (green/amber/red),
-  per-category finding counts and **recent runs on this PC** with a link to
-  each report - on a repeat visit to the same client you see right away
-  what was done last time.
+- **Dashboard:** instead of a numeric score, **health per area** (Disk,
+  Crashes, Security, Updates, Battery, Startup, Hardware and drivers): OK /
+  Attention / Critical / Unknown, the reasons below it (what the diagnostic
+  actually found) and a **Select the fix** button. Verdicts come from
+  structured findings (`PFJSON:{"findings": [...]}` in an action's output),
+  decided on values that do not depend on the Windows language (enum names,
+  `display.inf`, bcdedit's exit code), not on text matching. Also
+  per-category recommended-fix counts and **recent runs on this PC** with a
+  link to each report - on a repeat visit to the same client you see right
+  away what was done last time.
+- **Item selection:** an action with an `items_command` (e.g. *Disable
+  selected autostart entries*) lists its items first and the technician
+  ticks the ones to act on (nothing is ticked beforehand). The chosen ids
+  reach the command through a file, never pasted into the command text, and
+  must pass a strict format check; the audit records the exact ids and
+  `undo.ps1` gets one step per changed item.
+- **"Already set":** actions with a state check (m08, m09, m13) show an
+  *already set / not set* chip when their category opens. A real run skips
+  an action that is already in place and records the skip in the audit and
+  the report; at the next visit the report lists what Windows turned back
+  and what is new in autostart.
+- **Headless (CLI):** `PortableFix.exe --preset <name|file.json> [--live]
+  [--out dir] [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]`.
+  DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
+  only and refuses up front when the preset holds anything riskier or the
+  pre-flight check finds a blocker. Same audit log, restore point,
+  `undo.ps1` and report as the window. `--export-preset <name> <file.json>`
+  saves a preset to a file; the file may also carry `"items"` (item ids for
+  per-item actions). Exit codes follow Tron: 0 OK, 1 error, 2 warning
+  (something was skipped, or a diagnostic found a problem), 3 unsupported
+  Windows, 4 restart pending,
+  5 running from %TEMP%.
+- **Custom actions (`UserModules/`):** catalogs in
+  `UserModules/<id>/actions.yaml` (same format as `Modules/`) load next to
+  the built-in ones, carry a **custom** badge in the window and the report,
+  and are never changed or removed by an update. They cannot override a
+  built-in module or action id.
 - **HTML report:** in the app's language, with a failed-actions summary
   (links straight to the details), a per-module/category overview, filters
   (all / failed only / changes only) and search. **Print / save as PDF**
@@ -404,7 +437,12 @@ PowerShell.
   a `SUMMARY` line. Each file's signature is checked once and files over
   200 MB are not hashed. An unsigned file in the Windows folder may be
   catalog-signed when the CryptSvc service is not running - the entry
-  says so. Changes nothing; disabling entries comes later.
+  says so. Changes nothing. Disabling is the **Disable selected autostart
+  entries (reversible)** action: Run values move to a
+  `PortableFix\AutorunsDisabled` key, scheduled tasks outside `\Microsoft\`
+  are disabled and third-party services set to Disabled (their original
+  start type, delayed start included, is kept) - each with an exact inverse
+  in `undo.ps1`.
 
 ## Safety mechanisms
 
@@ -684,6 +722,7 @@ PortableFix/
   main.py                entry point
   portablefix/           application code
   Modules/<id>/actions.yaml   declarative action catalogs
+  UserModules/<id>/actions.yaml  the shop's own actions (updates leave them alone)
   Vendor/                 LibreHardwareMonitorLib (optional HW sensors)
   Data/                  settings.json, SHA256SUMS, pending_batch.json (runtime)
   Logs/                  audit logs (runtime)

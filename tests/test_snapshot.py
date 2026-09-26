@@ -358,3 +358,69 @@ def test_compare_tolerates_old_and_malformed_snapshots():
     assert [r["key"] for r in rows] == ["free_gb"]
     # bools / strings from a hand-edited JSON are not numbers
     assert compare_snapshots({"startup_entries": True, "free_gb": "10"}, {"startup_entries": 1, "free_gb": 3}) == []
+
+
+# --- research G04: autostart inventory ----------------------------------------
+
+def test_autostart_inventory_names_run_values_startup_files_tasks_and_services(tmp_path):
+    from portablefix.snapshot import autostart_inventory
+
+    startup = tmp_path / "PD" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup.mkdir(parents=True)
+    (startup / "Vendor.lnk").write_bytes(b"L")
+    (startup / "desktop.ini").write_bytes(b"x")
+    runs = {
+        ("HKLM", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"): {"Tray": "x", "": "default ignored"},
+        ("HKCU", r"Software\Microsoft\Windows\CurrentVersion\Run"): {"Helper": "y"},
+    }
+
+    def read_values(hive, subkey):
+        # A missing key is None (as _winreg_values), not an error.
+        return runs.get((hive, subkey))
+
+    inventory = autostart_inventory(
+        env={"ProgramData": str(tmp_path / "PD"), "SystemRoot": "C:\\Windows"}, read_values=read_values,
+        services=lambda: ["Service: ContosoSvc"], tasks=lambda: ["Task: \\Contoso\\Updater"],
+    )
+    assert inventory == [
+        "Run (hklm): Tray", "Run (user): Helper", "Service: ContosoSvc", "Startup: Vendor.lnk",
+        "Task: \\Contoso\\Updater",
+    ]
+
+
+def test_autostart_inventory_is_none_when_nothing_is_readable():
+    from portablefix.snapshot import autostart_inventory
+
+    def broken():
+        raise OSError("denied")
+
+    def no_registry(hive, subkey):
+        raise OSError("denied")
+
+    assert autostart_inventory(env={}, read_values=no_registry, services=broken, tasks=broken) is None
+
+
+def test_autostart_inventory_is_none_when_one_part_is_missing():
+    # A partial list (tasks unreadable without admin, services cut off by
+    # the time budget) would make everything it missed look new next time.
+    from portablefix.snapshot import autostart_inventory
+
+    def denied():
+        raise PermissionError("tasks need admin")
+
+    def ok(hive, subkey):
+        return {"Tray": "x"}
+
+    assert autostart_inventory(env={}, read_values=ok, services=lambda: [], tasks=denied) is None
+    ticks = iter([0.0, 0.0, 99.0])
+    assert autostart_inventory(
+        env={"SystemRoot": "C:\\Windows"}, read_values=ok, tasks=lambda: [], clock=lambda: next(ticks, 99.0),
+    ) is None
+
+
+def test_new_autostart_entries_compares_with_the_last_visit():
+    from portablefix.snapshot import new_autostart_entries
+
+    assert new_autostart_entries({"autostart": ["a", "b"]}, {"autostart": ["b", "c", 5]}) == ["c"]
+    assert new_autostart_entries({}, {"autostart": ["c"]}) is None
+    assert new_autostart_entries({"autostart": ["a"]}, {"autostart": None}) is None

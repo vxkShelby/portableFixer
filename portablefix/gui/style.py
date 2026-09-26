@@ -155,6 +155,7 @@ QLabel#riskBadge[risk="SAFE"] {
 QLabel#riskBadge[risk="MODERATE"] { background-color: #ffb020; color: #06080c; }
 QLabel#riskBadge[risk="DESTRUCTIVE"] { background-color: #ff2d6f; color: #06080c; }
 QLabel#riskBadge[risk="REQUIRES_REBOOT"] { background-color: #b26bff; color: #06080c; }
+QLabel#riskBadge[risk="CUSTOM"] { background: transparent; border: 1px solid #5ee6ff; color: #5ee6ff; }
 
 QPushButton {
     background-color: #141a24;
@@ -348,19 +349,15 @@ QLabel#summaryHeader {
     font-weight: 700;
     color: #2fe6ff;
 }
-QLabel#dashboardScoreValue {
+QLabel#healthState {
     font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
-    font-size: 26pt;
+    font-size: 11pt;
     font-weight: 700;
-    color: #39ff88;
-}
-QLabel#dashboardScoreValue[state="none"] {
-    font-size: 16pt;
     color: #7c8799;
 }
-QLabel#dashboardScoreValue[state="good"] { color: #39ff88; }
-QLabel#dashboardScoreValue[state="warn"] { color: #ffb020; }
-QLabel#dashboardScoreValue[state="bad"] { color: #ff2d6f; }
+QLabel#healthState[state="ok"] { color: #39ff88; }
+QLabel#healthState[state="attention"] { color: #ffb020; }
+QLabel#healthState[state="critical"] { color: #ff2d6f; }
 QLabel#summaryDryRunNote {
     font-family: 'Consolas', 'Cascadia Mono';
     color: #ffb020;

@@ -11,6 +11,31 @@ MAX_CUSTOM_PRESETS = 20
 MAX_PRESET_NAME_LENGTH = 40
 MAX_TECHNICIAN_NAME_LENGTH = 60
 
+# Built-in presets - the window's preset buttons and the headless
+# `--preset <name>` (research G21) share them.
+PRESETS: dict[str, list[str]] = {
+    "quick_clean": [
+        "user_temp", "system_temp", "recycle_bin", "prefetch", "wer_reports",
+        "thumbnail_cache", "directx_shader_cache", "browser_cache_sweep",
+    ],
+    "full_diagnostic": [
+        "os_info", "computer_info", "bios_info", "cpu_info", "memory_info",
+        "volumes", "physical_disks", "recent_hotfixes", "pending_reboot",
+        "eventlog_critical_7d", "bsod_summary", "crash_bugcheck_triage",
+        "whea_hardware_errors", "disk_reliability_counters",
+        "defender_status", "top_cpu_processes", "sec_defender_status",
+        "sec_firewall_status", "sec_uac_status",
+        # The rest of the dashboard's health areas (research G02).
+        "battery_wear", "boot_safe_mode_status", "drv_problem_devices", "drv_gpu_info",
+    ],
+    "privacy_debloat": [
+        "debloat_disable_telemetry", "debloat_disable_suggestions",
+        "debloat_disable_web_search", "debloat_disable_copilot",
+        "debloat_disable_widgets", "debloat_disable_advertising_id",
+        "debloat_disable_diagtrack", "debloat_disable_ceip_tasks",
+    ],
+}
+
 
 @dataclass
 class Settings:

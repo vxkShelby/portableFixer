@@ -29,11 +29,7 @@ actions:
     label_sk: "Kontrola zavádzania do núdzového režimu"
     label_en: "Safe Mode boot check"
     risk: SAFE
-    command: "$out = & bcdedit.exe /enum '{current}' 2>&1 | Select-String -Pattern 'safeboot'; if ($out) { Write-Output ('Machine is currently configured to boot into SAFE MODE: ' + ($out -join '; ')) } else { Write-Output 'Normal boot (no safeboot flag set).' }"
-    problem_keywords:
-      - "Machine is currently configured to boot into SAFE MODE"
-    recommended_action_ids:
-      - boot_clear_safe_mode_flag
+    command: "$raw = @(& bcdedit.exe /enum '{current}' 2>&1); $code = $LASTEXITCODE; if ($code -ne 0) { Write-Output ('Could not read the boot configuration (bcdedit exit ' + $code + ', needs administrator): ' + (($raw | ForEach-Object { [string]$_ }) -join ' ')) } else { $out = @($raw | Select-String -Pattern 'safeboot'); if ($out) { Write-Output ('Machine is currently configured to boot into SAFE MODE: ' + ($out -join '; ')); Write-Output ('PFJSON:' + (ConvertTo-Json -Compress -Depth 4 -InputObject @{ findings = @([ordered]@{ id = 'boot.safe_mode'; severity = 'attention'; area = 'boot'; msg_sk = 'Počítač je nastavený na štart do núdzového režimu (Safe Mode).'; msg_en = 'The PC is set to start in Safe Mode.'; fix = @('boot_clear_safe_mode_flag') }) })) } else { Write-Output 'Normal boot (no safeboot flag set).'; Write-Output ('PFJSON:' + (ConvertTo-Json -Compress -Depth 4 -InputObject @{ findings = @([ordered]@{ id = 'boot.safe_mode'; severity = 'ok'; area = 'boot'; msg_sk = 'Počítač štartuje normálne, nie do núdzového režimu.'; msg_en = 'The PC starts normally, not in Safe Mode.'; fix = @('boot_clear_safe_mode_flag') }) })) } }"
     description_sk: "Zistí, či je počítač nastavený na zavádzanie do núdzového režimu (Safe Mode) - často zabudnutý príznak po predchádzajúcej diagnostike. Nič nemení."
     description_en: "Checks whether the machine is set to boot into Safe Mode (a commonly forgotten leftover flag from earlier troubleshooting). Changes nothing."
 

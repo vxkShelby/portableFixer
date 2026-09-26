@@ -214,6 +214,124 @@ def count_startup_entries(read_values=_winreg_values) -> int | None:
     return total if readable else None
 
 
+_INVENTORY_RUN_KEYS = (
+    ("HKLM", "hklm", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+    ("HKLM", "hklm32", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"),
+    ("HKCU", "user", r"Software\Microsoft\Windows\CurrentVersion\Run"),
+)
+_SERVICES_KEY = r"SYSTEM\CurrentControlSet\Services"
+INVENTORY_TIME_BUDGET_SEC = 0.3
+INVENTORY_MAX_ENTRIES = 2000
+
+
+def _winreg_services(system_root: str, deadline: float, clock) -> list[str]:
+    """Automatic-start services whose program is outside the Windows folder
+    - the same set autoruns_disable_items offers (research G04)."""
+    import winreg
+
+    found = []
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _SERVICES_KEY, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as root:
+        index = 0
+        while True:
+            if clock() >= deadline:
+                raise TimeoutError("services: over the time budget")
+            try:
+                name = winreg.EnumKey(root, index)
+            except OSError:
+                break
+            index += 1
+            try:
+                with winreg.OpenKey(root, name) as key:
+                    start = winreg.QueryValueEx(key, "Start")[0]
+                    kind = winreg.QueryValueEx(key, "Type")[0]
+                    image = str(winreg.QueryValueEx(key, "ImagePath")[0])
+            except OSError:
+                continue
+            if start != 2 or not isinstance(kind, int) or not kind & 0x30 or not image.strip():
+                continue
+            expanded = os.path.expandvars(image).strip().lstrip('"')
+            if system_root and expanded.lower().startswith(system_root.lower()):
+                continue
+            found.append(f"Service: {name}")
+    return found
+
+
+def _startup_files(env) -> list[str]:
+    found = []
+    for base in (env.get("ProgramData"), env.get("APPDATA")):
+        if not base:
+            continue
+        folder = os.path.join(base, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        found.extend(f"Startup: {name}" for name in names if name.lower() != "desktop.ini")
+    return found
+
+
+def _task_files(system_root: str, deadline: float, clock) -> list[str]:
+    """Scheduled tasks outside \\Microsoft\\, from the task store's file
+    tree. Raises when any folder of it cannot be read (it needs admin
+    rights) or the time budget runs out - a partial list is no inventory."""
+    root = os.path.join(system_root, "System32", "Tasks")
+    found = []
+    stack = [root]
+    while stack:
+        if clock() >= deadline:
+            raise TimeoutError("tasks: over the time budget")
+        folder = stack.pop()
+        entries = list(os.scandir(folder))
+        for entry in entries:
+            relative = entry.path[len(root):]
+            if relative.lower().startswith("\\microsoft"):
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    found.append(f"Task: {relative}")
+            except OSError:
+                continue
+    return found
+
+
+def autostart_inventory(*, env=None, read_values=_winreg_values, services=None, tasks=None,
+                        clock=time.perf_counter) -> list[str] | None:
+    """Names of what starts with Windows (research G04): Run values, Startup
+    folder files, scheduled tasks outside \\Microsoft\\ and automatic
+    third-party services - names only, so the report can show what is new
+    since the last visit. Bounded by INVENTORY_TIME_BUDGET_SEC.
+
+    None unless every part was read in full: a list missing, say, the tasks
+    (not elevated) or the services (over the time budget) would make all of
+    them look new at the next visit."""
+    env = os.environ if env is None else env
+    deadline = clock() + INVENTORY_TIME_BUDGET_SEC
+    system_root = env.get("SystemRoot") or env.get("windir") or ""
+    found: list[str] = []
+    try:
+        for hive, source, subkey in _INVENTORY_RUN_KEYS:
+            found.extend(f"Run ({source}): {name}" for name in (read_values(hive, subkey) or {}) if name)
+        found.extend(_startup_files(env))
+        found.extend((services or (lambda: _winreg_services(system_root, deadline, clock)))())
+        found.extend((tasks or (lambda: _task_files(system_root, deadline, clock)))())
+    except Exception:  # noqa: BLE001 - any unreadable part: no inventory
+        return None
+    return sorted(set(found))[:INVENTORY_MAX_ENTRIES]
+
+
+def new_autostart_entries(previous_snapshot, current_snapshot) -> list[str] | None:
+    """Autostart entries in `current_snapshot` that the previous visit's
+    snapshot did not have; None when either side has no inventory."""
+    before = previous_snapshot.get("autostart") if isinstance(previous_snapshot, dict) else None
+    now = current_snapshot.get("autostart") if isinstance(current_snapshot, dict) else None
+    if not isinstance(before, list) or not isinstance(now, list):
+        return None
+    known = {entry for entry in before if isinstance(entry, str)}
+    return [entry for entry in now if isinstance(entry, str) and entry not in known]
+
+
 def _default_temp_dirs(env) -> tuple[str | None, str | None]:
     user = env.get("TEMP") or env.get("TMP")
     windir = env.get("SystemRoot") or env.get("windir")
@@ -248,7 +366,8 @@ def _safe(func):
 
 def take_snapshot(*, env=None, platform: str | None = None, disk_usage=None,
                   temp_dirs: tuple | None = None, walk=None, memory=None,
-                  recycle_bin=None, startup_entries=None, clock=time.perf_counter) -> dict:
+                  recycle_bin=None, startup_entries=None, autostart=None, checks=None,
+                  clock=time.perf_counter) -> dict:
     """Measure the system; never raises. Every dependency is injectable for
     tests. Off Windows only free/total space is measured (as before); the
     Windows-only probes report None unless a fake is passed in."""
@@ -285,6 +404,15 @@ def take_snapshot(*, env=None, platform: str | None = None, disk_usage=None,
     mem = _safe(memory) if memory else None
     snap["mem_available_mb"] = round(mem[0] / _MB) if mem else None
     snap["mem_total_mb"] = round(mem[1] / _MB) if mem else None
+
+    if autostart is None and on_windows:
+        autostart = lambda: autostart_inventory(env=env)  # noqa: E731
+    snap["autostart"] = _safe(autostart) if autostart else None
+
+    if checks:
+        # Research G09: the last known "already applied?" state per action,
+        # for drift between visits (what Windows turned back on).
+        snap["checks"] = dict(checks)
 
     snap["snapshot_ms"] = round((clock() - started) * 1000, 1)
     return snap

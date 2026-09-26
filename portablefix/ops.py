@@ -558,6 +558,23 @@ def preview_script(op_list) -> str:
     return "; ".join(statements)
 
 
+def check_script(op_list) -> str:
+    """The generated "already applied?" check (research G09): the same read
+    as the preview, answering APPLIED when no op has anything left to do,
+    NOT_APPLIED otherwise and UNKNOWN when the state cannot be read."""
+    statements = _prelude(op_list)
+    statements.append(
+        "$pfEntries = New-Object System.Collections.ArrayList; "
+        "try { for ($i = 0; $i -lt $pfOps.Count; $i++) { [void]$pfEntries.Add((pfCap $pfOps[$i] $i)) } } "
+        "catch { Write-Output ('Could not read the current state ' + (pfErr $_)); Write-Output 'UNKNOWN'; exit 0 }"
+    )
+    statements.append(
+        "$pfTodo = 0; for ($i = 0; $i -lt $pfOps.Count; $i++) { if ($null -ne (pfPlan $pfOps[$i] $pfEntries[$i])) { $pfTodo++ } }; "
+        "if ($pfTodo -eq 0) { Write-Output 'APPLIED' } else { Write-Output 'NOT_APPLIED' }"
+    )
+    return "; ".join(statements)
+
+
 # --- state file and undo -----------------------------------------------------
 
 _SAFE_FILE_CHARS = re.compile(r"[^A-Za-z0-9_.\-]")
