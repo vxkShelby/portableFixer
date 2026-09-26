@@ -1723,3 +1723,15 @@ def test_dry_run_findings_do_not_count_in_the_summary(tmp_path):
     append_entry(tmp_path, "run_dr", make_entry("m02_cleanup", "user_temp", "c", 0, "o", True, "run_dr", findings=findings))
     data = build_report_data(tmp_path, "run_dr", _fixture_modules(), "en", {}, {})
     assert data["client_summary"]["found"] == [] and data["health_areas"]["disk"] == "unknown"
+
+
+def test_report_badges_actions_from_user_modules(tmp_path):
+    # Research G32: the shop's own actions are marked in the report.
+    shop = ActionDef(id="shop_fix", label_sk="Dielna", label_en="Shop fix", risk=RiskLevel.SAFE, command="x")
+    modules = _fixture_modules() + [ModuleDef(module_id="shop_tools", actions=[shop], custom=True)]
+    append_entry(tmp_path, "run_cu", make_entry("shop_tools", "shop_fix", "x", 0, "ok", False, "run_cu"))
+    append_entry(tmp_path, "run_cu", make_entry("m02_cleanup", "user_temp", "c", 0, "ok", False, "run_cu"))
+    html_path, json_path = generate_report(tmp_path, "run_cu", modules, "en", {}, {})
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert [a["custom"] for a in data["actions"]] == [True, False]
+    assert html_path.read_text(encoding="utf-8").count(">custom</span>") == 1

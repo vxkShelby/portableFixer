@@ -49,7 +49,7 @@ from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
-from ..module_engine import load_all_modules
+from ..module_engine import load_catalog
 from ..settings import (
     MAX_CUSTOM_PRESETS,
     MAX_PRESET_NAME_LENGTH,
@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
         # fell back to %TEMP% on the client machine, which the report must
         # then say (research-reporting.md F4).
         self._storage_fallback = Path(state_dir) != Path(assets_dir)
-        self.modules, module_load_errors = load_all_modules(assets_dir / "Modules")
+        self.modules, module_load_errors = load_catalog(assets_dir)
         if module_load_errors:
             QMessageBox.warning(
                 self,
@@ -934,6 +934,15 @@ class MainWindow(QMainWindow):
                     badge.setObjectName("riskBadge")
                     badge.setProperty("risk", action.risk.value)
                     row.addWidget(badge)
+                    if module.custom:
+                        # Research G32: from UserModules/ - the shop's own
+                        # action, not shipped with or checked by PortableFix.
+                        custom_badge = QLabel(self._t("custom_badge"))
+                        custom_badge.setObjectName("riskBadge")
+                        custom_badge.setProperty("risk", "CUSTOM")
+                        custom_badge.setToolTip(self._t("custom_badge_tip"))
+                        custom_badge.setAccessibleName(self._t("custom_badge_tip"))
+                        row.addWidget(custom_badge)
                     status_label = QLabel("")
                     status_label.setObjectName("actionStatus")
                     self._action_status_labels[action.id] = status_label

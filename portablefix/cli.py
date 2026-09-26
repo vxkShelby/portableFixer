@@ -33,7 +33,7 @@ from . import items as items_mod
 from .audit_log import append_entry, make_entry
 from .executor import PlanRun
 from .models import ActionDef, ModuleDef, RiskLevel
-from .module_engine import load_all_modules
+from .module_engine import load_catalog
 from .settings import PRESETS, Settings, load_settings
 
 EXIT_OK = 0
@@ -432,7 +432,7 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
         if not args.preset:
             raise CliError("--preset is required")
         preset = load_preset(args.preset, settings)
-        modules, errors = load_all_modules(assets_dir / "Modules")
+        modules, errors = load_catalog(assets_dir)
         for error in errors:
             out(f"[PortableFix] Module not loaded: {error}")
         if deps.is_admin is None:

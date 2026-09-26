@@ -7412,3 +7412,24 @@ def test_opening_a_category_fills_the_check_chips_in_the_background(qtbot, tmp_p
     window.category_list.setCurrentRow(0)
     window.category_list.setCurrentRow(window._categories_order.index(ModuleCategory.CLEANUP))
     assert window._check_queue == [] and not window._check_pending
+
+
+def test_user_modules_actions_get_a_custom_badge(qtbot, tmp_path):
+    # Research G32: actions from UserModules/ load next to the shipped ones
+    # and are badged as the shop's own.
+    from PySide6.QtWidgets import QLabel
+
+    _write_module(tmp_path, "m02_cleanup", "CLEANUP", "clean_action")
+    shop = tmp_path / "UserModules"
+    _write_module(shop, "shop_tools", "CLEANUP", "shop_action")
+    (shop / "Modules" / "shop_tools").rename(shop / "shop_tools")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True,
+                        run_id="run_custom")
+    qtbot.addWidget(window)
+
+    def badges(action_id):
+        row = window._action_checkboxes[action_id].parentWidget()
+        return [label.text() for label in row.findChildren(QLabel) if label.objectName() == "riskBadge"]
+
+    assert badges("shop_action") == ["SAFE", "custom"]
+    assert badges("clean_action") == ["SAFE"]

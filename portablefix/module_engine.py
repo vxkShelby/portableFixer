@@ -191,13 +191,30 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
     return ModuleDef(module_id=module_id, actions=actions, category=category)
 
 
-def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
+USER_MODULES_DIR = "UserModules"
+
+
+def load_catalog(assets_dir: Path) -> tuple[list[ModuleDef], list[str]]:
+    """Modules/ plus the shop's own UserModules/ (research G32) - a folder
+    the updater never replaces, its modules marked custom. A user module
+    cannot reuse a built-in module or action id: the built-in one wins."""
+    return load_all_modules(Path(assets_dir) / "Modules", Path(assets_dir) / USER_MODULES_DIR)
+
+
+def load_all_modules(modules_dir: Path, user_modules_dir: Path | None = None) -> tuple[list[ModuleDef], list[str]]:
     modules: list[ModuleDef] = []
     errors: list[str] = []
     seen_action_ids: dict[str, Path] = {}
-    for path in sorted(modules_dir.glob("*/actions.yaml")):
+    seen_module_ids: dict[str, Path] = {}
+    paths = [(path, False) for path in sorted(modules_dir.glob("*/actions.yaml"))]
+    if user_modules_dir is not None:
+        paths += [(path, True) for path in sorted(user_modules_dir.glob("*/actions.yaml"))]
+    for path, custom in paths:
         try:
             module = load_module(path)
+            module.custom = custom
+            if module.module_id in seen_module_ids:
+                raise ModuleLoadError(f"module_id '{module.module_id}' already used by {seen_module_ids[module.module_id]}")
             ids_in_module = [a.id for a in module.actions]
             same_file_dupes = {i for i in ids_in_module if ids_in_module.count(i) > 1}
             if same_file_dupes:
@@ -210,6 +227,7 @@ def load_all_modules(modules_dir: Path) -> tuple[list[ModuleDef], list[str]]:
                 )
             for action in module.actions:
                 seen_action_ids[action.id] = path
+            seen_module_ids[module.module_id] = path
             modules.append(module)
         except (ModuleLoadError, yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             errors.append(f"{path}: {exc}")

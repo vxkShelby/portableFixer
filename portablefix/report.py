@@ -391,6 +391,8 @@ def build_report_data(
                 # Research G05 / G02: the ids it ran on, what it found.
                 "items": entry.get("items") if isinstance(entry.get("items"), list) else [],
                 "findings": entry.get("findings") if isinstance(entry.get("findings"), list) else [],
+                # Research G32: the shop's own action from UserModules/.
+                "custom": any(m.custom for m in modules if m.module_id == entry["module_id"]),
             }
         )
     hostname = socket.gethostname()
@@ -857,6 +859,8 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
     if a.get("already_applied"):
         # Research G09: skipped because the check found it already in place.
         warned_tag += f'<span class="dry-tag">{t("report_already_applied")}</span>'
+    if a.get("custom"):
+        warned_tag += f'<span class="warned-tag" title="{t("custom_badge_tip")}">{t("custom_badge")}</span>'
     warn_text = ""
     if a.get("warned") and a.get("warning_text"):
         # The exact copy the technician accepted - the report is the

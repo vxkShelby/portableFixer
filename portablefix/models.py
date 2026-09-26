@@ -84,3 +84,6 @@ class ModuleDef:
     module_id: str
     actions: list[ActionDef]
     category: ModuleCategory = ModuleCategory.DIAGNOSTICS
+    # From UserModules/ (research G32): the shop's own, not shipped with
+    # PortableFix - badged "custom" in the window and the report.
+    custom: bool = False

@@ -62,10 +62,41 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   debloat) aj **vlastné** - vyber akcie, klikni **+ Uložiť výber**, pomenuj.
   Vlastné predvoľby sa ukladajú do `Data/settings.json` hneď (nie až pri
   zatvorení), cestujú s USB kľúčom a mažú sa pravým tlačidlom myši.
-- **Prehľad (dashboard):** skóre systému po analýze (zelené/oranžové/červené),
-  počty nálezov podľa kategórií a **história posledných behov na tomto PC**
-  s odkazom na report - pri opakovanej návšteve u toho istého klienta je
-  hneď vidno, čo sa robilo minule.
+- **Prehľad (dashboard):** namiesto číselného skóre **stav po oblastiach**
+  (Disk, Pády, Bezpečnosť, Aktualizácie, Batéria, Štart systému, Hardvér a
+  ovládače): OK / Pozor / Kritické / Nezistené, pod tým dôvody (čo presne
+  diagnostika našla) a tlačidlo **Vybrať opravu**. Verdikty skladajú
+  štruktúrované nálezy (`PFJSON:{"findings": [...]}` vo výstupe akcie),
+  rozhodnuté podľa hodnôt nezávislých od jazyka Windows (názvy enumov,
+  `display.inf`, exit kód bcdedit), nie podľa hľadania textu. Ďalej počty
+  odporúčaných opráv podľa kategórií a **história posledných behov na tomto
+  PC** s odkazom na report - pri opakovanej návšteve u toho istého klienta
+  je hneď vidno, čo sa robilo minule.
+- **Výber položiek:** akcia s `items_command` (napr. *Vypnúť vybrané položky
+  autoštartu*) najprv vypíše položky a technik v zozname označí, na ktorých
+  sa má vykonať (vopred nie je označené nič). Vybrané ID idú príkazu cez
+  súbor, nikdy vložením do textu príkazu, a musia prejsť prísnou kontrolou
+  formátu; audit zapíše presné ID a `undo.ps1` dostane jeden krok na každú
+  zmenenú položku.
+- **„Už nastavené“:** akcie s kontrolou stavu (m08, m09, m13) ukážu po
+  otvorení kategórie čip *už nastavené / nenastavené*. Ostrý beh akciu, ktorá
+  už je nastavená, preskočí a zapíše to do auditu aj reportu; report pri
+  ďalšej návšteve uvedie, čo Windows medzitým vrátil, a čo nové pribudlo v
+  autoštarte.
+- **Bez okna (CLI):** `PortableFix.exe --preset <názov|súbor.json> [--live]
+  [--out priečinok] [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]`.
+  Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
+  odmietne sa hneď na začiatku, ak predvoľba obsahuje niečo rizikovejšie
+  alebo kontrola pred spustením nájde blokujúci problém. Rovnaký audit,
+  bod obnovenia, `undo.ps1` aj report ako z okna. `--export-preset <názov>
+  <súbor.json>` uloží predvoľbu do súboru; v súbore môže byť aj `"items"`
+  (ID položiek pre akcie s výberom položiek). Exit kódy podľa Tronu: 0 OK,
+  1 chyba, 2 varovanie (niečo sa preskočilo), 3 nepodporovaný Windows,
+  4 čaká sa na reštart, 5 spustené z %TEMP%.
+- **Vlastné akcie (`UserModules/`):** katalógy v `UserModules/<id>/actions.yaml`
+  (rovnaký formát ako `Modules/`) sa načítajú vedľa vstavaných, v okne aj v
+  reporte majú odznak **vlastná** a aktualizácia ich nemení ani nemaže.
+  Nemôžu prepísať vstavaný modul ani akciu s rovnakým ID.
 - **HTML report:** v jazyku aplikácie, so súhrnom zlyhaných akcií (odkazy
   priamo na detail), prehľadom podľa modulov/kategórií, filtrom
   (všetky / len zlyhané / len zmeny) a vyhľadávaním. Tlačidlo **Tlačiť /
@@ -392,7 +423,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   počtami podľa kategórie a riadkom `SUMMARY`. Podpis sa overuje raz na
   súbor, súbory nad 200 MB sa nehašujú. Nepodpísaný súbor v priečinku
   Windows môže byť podpísaný katalógom, ak nebeží služba CryptSvc - pri
-  položke je poznámka. Nič nemení; vypínanie položiek príde neskôr.
+  položke je poznámka. Nič nemení. Vypínanie robí akcia **Vypnúť vybrané
+  položky autoštartu (vratne)**: Run hodnoty presunie do kľúča
+  `PortableFix\AutorunsDisabled`, naplánované úlohy mimo `\Microsoft\` vypne
+  a služby tretích strán prepne na Zakázané (s uložením pôvodného typu
+  štartu, vrátane oneskoreného) - každú s presnou inverziou v `undo.ps1`.
 
 ## Bezpečnostné mechanizmy
 
@@ -665,6 +700,7 @@ PortableFix/
   main.py                vstupný bod
   portablefix/           aplikačný kód
   Modules/<id>/actions.yaml   deklaratívne katalógy akcií
+  UserModules/<id>/actions.yaml  vlastné akcie dielne (aktualizácia ich nemení)
   Vendor/                 LibreHardwareMonitorLib (voliteľné HW senzory)
   Data/                  settings.json, SHA256SUMS, pending_batch.json (runtime)
   Logs/                  audit logy (runtime)

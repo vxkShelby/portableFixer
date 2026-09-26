@@ -155,6 +155,7 @@ QLabel#riskBadge[risk="SAFE"] {
 QLabel#riskBadge[risk="MODERATE"] { background-color: #ffb020; color: #06080c; }
 QLabel#riskBadge[risk="DESTRUCTIVE"] { background-color: #ff2d6f; color: #06080c; }
 QLabel#riskBadge[risk="REQUIRES_REBOOT"] { background-color: #b26bff; color: #06080c; }
+QLabel#riskBadge[risk="CUSTOM"] { background: transparent; border: 1px solid #5ee6ff; color: #5ee6ff; }
 
 QPushButton {
     background-color: #141a24;

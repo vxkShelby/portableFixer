@@ -427,3 +427,37 @@ def test_destructive_action_cannot_opt_out_of_the_restore_point(tmp_path):
     path.write_text(_yaml_with("    changes_system: false\n", risk="DESTRUCTIVE"), encoding="utf-8")
     with pytest.raises(ModuleLoadError, match="DESTRUCTIVE"):
         load_module(path)
+
+
+def _write_catalog(folder, module_id, action_id):
+    (folder / module_id).mkdir(parents=True)
+    (folder / module_id / "actions.yaml").write_text(
+        f"module_id: {module_id}\nactions:\n  - id: {action_id}\n    label_sk: X\n    label_en: X\n"
+        "    risk: SAFE\n    command: \"Write-Output 'x'\"\n",
+        encoding="utf-8",
+    )
+
+
+def test_load_catalog_adds_user_modules_marked_custom_and_built_ins_win(tmp_path):
+    # Research G32: UserModules/ survives updates; its modules are badged
+    # custom and may not reuse a built-in module or action id.
+    from portablefix.module_engine import load_catalog
+
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    _write_catalog(tmp_path / "UserModules", "shop_tools", "shop_action")
+    _write_catalog(tmp_path / "UserModules", "shop_clash", "shipped")
+    _write_catalog(tmp_path / "UserModules", "m01_diag", "other")
+    modules, errors = load_catalog(tmp_path)
+    by_id = {m.module_id: m for m in modules}
+    assert set(by_id) == {"m01_diag", "shop_tools"}
+    assert by_id["shop_tools"].custom is True and by_id["m01_diag"].custom is False
+    assert by_id["m01_diag"].actions[0].id == "shipped"
+    assert len(errors) == 2 and all("UserModules" in e for e in errors)
+
+
+def test_load_catalog_without_user_modules_folder(tmp_path):
+    from portablefix.module_engine import load_catalog
+
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    modules, errors = load_catalog(tmp_path)
+    assert [m.module_id for m in modules] == ["m01_diag"] and errors == []
