@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from portablefix import symptoms
 from portablefix.models import ActionDef, RiskLevel
@@ -58,9 +59,45 @@ def test_every_shipped_diagnostic_is_safe_and_every_fix_exists(table, catalog):
     ("počítač strašne dlho nabieha", "slow_startup"),
     ("slow boot", "slow_startup"),
     ("my email is not working", "outlook_wont_open"),
+    ("wifi stále vypadáva", "wifi_drops"),
+    ("počítač je strašne pomalý", "slow_pc"),
+    ("sám sa reštartuje", "blue_screen"),
+    ("málo miesta na disku", "disk_full"),
+    ("vyskakujú reklamy", "virus_suspected"),
+    ("tlačiareň netlačí", "printer_not_working"),
+    ("printer won't print", "printer_not_working"),
+    ("nejde mikrofón", "no_sound"),
+    ("nerozpozná USB kľúč", "usb_device_not_recognized"),
+    ("druhý monitor nejde", "display_problems"),
+    ("excel padá", "office_apps_crash"),
+    ("vyžaduje .NET Framework 3.5", "dotnet35_needed"),
+    ("pýta BitLocker kľúč", "bitlocker_recovery"),
+    ("zmizla mi plocha", "temp_profile"),
+    ("nevidím NAS", "network_share_unreachable"),
+    ("nejde vzdialená plocha", "remote_desktop_fails"),
+    ("chyba certifikátu", "wrong_time_certificates"),
+    ("zálohovať dáta", "backup_before_reinstall"),
+    ("koniec podpory windows 10", "win10_end_of_support"),
+    ("reklamy v štart menu", "start_menu_ads"),
 ])
 def test_client_complaints_find_their_symptom(table, complaint, expected):
     assert _top(table, complaint) == expected
+
+
+def test_shipped_file_covers_the_common_complaints(table):
+    # The value of G27 is breadth - a handful of toy entries is not it.
+    assert len(table.symptoms) >= 40
+
+
+def test_negations_alone_do_not_link_symptoms(table):
+    # "no"/"nie" used to be strong terms: "no sound" also found "no internet".
+    assert [m.symptom.id for m in symptoms.suggest(table, "no sound")] == ["no_sound"]
+    assert "disk_full" not in [m.symptom.id for m in symptoms.suggest(table, "windows nie je aktivovaný")]
+
+
+def test_backup_data_does_not_suggest_the_clock(table):
+    # "date" stemmed is "dat" - the same as "dáta"; it is not a clock synonym.
+    assert "wrong_time_certificates" not in [m.symptom.id for m in symptoms.suggest(table, "zálohovať dáta")]
 
 
 def test_a_generic_word_alone_matches_nothing(table):
@@ -165,6 +202,14 @@ def test_synonyms_apply_to_query_and_phrases():
     })
     assert _top(table, "printer nejde") == "printer_offline"
     assert _top(table, "tlač nejde") == "printer_offline"
+
+
+def test_a_bare_yaml_boolean_word_is_reported_not_coerced():
+    # `weak: [no]` loads as [False]; it must not become the word "false".
+    table, errors = symptoms.parse(yaml.safe_load("weak: [no, nejde]\nsynonyms: {zvuk: [off, audio]}\nsymptoms: []"))
+    assert table.weak == frozenset({"nejd"})
+    assert any("weak" in e and "quote" in e for e in errors)
+    assert any("synonyms.zvuk" in e for e in errors)
 
 
 def test_missing_file_is_an_empty_table(tmp_path):

@@ -45,10 +45,11 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _JOINERS = str.maketrans("", "", "'’`-")
 
 # Words that say nothing about the problem. Normalized (no diacritics).
+# Not "nas" ("nás"): folded it is also "NAS", the network storage box.
 STOP_WORDS = frozenset(
     """
     a aj ako ale ani bo by do je ho i k ked ku ma mi mne moj moja moje mu
-    na nam nas o od po pri s sa si so su ta tak ten to tu uz v vo vobec z ze
+    na nam o od po pri s sa si so su ta tak ten to tu uz v vo vobec z ze
     zo stale strasne velmi dost uplne celkom trochu hrozne furt
     pocitac pocitaci pocitaca pc notebook notebooku ntb laptop windows win
     an and are be been i in is it its me my of on or the this to very when
@@ -181,7 +182,7 @@ def parse(data) -> tuple[SymptomTable, list[str]]:
         if len(canon) != 1 or not isinstance(variants, list):
             errors.append(f"synonyms: '{canonical}' must be one word with a list of variants")
             continue
-        for word, stemmed in [(canonical, canon)] + [(v, [t for _, t in words(str(v))]) for v in variants]:
+        for word, stemmed in [(canonical, canon)] + [(v, [t for _, t in words(v)] if isinstance(v, str) else []) for v in variants]:
             if len(stemmed) != 1:
                 errors.append(f"synonyms.{canonical}: '{word}' must be one word")
                 continue
@@ -194,7 +195,11 @@ def parse(data) -> tuple[SymptomTable, list[str]]:
     raw_weak = data.get("weak") or []
     if not isinstance(raw_weak, list):
         raise SymptomsError("'weak' must be a list of words")
-    table.weak = frozenset(table.synonyms.get(t, t) for w in raw_weak for _, t in words(str(w)))
+    # A bare `no` in YAML is False - str() would quietly make it "False".
+    for w in raw_weak:
+        if not isinstance(w, str):
+            errors.append(f"weak: {w!r} is not a word (quote it)")
+    table.weak = frozenset(table.synonyms.get(t, t) for w in raw_weak if isinstance(w, str) for _, t in words(w))
 
     raw_symptoms = data.get("symptoms")
     if not isinstance(raw_symptoms, list):
