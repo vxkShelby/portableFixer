@@ -1,0 +1,84 @@
+# Client complaint -> catalog actions (research G27, portablefix/symptoms.py).
+#
+# The technician types what the client said ("Outlook sa neotvára", "nejde
+# internet") into the search box and gets the three best symptoms below,
+# each with a "why" line. Choosing one selects its diagnostics (and, with
+# the second button, its fixes too) - nothing runs until the technician
+# starts the batch, and the batch review approves anything not SAFE.
+#
+# Rules (checked on load, a broken entry is skipped with an error):
+#   - diagnostics: existing SAFE actions only - they are what runs first;
+#   - fixes: existing actions of any risk, in the order to try them;
+#   - phrases: whatever a client says, SK and EN - with or without
+#     diacritics, both match either way; word endings are stripped, so
+#     "neotvára" also finds "neotvárajú".
+#   - synonyms: one word each; every variant counts as the canonical term.
+#   - weak: words that help a phrase match but never match on their own.
+
+synonyms:
+  internet: [net, siet, siete, sieti, pripojenie, pripojenia, connection, connected, online, web, stranky, pages, websites]
+  wifi: [wlan, wireless, bezdrot]
+  pomaly: [pomala, pomale, pomalsie, slow, slower, sluggish, seka, sekanie, zasekava, laguje, lag, lagging, trva, dlho, spomaleny]
+  spusta: [spustenie, nespusta, nespusti, nenabieha, startuje, start, starts, startup, nabieha, nabiehanie, zapina, zapnutie, boot, boots, booting]
+  otvara: [neotvara, neotvaraju, otvorit, neotvori, neotvoril, otvori, opens, open, launch, launches]
+  pada: [pada, spadne, padne, pad, crash, crashes, crashing, zamrza, zamrzne, zamrznuty, freeze, freezes, frozen, hang, hangs, nereaguje, responding]
+  posta: [mail, email, emaily, maily]
+  tlaciaren: [tlaciarne, tlac, tlacit, netlaci, printer, printers, print, printing]
+
+weak: [nejde, nejdu, nefunguje, nefunguju, problem, chyba, error, broken, doesnt, dont, wont, cant, not, working, work, funguje, ide]
+
+symptoms:
+  - id: outlook_wont_open
+    title_sk: Outlook sa neotvára alebo padá
+    title_en: Outlook won't open or crashes
+    why_sk: Najčastejšie za tým je doplnok tretej strany alebo priveľký OST/PST - najprv ich skontroluje, oprava Office príde až potom.
+    why_en: Usually a third-party add-in or an oversized OST/PST - checks those first, an Office repair comes after.
+    phrases_sk:
+      - outlook sa neotvára
+      - outlook padá
+      - outlook zamŕza
+      - nejde pošta
+      - nefunguje outlook
+    phrases_en:
+      - outlook won't open
+      - outlook crashes
+      - outlook not responding
+      - email not working
+    diagnostics: [office_addins_report, office_ost_pst_report, office_version_channel_report]
+    fixes: [office_com_addin_disable_all_thirdparty, office_quick_repair, office_reset_outlook_profile]
+
+  - id: no_internet
+    title_sk: Nejde internet
+    title_en: No internet
+    why_sk: Test po krokoch ukáže, kde sa spojenie láme (adaptér, router, DNS, proxy) - oprava potom mieri len na to miesto.
+    why_en: The step-by-step test shows where the connection breaks (adapter, router, DNS, proxy) - the fix then targets just that.
+    phrases_sk:
+      - nejde internet
+      - nefunguje internet
+      - nejde wifi
+      - nenačítajú sa stránky
+      - bez pripojenia
+    phrases_en:
+      - no internet
+      - internet not working
+      - wifi not working
+      - websites won't load
+    diagnostics: [online_connectivity_ladder, net_adapter_status, net_ip_config_report, online_proxy_check]
+    fixes: [net_flush_dns, net_dhcp_renew, online_proxy_reset, net_dns_reset_automatic, net_winsock_reset]
+
+  - id: slow_startup
+    title_sk: Počítač sa pomaly spúšťa
+    title_en: Slow startup
+    why_sk: Rozpis posledných štartov a zoznam autoštartu ukážu, čo štart brzdí - vypnúť sa dá len vybrané položky, s undo.
+    why_en: The boot-time breakdown and the autostart list show what slows the start - only the entries you pick get disabled, with undo.
+    phrases_sk:
+      - pomaly sa spúšťa
+      - dlho nabieha
+      - pomalý štart
+      - dlho sa zapína
+    phrases_en:
+      - slow startup
+      - slow boot
+      - takes long to start
+    diagnostics: [boot_time_breakdown, tune_startup_apps_report, autoruns_registry_run, uptime_faststartup]
+    fixes: [autoruns_disable_items]
