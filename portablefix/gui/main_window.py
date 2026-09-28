@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 from . import job_forms, style
 from .batch_review import BatchReview, BatchReviewDialog, ReviewDecision, build_review
 from .items_dialog import ItemsDialog
-from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, health, hive_backup, history, i18n, intake, ops, panel_safety, paths, pfjson, preflight, report, restore_point, snapshot, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
+from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, health, hive_backup, history, i18n, intake, ops, panel_safety, paths, pfjson, preflight, report, restore_point, snapshot, symptoms, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner
@@ -207,6 +207,13 @@ class MainWindow(QMainWindow):
         # then say (research-reporting.md F4).
         self._storage_fallback = Path(state_dir) != Path(assets_dir)
         self.modules, module_load_errors = load_catalog(assets_dir)
+        # Research G27: client complaint -> the symptoms to suggest. A broken
+        # entry is skipped and reported with the module errors.
+        self._symptoms, symptom_errors = symptoms.load(
+            Path(assets_dir) / "Modules" / symptoms.SYMPTOMS_FILE,
+            {a.id: a for m in self.modules for a in m.actions},
+        )
+        module_load_errors = module_load_errors + symptom_errors
         if module_load_errors:
             QMessageBox.warning(
                 self,
@@ -821,6 +828,32 @@ class MainWindow(QMainWindow):
         preset_row.addWidget(self.search_box)
         center_layout.addLayout(preset_row)
 
+        # Research G27: the client's complaint -> the top 3 symptoms, each a
+        # tile like the dashboard's health tiles (title, why, buttons that
+        # only select - nothing runs until Run selected and its review).
+        symptom_row = QHBoxLayout()
+        symptom_row.setSpacing(6)
+        symptom_label = QLabel(self._t("symptom_label"))
+        symptom_label.setObjectName("selectionScope")
+        symptom_row.addWidget(symptom_label)
+        self.symptom_box = QLineEdit()
+        self.symptom_box.setObjectName("searchBox")
+        self.symptom_box.setPlaceholderText(self._t("symptom_placeholder"))
+        self.symptom_box.setMaxLength(symptoms.MAX_QUERY_CHARS)
+        self.symptom_box.setAccessibleName(self._t("symptom_label"))
+        self.symptom_box.textChanged.connect(self._on_symptom_changed)
+        symptom_row.addWidget(self.symptom_box, 1)
+        # No Modules/symptoms.yaml (or nothing usable in it): no box.
+        symptom_label.setVisible(bool(self._symptoms.symptoms))
+        self.symptom_box.setVisible(bool(self._symptoms.symptoms))
+        center_layout.addLayout(symptom_row)
+        self._symptom_results = QWidget()
+        self._symptom_results_layout = QHBoxLayout(self._symptom_results)
+        self._symptom_results_layout.setContentsMargins(0, 0, 0, 0)
+        self._symptom_results_layout.setSpacing(10)
+        self._symptom_results.setVisible(False)
+        center_layout.addWidget(self._symptom_results)
+
         # User-saved presets get their own row: sharing the built-in preset
         # row squeezed the search box down to nothing once a couple existed.
         # The inner sub-layout lets saving/deleting rebuild only these
@@ -1253,6 +1286,70 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self._t("search_no_matches").format(query=text.strip()))
         else:
             self.statusBar().showMessage(self._t("search_matches_count").format(count=len(matched_ids)))
+
+    # --- symptom suggestions (research G27) ------------------------------------
+
+    def _on_symptom_changed(self, text: str) -> None:
+        layout = self._symptom_results_layout
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not text.strip():
+            self._symptom_results.setVisible(False)
+            return
+        language = self.settings.language
+        matches = symptoms.suggest(self._symptoms, text)
+        if not matches:
+            label = QLabel(self._t("symptom_no_matches").format(query=text.strip()))
+            label.setObjectName("selectionScope")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        for match in matches:
+            symptom = match.symptom
+            diagnostics = [a for a in symptom.diagnostics if a in self._action_checkboxes]
+            fixes = [a for a in symptom.fixes if a in self._action_checkboxes]
+            tile = QFrame()
+            tile.setObjectName("actionCard")
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(10, 8, 10, 8)
+            tile_layout.setSpacing(2)
+            title_label = QLabel(symptom.title(language))
+            title_label.setObjectName("cardHeading")
+            title_label.setWordWrap(True)
+            why_label = QLabel(symptom.why(language))
+            why_label.setObjectName("selectionScope")
+            why_label.setWordWrap(True)
+            matched_label = QLabel(self._t("symptom_matched").format(words=", ".join(match.matched_words)))
+            matched_label.setObjectName("selectionScope")
+            for widget in (title_label, why_label, matched_label):
+                tile_layout.addWidget(widget)
+            button_row = QHBoxLayout()
+            button_row.setSpacing(6)
+            diag_button = self._make_selection_button(
+                self._t("symptom_select_diagnostics"),
+                lambda s=symptom, ids=diagnostics: self._select_symptom(s, ids),
+            )
+            diag_button.setEnabled(bool(diagnostics))
+            button_row.addWidget(diag_button)
+            if fixes:
+                button_row.addWidget(self._make_selection_button(
+                    self._t("symptom_select_with_fixes"),
+                    lambda s=symptom, ids=diagnostics + fixes: self._select_symptom(s, ids),
+                ))
+            button_row.addStretch(1)
+            tile_layout.addLayout(button_row)
+            tile_layout.addStretch(1)
+            tile.setAccessibleName(f"{symptom.title(language)}. {symptom.why(language)}")
+            layout.addWidget(tile, 1)
+        self._symptom_results.setVisible(True)
+
+    def _select_symptom(self, symptom, action_ids: list[str]) -> None:
+        """Selects - never runs - a suggestion's actions; the batch review
+        approves anything that is not SAFE, as for every other selection."""
+        self._apply_recommended_selection(action_ids, None)
+        self.statusBar().showMessage(self._t("symptom_selected").format(
+            title=symptom.title(self.settings.language), count=len(action_ids)))
 
     def _preset_action_ids(self, preset_key: str) -> list[str]:
         if preset_key.startswith(CUSTOM_PRESET_PREFIX):
