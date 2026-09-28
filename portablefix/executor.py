@@ -40,6 +40,7 @@ class ExecutionPlan:
 def build_execution_plan(
     command: str, dry_run: bool, temp_protect: Path | None = None, ops_state: Path | None = None,
     target_user: TargetUser | None = None, items_file: Path | None = None,
+    variables: dict[str, str] | None = None,
 ) -> ExecutionPlan:
     if dry_run:
         display = command
@@ -72,6 +73,9 @@ def build_execution_plan(
         # Where an `ops:` command saves the state it captures (research G10);
         # without it the command refuses to change anything.
         prefix += f"{STATE_VARIABLE} = {ps_str(str(ops_state))}; "
+    for name, value in (variables or {}).items():
+        # Paths PortableFix owns (the m24 scanner folders, research G28).
+        prefix += f"${name} = {ps_str(value)}; "
     utf8_command = f"{prefix}[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}"
     return ExecutionPlan(mode="run", display_command=command, argv=POWERSHELL_PREFIX + [utf8_command])
 
