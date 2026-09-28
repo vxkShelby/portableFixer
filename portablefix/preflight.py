@@ -100,9 +100,16 @@ def profile_for(items: Iterable[tuple[ModuleDef, ActionDef]]) -> BatchProfile:
         if action.stresses_disk:
             stresses_disk = True
         risky = action.risk != RiskLevel.SAFE
-        if risky or needs_restore_point(module, action):
+        wants_restore_point = needs_restore_point(module, action)
+        if risky or wants_restore_point:
             changes = True
-        if risky:
+        # Checkpoint-Computer/Enable-ComputerRestore always need admin, even
+        # for a SAFE action that only opts into a restore point via an
+        # explicit `changes_system: true` (a real, catalog-supported case -
+        # see UserModules/G32) - without this a non-admin run skipped the
+        # "no_admin" blocker, then failed the restore point it was about to
+        # attempt with no explanation of why.
+        if risky or wants_restore_point:
             admin = True
         if action.risk == RiskLevel.REQUIRES_REBOOT or (risky and is_long_action(action)):
             long_or_reboot = True

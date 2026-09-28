@@ -161,9 +161,11 @@ def test_profile_for_classifies_the_batch():
     safe_repair = (_module(ModuleCategory.REPAIR), _action(risk=RiskLevel.SAFE))
     assert profile_for([safe_repair]) == BatchProfile()
     # ...but a SAFE action that declares changes_system is guarded by a
-    # restore point - it needs neither admin nor servicing checks.
+    # restore point - Checkpoint-Computer itself needs admin even though
+    # the action's own command does not, so this still blocks a non-admin
+    # run (no servicing check though, that stays tied to REPAIR + risky).
     safe_changing = (_module(ModuleCategory.REPAIR), _action(risk=RiskLevel.SAFE, changes_system=True))
-    assert profile_for([safe_changing]) == BatchProfile(changes_system=True)
+    assert profile_for([safe_changing]) == BatchProfile(changes_system=True, needs_admin=True)
 
     moderate_cleanup = (_module(ModuleCategory.CLEANUP), _action())
     assert profile_for([moderate_cleanup]) == BatchProfile(changes_system=True, needs_admin=True)

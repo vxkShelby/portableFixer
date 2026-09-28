@@ -3679,7 +3679,7 @@ def _fake_installed_program(name, quiet=None, plain="uninst.exe /x", location=No
     )
 
 
-def _uninstaller_window(qtbot, tmp_path, monkeypatch, run_id, programs, dry_run, orphans=()):
+def _uninstaller_window(qtbot, tmp_path, monkeypatch, run_id, programs, dry_run, orphans=(), is_admin=True):
     # The card reads the registry once, when it is built - fake it first.
     # No real winget scan either: on a Windows runner that takes seconds.
     from portablefix import uninstaller, winget_updates
@@ -3691,7 +3691,7 @@ def _uninstaller_window(qtbot, tmp_path, monkeypatch, run_id, programs, dry_run,
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
         assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=dry_run),
-        is_admin=True, run_id=run_id,
+        is_admin=is_admin, run_id=run_id,
     )
     qtbot.addWidget(window)
     return window, window._category_groups[ModuleCategory.UNINSTALLER]
@@ -3817,6 +3817,27 @@ def test_uninstaller_confirmed_run_logs_each_program_as_warned_and_irreversible(
     assert "NOT reversible" in undo_text and "Real App" in undo_text
 
 
+def test_uninstall_without_admin_is_refused_before_any_confirmation(qtbot, tmp_path, monkeypatch):
+    # A real uninstall (and the restore point it makes first) needs admin -
+    # this panel runs outside the batch queue's preflight, so it must check
+    # is_admin itself instead of failing confusingly further down.
+    from portablefix import restore_point, uninstaller
+
+    monkeypatch.setattr(restore_point, "create_restore_point", _refuse_runner("create_restore_point"))
+    monkeypatch.setattr(uninstaller, "uninstall_program", _refuse_runner("uninstall_program"))
+    monkeypatch.setattr(QMessageBox, "warning", _refuse_runner("QMessageBox.warning"))
+    program = _fake_installed_program("Real App", plain="realapp-uninst.exe")
+    window, card = _uninstaller_window(
+        qtbot, tmp_path, monkeypatch, "run_uninst_noadmin", [program], dry_run=False, is_admin=False,
+    )
+
+    _panel_checkbox(card, "Real App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+
+    assert window._t("panel_needs_admin") in _panel_console_text(card)
+    assert _audit_entries(audit_log_path(tmp_path, "run_uninst_noadmin")) == []
+
+
 def test_orphan_cleanup_dry_run_starts_unchecked_and_deletes_nothing(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QCheckBox
 
@@ -3919,7 +3940,33 @@ def test_orphan_cleanup_deletes_only_entries_whose_registry_backup_succeeded(qtb
     assert f"reg import '{backup_file}'" in undo_text
 
 
-def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package, **settings):
+def test_orphan_cleanup_without_admin_is_refused_before_any_confirmation(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point, uninstaller
+
+    monkeypatch.setattr(restore_point, "create_restore_point", _refuse_runner("create_restore_point"))
+    monkeypatch.setattr(uninstaller, "remove_registry_key", _refuse_runner("remove_registry_key"))
+    program = _fake_installed_program("Some App", quiet="someapp.exe /S")
+    orphan = _fake_installed_program("Tool Gone", location=r"C:\Gone\A")
+    # Reach the leftover panel through a DRY-RUN preview (as a real
+    # technician would), then switch DRY-RUN off before the refused click.
+    window, card = _uninstaller_window(
+        qtbot, tmp_path, monkeypatch, "run_orphan_noadmin", [program], dry_run=True, orphans=[orphan], is_admin=False,
+    )
+    _panel_checkbox(card, "Some App").setChecked(True)
+    _panel_button(card, window._t("uninstaller_uninstall_button")).click()
+    window.dry_run_checkbox.setChecked(False)
+    monkeypatch.setattr(QMessageBox, "warning", _refuse_runner("QMessageBox.warning"))
+    _panel_checkbox(card, "Tool Gone").setChecked(True)
+
+    _panel_button(card, window._t("uninstaller_clean_leftovers_button")).click()
+
+    assert window._t("panel_needs_admin") in _panel_console_text(card)
+    assert [
+        e for e in _audit_entries(audit_log_path(tmp_path, "run_orphan_noadmin")) if e["action_id"].startswith("orphan_cleanup:")
+    ] == []
+
+
+def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package, is_admin=True, **settings):
     from PySide6.QtWidgets import QCheckBox
 
     from portablefix import winget_updates
@@ -3929,7 +3976,7 @@ def _winget_window(qtbot, tmp_path, monkeypatch, run_id, dry_run, package, **set
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
         assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=dry_run, **settings),
-        is_admin=True, run_id=run_id,
+        is_admin=is_admin, run_id=run_id,
     )
     qtbot.addWidget(window)
     card = window._category_groups[ModuleCategory.DASHBOARD]
@@ -4013,6 +4060,25 @@ def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monke
     assert entry["output"] == "Successfully installed"
     undo_text = (tmp_path / "Backups" / "run_winget_yes" / "undo.ps1").read_text(encoding="utf-8-sig")
     assert "NOT reversible" in undo_text and "Fake.Editor" in undo_text
+
+
+def test_winget_update_without_admin_is_refused_before_any_confirmation(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point, winget_updates
+
+    monkeypatch.setattr(restore_point, "create_restore_point", _refuse_runner("create_restore_point"))
+    monkeypatch.setattr(winget_updates, "update_package", _refuse_runner("update_package"))
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    monkeypatch.setattr(QMessageBox, "question", _refuse_runner("QMessageBox.question"))
+    window, card, row = _winget_window(
+        qtbot, tmp_path, monkeypatch, "run_winget_noadmin", False, _fake_outdated_package(), is_admin=False,
+    )
+
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    assert window._t("panel_needs_admin") in _panel_console_text(card)
+    assert window._winget_update_runner is None
+    assert [e for e in _audit_entries(audit_log_path(tmp_path, "run_winget_noadmin")) if e["module_id"] == "_winget"] == []
 
 
 def _winget_failed_window(qtbot, tmp_path, monkeypatch, run_id, error, ignored_ids=()):

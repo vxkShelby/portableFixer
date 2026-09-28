@@ -2346,6 +2346,8 @@ class MainWindow(QMainWindow):
                     console.appendPlainText(f"[DRY-RUN] {command}")
                     self._log_panel_action("_winget", package.id, command, 0, f"[DRY-RUN] {command}", True, risk)
                 return
+            if self._panel_refused_without_admin(console):
+                return
             warning_text = self._t("winget_update_confirm_text").format(
                 count=len(selected_packages),
                 packages=self._panel_confirm_list(
@@ -3099,6 +3101,8 @@ class MainWindow(QMainWindow):
                             True, risk,
                         )
                     return
+                if self._panel_refused_without_admin(console):
+                    return
                 warning_text = self._t("uninstaller_orphan_confirm_text").format(
                     count=len(chosen),
                     entries=self._panel_confirm_list([
@@ -3237,6 +3241,8 @@ class MainWindow(QMainWindow):
                 # the registry, and cleaning honours DRY-RUN as well.
                 show_orphan_cleanup()
                 return
+            if self._panel_refused_without_admin(console):
+                return
             # A silent uninstall runs with no uninstaller window at all -
             # the only chance to stop it is this dialog, so say so; and say
             # which queue each program is in (research G15).
@@ -3372,6 +3378,22 @@ class MainWindow(QMainWindow):
         except OSError:
             if not self._closed:
                 self.console.appendPlainText(self._t("disk_write_failed"))
+
+    def _panel_refused_without_admin(self, console: QPlainTextEdit) -> bool:
+        """True (and shown) when a panel's real run needs admin rights it
+        does not have. The winget/uninstaller/leftover-cleanup panels run
+        outside the batch queue, so they never went through preflight's
+        "no_admin" blocker - uninstalling a program, installing a winget
+        upgrade or deleting an HKLM leftover key all need an elevated
+        process, and so does the restore point this same run makes right
+        after (Enable-ComputerRestore/Checkpoint-Computer fail without
+        admin, previously surfacing only as a generic "continue anyway?"
+        prompt with no explanation of why it failed)."""
+        if self.is_admin:
+            return False
+        console.setVisible(True)
+        console.appendPlainText(self._t("panel_needs_admin"))
+        return True
 
     def _start_panel_restore_point(self, subjects: list[str], console: QPlainTextEdit, on_done) -> bool:
         """The panels' real runs get the batch's safety net (research G01):
