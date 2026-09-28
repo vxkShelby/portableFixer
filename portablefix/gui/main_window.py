@@ -1346,8 +1346,13 @@ class MainWindow(QMainWindow):
 
     def _select_symptom(self, symptom, action_ids: list[str]) -> None:
         """Selects - never runs - a suggestion's actions; the batch review
-        approves anything that is not SAFE, as for every other selection."""
+        approves anything that is not SAFE, as for every other selection.
+        Ticks exclude_from_select_all actions too (AdwCleaner, the external
+        backup, the RAM test): that flag keeps them out of bulk sweeps, and
+        a suggestion that names them is a deliberate pick, like their box."""
         self._apply_recommended_selection(action_ids, None)
+        for action_id in action_ids:
+            self._action_checkboxes[action_id].setChecked(True)
         self.statusBar().showMessage(self._t("symptom_selected").format(
             title=symptom.title(self.settings.language), count=len(action_ids)))
 

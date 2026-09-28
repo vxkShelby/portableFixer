@@ -16,7 +16,8 @@ ACTIONS = (
     "actions:\n"
     "  - {id: ladder, label_sk: Rebrik, label_en: Ladder, risk: SAFE, command: \"Write-Output 1\"}\n"
     "  - {id: adapter, label_sk: Adapter, label_en: Adapter, risk: SAFE, command: \"Write-Output 1\"}\n"
-    "  - {id: winsock, label_sk: Winsock, label_en: Winsock, risk: REQUIRES_REBOOT, command: \"Write-Output 1\"}\n"
+    "  - {id: winsock, label_sk: Winsock, label_en: Winsock, risk: REQUIRES_REBOOT, command: \"Write-Output 1\",\n"
+    "     exclude_from_select_all: true}\n"
     "  - {id: renew, label_sk: DHCP, label_en: DHCP, risk: MODERATE, command: \"Write-Output 1\"}\n"
 )
 
@@ -89,7 +90,11 @@ def test_the_buttons_select_diagnostics_or_diagnostics_and_fixes(qtbot, tmp_path
     assert _checked(window) == {"ladder", "adapter"}
     assert "2 actions selected" in window.statusBar().currentMessage()
     fix_button.click()
+    # winsock is exclude_from_select_all - a named suggestion still ticks it.
     assert _checked(window) == {"ladder", "adapter", "renew", "winsock"}
+    assert "4 actions selected" in window.statusBar().currentMessage()
+    diag_button.click()
+    assert _checked(window) == {"ladder", "adapter"}
     # Selecting is all it does - nothing started.
     assert not window._batch_active
 
