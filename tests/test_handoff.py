@@ -739,3 +739,26 @@ def test_handoff_runner_passes_redact_through(tmp_path, monkeypatch):
     monkeypatch.setattr(handoff, "build_handoff_zip", lambda *a, **kw: captured.update(kw) or tmp_path / "x.zip")
     handoff.HandoffRunner(tmp_path, HOST, RUN, tmp_path / "x.zip", redact=True).run()
     assert captured["redact"] is True and captured["include_diagnostics"] is True
+
+
+def test_scanner_logs_go_into_the_zip_but_not_the_tools_data(tmp_path):
+    # Research G28: the raw log of an m24 scanner travels with the findings
+    # parsed from it; KVRT's data folder (databases, quarantine) never does.
+    state = tmp_path / "state"
+    _write_run(state)
+    job = state / "Backups" / RUN / "scanners" / "msert_scan"
+    (job / "logs").mkdir(parents=True)
+    (job / "logs" / "msert.log").write_text("Threat Detected: X in C:\\Users\\jan\\a.exe\n", encoding="utf-8")
+    (job / "kvrt_data").mkdir()
+    (job / "kvrt_data" / "base.dat").write_bytes(b"x")
+    (job / "logs" / "huge.log").write_bytes(b"x" * (handoff.MAX_SCANNER_LOG_BYTES + 1))
+    dest = tmp_path / "out.zip"
+
+    handoff.build_handoff_zip(state, HOST, RUN, dest)
+    assert "scanners/msert_scan/msert.log" in _names(dest)
+    assert not [n for n in _names(dest) if "kvrt_data" in n or "huge" in n]
+
+    handoff.build_handoff_zip(state, HOST, RUN, dest, redact=True)
+    with zipfile.ZipFile(dest) as zf:
+        redacted = zf.read("scanners/msert_scan/msert.log").decode("utf-8")
+    assert "jan" not in redacted and "Threat Detected: X" in redacted
