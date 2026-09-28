@@ -11,21 +11,44 @@
 #   - fixes: existing actions of any risk, in the order to try them;
 #   - phrases: whatever a client says, SK and EN - with or without
 #     diacritics, both match either way; word endings are stripped, so
-#     "neotvára" also finds "neotvárajú".
-#   - synonyms: one word each; every variant counts as the canonical term.
+#     "neotvára" also finds "neotvárajú";
+#   - synonyms: one word each; every variant counts as the canonical term,
+#     and no word may belong to two terms;
 #   - weak: words that help a phrase match but never match on their own.
 
 synonyms:
   internet: [net, siet, siete, sieti, pripojenie, pripojenia, connection, connected, online, web, stranky, pages, websites]
   wifi: [wlan, wireless, bezdrot]
-  pomaly: [pomala, pomale, pomalsie, slow, slower, sluggish, seka, sekanie, zasekava, laguje, lag, lagging, trva, dlho, spomaleny]
+  pomaly: [pomala, pomale, pomalsie, slow, slower, sluggish, seka, sekanie, zasekava, laguje, lag, lagging, trva, dlho, spomaleny, spomalil]
   spusta: [spustenie, nespusta, nespusti, nenabieha, startuje, start, starts, startup, nabieha, nabiehanie, zapina, zapnutie, boot, boots, booting]
   otvara: [neotvara, neotvaraju, otvorit, neotvori, neotvoril, otvori, opens, open, launch, launches]
-  pada: [pada, spadne, padne, pad, crash, crashes, crashing, zamrza, zamrzne, zamrznuty, freeze, freezes, frozen, hang, hangs, nereaguje, responding]
+  pada: [spadne, padne, pad, crash, crashes, crashing, zamrza, zamrzne, zamrznuty, freeze, freezes, frozen, hang, hangs, nereaguje, responding]
+  vypada: [vypadava, vypadne, vypadok, odpaja, odpojuje, drops, dropping, disconnects, disconnecting]
   posta: [mail, email, emaily, maily]
   tlaciaren: [tlaciarne, tlac, tlacit, netlaci, printer, printers, print, printing]
+  zvuk: [audio, sound, reproduktory, repraky, speakers, nehra, hlasitost, volume]
+  kamera: [webkamera, camera, webcam]
+  bluetooth: [bt, sluchadla, headphones, headset]
+  bateria: [baterka, baterku, baterky, battery, nabijanie, charge]
+  disk: [ssd, hdd, drive, harddisk]
+  miesto: [space, priestor, kapacita, storage]
+  plny: [full, zaplneny, preplneny]
+  aktualizacia: [aktualizacie, aktualizovat, neaktualizuje, update, updates, updaty, updating]
+  virus: [viry, virusy, malware, trojan, adware, spyware, infected, infikovany, zavirovany, hacknuty, hacked]
+  reklama: [reklamy, ads, popup, popups, vyskakuje, vyskakovacie, adverts]
+  prehliadac: [browser, chrome, edge, firefox, opera, brave]
+  domovska: [homepage, home, uvodna]
+  modra: [blue, modry]
+  obrazovka: [screen, displej]
+  restartuje: [restart, restarts, reboot, reboots, restartne, vypina, vypne, shuts, shutdown]
+  obchod: [store, microsoftstore]
+  aplikacie: [apps, appky, aplikacia, programy]
+  vyhladavanie: [search, hladanie, nehlada]
+  prehrieva: [prehriva, horuci, hot, overheating, overheats, zohrieva, heat]
+  ventilator: [fan, vetrak, hlucny, noisy, loud, huci]
+  aktivacia: [activation, activated, aktivovany, licencia, license, aktivovat]
 
-weak: [nejde, nejdu, nefunguje, nefunguju, problem, chyba, error, broken, doesnt, dont, wont, cant, not, working, work, funguje, ide]
+weak: [nejde, nejdu, nefunguje, nefunguju, problem, chyba, error, broken, doesnt, dont, wont, cant, not, working, work, funguje, ide, stale, often, casto, sam, sama, itself, randomly, nahodne]
 
 symptoms:
   - id: outlook_wont_open
@@ -66,6 +89,40 @@ symptoms:
     diagnostics: [online_connectivity_ladder, net_adapter_status, net_ip_config_report, online_proxy_check]
     fixes: [net_flush_dns, net_dhcp_renew, online_proxy_reset, net_dns_reset_automatic, net_winsock_reset]
 
+  - id: slow_internet
+    title_sk: Pomalý internet
+    title_en: Slow internet
+    why_sk: Meranie rýchlosti, signál Wi-Fi a porovnanie DNS oddelia pomalú linku od slabej Wi-Fi alebo pomalého DNS.
+    why_en: A speed test, the Wi-Fi signal and a DNS comparison tell a slow line from weak Wi-Fi or a slow DNS server.
+    phrases_sk:
+      - pomalý internet
+      - internet sa seká
+      - stránky sa dlho načítavajú
+      - slabá wifi
+    phrases_en:
+      - slow internet
+      - internet is slow
+      - weak wifi
+    diagnostics: [online_speed_test, net_wifi_diagnostics, online_dns_benchmark, drv_network_adapter_versions]
+    fixes: [net_adapter_power_disable, net_set_public_dns]
+
+  - id: wifi_drops
+    title_sk: Wi-Fi vypadáva
+    title_en: Wi-Fi keeps dropping
+    why_sk: Vypadávanie býva úspora energie adaptéra alebo starý ovládač - diagnostika ukáže signál, ovládač a chyby v logu.
+    why_en: Drop-outs are usually the adapter's power saving or an old driver - the checks show the signal, the driver and log errors.
+    phrases_sk:
+      - wifi vypadáva
+      - internet vypadáva
+      - odpája sa wifi
+      - padá wifi
+    phrases_en:
+      - wifi keeps dropping
+      - wifi disconnects
+      - internet drops
+    diagnostics: [net_wifi_diagnostics, net_adapter_status, drv_network_adapter_versions, eventlog_critical_7d]
+    fixes: [net_adapter_power_disable, net_dhcp_renew, drv_install_updates]
+
   - id: slow_startup
     title_sk: Počítač sa pomaly spúšťa
     title_en: Slow startup
@@ -82,3 +139,313 @@ symptoms:
       - takes long to start
     diagnostics: [boot_time_breakdown, tune_startup_apps_report, autoruns_registry_run, uptime_faststartup]
     fixes: [autoruns_disable_items]
+
+  - id: slow_pc
+    title_sk: Počítač je pomalý, seká sa
+    title_en: The PC is slow or lags
+    why_sk: Zistí, čo zaťažuje procesor a pamäť a či disk nezlyháva - pomalý disk vyzerá rovnako ako „pomalý počítač“.
+    why_en: Finds what loads the CPU and memory and whether the disk is failing - a dying disk looks just like "a slow PC".
+    phrases_sk:
+      - počítač je pomalý
+      - všetko sa seká
+      - seká sa
+      - pomaly reaguje
+      - spomalil sa
+    phrases_en:
+      - pc is slow
+      - computer is slow
+      - everything lags
+      - sluggish
+    diagnostics: [top_cpu_processes, tune_memory_usage_report, disk_health_verdict, tune_startup_apps_report, volumes]
+    fixes: [autoruns_disable_items, tune_power_high_performance, tune_visual_effects_performance, user_temp, system_temp]
+
+  - id: blue_screen
+    title_sk: Modrá obrazovka, pád alebo reštart systému
+    title_en: Blue screen, crash or sudden restart
+    why_sk: Stop kódy, chyby hardvéru (WHEA) a výpisy pamäte ukážu, či je to ovládač, pamäť alebo disk - opravy podľa toho.
+    why_en: Stop codes, hardware errors (WHEA) and crash dumps show whether it is a driver, RAM or the disk - fix accordingly.
+    phrases_sk:
+      - modrá obrazovka
+      - bsod
+      - padá systém
+      - sám sa reštartuje
+      - náhodne sa vypína
+    phrases_en:
+      - blue screen
+      - bsod
+      - crashes randomly
+      - restarts by itself
+      - shuts down randomly
+    diagnostics: [bsod_summary, crash_bugcheck_triage, whea_hardware_errors, crash_dump_evidence, reliability_history]
+    fixes: [drv_install_updates, mem_test_schedule, dism_restorehealth, sfc_scannow]
+
+  - id: disk_failing
+    title_sk: Disk hlási chyby alebo klikne
+    title_en: Disk errors or clicking
+    why_sk: SMART a čítací test povedia, či disk umiera - vtedy najprv záloha, až potom oprava súborového systému.
+    why_en: SMART and a read-only scan tell whether the disk is dying - then back up first, file system repair only after.
+    phrases_sk:
+      - disk klikne
+      - chyba disku
+      - disk zlyháva
+      - disk hlási chyby
+    phrases_en:
+      - disk errors
+      - hard drive failing
+      - disk clicking
+      - smart error
+    diagnostics: [disk_health_verdict, disk_smart_status, disk_reliability_counters, disk_scan_readonly]
+    fixes: [backup_user_data_external, disk_spotfix, disk_full_scan_reboot]
+
+  - id: disk_full
+    title_sk: Plný disk, málo miesta
+    title_en: Disk full, low space
+    why_sk: Najprv ukáže, čo miesto naozaj zaberá (aj skryté zálohy iPhone či disky WSL) - potom čistenie od najbezpečnejšieho.
+    why_en: First shows what actually takes the space (hidden iPhone backups and WSL disks too) - then cleanup, safest first.
+    phrases_sk:
+      - plný disk
+      - málo miesta
+      - nie je miesto na disku
+      - disk je plný
+    phrases_en:
+      - disk full
+      - low disk space
+      - out of space
+    diagnostics: [volumes, largest_folders_report, largest_files_report, hidden_large_data_report, storage_sense_report]
+    fixes: [user_temp, system_temp, recycle_bin, windows_update_cache, component_store_cleanup, windows_old_removal]
+
+  - id: windows_update_fails
+    title_sk: Aktualizácie Windows zlyhávajú
+    title_en: Windows Update fails
+    why_sk: Stav služieb, čakajúci reštart a stav úložiska súčastí sú tri najčastejšie príčiny - reset cache až po nich.
+    why_en: Service state, a pending restart and component store health are the three usual causes - the cache reset comes after.
+    phrases_sk:
+      - nejdú aktualizácie
+      - aktualizácia zlyháva
+      - windows sa neaktualizuje
+      - chyba aktualizácie
+    phrases_en:
+      - windows update fails
+      - updates won't install
+      - update error
+    diagnostics: [wu_check_services, pending_reboot, dism_checkhealth, recent_hotfixes]
+    fixes: [wu_reset_cache, wu_reregister_dlls, dism_restorehealth, wu_trigger_detection]
+
+  - id: virus_suspected
+    title_sk: Podozrenie na vírus, vyskakujú reklamy
+    title_en: Suspected virus or pop-up ads
+    why_sk: Najprv stav Defendera, história hrozieb, rozšírenia a autoštart bez Microsoftu - druhý názor dajú skenery len na sken.
+    why_en: Defender state, threat history, extensions and non-Microsoft autostart first - the scan-only scanners give a second opinion.
+    phrases_sk:
+      - mám vírus
+      - vyskakujú reklamy
+      - počítač je zavírovaný
+      - niekto ma hackol
+    phrases_en:
+      - i have a virus
+      - pop up ads
+      - malware infection
+      - pc is infected
+    diagnostics: [sec_defender_status, sec_defender_threat_history, browser_extensions_report, autoruns_thirdparty_signed_view, sec_suspicious_scheduled_tasks]
+    fixes: [sec_defender_update, sec_defender_quickscan, adwcleaner_scan, msert_scan]
+
+  - id: browser_hijacked
+    title_sk: Prehliadač má inú domovskú stránku alebo vyhľadávač
+    title_en: Browser homepage or search engine changed
+    why_sk: Únos býva rozšírenie alebo podnikové politiky - report ukáže ktoré, reset profilu až keď ide o prehliadač celý.
+    why_en: A hijack is usually an extension or enterprise policies - the reports show which, a profile reset only if it is the whole browser.
+    phrases_sk:
+      - zmenila sa domovská stránka
+      - iný vyhľadávač v prehliadači
+      - prehliadač otvára reklamy
+      - prehliadač spravuje organizácia
+    phrases_en:
+      - homepage changed
+      - search engine changed
+      - browser managed by your organization
+      - browser opens ads
+    diagnostics: [browser_homepage_search_report, browser_extensions_report, browser_policy_report]
+    fixes: [adwcleaner_scan, browser_reset_chrome_profile, browser_reset_edge_profile, browser_clear_policy_keys]
+
+  - id: printer_not_working
+    title_sk: Tlačiareň netlačí
+    title_en: Printer won't print
+    why_sk: Zoznam tlačiarní, odpojené „duchovia“ a triedy ovládačov ukážu, čo tlač drží - reset zaraďovača úloh je prvá oprava.
+    why_en: The printer list, offline ghosts and driver classes show what holds the queue - a spooler reset is the first fix.
+    phrases_sk:
+      - nejde tlačiareň
+      - netlačí
+      - tlačiareň je offline
+      - zaseknutá tlač
+    phrases_en:
+      - printer not working
+      - printer offline
+      - can't print
+      - print queue stuck
+    diagnostics: [print_installed_printers_report, print_offline_ghost_printers_report, print_driver_class_report]
+    fixes: [net_print_spooler_reset, print_remove_offline_printers]
+
+  - id: no_sound
+    title_sk: Nejde zvuk
+    title_en: No sound
+    why_sk: Skontroluje zariadenia s chybou - najčastejšie pomôže reštart zvukovej služby alebo zariadenia.
+    why_en: Checks for devices in an error state - restarting the audio service or the device usually fixes it.
+    phrases_sk:
+      - nejde zvuk
+      - nehrá zvuk
+      - nefungujú reproduktory
+    phrases_en:
+      - no sound
+      - audio not working
+      - speakers not working
+    diagnostics: [drv_problem_devices]
+    fixes: [tune_audio_service_restart, drv_restart_problem_devices]
+
+  - id: camera_not_working
+    title_sk: Nejde kamera
+    title_en: Camera not working
+    why_sk: Skontroluje zariadenia s chybou - potom reštart služby kamery (Frame Server) alebo zariadenia.
+    why_en: Checks for devices in an error state - then restarts the camera service (Frame Server) or the device.
+    phrases_sk:
+      - nejde kamera
+      - nefunguje webkamera
+      - kamera v teams nejde
+    phrases_en:
+      - camera not working
+      - webcam not detected
+    diagnostics: [drv_problem_devices]
+    fixes: [tune_camera_service_restart, drv_restart_problem_devices]
+
+  - id: bluetooth_not_working
+    title_sk: Nejde Bluetooth
+    title_en: Bluetooth not working
+    why_sk: Skontroluje zariadenia s chybou - potom reštart služby Bluetooth alebo zariadenia.
+    why_en: Checks for devices in an error state - then restarts the Bluetooth service or the device.
+    phrases_sk:
+      - nejde bluetooth
+      - nepripoja sa slúchadlá
+    phrases_en:
+      - bluetooth not working
+      - headphones won't connect
+    diagnostics: [drv_problem_devices]
+    fixes: [tune_bluetooth_service_restart, drv_restart_problem_devices]
+
+  - id: battery_drains
+    title_sk: Batéria rýchlo odchádza
+    title_en: Battery drains fast
+    why_sk: Opotrebenie batérie (návrhová vs. skutočná kapacita) a to, čo beží na pozadí, oddelia starú batériu od záťaže.
+    why_en: Battery wear (design vs. actual capacity) and what runs in the background tell an old battery from a heavy load.
+    phrases_sk:
+      - batéria rýchlo odchádza
+      - baterka nevydrží
+      - nenabíja sa
+    phrases_en:
+      - battery drains fast
+      - battery doesn't last
+      - battery not charging
+    diagnostics: [battery_wear, battery_health_report, tune_power_plan_report, top_cpu_processes]
+    fixes: []
+
+  - id: overheating
+    title_sk: Prehrieva sa, hlučný ventilátor
+    title_en: Overheating, loud fan
+    why_sk: Čo zaťažuje procesor a aký je plán napájania - trvalá záťaž na pozadí je častejšia než zanesený chladič.
+    why_en: What loads the CPU and which power plan is active - a constant background load is more common than a clogged cooler.
+    phrases_sk:
+      - prehrieva sa
+      - hlučný ventilátor
+      - ventilátor stále beží
+    phrases_en:
+      - overheating
+      - loud fan
+      - fan always on
+    diagnostics: [top_cpu_processes, tune_power_plan_report, tune_memory_usage_report]
+    fixes: [tune_pause_background_services]
+
+  - id: store_apps_broken
+    title_sk: Microsoft Store alebo aplikácie sa nespúšťajú
+    title_en: Microsoft Store or apps won't open
+    why_sk: Rýchla kontrola súčastí Windows - potom vyčistenie cache Obchodu a nové zaregistrovanie aplikácií.
+    why_en: A quick Windows component check - then the Store cache is cleared and the apps are re-registered.
+    phrases_sk:
+      - nejde obchod
+      - aplikácie sa nespúšťajú
+      - microsoft store nejde
+    phrases_en:
+      - microsoft store not working
+      - apps won't open
+    diagnostics: [dism_checkhealth, sfc_verifyonly]
+    fixes: [store_cache_reset, appx_reregister]
+
+  - id: search_start_broken
+    title_sk: Vyhľadávanie alebo ponuka Štart nefunguje
+    title_en: Search or the Start menu doesn't work
+    why_sk: Overí systémové súbory len na čítanie - potom prebudovanie indexu vyhľadávania a nové zaregistrovanie aplikácií.
+    why_en: Verifies system files read-only - then rebuilds the search index and re-registers the apps.
+    phrases_sk:
+      - nefunguje vyhľadávanie
+      - štart menu nereaguje
+      - nehľadá súbory
+    phrases_en:
+      - search not working
+      - start menu not responding
+    diagnostics: [sfc_verifyonly, dism_checkhealth]
+    fixes: [search_index_rebuild, appx_reregister, sfc_scannow]
+
+  - id: system_files_damaged
+    title_sk: Poškodené systémové súbory, chýba DLL
+    title_en: Damaged system files, missing DLL
+    why_sk: Kontrola úložiska súčastí a súborov len na čítanie - oprava DISM ide pred SFC, lebo SFC čerpá z úložiska.
+    why_en: Read-only component store and file checks - the DISM repair goes before SFC, because SFC restores from the store.
+    phrases_sk:
+      - chýba dll
+      - poškodené systémové súbory
+      - windows hlási poškodenie
+    phrases_en:
+      - missing dll
+      - corrupted system files
+    diagnostics: [dism_checkhealth, sfc_verifyonly, dism_scanhealth]
+    fixes: [dism_restorehealth, sfc_scannow]
+
+  - id: taskmgr_blocked
+    title_sk: Správca úloh alebo Regedit je zakázaný
+    title_en: Task Manager or Regedit is disabled
+    why_sk: Zákaz býva stopa malvéru - najprv história hrozieb a únosy cez IFEO, potom obnovenie nástrojov.
+    why_en: The block is often malware's footprint - threat history and IFEO hijacks first, then the tools are restored.
+    phrases_sk:
+      - správca úloh je zakázaný
+      - nejde otvoriť regedit
+      - task manager zakázal správca
+    phrases_en:
+      - task manager disabled
+      - regedit disabled by administrator
+    diagnostics: [sec_defender_threat_history, autoruns_ifeo_debuggers]
+    fixes: [sec_restore_taskmgr_regedit, sec_defender_quickscan]
+
+  - id: safe_mode_loop
+    title_sk: Stále štartuje do núdzového režimu
+    title_en: Keeps booting into Safe Mode
+    why_sk: Skontroluje príznak núdzového režimu v konfigurácii štartu - jeho zmazanie vráti bežný štart.
+    why_en: Checks the Safe Mode flag in the boot configuration - clearing it restores a normal start.
+    phrases_sk:
+      - štartuje do núdzového režimu
+      - zasekol sa v núdzovom režime
+    phrases_en:
+      - stuck in safe mode
+      - boots into safe mode
+    diagnostics: [boot_safe_mode_status, boot_bcd_report]
+    fixes: [boot_clear_safe_mode_flag]
+
+  - id: windows_not_activated
+    title_sk: Windows nie je aktivovaný
+    title_en: Windows is not activated
+    why_sk: Ukáže stav licencie a kanál - aktiváciu PortableFix nemení, report je podklad pre ďalší krok.
+    why_en: Shows the licence state and channel - PortableFix does not change activation, the report is the basis for the next step.
+    phrases_sk:
+      - windows nie je aktivovaný
+      - aktivujte windows
+    phrases_en:
+      - windows not activated
+      - activate windows watermark
+    diagnostics: [activation_status, os_edition_eol]
+    fixes: []
