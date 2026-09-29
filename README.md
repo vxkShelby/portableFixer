@@ -55,9 +55,18 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M21 | Oprava | Hardvérové senzory: PawnIO stav/inštalácia (CPU teplota/hodinky cez LibreHardwareMonitor), opotrebenie batérie (verdikt), test pamäte RAM pri reštarte a jeho výsledok |
 | M22 | Čistenie | Hlbšie čistenie: osamotené uninstall položky, duplicitné súbory, nefunkčné odkazy (.lnk), bezpečné prepísanie voľného miesta |
 | M23 | Antivírus | Microsoft Defender: stav, história hrozieb s verdiktom, aktualizácia definícií, rýchly/úplný/offline sken, výnimky, ochrana pred PUA |
+| M24 | Antivírus | Druhý názor: AdwCleaner, Microsoft Safety Scanner a Kaspersky KVRT - sken bez čistenia, spustený len s overeným podpisom; odstránenie nálezov je samostatná DESTRUCTIVE akcia |
 
 ## Funkcie pre technika
 
+- **Sťažnosť klienta:** pole pod predvoľbami - napíš, čo klient povedal
+  („Outlook sa neotvára“, „nejde internet“, „pomaly sa spúšťa“, SK aj EN,
+  s diakritikou aj bez) a zobrazia sa 3 najbližšie problémy s riadkom
+  *prečo*. **Vybrať diagnostiku** označí SAFE diagnostiky, **Diagnostika +
+  opravy** aj nadväzujúce opravy; nič sa nespustí, kým technik nedá
+  **Spustiť vybrané** a neschváli v kontrole všetko nad SAFE. Mapa je v
+  `Modules/symptoms.yaml` (frázy, synonymá, akcie); nepoznané ID alebo
+  diagnostika, ktorá nie je SAFE, sa pri štarte ohlási a preskočí.
 - **Predvoľby:** vstavané (Rýchle čistenie, Plná diagnostika, Privacy
   debloat) aj **vlastné** - vyber akcie, klikni **+ Uložiť výber**, pomenuj.
   Vlastné predvoľby sa ukladajú do `Data/settings.json` hneď (nie až pri

@@ -98,6 +98,32 @@ def check_state(action: ActionDef, target_user: TargetUser | None, holder: list 
     return parse_check_state(run.captured_output)
 
 
+SCANNERS_LIB_VARIABLE = "__pfScannersLib"
+SCANNER_CACHE_DIR = "ScannerCache"
+
+
+def scanner_job_dir(state_dir: Path, run_id: str, action_id: str) -> Path:
+    """Where an m24 scanner (research G28) works and leaves its logs\\ -
+    under Backups/<run_id>/ like the run's other files, so the handoff ZIP
+    finds them (portablefix/handoff.py)."""
+    return Path(state_dir) / "Backups" / run_id / "scanners" / action_id
+
+
+def scanner_variables(action: ActionDef, state_dir: Path, run_id: str, app_dir: Path | None = None) -> dict[str, str]:
+    """The folders an m24 scanner command needs, or {} for every other
+    action. The cache lives in the state dir, not Vendor/: Vendor/ is
+    release-owned - hashed by the integrity check and replaced by updates."""
+    scripts = (action.command, action.preview_command or "")
+    if not any("$" + SCANNERS_LIB_VARIABLE in s for s in scripts):
+        return {}
+    app_dir = app_dir or paths.get_base_dir()
+    return {
+        SCANNERS_LIB_VARIABLE: str(app_dir / "Modules" / "m24_scanners" / "scanners.ps1"),
+        "__pfScannerCache": str(Path(state_dir) / SCANNER_CACHE_DIR),
+        "__pfJobDir": str(scanner_job_dir(state_dir, run_id, action.id)),
+    }
+
+
 @dataclass
 class PreparedRun:
     plan: ExecutionPlan
@@ -114,6 +140,7 @@ def prepare_plan(
     items.ItemsError for an invalid id); a real run of an `ops:` action gets
     a fresh state file path."""
     items_file = None
+    variables = scanner_variables(action, state_dir, run_id)
     if action.items_command:
         items_file = items_mod.write_items_file(
             items_mod.items_file_path(state_dir, run_id, action.id), list(item_ids or []),
@@ -121,7 +148,7 @@ def prepare_plan(
     if dry_run and action.preview_command:
         plan = build_execution_plan(
             action.preview_command, dry_run=False, temp_protect=temp_protect, target_user=target_user,
-            items_file=items_file,
+            items_file=items_file, variables=variables,
         )
         return PreparedRun(plan, None, items_file)
     ops_state = None
@@ -131,7 +158,7 @@ def prepare_plan(
         ops_state = ops.state_file_path(state_dir, run_id, action.id)
     plan = build_execution_plan(
         action.command, dry_run, temp_protect=temp_protect, ops_state=ops_state, target_user=target_user,
-        items_file=items_file,
+        items_file=items_file, variables=variables,
     )
     return PreparedRun(plan, ops_state, items_file)
 

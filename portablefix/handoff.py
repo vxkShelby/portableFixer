@@ -52,6 +52,8 @@ ARC_REPORT_JSON = "report.json"
 ARC_AUDIT_LOG = "audit_log.jsonl"
 ARC_UNDO = "undo.ps1"
 ARC_README = "README.txt"
+ARC_SCANNERS_DIR = "scanners"
+MAX_SCANNER_LOG_BYTES = 10 * 1024 * 1024
 
 # A hostname or run_id ends up in a file name inside state_dir - reject
 # anything that could name a different directory (separators, drive colons,
@@ -82,6 +84,8 @@ vyššie uvedenom počítači.
   diagnostics/     (len ak ho technik pribalil) Vstavané reporty Windows
                    o stave počítača - obsahujú osobné údaje, pozri
                    diagnostics/README.txt.
+  scanners/        (len ak bežal skener z M24) Pôvodné logy skenerov
+                   (AdwCleaner, Microsoft Safety Scanner, KVRT).
 
 Ako bezpečne použiť undo.ps1:
   1. Spúšťajte ho IBA na tom istom počítači ({hostname}) - na inom PC
@@ -111,6 +115,8 @@ computer named above.
   diagnostics/     (only if the technician included it) Windows' built-in
                    reports on the state of the PC - they contain personal
                    data, see diagnostics/README.txt.
+  scanners/        (only if an M24 scanner ran) The scanners' raw logs
+                   (AdwCleaner, Microsoft Safety Scanner, KVRT).
 
 How to use undo.ps1 safely:
   1. Run it ONLY on the same computer ({hostname}) - on another PC it
@@ -128,14 +134,14 @@ REDACTED_README_NOTE = """\
 
 REDIGOVANÉ PRE KLIENTA / REDACTED FOR THE CLIENT
 ------------------------------------------------
-V súboroch report.html, report.json a audit_log.jsonl sú mená používateľov
+V súboroch report.html, report.json, audit_log.jsonl a v logoch skenerov sú mená používateľov
 v cestách, IP a MAC adresy, sériové čísla, časti licenčných kľúčov a názvy
 Wi-Fi sietí nahradené značkami ako <user>, <ip> alebo <serial>. Názov
 počítača a údaje, ktoré technik zadal (technik, klient, poznámka), zostali.
 undo.ps1 je nezmenený, aby vrátil zmeny presne. Vstavané reporty Windows
 v priečinku diagnostics/ (ak je pribalený) redigované nie sú.
 
-In report.html, report.json and audit_log.jsonl, user names in paths, IP
+In report.html, report.json, audit_log.jsonl and the scanner logs, user names in paths, IP
 and MAC addresses, serial numbers, product-key fragments and Wi-Fi network
 names are replaced by markers such as <user>, <ip> or <serial>. The
 computer name and what the technician entered (technician, client, note)
@@ -539,6 +545,14 @@ def package_sources(state_dir: Path, hostname: str, run_id: str) -> list[tuple[s
         (ARC_AUDIT_LOG, audit_log_path(root, run_id)),
         (ARC_UNDO, root / "Backups" / run_id / "undo.ps1"),
     ]
+    # The raw logs of the m24 scanners (research G28), next to the findings
+    # parsed from them - only the logs\ copies, never the tools' data folders
+    # (KVRT's holds its databases and quarantine).
+    scanners = root / "Backups" / run_id / "scanners"
+    if scanners.is_dir() and not scanners.is_symlink():
+        for path in sorted(scanners.glob("*/logs/*")):
+            if path.stat().st_size <= MAX_SCANNER_LOG_BYTES:
+                candidates.append((f"{ARC_SCANNERS_DIR}/{path.parent.parent.name}/{path.name}", path))
     found: list[tuple[str, Path]] = []
     for arcname, path in candidates:
         resolved = _inside(path, root)
@@ -661,6 +675,10 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
             _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep, mask))
         elif arcname == ARC_AUDIT_LOG:
             _write_bytes(zf, arcname, _redacted_audit_log(source, keep, mask))
+        elif arcname.startswith(ARC_SCANNERS_DIR + "/"):
+            # Scanner logs list file paths - user names included.
+            text = source.read_text(encoding="utf-8-sig", errors="replace")
+            _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask).encode("utf-8"))
         else:
             zf.write(source, arcname=arcname)
 

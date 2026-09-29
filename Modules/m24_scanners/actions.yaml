@@ -1,0 +1,88 @@
+module_id: m24_scanners
+category: ANTIVIRUS
+# Research G28: second-opinion scanners. Every action runs ONE tool through
+# scanners.ps1 next to this file: from the scanner cache or downloaded, run
+# only after its Authenticode signature matches the pinned signer, the raw
+# log kept for the client handoff ZIP, the result as a PFJSON finding
+# (security.scanner.<tool>). A scan never removes anything; removing is a
+# separate DESTRUCTIVE action per tool, never bundled with the scan.
+# PortableFix sets $__pfScannersLib, $__pfScannerCache and $__pfJobDir
+# (portablefix/action_service.py) for any command that mentions them.
+# All of them download or start third-party tools for minutes to hours, so
+# none is in "Select all".
+actions:
+  - id: adwcleaner_scan
+    label_sk: "AdwCleaner - sken (bez čistenia)"
+    label_en: "AdwCleaner - scan only"
+    risk: MODERATE
+    changes_system: false  # scan only; the tool writes nothing outside the job folder
+    exclude_from_select_all: true
+    command: ". $__pfScannersLib; Invoke-PfScanner -Key adwcleaner -Mode scan"
+    preview_command: ". $__pfScannersLib; Show-PfScannerPlan -Key adwcleaner -Mode scan"
+    inactivity_timeout_sec: 600
+    hard_cap_sec: 3600
+    description_sk: "Druhý názor na adware, nechcené programy (PUP) a únosy prehliadača: Malwarebytes AdwCleaner len skenuje, nič neodstráni. Použije kópiu v priečinku ScannerCache, inak ho stiahne (treba internet); spustí ho len s platným podpisom Malwarebytes. Log ide do ZIP pre klienta, výsledok na dlaždicu Zabezpečenie. Licencia: freeware Malwarebytes s vlastnou EULA, ktorú akcia prijme (/eula) - over si, či pokrýva platenú servisnú prácu vo vašej dielni."
+    description_en: "A second opinion on adware, potentially unwanted programs (PUPs) and browser hijacks: Malwarebytes AdwCleaner scans only and removes nothing. Uses the copy in the ScannerCache folder, otherwise downloads it (needs internet); runs it only with a valid Malwarebytes signature. The log goes into the client ZIP, the result onto the Security tile. License: Malwarebytes freeware under its own EULA, which the action accepts (/eula) - check that it covers paid service work in your shop."
+
+  - id: msert_scan
+    label_sk: "Microsoft Safety Scanner - sken (bez čistenia)"
+    label_en: "Microsoft Safety Scanner - scan only"
+    risk: MODERATE
+    changes_system: false  # /N = detect only
+    exclude_from_select_all: true
+    command: ". $__pfScannersLib; Invoke-PfScanner -Key msert -Mode scan"
+    preview_command: ". $__pfScannersLib; Show-PfScannerPlan -Key msert -Mode scan"
+    inactivity_timeout_sec: 600
+    hard_cap_sec: 14400
+    description_sk: "Druhý názor od Microsoftu nezávislý od nainštalovaného antivírusu: Microsoft Safety Scanner (msert) v režime len detekcie (/N /Q), nič neodstráni. Stiahne sa (~200 MB) alebo použije kópiu v ScannerCache - Microsoft ju po 10 dňoch od stiahnutia prestane podporovať, preto staršiu kópiu stiahne znova. Spustí sa len s platným podpisom Microsoft Corporation. Výsledok z %SystemRoot%\\debug\\msert.log (len tento beh) ide do ZIP pre klienta a na dlaždicu Zabezpečenie. Licencia: bezplatný nástroj Microsoftu. Nie je pre ARM64."
+    description_en: "A second opinion from Microsoft, independent of the installed antivirus: Microsoft Safety Scanner (msert) in detect-only mode (/N /Q), removes nothing. Downloaded (~200 MB) or taken from ScannerCache - Microsoft stops supporting a copy 10 days after download, so an older copy is downloaded again. Runs only with a valid Microsoft Corporation signature. The result from %SystemRoot%\\debug\\msert.log (this run only) goes into the client ZIP and onto the Security tile. License: free Microsoft tool. Not available for ARM64."
+
+  - id: kvrt_scan
+    label_sk: "Kaspersky KVRT - sken (bez čistenia)"
+    label_en: "Kaspersky KVRT - scan only"
+    risk: MODERATE
+    changes_system: false  # PortableFix never tells KVRT to neutralize in this action
+    exclude_from_select_all: true
+    command: ". $__pfScannersLib; Invoke-PfScanner -Key kvrt -Mode scan"
+    preview_command: ". $__pfScannersLib; Show-PfScannerPlan -Key kvrt -Mode scan"
+    inactivity_timeout_sec: 600
+    hard_cap_sec: 14400
+    description_sk: "POZOR na licenciu a región: v USA je predaj a aktualizácia softvéru Kaspersky od septembra 2024 zakázaná - na počítačoch v USA ho nepoužívaj; niektoré organizácie (štátna správa, kritická infraštruktúra) Kaspersky zakazujú aj v EÚ - najprv sa opýtaj klienta. KVRT posiela údaje do Kaspersky Security Network podľa svojej EULA. Akcia spustí Kaspersky Virus Removal Tool v jeho vlastnom okne (-accepteula -dontencrypt -d <job>): spusti sken tam a pri nálezoch zvoľ Preskočiť - PortableFix mu nič neutralizovať nekáže. Spustí sa len s platným podpisom Kaspersky. Report ide do ZIP pre klienta."
+    description_en: "MIND THE LICENSE AND REGION: selling and updating Kaspersky software in the USA is prohibited since September 2024 - do not use it on computers in the US; some organizations (government, critical infrastructure) ban Kaspersky in the EU too - ask the client first. KVRT sends data to Kaspersky Security Network under its EULA. The action starts Kaspersky Virus Removal Tool in its own window (-accepteula -dontencrypt -d <job>): start the scan there and choose Skip for detections - PortableFix never tells it to neutralize anything. Runs only with a valid Kaspersky signature. The report goes into the client ZIP."
+
+  # Cleaning: one DESTRUCTIVE action per tool, separate from its scan.
+  - id: adwcleaner_clean
+    label_sk: "AdwCleaner - odstránenie nálezov"
+    label_en: "AdwCleaner - remove detections"
+    risk: DESTRUCTIVE
+    exclude_from_select_all: true
+    command: ". $__pfScannersLib; Invoke-PfScanner -Key adwcleaner -Mode clean"
+    preview_command: ". $__pfScannersLib; Show-PfScannerPlan -Key adwcleaner -Mode clean"
+    inactivity_timeout_sec: 600
+    hard_cap_sec: 3600
+    description_sk: "Odstráni všetko, čo AdwCleaner nájde (/eula /clean /noreboot): nechcené programy, ich služby, úlohy, položky registra a nastavenia prehliadačov. Presúva do karantény AdwCleanera, odkiaľ sa dá obnoviť v jeho okne; PortableFix to vrátiť nevie. Na dokončenie môže byť potrebný reštart. Najprv spusti sken a pozri sa, čo našiel; po čistení sken zopakuj. Rovnaká licenčná poznámka ako pri skene."
+    description_en: "Removes everything AdwCleaner detects (/eula /clean /noreboot): unwanted programs, their services, tasks, registry entries and browser settings. Moves them to AdwCleaner's quarantine, restorable from its own window; PortableFix cannot undo it. A restart may be needed to finish. Run the scan first and look at what it found; run it again after cleaning. Same license note as for the scan."
+
+  - id: msert_clean
+    label_sk: "Microsoft Safety Scanner - odstránenie nálezov"
+    label_en: "Microsoft Safety Scanner - remove detections"
+    risk: DESTRUCTIVE
+    exclude_from_select_all: true
+    command: ". $__pfScannersLib; Invoke-PfScanner -Key msert -Mode clean"
+    preview_command: ". $__pfScannersLib; Show-PfScannerPlan -Key msert -Mode clean"
+    inactivity_timeout_sec: 600
+    hard_cap_sec: 14400
+    description_sk: "Rýchly sken Microsoft Safety Scannerom s automatickým odstránením nájdených hrozieb (/Q bez /N). Odstránené súbory PortableFix vrátiť nevie. Najprv spusti sken a pozri sa, čo našiel; po čistení sken zopakuj. Nie je pre ARM64."
+    description_en: "A Microsoft Safety Scanner quick scan that removes detected threats automatically (/Q without /N). PortableFix cannot bring removed files back. Run the scan first and look at what it found; run it again after cleaning. Not available for ARM64."
+
+  - id: kvrt_clean
+    label_sk: "Kaspersky KVRT - neutralizácia nálezov"
+    label_en: "Kaspersky KVRT - neutralize detections"
+    risk: DESTRUCTIVE
+    exclude_from_select_all: true
+    command: ". $__pfScannersLib; Invoke-PfScanner -Key kvrt -Mode clean"
+    preview_command: ". $__pfScannersLib; Show-PfScannerPlan -Key kvrt -Mode clean"
+    inactivity_timeout_sec: 600
+    hard_cap_sec: 14400
+    description_sk: "Spustí KVRT bez okna (-silent -processlevel 2), ktorý sám vylieči alebo odstráni hrozby vysokej a strednej úrovne; kópie idú do karantény v priečinku úlohy. PortableFix to vrátiť nevie. Rovnaké obmedzenia ako pri skene: v USA nepoužívať (zákaz softvéru Kaspersky od septembra 2024), niektoré organizácie ho zakazujú aj v EÚ, údaje idú do Kaspersky Security Network. Po čistení sken zopakuj."
+    description_en: "Runs KVRT without a window (-silent -processlevel 2); it cures or deletes high and medium level threats by itself, keeping copies in the quarantine inside the job folder. PortableFix cannot undo it. Same restrictions as the scan: do not use in the USA (Kaspersky software ban since September 2024), some organizations ban it in the EU too, data goes to Kaspersky Security Network. Run the scan again after cleaning."
