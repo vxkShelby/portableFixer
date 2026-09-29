@@ -498,7 +498,9 @@ PowerShell.
   the restart are added to the file, so the continued batch keeps them;
   registry hive backups are saved relative to the PortableFix folder,
   so they are found on another USB drive letter too (a missing one is
-  reported). When continuing switches DRY-RUN to the first half's
+  reported). Per-item actions keep the items picked before the restart
+  and do not show the checklist again (items gone meanwhile are left
+  out). When continuing switches DRY-RUN to the first half's
   mode, the review screen says so. On the next start
   PortableFix offers to continue: "Yes" selects the remaining actions
   and opens the review screen again (even for a SAFE-only batch), "No"

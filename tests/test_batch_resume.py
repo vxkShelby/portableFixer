@@ -77,6 +77,19 @@ def test_resume_file_round_trips_on_the_same_computer(tmp_path):
     assert path.exists()
 
 
+def test_resume_file_keeps_item_picks_of_waiting_actions_only_when_valid(tmp_path):
+    # Research G05: a per-item action continued after the restart keeps its picks.
+    save_pending(tmp_path, _pending(items={"sfc_scannow": ["run-1", "run-2"]}), now=NOW, computer="PC")
+    assert load_pending(tmp_path, now=NOW, computer="PC").items == {"sfc_scannow": ["run-1", "run-2"]}
+    # Edited on the stick: an injected id, or picks for an action not waiting,
+    # are dropped - that action asks again.
+    path = resume_path(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["items"] = {"sfc_scannow": ["ok", "x;rm"], "dism_restorehealth": ["fine"], "not_waiting": ["a"]}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_pending(tmp_path, now=NOW, computer="PC").items == {"dism_restorehealth": ["fine"]}
+
+
 def test_resume_file_keeps_the_dry_run_flag(tmp_path):
     save_pending(tmp_path, _pending(dry_run=True), now=NOW, computer="PC")
     assert load_pending(tmp_path, now=NOW, computer="PC").dry_run is True

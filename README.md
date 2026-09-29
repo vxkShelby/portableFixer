@@ -491,7 +491,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   istom okne pred reštartom sa do súboru dopisujú, aby o ne pokračovanie
   neprišlo; zálohy registrov sa ukladajú relatívne k priečinku
   PortableFix, takže ich nájde aj pri inom písmene USB (chýbajúcu
-  zálohu ohlási). Ak sa pri pokračovaní prepne DRY-RUN na režim prvej
+  zálohu ohlási). Akcie s výberom položiek si pamätajú, čo sa vybralo pred
+  reštartom, a zoznam sa znova neukáže (položky, ktoré medzitým zmizli, sa
+  vynechajú). Ak sa pri pokračovaní prepne DRY-RUN na režim prvej
   časti dávky, kontrolná obrazovka to povie. Pri ďalšom spustení PortableFix ponúkne
   pokračovanie: súhlas označí zvyšné akcie a znova otvorí kontrolnú
   obrazovku (aj pri dávke len zo SAFE akcií), odmietnutie uloženú dávku
