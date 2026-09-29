@@ -14,14 +14,15 @@ from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums
 TARGET_DIRS = ("App", "Modules", "Vendor")
 
 
-def _iter_real_files(root: Path):
+def _iter_real_files(root: Path, links: list[Path] | None = None):
     """Yield files under root without ever descending into a symlink or an
     NTFS junction (mklink /J - a reparse point pathlib does NOT treat as a
     symlink, so `Path.is_symlink()` alone misses it). rglob() itself already
     recurses into a directory before any per-entry check can run, so a
     planted junction that points back to an ancestor makes it loop forever;
     walking directories ourselves lets us refuse to descend in the first
-    place instead of only filtering results after the fact."""
+    place instead of only filtering results after the fact. Each link
+    skipped is appended to `links` when given."""
     stack = [root]
     while stack:
         current = stack.pop()
@@ -32,6 +33,8 @@ def _iter_real_files(root: Path):
         for entry in entries:
             try:
                 if entry.is_symlink() or entry.is_junction():
+                    if links is not None:
+                        links.append(entry)
                     continue
                 is_dir = entry.is_dir()
                 is_file = entry.is_file()
@@ -89,11 +92,15 @@ def check_integrity(
     # A single walk covers both directions: a file present on disk that
     # changed or was never in the manifest (extra DLL, planted module), and
     # (via `seen`, checked below) a manifest entry that vanished entirely.
+    # Required (research G32): a release holds no links, and the walk does
+    # not follow one - but load_all_modules' glob would, so a planted
+    # junction Modules/m99 -> anywhere must be a finding, not invisible.
+    links: list[Path] | None = [] if required else None
     for target in dirs:
         target_dir = base_dir / target
         if not target_dir.exists():
             continue
-        for file_path in _iter_real_files(target_dir):
+        for file_path in _iter_real_files(target_dir, links):
             rel_path = file_path.relative_to(base_dir).as_posix()
             seen.add(rel_path)
             expected_hash = expected.get(rel_path)
@@ -106,7 +113,11 @@ def check_integrity(
                 # Locked by AV, or the stick dropped out mid-read: this runs
                 # on a background thread where an uncaught error just kills
                 # the check silently - and a file that can't be read can't
-                # be told apart from a tampered one, so don't claim it was.
+                # be told apart from a tampered one, so don't claim it was -
+                # except where the manifest is required: there an unread file
+                # is not a verified one (research G32, fail closed).
+                if required:
+                    mismatches.append(rel_path)
                 continue
             if actual_hash is None:
                 return []
@@ -115,6 +126,7 @@ def check_integrity(
     for rel_path in expected:
         if rel_path not in seen and rel_path.split("/")[0] in dirs:
             mismatches.append(rel_path)
+    mismatches += [link.relative_to(base_dir).as_posix() for link in links or ()]
     return mismatches
 
 

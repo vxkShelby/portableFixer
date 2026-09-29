@@ -340,3 +340,40 @@ def test_blocked_module_dirs_blocks_everything_when_shared_files_or_the_manifest
     if change != "unsigned":
         (base / change).write_bytes(b"edited")
     assert blocked_module_dirs(base) == {ALL_MODULES}
+
+
+def test_required_check_reports_a_planted_junction_the_module_loader_would_follow(tmp_path):
+    # The walk never descends into a link, but load_all_modules' glob does:
+    # a junction Modules/m99 -> an attacker's folder must not be invisible.
+    from portablefix.integrity import ALL_MODULES, blocked_module_dirs
+
+    base = _signed_tree(tmp_path, _TREE)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "actions.yaml").write_bytes(b"planted")
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(base / "Modules" / "m99"), str(elsewhere)],
+        capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode != 0:
+        pytest.skip("mklink /J not available in this environment")
+
+    assert check_integrity(base, required=True) == ["Modules/m99"]
+    assert blocked_module_dirs(base) == {ALL_MODULES}
+    assert check_integrity(base, required=False) == []  # from source: still just skipped
+
+
+def test_required_check_does_not_pass_a_file_it_could_not_read(tmp_path, monkeypatch):
+    import portablefix.integrity as integrity_module
+
+    base = _signed_tree(tmp_path, _TREE)
+    real = integrity_module._sha256_unless_stopped
+
+    def locked(path, should_stop):
+        if path.name == "lib.dll":
+            raise PermissionError("locked")
+        return real(path, should_stop)
+
+    monkeypatch.setattr(integrity_module, "_sha256_unless_stopped", locked)
+    assert check_integrity(base, required=True) == ["Vendor/lib.dll"]
+    assert check_integrity(base, required=False) == []
