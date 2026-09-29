@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from signing_keys import sign_for_tests
 
-from portablefix import update_swap
+from portablefix import signing, update_swap
 from portablefix import updater as updater_module
 from portablefix.updater import (
     UpdateCheckRunner,
@@ -160,7 +161,7 @@ def test_download_update_passes_a_timeout_to_the_package_download(tmp_path):
         calls.append((url, timeout))
         if url == info.package_url:
             return _mock_download_response(content)
-        return _mock_response(expected_hash.encode("utf-8"))
+        return _mock_response(sign_for_tests(expected_hash.encode("utf-8")))
 
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
         download_update(info, tmp_path / "dest")
@@ -182,7 +183,7 @@ def test_download_update_succeeds_when_hash_matches(tmp_path):
     def fake_urlopen(url, timeout=None):
         if url == info.package_url:
             return _mock_download_response(content)
-        return _mock_response(expected_hash.encode("utf-8"))
+        return _mock_response(sign_for_tests(expected_hash.encode("utf-8")))
 
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
         result_path = download_update(info, tmp_path / "dest")
@@ -203,7 +204,7 @@ def test_download_update_raises_and_cleans_up_on_hash_mismatch(tmp_path):
     def fake_urlopen(url, timeout=None):
         if url == info.package_url:
             return _mock_download_response(b"fake-zip-content")
-        return _mock_response(wrong_hash.encode("utf-8"))
+        return _mock_response(sign_for_tests(wrong_hash.encode("utf-8")))
 
     dest = tmp_path / "dest"
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
@@ -250,7 +251,7 @@ def test_download_update_reports_progress_via_content_length(tmp_path):
             mock_resp.getheader.return_value = str(len(content))
             mock_resp.__enter__.return_value = mock_resp
             return mock_resp
-        return _mock_response(expected_hash.encode("utf-8"))
+        return _mock_response(sign_for_tests(expected_hash.encode("utf-8")))
 
     calls = []
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
@@ -279,7 +280,7 @@ def test_download_update_reports_zero_total_when_content_length_missing(tmp_path
             mock_resp.getheader.return_value = None
             mock_resp.__enter__.return_value = mock_resp
             return mock_resp
-        return _mock_response(expected_hash.encode("utf-8"))
+        return _mock_response(sign_for_tests(expected_hash.encode("utf-8")))
 
     calls = []
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
@@ -477,7 +478,7 @@ def test_download_update_rejects_empty_or_malformed_manifest(tmp_path, manifest)
     def fake_urlopen(url, timeout=None):
         if url == info.package_url:
             return _mock_download_response(b"fake-zip-content")
-        return _mock_response(manifest)
+        return _mock_response(sign_for_tests(manifest))
 
     dest = tmp_path / "dest"
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
@@ -494,7 +495,7 @@ def test_download_update_accepts_uppercase_manifest_hash_with_filename(tmp_path)
         sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
         notes="",
     )
-    manifest = f"{hashlib.sha256(content).hexdigest().upper()}  PortableFix-Portable.zip\n".encode()
+    manifest = sign_for_tests(f"{hashlib.sha256(content).hexdigest().upper()}  PortableFix-Portable.zip\n".encode())
 
     def fake_urlopen(url, timeout=None):
         if url == info.package_url:
@@ -666,3 +667,30 @@ def test_update_launch_runner_turns_an_unexpected_error_into_a_failed_result(qtb
     assert result.ok is False
     assert result.reason == updater_module.REASON_SPAWN_ERROR
     assert "boom" in result.detail
+
+
+@pytest.mark.parametrize("sign", [
+    lambda body: body,  # a release as <= 1.14 built it: no signature
+    lambda body: signing.sign(body, b"\x07" * 32),  # someone else's key
+])
+def test_download_update_refuses_a_manifest_not_signed_with_the_release_key(tmp_path, sign):
+    # Research G32: whoever can replace the zip can replace its .sha256 too.
+    content = b"fake-zip-content"
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+    manifest = sign(f"{hashlib.sha256(content).hexdigest()}  PortableFix-Portable.zip\n".encode())
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(content)
+        return _mock_response(manifest)
+
+    dest = tmp_path / "dest"
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(UpdateVerificationError, match="not signed"):
+            download_update(info, dest)
+    assert not (dest / "PortableFix-update.zip").exists()
