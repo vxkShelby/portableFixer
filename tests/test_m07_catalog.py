@@ -243,8 +243,13 @@ def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_prope
     script = "; ".join(
         ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + warm_up + env_lines + stubs + [guard, _signed_view_command()]
     )
+    # -Command with the script inline can exceed Windows' CreateProcess command-line
+    # limit as the catalog grows (surfaces as WinError 206) - write it to a file and
+    # use -File instead, which has no such limit.
+    script_path = tmp / "signed_view_script.ps1"
+    script_path.write_text(script, encoding="utf-8")
     result = subprocess.run(
-        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
         env=dict(os.environ), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
