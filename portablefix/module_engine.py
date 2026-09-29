@@ -223,8 +223,15 @@ def load_all_modules(
     paths = [(path, False) for path in sorted(modules_dir.glob("*/actions.yaml"))]
     if user_modules_dir is not None:
         paths += [(path, True) for path in sorted(user_modules_dir.glob("*/actions.yaml"))]
+    if ALL_MODULES in blocked:
+        errors.append(
+            f"{modules_dir}: no built-in module loaded - Data/SHA256SUMS is missing or not signed by the "
+            "release key, or a shared file (Vendor/, Modules/symptoms.yaml) changed (allow_modified_modules in "
+            "Data/settings.json runs an edited catalog anyway)"
+        )
+        paths = [(path, custom) for path, custom in paths if custom]
     for path, custom in paths:
-        if not custom and (ALL_MODULES in blocked or path.parent.name in blocked):
+        if not custom and path.parent.name in blocked:
             errors.append(
                 f"{path}: not loaded - its files do not match the signed Data/SHA256SUMS "
                 "(set allow_modified_modules in Data/settings.json to run an edited catalog)"

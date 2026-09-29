@@ -507,7 +507,8 @@ def test_frozen_app_without_a_signed_manifest_loads_only_user_modules(tmp_path, 
     _write_catalog(tmp_path / "UserModules", "shop_tools", "shop_action")
     modules, errors = load_catalog(tmp_path)
     assert [m.module_id for m in modules] == ["shop_tools"]
-    assert len(errors) == 1 and "m01_diag" in errors[0]
+    # One line, not one per module: the warning dialog must fit the screen.
+    assert len(errors) == 1 and "no built-in module loaded" in errors[0] and "allow_modified_modules" in errors[0]
 
 
 def test_from_source_a_changed_module_still_loads(tmp_path):

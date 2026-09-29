@@ -49,6 +49,7 @@ from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
 from ..executor import ActionRunner
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
+from ..integrity import format_mismatches
 from ..module_engine import load_catalog
 from ..settings import (
     MAX_CUSTOM_PRESETS,
@@ -218,7 +219,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 self._t("app_title"),
-                self._t("module_load_warning") + "\n" + "\n".join(module_load_errors),
+                # Capped: a fully blocked catalog (research G32) also breaks
+                # every symptom entry - one line each outgrew the screen.
+                self._t("module_load_warning") + "\n" + format_mismatches(module_load_errors, self._t("load_errors_more")),
             )
         elif not self.modules:
             QMessageBox.warning(self, self._t("app_title"), self._t("no_modules_warning"))
