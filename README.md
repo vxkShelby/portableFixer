@@ -97,7 +97,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
   odmietne sa hneď na začiatku, ak predvoľba obsahuje niečo rizikovejšie
   alebo kontrola pred spustením nájde blokujúci problém. Rovnaký audit,
-  bod obnovenia, `undo.ps1` aj report ako z okna. `--export-preset <názov>
+  bod obnovenia, `undo.ps1` aj report ako z okna; pred prvou DESTRUCTIVE
+  akciou sa vždy uloží záloha hive registra (bez okna sa nemá koho spýtať) a
+  keď zlyhá, DESTRUCTIVE akcie sa preskočia. `--export-preset <názov>
   <súbor.json>` uloží predvoľbu do súboru; v súbore môže byť aj `"items"`
   (ID položiek pre akcie s výberom položiek). Exit kódy podľa Tronu: 0 OK,
   1 chyba, 2 varovanie (niečo sa preskočilo alebo diagnostika našla

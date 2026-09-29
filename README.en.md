@@ -89,7 +89,9 @@ PowerShell.
   DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
   only and refuses up front when the preset holds anything riskier or the
   pre-flight check finds a blocker. Same audit log, restore point,
-  `undo.ps1` and report as the window. `--export-preset <name> <file.json>`
+  `undo.ps1` and report as the window; the registry hive backup is always
+  saved before the first DESTRUCTIVE action (there is no one to ask), and
+  when it fails the DESTRUCTIVE actions are skipped. `--export-preset <name> <file.json>`
   saves a preset to a file; the file may also carry `"items"` (item ids for
   per-item actions). Exit codes follow Tron: 0 OK, 1 error, 2 warning
   (something was skipped, or a diagnostic found a problem), 3 unsupported
