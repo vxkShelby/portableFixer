@@ -350,3 +350,24 @@ def test_sysinfo_powershell_calls_use_the_absolute_powershell_path(monkeypatch):
         sysinfo._get_ram_speed_and_disk_health()
         sysinfo.check_vpn_status()
     assert [argv[0] for argv in calls] == [exe, exe]
+
+
+def test_frozen_app_does_not_load_a_vendor_dll_the_signed_manifest_does_not_back(tmp_path, monkeypatch):
+    # Research G32: an unsigned (here: missing) manifest - or a swapped DLL -
+    # must never reach pythonnet in the shipped app.
+    monkeypatch.setattr(sysinfo.sys, "frozen", True, raising=False)
+    dll = tmp_path / "Vendor" / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll"
+    dll.parent.mkdir(parents=True)
+    dll.write_bytes(b"planted")
+    sysinfo._hw_init_attempted = False
+    sysinfo._hw_computer = None
+    sysinfo._hw_init_error = None
+    try:
+        assert sysinfo.init_hardware_monitor(tmp_path) is None
+        error = sysinfo.hardware_monitor_error()
+    finally:
+        sysinfo._hw_init_attempted = False
+        sysinfo._hw_computer = None
+        sysinfo._hw_init_error = None
+        sysinfo._hw_init_assets_dir = None
+    assert "SHA256SUMS" in error

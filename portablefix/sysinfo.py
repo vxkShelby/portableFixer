@@ -239,6 +239,14 @@ def init_hardware_monitor(assets_dir: Path):
         if not (vendor / "LibreHardwareMonitorLib.dll").exists():
             _hw_init_error = "LibreHardwareMonitorLib.dll not bundled"
             return None
+        # Research G32: a DLL loaded into this (often elevated) process -
+        # the shipped app loads it only as the signed manifest lists it.
+        if getattr(sys, "frozen", False):
+            from .integrity import check_integrity
+
+            if check_integrity(assets_dir, dirs=("Vendor",), required=True):
+                _hw_init_error = "Vendor/ does not match the signed Data/SHA256SUMS - not loaded"
+                return None
         if str(vendor) not in sys.path:
             sys.path.insert(0, str(vendor))
         import pythonnet
