@@ -460,7 +460,8 @@ PowerShell.
   account's hive when nothing differs) and `$__pfUserSid`. The M13
   actions that change user settings (Start suggestions, web results,
   Copilot, advertising ID, Explorer ads, the reinstall block, Recall)
-  write to that hive; run on their own outside PortableFix they use
+  write to that hive, and the M07 autostart actions read (Run, Winlogon,
+  the user's Startup folder) and disable from it; run on their own outside PortableFix they use
   `HKCU:`. If the user has signed out meanwhile (hive not loaded), the
   action changes nothing, prints "Profile hive not loaded, skipped" and
   fails (the hive is never loaded with `reg load`). The target user and
@@ -890,11 +891,12 @@ retry on failure, instead of the whole file at once.
 
 ## Known limitations
 
-- Only the M13 actions use the signed-in user's hive (`$__pfUserHive`)
+- Only the M13 and M07 actions use the signed-in user's hive (`$__pfUserHive`)
   so far. HKCU in other modules still means the account PortableFix runs
   as: M12 *proxy reset* (and its check), M16 (add-ins, Outlook profile),
   M08 *restore Task Manager and Regedit*, the reports in M01, M05 (ESU),
-  M07, M17, M22, the M18 backup folders and the M09 tweaks (Storage
+  M17, M22, the autostart inventory in the before/after snapshot (new
+  entries since the last visit), the M18 backup folders and the M09 tweaks (Storage
   Sense and ESU at least print whose profile they use). AppX removal
   in M13 applies to the process's account.
 - Undo only covers actions with a static reversible command or with

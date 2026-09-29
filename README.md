@@ -455,7 +455,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   `$__pfUserSid`. Akcie M13, ktoré menia nastavenia používateľa (návrhy
   v Štarte, webové výsledky, Copilot, reklamné ID, reklamy v
   Prieskumníkovi, blokovanie reinštalácie, Recall), zapisujú do tohto
-  hive; spustené samostatne mimo PortableFixu použijú `HKCU:`. Ak je
+  hive a akcie autoštartu M07 z neho čítajú (Run, Winlogon, priečinok
+  Startup používateľa) a vypínajú; spustené samostatne mimo PortableFixu
+  použijú `HKCU:`. Ak je
   používateľ medzitým odhlásený (hive nie je načítaný), akcia nič
   nezmení, vypíše „Profile hive not loaded, skipped“ a skončí s chybou
   (hive sa nikdy nenačítava cez `reg load`). Cieľový používateľ a SID sú
@@ -897,10 +899,11 @@ lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
 ## Známe obmedzenia
 
 - Na hive prihláseného používateľa (`$__pfUserHive`) sú zatiaľ prevedené
-  len akcie M13. HKCU v ďalších moduloch stále znamená účet, pod ktorým
+  len akcie M13 a M07. HKCU v ďalších moduloch stále znamená účet, pod ktorým
   PortableFix beží: M12 *reset proxy* (a jej kontrola), M16 (doplnky a
   profil Outlooku), M08 *obnova Task Managera a Regeditu*, prehľady v
-  M01, M05 (ESU), M07, M17, M22, priečinky M18 (zálohy) a tweaky M09
+  M01, M05 (ESU), M17, M22, súpis autoštartu v snímke „pred/po“ (nové
+  položky od minulej návštevy), priečinky M18 (zálohy) a tweaky M09
   (Storage Sense a ESU aspoň vypíšu, do koho profilu siahajú).
   Odstraňovanie AppX balíkov v M13 platí pre účet procesu.
 - Undo pokrýva len akcie so statickým vratným príkazom alebo s `ops:`
