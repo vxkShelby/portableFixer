@@ -13,7 +13,8 @@ clients run, so a package they would refuse never gets published. On top of
 that it applies the release rules clients cannot enforce: Data/ holds only
 the allowlist (never a build machine's settings.json), the manifest covers
 the whole App/ and Modules/, the icon is there, and the .sha256 file next
-to the zip matches it.
+to the zip matches it. Both SHA256SUMS (checked by stage_update) and the
+.sha256 must carry the release key's signature (scripts/sign_release.py).
 """
 import argparse
 import shutil
@@ -23,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from portablefix import signing
 from portablefix.integrity import TARGET_DIRS
 from portablefix.sha256sums import compute_sha256, parse_sha256sums
 from portablefix.update_swap import (
@@ -88,7 +90,12 @@ def _sidecar_problems(zip_path: Path) -> list[str]:
     sidecar = zip_path.with_name(zip_path.name + ".sha256")
     if not sidecar.is_file():
         return [f"{sidecar.name} is missing - clients refuse a release without it"]
-    tokens = sidecar.read_text(encoding="utf-8", errors="replace").split()
+    # Research G32: clients (updater.download_update) install nothing whose
+    # .sha256 the release key did not sign.
+    signed = signing.verified_body(sidecar.read_bytes())
+    if signed is None:
+        return [f"{sidecar.name} is not signed with the PortableFix release key - run scripts/sign_release.py"]
+    tokens = signed.decode("utf-8", errors="replace").split()
     # The updater compares the first token only (updater.download_update).
     if not tokens or tokens[0].lower() != compute_sha256(zip_path):
         return [f"{sidecar.name} does not match {zip_path.name}"]

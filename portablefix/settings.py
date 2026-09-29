@@ -66,6 +66,11 @@ class Settings:
     branding_company_id: str = ""
     branding_contact: str = ""
     branding_logo: str = ""
+    # Research G32: the shipped app does not load a built-in module whose
+    # files do not match the signed Data/SHA256SUMS. A technician who edits
+    # a catalog on purpose sets this by hand in settings.json - there is no
+    # checkbox, so the protection cannot be switched off by a stray click.
+    allow_modified_modules: bool = False
 
     def branding_info(self) -> dict:
         """The branding as report.py takes it (see branding.clean_branding)."""
@@ -102,6 +107,7 @@ def load_settings(base_dir: Path) -> Settings:
     technician = data.get("technician_name")
     quiet_mode = data.get("quiet_mode")
     redact = data.get("redact_for_client")
+    allow_modified = data.get("allow_modified_modules")
     logo = branding.decode_logo(data.get("branding_logo"))
     return Settings(
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
@@ -116,6 +122,8 @@ def load_settings(base_dir: Path) -> Settings:
         # read as truthy and silently change what the app sends on the wire.
         quiet_mode=quiet_mode if isinstance(quiet_mode, bool) else False,
         redact_for_client=redact if isinstance(redact, bool) else False,
+        # Strictly True: a hand-edited "false" string must not lift the block.
+        allow_modified_modules=allow_modified is True,
         branding_company=branding.clean_text(data.get("branding_company"), branding.MAX_COMPANY_LENGTH),
         branding_company_id=branding.clean_text(data.get("branding_company_id"), branding.MAX_COMPANY_ID_LENGTH),
         branding_contact=branding.clean_text(data.get("branding_contact"), branding.MAX_CONTACT_LENGTH),

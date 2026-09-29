@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 import pytest
+from signing_keys import sign_for_tests
 
 V1 = os.environ.get("PF_E2E_V1", "")
 V2 = os.environ.get("PF_E2E_V2", "")
@@ -50,7 +51,7 @@ def work_dir(tmp_path):
 def _release_zip(work: Path) -> Path:
     """The v2 package in the release shape: one PortableFix folder, zipped by
     Compress-Archive like scripts/build_release_zip.ps1 does, with a
-    SHA256SUMS from scripts/generate_sha256sums.py."""
+    SHA256SUMS from scripts/generate_sha256sums.py, signed with the test key."""
     tree = work / "release" / "PortableFix"
     for rel, data in {
         "Modules/m00_probe/actions.yaml": b"new-module",
@@ -66,6 +67,8 @@ def _release_zip(work: Path) -> Path:
     shutil.copyfile(REPO_ROOT / "portablefix.ico", tree / "portablefix.ico")
     subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "generate_sha256sums.py"), str(tree)],
                    check=True, timeout=120)
+    sums = tree / "Data" / "SHA256SUMS"
+    sums.write_bytes(sign_for_tests(sums.read_bytes()))
     zip_path = work / "PortableFix-Portable.zip"
     from portablefix.paths import powershell_executable
 

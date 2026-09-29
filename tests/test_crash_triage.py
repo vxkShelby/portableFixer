@@ -64,7 +64,7 @@ STUBS = r"""
 function Get-WinEvent {
   [CmdletBinding()] param([hashtable] $FilterHashtable, [long] $MaxEvents)
   Add-Content -LiteralPath $env:PF_CALLS -Value ('Get-WinEvent ' + (($FilterHashtable.Keys | Sort-Object) -join ','))
-  $cfg = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PF_EVENTS | ConvertFrom-Json
+  $cfg = $global:PfEventsCfg
   if ($cfg.fail) {
     $PSCmdlet.ThrowTerminatingError((New-Object System.Management.Automation.ErrorRecord ((New-Object System.UnauthorizedAccessException 'Prístup bol odmietnutý.'), 'LogInfoUnavailable', 'PermissionDenied', $null)))
   }
@@ -94,7 +94,7 @@ function Get-CimInstance {
   Add-Content -LiteralPath $env:PF_CALLS -Value ('Get-CimInstance ' + $ClassName)
   if ($Filter) { Add-Content -LiteralPath $env:PF_CALLS -Value ('  Filter ' + $Filter) }
   if ($Property) { Add-Content -LiteralPath $env:PF_CALLS -Value ('  Property ' + ($Property -join ',')) }
-  $cfg = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PF_CIM | ConvertFrom-Json
+  $cfg = $global:PfCimCfg
   if (@($cfg.fail) -contains $ClassName) { throw 'Neplatná trieda' }
   # Like WMI: a WQL date filter drops older instances, and -Property leaves
   # every other property empty.
@@ -115,7 +115,7 @@ function Get-CimInstance {
 function Get-ItemProperty {
   [CmdletBinding()] param([Parameter(Position = 0)] [string] $Path, [string] $Name)
   Add-Content -LiteralPath $env:PF_CALLS -Value ('Get-ItemProperty ' + $Path)
-  $cfg = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PF_CIM | ConvertFrom-Json
+  $cfg = $global:PfCimCfg
   if ($Path -like '*CrashControl' -and $cfg.CrashControl) { return $cfg.CrashControl }
   return $null
 }
@@ -138,7 +138,14 @@ def _run(tmp_path: Path, action_id: str, events=(), cim=None, event_fail=False):
     script = (
         "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
         f"$env:PF_CALLS = {_ps_quote(str(calls))}; $env:PF_EVENTS = {_ps_quote(str(tmp_path / 'events.json'))}; "
-        f"$env:PF_CIM = {_ps_quote(str(tmp_path / 'cim.json'))}; $env:SystemRoot = {_ps_quote(str(system_root))}; "
+        f"$env:PF_CIM = {_ps_quote(str(tmp_path / 'cim.json'))}; "
+        # Parsed before the SystemRoot redirect: Windows PowerShell 5.1's
+        # ConvertFrom-Json loads System.Web.Extensions on every call, which
+        # fails ("The given assembly name or codebase ... was invalid") once
+        # SystemRoot points elsewhere (see test_m07_catalog's warm-up).
+        "$global:PfEventsCfg = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PF_EVENTS | ConvertFrom-Json; "
+        "$global:PfCimCfg = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PF_CIM | ConvertFrom-Json; "
+        f"$env:SystemRoot = {_ps_quote(str(system_root))}; "
         f". {_ps_quote(str(stubs))}; "
         + _action(action_id).command
     )

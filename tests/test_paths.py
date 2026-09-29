@@ -327,5 +327,8 @@ def test_onefile_build_does_not_bundle_modules_or_data():
     # The updater only scrubs the bundle's traces out of the environment it
     # hands to the swap and the relaunched exe - it never reads from it.
     sources = list((root / "portablefix").rglob("*.py")) + [root / "main.py"]
-    scrubbers = {"update_swap.py", "update_swap_script.py"}
+    # paths.app_icon_path (research G32) is the one reader: the icon, the only
+    # file bundled, is parsed from inside the exe rather than the drive.
+    scrubbers = {"update_swap.py", "update_swap_script.py", "paths.py"}
     assert [p for p in sources if p.name not in scrubbers and "_MEIPASS" in p.read_text(encoding="utf-8")] == []
+    assert (root / "portablefix" / "paths.py").read_text(encoding="utf-8").count("_MEIPASS") == 1

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from PySide6.QtCore import QThread, Signal
 
-from . import elevation
+from . import elevation, signing
 from .sha256sums import _sha256_unless_stopped
 from .version import APP_VERSION
 
@@ -162,7 +162,15 @@ def download_update(
         zip_path.unlink(missing_ok=True)
         raise
     with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
-        manifest = resp.read().decode("utf-8", errors="replace").split()
+        raw_manifest = resp.read()
+    # Research G32: the .sha256 sits in the same release as the zip, so
+    # whoever can replace one can replace both - only the release key's
+    # signature ties the hash to PortableFix. Fail closed like a missing asset.
+    signed = signing.verified_body(raw_manifest)
+    if signed is None:
+        zip_path.unlink(missing_ok=True)
+        raise UpdateVerificationError("SHA256 manifest is not signed with the PortableFix release key - refusing to install.")
+    manifest = signed.decode("utf-8", errors="replace").split()
     # An empty or garbled manifest must fail as a verification error (which
     # the UI reports), not an IndexError, and never be compared as-is.
     expected = manifest[0].lower() if manifest else ""

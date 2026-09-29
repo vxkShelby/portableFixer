@@ -97,10 +97,20 @@ def gate_disks(verdicts: Iterable[DiskVerdict]) -> list[DiskVerdict]:
 
 
 def catalog_command(modules_dir: Path | None = None) -> str | None:
+    from .integrity import ALL_MODULES, blocked_module_dirs
     from .module_engine import ModuleLoadError, load_module
     from .paths import get_base_dir
 
-    path = (modules_dir or get_base_dir() / "Modules") / "m03_disk" / "actions.yaml"
+    modules_dir = Path(modules_dir or get_base_dir() / "Modules")
+    # Research G32: this runs m03's command outside load_catalog, so the
+    # shipped app refuses a tampered m03_disk here too ("unknown", which
+    # pre-flight never blocks on). allow_modified_modules is deliberately not
+    # honoured: the GUI/CLI read it from the state dir (which may be the
+    # %TEMP% fallback), this has only the drive - reading it here could run
+    # code the catalog itself refused.
+    if getattr(sys, "frozen", False) and blocked_module_dirs(modules_dir.parent) & {ALL_MODULES, "m03_disk"}:
+        return None
+    path = modules_dir / "m03_disk" / "actions.yaml"
     try:
         module = load_module(path)
     except (OSError, ModuleLoadError, ValueError):

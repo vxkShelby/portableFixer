@@ -16,8 +16,9 @@ from portablefix.diagnostics import install_excepthook, write_crash_log
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
-from portablefix.integrity import IntegrityCheckRunner, format_mismatches
+from portablefix.integrity import IntegrityCheckRunner, check_integrity, format_mismatches
 from portablefix.paths import (
+    app_icon_path,
     get_base_dir,
     resolve_temp_root,
     resolve_windir_temp_root,
@@ -45,6 +46,19 @@ def _write_startup_diagnostics(raw_base_dir, base_dir, used_fallback: bool, run_
         append_entry(base_dir, run_id, diag_entry)
     except OSError:
         pass
+
+
+FONT_FILES = ("Sora-SemiBold.ttf", "Sora-Bold.ttf")
+
+
+def _trusted_font_paths(base_dir: Path) -> list[Path]:
+    """The bundled Sora fonts to load. Research G32: a font is parsed inside
+    this (often elevated) process like the Vendor DLLs, so the shipped app
+    loads them only while Vendor/ matches the signed manifest - otherwise
+    none, and the Segoe UI fallback is used. Run from source: all present."""
+    if getattr(sys, "frozen", False) and check_integrity(base_dir, dirs=("Vendor",), required=True):
+        return []
+    return [p for p in (base_dir / "Vendor" / "Fonts" / name for name in FONT_FILES) if p.exists()]
 
 
 def _update_status_message(install_dir, language: str) -> str | None:
@@ -287,15 +301,13 @@ def main() -> int:
         # headings/the wordmark the same distinct look as the approved
         # mockup. Bundled rather than loaded from Google Fonts since this
         # is an offline portable app with no guaranteed internet access.
-        for font_file in ("Sora-SemiBold.ttf", "Sora-Bold.ttf"):
-            font_path = raw_base_dir / "Vendor" / "Fonts" / font_file
-            if font_path.exists():
-                QFontDatabase.addApplicationFont(str(font_path))
+        for font_path in _trusted_font_paths(raw_base_dir):
+            QFontDatabase.addApplicationFont(str(font_path))
         # style.stylesheet(), not style.STYLE: empty under Windows High
         # Contrast so the user's system colors win (see style.py).
         app.setStyleSheet(style.stylesheet())
 
-        icon_path = raw_base_dir / "portablefix.ico"
+        icon_path = app_icon_path(raw_base_dir)
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
         base_dir, used_fallback = resolve_writable_base_dir(raw_base_dir)

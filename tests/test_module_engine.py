@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -459,5 +460,64 @@ def test_load_catalog_without_user_modules_folder(tmp_path):
     from portablefix.module_engine import load_catalog
 
     _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    modules, errors = load_catalog(tmp_path)
+    assert [m.module_id for m in modules] == ["m01_diag"] and errors == []
+
+
+def _sign_modules(base):
+    """A Data/SHA256SUMS over Modules/ as a release build signs it."""
+    import hashlib
+
+    from signing_keys import sign_for_tests
+
+    lines = "".join(
+        f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(base).as_posix()}\n"
+        for p in sorted((base / "Modules").rglob("*")) if p.is_file()
+    )
+    (base / "Data").mkdir(exist_ok=True)
+    (base / "Data" / "SHA256SUMS").write_bytes(sign_for_tests(lines.encode()))
+
+
+def test_frozen_app_does_not_load_a_changed_built_in_module(tmp_path, monkeypatch):
+    # Research G32: in the shipped app a hash mismatch blocks the module
+    # instead of only warning; the shop's UserModules/ are never blocked.
+    from portablefix.module_engine import load_catalog
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    _write_catalog(tmp_path / "Modules", "m02_clean", "other_shipped")
+    _sign_modules(tmp_path)
+    _write_catalog(tmp_path / "UserModules", "shop_tools", "shop_action")
+    edited = tmp_path / "Modules" / "m02_clean" / "actions.yaml"
+    edited.write_text(edited.read_text(encoding="utf-8").replace("'x'", "'evil'"), encoding="utf-8")
+
+    modules, errors = load_catalog(tmp_path)
+    assert {m.module_id for m in modules} == {"m01_diag", "shop_tools"}
+    assert len(errors) == 1 and "m02_clean" in errors[0] and "allow_modified_modules" in errors[0]
+
+    modules, errors = load_catalog(tmp_path, allow_modified_modules=True)
+    assert {m.module_id for m in modules} == {"m01_diag", "m02_clean", "shop_tools"} and errors == []
+
+
+def test_frozen_app_without_a_signed_manifest_loads_only_user_modules(tmp_path, monkeypatch):
+    from portablefix.module_engine import load_catalog
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    _write_catalog(tmp_path / "UserModules", "shop_tools", "shop_action")
+    modules, errors = load_catalog(tmp_path)
+    assert [m.module_id for m in modules] == ["shop_tools"]
+    # One line, not one per module: the warning dialog must fit the screen.
+    assert len(errors) == 1 and "no built-in module loaded" in errors[0] and "allow_modified_modules" in errors[0]
+
+
+def test_from_source_a_changed_module_still_loads(tmp_path):
+    from portablefix.module_engine import load_catalog
+
+    _write_catalog(tmp_path / "Modules", "m01_diag", "shipped")
+    _sign_modules(tmp_path)
+    (tmp_path / "Modules" / "m01_diag" / "actions.yaml").write_text(
+        "module_id: m01_diag\nactions: []\n", encoding="utf-8"
+    )
     modules, errors = load_catalog(tmp_path)
     assert [m.module_id for m in modules] == ["m01_diag"] and errors == []

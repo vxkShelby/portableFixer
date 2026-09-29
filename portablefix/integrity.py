@@ -1,24 +1,28 @@
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from . import signing
+
 # Re-exported: callers and tests have always imported these from here.
-from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums  # noqa: F401
+from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums, parse_sha256sums_text  # noqa: F401
 
 # Vendor/ too (research G32): its DLLs are loaded into the process. Never
 # UserModules/ - the shop's own actions are not in the release manifest.
 TARGET_DIRS = ("App", "Modules", "Vendor")
 
 
-def _iter_real_files(root: Path):
+def _iter_real_files(root: Path, links: list[Path] | None = None):
     """Yield files under root without ever descending into a symlink or an
     NTFS junction (mklink /J - a reparse point pathlib does NOT treat as a
     symlink, so `Path.is_symlink()` alone misses it). rglob() itself already
     recurses into a directory before any per-entry check can run, so a
     planted junction that points back to an ancestor makes it loop forever;
     walking directories ourselves lets us refuse to descend in the first
-    place instead of only filtering results after the fact."""
+    place instead of only filtering results after the fact. Each link
+    skipped is appended to `links` when given."""
     stack = [root]
     while stack:
         current = stack.pop()
@@ -29,6 +33,8 @@ def _iter_real_files(root: Path):
         for entry in entries:
             try:
                 if entry.is_symlink() or entry.is_junction():
+                    if links is not None:
+                        links.append(entry)
                     continue
                 is_dir = entry.is_dir()
                 is_file = entry.is_file()
@@ -42,26 +48,59 @@ def _iter_real_files(root: Path):
                 yield entry
 
 
-def check_integrity(base_dir: Path, should_stop: Callable[[], bool] | None = None) -> list[str]:
+MANIFEST = "Data/SHA256SUMS"
+# The folders whose modules are blocked on a mismatch (research G32). App/
+# is the running exe itself - too late to block, so it is only reported.
+BLOCKING_DIRS = ("Modules", "Vendor")
+ALL_MODULES = "*"
+
+
+def _manifest_required() -> bool:
+    """The shipped (frozen) app demands a signed manifest. Run from source
+    there is none to demand - Data/SHA256SUMS is a build output - so the
+    check stays the old best-effort warning there."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def check_integrity(
+    base_dir: Path,
+    should_stop: Callable[[], bool] | None = None,
+    *,
+    dirs: tuple[str, ...] = TARGET_DIRS,
+    required: bool | None = None,
+) -> list[str]:
+    """Files under dirs that differ from Data/SHA256SUMS, are not in it, or
+    are listed but gone. When required (default: the frozen app), a missing,
+    unreadable or unsigned manifest is reported as MANIFEST itself - fail
+    closed, research G32 - instead of skipping the check."""
+    if required is None:
+        required = _manifest_required()
     sums_path = base_dir / "Data" / "SHA256SUMS"
-    if not sums_path.exists():
-        return []
     try:
-        expected = parse_sha256sums(sums_path)
+        raw = sums_path.read_bytes()
+        # Only the signed part: nothing after the signature line counts.
+        body = signing.verified_body(raw) if required else raw
+        if body is None:
+            return [MANIFEST]
+        expected = parse_sha256sums_text(body.decode("utf-8"))
     except (OSError, UnicodeDecodeError):
-        # An unreadable/corrupted manifest is a failure of this optional,
-        # best-effort tamper check itself - it must not take down the app.
-        return []
+        # From source this is a failure of an optional, best-effort check and
+        # must not take down the app; in the shipped app it is a finding.
+        return [MANIFEST] if required else []
     mismatches = []
     seen: set[str] = set()
     # A single walk covers both directions: a file present on disk that
     # changed or was never in the manifest (extra DLL, planted module), and
     # (via `seen`, checked below) a manifest entry that vanished entirely.
-    for target in TARGET_DIRS:
+    # Required (research G32): a release holds no links, and the walk does
+    # not follow one - but load_all_modules' glob would, so a planted
+    # junction Modules/m99 -> anywhere must be a finding, not invisible.
+    links: list[Path] | None = [] if required else None
+    for target in dirs:
         target_dir = base_dir / target
         if not target_dir.exists():
             continue
-        for file_path in _iter_real_files(target_dir):
+        for file_path in _iter_real_files(target_dir, links):
             rel_path = file_path.relative_to(base_dir).as_posix()
             seen.add(rel_path)
             expected_hash = expected.get(rel_path)
@@ -74,16 +113,36 @@ def check_integrity(base_dir: Path, should_stop: Callable[[], bool] | None = Non
                 # Locked by AV, or the stick dropped out mid-read: this runs
                 # on a background thread where an uncaught error just kills
                 # the check silently - and a file that can't be read can't
-                # be told apart from a tampered one, so don't claim it was.
+                # be told apart from a tampered one, so don't claim it was -
+                # except where the manifest is required: there an unread file
+                # is not a verified one (research G32, fail closed).
+                if required:
+                    mismatches.append(rel_path)
                 continue
             if actual_hash is None:
                 return []
             if actual_hash != expected_hash:
                 mismatches.append(rel_path)
     for rel_path in expected:
-        if rel_path not in seen:
+        if rel_path not in seen and rel_path.split("/")[0] in dirs:
             mismatches.append(rel_path)
+    mismatches += [link.relative_to(base_dir).as_posix() for link in links or ()]
     return mismatches
+
+
+def blocked_module_dirs(base_dir: Path) -> set[str]:
+    """Research G32: the Modules/ folder names whose files do not match the
+    signed manifest, or {ALL_MODULES} when the manifest itself cannot be
+    trusted or a file outside a module folder (Vendor/, Modules/symptoms.yaml)
+    is off - those are shared by every module. UserModules/ is never in the
+    manifest and never blocked."""
+    blocked: set[str] = set()
+    for rel_path in check_integrity(base_dir, dirs=BLOCKING_DIRS, required=True):
+        parts = rel_path.split("/")
+        if parts[0] != "Modules" or len(parts) < 3:
+            return {ALL_MODULES}
+        blocked.add(parts[1])
+    return blocked
 
 
 class IntegrityCheckRunner(QThread):

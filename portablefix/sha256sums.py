@@ -13,8 +13,12 @@ def compute_sha256(path: Path) -> str:
 
 
 def parse_sha256sums(sums_path: Path) -> dict[str, str]:
+    return parse_sha256sums_text(sums_path.read_text(encoding="utf-8"))
+
+
+def parse_sha256sums_text(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for line in sums_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
