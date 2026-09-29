@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from signing_keys import sign_for_tests
 from update_fixtures import release_files, sums_for, write_release_zip
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +35,7 @@ def _release(tmp_path: Path, files=None, *, sums=None, extra_names=None, sidecar
     )
     if sidecar:
         digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
-        Path(str(zip_path) + ".sha256").write_text(f"{digest}  PortableFix-Portable.zip\n", encoding="ascii")
+        Path(str(zip_path) + ".sha256").write_bytes(sign_for_tests(f"{digest}  PortableFix-Portable.zip\n".encode()))
     return zip_path
 
 
@@ -63,13 +64,17 @@ def test_a_good_release_passes_and_the_zip_is_kept(tmp_path, capsys):
     assert "OK" in capsys.readouterr().out
 
 
-def test_the_script_runs_standalone(tmp_path):
+def test_the_script_runs_standalone_and_checks_the_real_release_key(tmp_path):
+    # Its own process trusts only the key built into the app, not the
+    # conftest's test key - so this test-signed release must be refused.
     zip_path = _release(tmp_path)
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "verify_release.py"), "--zip", str(zip_path)],
         capture_output=True, text=True, timeout=120,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "PortableFix-Portable.zip.sha256 is not signed" in result.stderr
+    assert "SHA256SUMS is not signed" in result.stderr
 
 
 def test_nothing_to_check_is_a_usage_error():
@@ -113,7 +118,16 @@ def test_a_zip_with_two_top_level_folders_fails(tmp_path, capsys):
 def test_a_missing_or_wrong_sha256_file_fails(tmp_path, capsys, sidecar_text):
     zip_path = _release(tmp_path, sidecar=False)
     if sidecar_text is not None:
-        Path(str(zip_path) + ".sha256").write_text(sidecar_text, encoding="ascii")
+        Path(str(zip_path) + ".sha256").write_bytes(sign_for_tests(sidecar_text.encode()))
+
+
+def test_an_unsigned_sha256_file_fails(tmp_path, capsys):
+    zip_path = _release(tmp_path)
+    sidecar = Path(str(zip_path) + ".sha256")
+    sidecar.write_bytes(sidecar.read_bytes().split(b"ed25519:")[0])
+
+    assert verify_release.main(["--zip", str(zip_path)]) == 1
+    assert "PortableFix-Portable.zip.sha256 is not signed" in capsys.readouterr().err
 
     assert verify_release.main(["--zip", str(zip_path)]) == 1
     assert "PortableFix-Portable.zip.sha256" in capsys.readouterr().err
@@ -219,8 +233,10 @@ def test_build_runs_its_steps_in_the_release_order():
         '"PyInstaller" {',
         'Invoke-Signing "$distStage\\PortableFix.exe"',
         "generate_sha256sums.py",
+        'sign_release.py" "$root\\Data\\SHA256SUMS"',
         "verify_release.py\" --tree",
         "build_release_zip.ps1",
+        'sign_release.py" "$zipPath.sha256"',
         "verify_release.py\" --zip",
         "/DMyAppVersion=$appVersion",
         'Invoke-Signing "$root\\Output\\PortableFix-Setup.exe"',
@@ -233,3 +249,19 @@ def test_the_build_pins_the_pyinstaller_it_checks():
     lines = (ROOT / "requirements-build.txt").read_text(encoding="utf-8").splitlines()
     assert "-r requirements.txt" in lines
     assert "pyinstaller==6.22.3" in lines
+
+
+def test_a_release_build_refuses_to_start_without_the_signing_key():
+    from portablefix.signing import KEY_ENV_VAR
+    from portablefix.version import APP_VERSION
+
+    env = {k: v for k, v in os.environ.items() if k != KEY_ENV_VAR}
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(ROOT / "scripts" / "build.ps1"), "-Tag", f"v{APP_VERSION}"],
+        capture_output=True, text=True, timeout=120, env=env,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert KEY_ENV_VAR in output
+    assert "==> PyInstaller" not in output

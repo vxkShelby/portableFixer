@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from portablefix import update_swap
+from portablefix import signing, update_swap
 from portablefix.update_swap import (
     CREATE_BREAKAWAY_FROM_JOB,
     CREATE_NO_WINDOW,
@@ -303,9 +303,12 @@ def _without(prefix: str) -> dict[str, bytes]:
         (release_files(), {"extra_names": {"Other\\x.txt": b"x"}}, "more than one top-level folder"),
         (release_files(), {"extra_names": {"loose.txt": b"x"}}, "more than one top-level folder"),
         (release_files(), {"extra_names": {"PortableFix\\modules\\M01_DIAGNOSTICS\\actions.yaml": b"x"}}, "duplicate"),
+        # Research G32: a correct manifest is not enough - it must be signed.
+        (release_files(), {"sums": sums_for(release_files()).split(b"ed25519:")[0]}, "not signed"),
+        (release_files(), {"sums": signing.sign(sums_for(release_files()), b"\x07" * 32)}, "not signed"),
     ],
     ids=["no-vendor", "no-modules", "no-exe", "no-sums", "no-launcher", "exe-not-in-manifest", "hash-mismatch",
-         "listed-file-missing", "two-top-folders", "loose-file", "case-duplicate"],
+         "listed-file-missing", "two-top-folders", "loose-file", "case-duplicate", "unsigned-sums", "foreign-key-sums"],
 )
 def test_stage_update_rejects_broken_packages(tmp_path, files, kwargs, message):
     install_dir = tmp_path / "install"

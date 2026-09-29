@@ -25,8 +25,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from . import signing
 from .paths import powershell_executable
-from .sha256sums import _sha256_unless_stopped, parse_sha256sums
+from .sha256sums import _sha256_unless_stopped, parse_sha256sums_text
 from .update_swap_script import SWAP_SCRIPT
 from .version import APP_VERSION
 
@@ -652,7 +653,14 @@ def _verify_layout(root: Path) -> None:
 
 def _verify_manifest(root: Path, should_stop) -> None:
     try:
-        manifest = parse_sha256sums(root / "Data" / "SHA256SUMS")
+        raw = (root / "Data" / "SHA256SUMS").read_bytes()
+        # Research G32: the manifest is what every file is checked against,
+        # so it must come from the release key - also for the developer
+        # switch, whose zip hash the developer typed in themselves.
+        signed = signing.verified_body(raw)
+        if signed is None:
+            raise UpdateStageError("the update's SHA256SUMS is not signed with the PortableFix release key")
+        manifest = parse_sha256sums_text(signed.decode("utf-8"))
     except (OSError, UnicodeDecodeError) as exc:
         raise UpdateStageError(f"the update's SHA256SUMS is unreadable: {exc}") from exc
     if MANIFEST_EXE not in manifest:

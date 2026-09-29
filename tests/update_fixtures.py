@@ -7,6 +7,8 @@ import hashlib
 import zipfile
 from pathlib import Path
 
+from signing_keys import sign_for_tests
+
 NEW_EXE = b"new-exe"
 
 
@@ -33,7 +35,8 @@ def sums_for(files: dict[str, bytes], skip: tuple[str, ...] = ()) -> bytes:
         for rel, data in sorted(files.items())
         if rel.split("/")[0] in TARGET_DIRS and rel not in skip
     ]
-    return "".join(lines).encode("ascii")
+    # Signed like a real release (research G32), with the test key.
+    return sign_for_tests("".join(lines).encode("ascii"))
 
 
 def write_release_zip(

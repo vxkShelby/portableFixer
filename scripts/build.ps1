@@ -6,9 +6,11 @@
 #    2. the PyInstaller in use is the one pinned in requirements-build.txt
 #    3. PyInstaller -> App\PortableFix.exe
 #    4. optional: sign App\PortableFix.exe
-#    5. Data\SHA256SUMS - after signing, which changes the exe's hash
+#    5. Data\SHA256SUMS - after signing, which changes the exe's hash -
+#       then its ed25519 signature (sign_release.py, research G32)
 #    6. verify_release.py --tree
-#    7. build_release_zip.ps1 -> Output\PortableFix-Portable.zip (+ .sha256)
+#    7. build_release_zip.ps1 -> Output\PortableFix-Portable.zip (+ .sha256),
+#       then the .sha256's signature
 #    8. verify_release.py --zip - stages the zip exactly like the clients do
 #    9. ISCC -> Output\PortableFix-Setup.exe
 #   10. optional: sign PortableFix-Setup.exe
@@ -19,6 +21,12 @@
 #   .\scripts\build.ps1 -Tag v1.12.0 -SignCommand { param($File) signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 $File }
 # -Python picks the interpreter that has requirements-build.txt installed
 # (default: python).
+#
+# The release key (research G32) comes from the environment variable
+# PORTABLEFIX_RELEASE_SIGNING_KEY - in practice the GitHub Actions secret of
+# that name, as .github/workflows/release.yml runs this script. A -Tag build
+# refuses to start without it; a development build without it is unsigned,
+# skips the zip check and cannot be installed by any client's updater.
 param(
     [string]$Tag = "",
     [scriptblock]$SignCommand = $null,
@@ -73,6 +81,16 @@ if ($Tag) {
     Write-Warning "No -Tag given: a development build, not checked against a release tag."
 }
 Write-Host "Building PortableFix $appVersion"
+
+# Checked before anything is built: an unsigned release is refused by every
+# client (updater.download_update, update_swap.stage_update).
+$signRelease = [bool]$env:PORTABLEFIX_RELEASE_SIGNING_KEY
+if ($Tag -and -not $signRelease) {
+    throw "PORTABLEFIX_RELEASE_SIGNING_KEY is not set - a release build must be signed (run it through .github/workflows/release.yml)"
+}
+if (-not $signRelease) {
+    Write-Warning "PORTABLEFIX_RELEASE_SIGNING_KEY not set: an unsigned development build that no updater will install."
+}
 
 # 2. The pinned PyInstaller: its bootloader is part of what the frozen
 # update test (tests.yml, frozen-update-e2e) proved to work.
@@ -135,11 +153,20 @@ Invoke-Signing "$distStage\PortableFix.exe"
 # 5-6. The manifest comes after the last change to App\ - generated before
 # signing, it flagged every signed copy as tampered.
 Invoke-Step "SHA256SUMS" { & $Python "$root\scripts\generate_sha256sums.py" "$root" }
+if ($signRelease) {
+    Invoke-Step "Sign SHA256SUMS" { & $Python "$root\scripts\sign_release.py" "$root\Data\SHA256SUMS" }
+}
 Invoke-Step "Verify the built tree" { & $Python "$root\scripts\verify_release.py" --tree "$root" }
 
-# 7-8.
+# 7-8. The .sha256 is signed too: it covers the whole zip, including
+# PortableFix.cmd and Data\, which SHA256SUMS does not.
 Invoke-Step "Release zip" { & "$root\scripts\build_release_zip.ps1" }
-Invoke-Step "Verify the release zip" { & $Python "$root\scripts\verify_release.py" --zip "$zipPath" }
+if ($signRelease) {
+    Invoke-Step "Sign the zip's .sha256" { & $Python "$root\scripts\sign_release.py" "$zipPath.sha256" }
+    Invoke-Step "Verify the release zip" { & $Python "$root\scripts\verify_release.py" --zip "$zipPath" }
+} else {
+    Write-Warning "Unsigned development build: verify_release.py --zip skipped (clients would refuse this zip)."
+}
 
 # 9-10.
 if ($isccPath) {
