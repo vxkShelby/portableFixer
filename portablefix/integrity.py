@@ -1,10 +1,13 @@
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from . import signing
+
 # Re-exported: callers and tests have always imported these from here.
-from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums  # noqa: F401
+from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums, parse_sha256sums_text  # noqa: F401
 
 # Vendor/ too (research G32): its DLLs are loaded into the process. Never
 # UserModules/ - the shop's own actions are not in the release manifest.
@@ -42,22 +45,51 @@ def _iter_real_files(root: Path):
                 yield entry
 
 
-def check_integrity(base_dir: Path, should_stop: Callable[[], bool] | None = None) -> list[str]:
+MANIFEST = "Data/SHA256SUMS"
+# The folders whose modules are blocked on a mismatch (research G32). App/
+# is the running exe itself - too late to block, so it is only reported.
+BLOCKING_DIRS = ("Modules", "Vendor")
+ALL_MODULES = "*"
+
+
+def _manifest_required() -> bool:
+    """The shipped (frozen) app demands a signed manifest. Run from source
+    there is none to demand - Data/SHA256SUMS is a build output - so the
+    check stays the old best-effort warning there."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def check_integrity(
+    base_dir: Path,
+    should_stop: Callable[[], bool] | None = None,
+    *,
+    dirs: tuple[str, ...] = TARGET_DIRS,
+    required: bool | None = None,
+) -> list[str]:
+    """Files under dirs that differ from Data/SHA256SUMS, are not in it, or
+    are listed but gone. When required (default: the frozen app), a missing,
+    unreadable or unsigned manifest is reported as MANIFEST itself - fail
+    closed, research G32 - instead of skipping the check."""
+    if required is None:
+        required = _manifest_required()
     sums_path = base_dir / "Data" / "SHA256SUMS"
-    if not sums_path.exists():
-        return []
     try:
-        expected = parse_sha256sums(sums_path)
+        raw = sums_path.read_bytes()
+        # Only the signed part: nothing after the signature line counts.
+        body = signing.verified_body(raw) if required else raw
+        if body is None:
+            return [MANIFEST]
+        expected = parse_sha256sums_text(body.decode("utf-8"))
     except (OSError, UnicodeDecodeError):
-        # An unreadable/corrupted manifest is a failure of this optional,
-        # best-effort tamper check itself - it must not take down the app.
-        return []
+        # From source this is a failure of an optional, best-effort check and
+        # must not take down the app; in the shipped app it is a finding.
+        return [MANIFEST] if required else []
     mismatches = []
     seen: set[str] = set()
     # A single walk covers both directions: a file present on disk that
     # changed or was never in the manifest (extra DLL, planted module), and
     # (via `seen`, checked below) a manifest entry that vanished entirely.
-    for target in TARGET_DIRS:
+    for target in dirs:
         target_dir = base_dir / target
         if not target_dir.exists():
             continue
@@ -81,9 +113,24 @@ def check_integrity(base_dir: Path, should_stop: Callable[[], bool] | None = Non
             if actual_hash != expected_hash:
                 mismatches.append(rel_path)
     for rel_path in expected:
-        if rel_path not in seen:
+        if rel_path not in seen and rel_path.split("/")[0] in dirs:
             mismatches.append(rel_path)
     return mismatches
+
+
+def blocked_module_dirs(base_dir: Path) -> set[str]:
+    """Research G32: the Modules/ folder names whose files do not match the
+    signed manifest, or {ALL_MODULES} when the manifest itself cannot be
+    trusted or a file outside a module folder (Vendor/, Modules/symptoms.yaml)
+    is off - those are shared by every module. UserModules/ is never in the
+    manifest and never blocked."""
+    blocked: set[str] = set()
+    for rel_path in check_integrity(base_dir, dirs=BLOCKING_DIRS, required=True):
+        parts = rel_path.split("/")
+        if parts[0] != "Modules" or len(parts) < 3:
+            return {ALL_MODULES}
+        blocked.add(parts[1])
+    return blocked
 
 
 class IntegrityCheckRunner(QThread):

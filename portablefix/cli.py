@@ -440,7 +440,7 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
         if not args.preset:
             raise CliError("--preset is required")
         preset = load_preset(args.preset, settings)
-        modules, errors = load_catalog(assets_dir)
+        modules, errors = load_catalog(assets_dir, settings.allow_modified_modules)
         for error in errors:
             out(f"[PortableFix] Module not loaded: {error}")
         if deps.is_admin is None:

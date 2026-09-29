@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
         # fell back to %TEMP% on the client machine, which the report must
         # then say (research-reporting.md F4).
         self._storage_fallback = Path(state_dir) != Path(assets_dir)
-        self.modules, module_load_errors = load_catalog(assets_dir)
+        self.modules, module_load_errors = load_catalog(assets_dir, settings.allow_modified_modules)
         # Research G27: client complaint -> the symptoms to suggest. A broken
         # entry is skipped and reported with the module errors.
         self._symptoms, symptom_errors = symptoms.load(

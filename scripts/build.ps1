@@ -139,9 +139,13 @@ if ((-not $isccPath) -and $Tag) {
 # the drive next to App/ (paths.get_base_dir, never sys._MEIPASS), so an
 # embedded copy was only extracted to %TEMP% on every launch and never
 # read - and Data/ would have baked the build machine's settings.json in.
+# _cffi_backend: PyNaCl (portablefix/signing.py, research G32) loads it only
+# through its cffi bindings, which PyInstaller does not trace - without it
+# the frozen app dies on its first signature check.
 Invoke-Step "PyInstaller" {
     & $Python -m PyInstaller --onefile --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
       --add-data "$root\portablefix.ico;." `
+      --hidden-import _cffi_backend `
       --icon "$root\portablefix.ico" `
       --name PortableFix `
       "$root\main.py"

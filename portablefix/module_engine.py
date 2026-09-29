@@ -1,8 +1,10 @@
+import sys
 from pathlib import Path
 
 import yaml
 
 from . import ops as ops_engine
+from .integrity import ALL_MODULES, blocked_module_dirs
 from .models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 
 # Plus exactly one of "command" and "ops" (research G10).
@@ -194,14 +196,26 @@ def load_module(actions_yaml_path: Path) -> ModuleDef:
 USER_MODULES_DIR = "UserModules"
 
 
-def load_catalog(assets_dir: Path) -> tuple[list[ModuleDef], list[str]]:
+def load_catalog(assets_dir: Path, allow_modified_modules: bool = False) -> tuple[list[ModuleDef], list[str]]:
     """Modules/ plus the shop's own UserModules/ (research G32) - a folder
     the updater never replaces, its modules marked custom. A user module
-    cannot reuse a built-in module or action id: the built-in one wins."""
-    return load_all_modules(Path(assets_dir) / "Modules", Path(assets_dir) / USER_MODULES_DIR)
+    cannot reuse a built-in module or action id: the built-in one wins.
+
+    In the shipped (frozen) app a built-in module whose files do not match
+    the signed Data/SHA256SUMS is not loaded (research G32) - every one of
+    them when the manifest is missing, unsigned or Vendor/ is off - unless
+    the technician set allow_modified_modules (settings.json) to run a
+    catalog they edited. Run from source nothing is blocked."""
+    assets_dir = Path(assets_dir)
+    blocked: set[str] = set()
+    if not allow_modified_modules and getattr(sys, "frozen", False):
+        blocked = blocked_module_dirs(assets_dir)
+    return load_all_modules(assets_dir / "Modules", assets_dir / USER_MODULES_DIR, blocked=blocked)
 
 
-def load_all_modules(modules_dir: Path, user_modules_dir: Path | None = None) -> tuple[list[ModuleDef], list[str]]:
+def load_all_modules(
+    modules_dir: Path, user_modules_dir: Path | None = None, *, blocked: set[str] = frozenset()
+) -> tuple[list[ModuleDef], list[str]]:
     modules: list[ModuleDef] = []
     errors: list[str] = []
     seen_action_ids: dict[str, Path] = {}
@@ -210,6 +224,12 @@ def load_all_modules(modules_dir: Path, user_modules_dir: Path | None = None) ->
     if user_modules_dir is not None:
         paths += [(path, True) for path in sorted(user_modules_dir.glob("*/actions.yaml"))]
     for path, custom in paths:
+        if not custom and (ALL_MODULES in blocked or path.parent.name in blocked):
+            errors.append(
+                f"{path}: not loaded - its files do not match the signed Data/SHA256SUMS "
+                "(set allow_modified_modules in Data/settings.json to run an edited catalog)"
+            )
+            continue
         try:
             module = load_module(path)
             module.custom = custom

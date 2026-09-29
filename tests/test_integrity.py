@@ -261,3 +261,82 @@ def test_closing_the_app_during_the_integrity_check_does_not_abort_the_process(t
 
     assert result.returncode == 0, result.stderr
     assert "clean exit" in result.stdout
+
+
+# --- Research G32: the shipped app trusts only a signed manifest -----------
+
+
+def _signed_tree(tmp_path, files: dict[str, bytes], *, sign=True):
+    from signing_keys import sign_for_tests
+
+    lines = []
+    for rel, data in sorted(files.items()):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        lines.append(f"{hashlib.sha256(data).hexdigest()}  {rel}\n")
+    body = "".join(lines).encode()
+    (tmp_path / "Data").mkdir(exist_ok=True)
+    (tmp_path / "Data" / "SHA256SUMS").write_bytes(sign_for_tests(body) if sign else body)
+    return tmp_path
+
+
+_TREE = {
+    "App/PortableFix.exe": b"exe",
+    "Modules/m01/actions.yaml": b"m01",
+    "Modules/m02/actions.yaml": b"m02",
+    "Modules/symptoms.yaml": b"symptoms",
+    "Vendor/lib.dll": b"dll",
+}
+
+
+def test_required_signed_manifest_that_matches_is_clean(tmp_path):
+    assert check_integrity(_signed_tree(tmp_path, _TREE), required=True) == []
+
+
+@pytest.mark.parametrize("setup", ["missing", "unsigned", "tampered-manifest"])
+def test_required_manifest_that_cannot_be_trusted_fails_closed(tmp_path, setup):
+    base = _signed_tree(tmp_path, _TREE, sign=setup != "unsigned")
+    sums = base / "Data" / "SHA256SUMS"
+    if setup == "missing":
+        sums.unlink()
+    elif setup == "tampered-manifest":
+        # Someone who edited a module and "fixed" its line in the manifest.
+        sums.write_bytes(sums.read_bytes().replace(hashlib.sha256(b"m01").hexdigest().encode(), b"0" * 64))
+    assert check_integrity(base, required=True) == ["Data/SHA256SUMS"]
+
+
+def test_from_source_an_unsigned_manifest_is_still_the_old_best_effort_check(tmp_path):
+    base = _signed_tree(tmp_path, _TREE, sign=False)
+    assert check_integrity(base, required=False) == []
+    (base / "Data" / "SHA256SUMS").unlink()
+    assert check_integrity(base, required=False) == []
+
+
+def test_dirs_limits_the_check_and_its_missing_entries(tmp_path):
+    base = _signed_tree(tmp_path, _TREE)
+    (base / "App" / "PortableFix.exe").unlink()
+    assert check_integrity(base, dirs=("Modules", "Vendor"), required=True) == []
+
+
+def test_blocked_module_dirs_names_only_the_changed_module(tmp_path):
+    from portablefix.integrity import blocked_module_dirs
+
+    base = _signed_tree(tmp_path, _TREE)
+    (base / "Modules" / "m02" / "actions.yaml").write_bytes(b"edited")
+    (base / "Modules" / "planted" / "actions.yaml").parent.mkdir()
+    (base / "Modules" / "planted" / "actions.yaml").write_bytes(b"x")
+    # UserModules/ is the shop's own and never checked.
+    (base / "UserModules" / "shop" / "actions.yaml").parent.mkdir(parents=True)
+    (base / "UserModules" / "shop" / "actions.yaml").write_bytes(b"x")
+    assert blocked_module_dirs(base) == {"m02", "planted"}
+
+
+@pytest.mark.parametrize("change", ["Vendor/lib.dll", "Modules/symptoms.yaml", "unsigned"])
+def test_blocked_module_dirs_blocks_everything_when_shared_files_or_the_manifest_are_off(tmp_path, change):
+    from portablefix.integrity import ALL_MODULES, blocked_module_dirs
+
+    base = _signed_tree(tmp_path, _TREE, sign=change != "unsigned")
+    if change != "unsigned":
+        (base / change).write_bytes(b"edited")
+    assert blocked_module_dirs(base) == {ALL_MODULES}

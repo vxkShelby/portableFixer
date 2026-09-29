@@ -113,7 +113,7 @@ jobs:
             # Absolute paths: with --specpath, PyInstaller resolves relative
             # --add-data sources against the spec folder.
             python -m PyInstaller --onefile --noconsole --noconfirm --name PortableFix `
-              --paths "$PWD" --add-data "$PWD\probe_version.txt;." `
+              --paths "$PWD" --add-data "$PWD\probe_version.txt;." --hidden-import _cffi_backend `
               --distpath "$PWD\dist$v" --workpath "$PWD\build\probe$v" --specpath "$PWD\build\probe$v" `
               "$PWD\tests\frozen\probe_app.py"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
