@@ -102,6 +102,17 @@ PowerShell.
   the built-in ones, carry a **custom** badge in the window and the report,
   and are never changed or removed by an update. They cannot override a
   built-in module or action id.
+- **Signed catalog:** `Data/SHA256SUMS` (the hashes of `App/`, `Modules/`,
+  `Vendor/`) carries an ed25519 signature by the release key (the public
+  key is built into `portablefix/signing.py`). At startup the packaged app
+  checks the signature and the hashes and does **not load** a built-in
+  module whose files do not match (with a missing or unsigned
+  `SHA256SUMS`, or a change in `Vendor/` or `Modules/symptoms.yaml`, no
+  built-in module at all; the `Vendor/` DLLs and fonts are then not loaded
+  either). `UserModules/` is never blocked. Whoever edits the catalog on
+  purpose puts `"allow_modified_modules": true` into `Data/settings.json`
+  by hand (the integrity warning still shows). Run from source
+  (`python main.py`) nothing is blocked.
 - **HTML report:** in the app's language, with a failed-actions summary
   (links straight to the details), a per-module/category overview, filters
   (all / failed only / changes only) and search. **Print / save as PDF**
@@ -744,7 +755,7 @@ If the USB stick isn't writable, runtime folders move to
 ```powershell
 pip install -r requirements-build.txt
 .\scripts\build.ps1                  # development build
-.\scripts\build.ps1 -Tag v1.12.0     # release build
+.\scripts\build.ps1 -Tag v1.12.0     # release build - only with the key, see below
 ```
 
 (From a PowerShell prompt in the repo root; `Set-ExecutionPolicy -Scope
@@ -753,14 +764,19 @@ ordered pipeline that stops at the first failing step:
 
 1. `portablefix/version.py`, `installer/PortableFix.iss` and `-Tag` must
    name the same version, and the PyInstaller in use must be the one pinned
-   in `requirements-build.txt`;
+   in `requirements-build.txt`; with `-Tag` the environment variable
+   `PORTABLEFIX_RELEASE_SIGNING_KEY` must be set (otherwise the build does
+   not even start);
 2. `App/PortableFix.exe` (PyInstaller onefile, a single executable, no
    `_internal` subfolder), optionally signed (`-SignCommand`);
-3. `Data/SHA256SUMS`, then `scripts/verify_release.py --tree` (the manifest
-   matches `App/` and `Modules/` exactly);
-4. `Output/PortableFix-Portable.zip` (+ `.sha256`), then
+3. `Data/SHA256SUMS` and its ed25519 signature (`scripts/sign_release.py`),
+   then `scripts/verify_release.py --tree` (the manifest matches `App/` and
+   `Modules/` exactly);
+4. `Output/PortableFix-Portable.zip` (+ `.sha256`, signed too - it covers
+   the whole zip including `PortableFix.cmd` and `Data/`), then
    `verify_release.py --zip`, which unpacks it with the same code the
-   clients' updater uses and checks that `Data/` holds only the allowlist;
+   clients' updater uses (signature check included) and checks that
+   `Data/` holds only the allowlist;
 5. `Output/PortableFix-Setup.exe` via Inno Setup (`ISCC.exe`, required with
    `-Tag`; without it a development build skips the installer), optionally
    signed.

@@ -295,6 +295,33 @@ def test_probe_without_catalog_is_unknown(tmp_path):
     assert disk_health.catalog_command(CATALOG_PATH.parent.parent) == _command()
 
 
+def test_frozen_app_does_not_probe_with_a_tampered_m03(tmp_path, monkeypatch):
+    # Research G32: the pre-flight probe runs m03's command outside
+    # load_catalog - it must refuse the same tampered module load_catalog does.
+    import hashlib
+    import sys
+
+    from signing_keys import sign_for_tests
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    target = tmp_path / "Modules" / "m03_disk" / "actions.yaml"
+    target.parent.mkdir(parents=True)
+    shutil.copyfile(CATALOG_PATH, target)
+    (tmp_path / "Data").mkdir()
+    sums = tmp_path / "Data" / "SHA256SUMS"
+    sums.write_bytes(sign_for_tests(f"{hashlib.sha256(target.read_bytes()).hexdigest()}  Modules/m03_disk/actions.yaml\n".encode()))
+    assert disk_health.catalog_command(tmp_path / "Modules") == _command()
+
+    target.write_bytes(target.read_bytes() + b"\n# planted\n")
+    assert disk_health.catalog_command(tmp_path / "Modules") is None
+    (tmp_path / "Data" / "settings.json").write_text('{"allow_modified_modules": true}', encoding="utf-8")
+    assert disk_health.catalog_command(tmp_path / "Modules") == _command()
+
+    sums.write_bytes(b"")  # unsigned manifest: nothing built-in is trusted
+    (tmp_path / "Data" / "settings.json").unlink()
+    assert disk_health.catalog_command(tmp_path / "Modules") is None
+
+
 class _FakePopen:
     """Stands in for subprocess.Popen: `hang` = how many communicate() calls
     time out before one returns."""

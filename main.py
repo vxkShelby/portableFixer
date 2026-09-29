@@ -16,7 +16,7 @@ from portablefix.diagnostics import install_excepthook, write_crash_log
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
-from portablefix.integrity import IntegrityCheckRunner, format_mismatches
+from portablefix.integrity import IntegrityCheckRunner, check_integrity, format_mismatches
 from portablefix.paths import (
     get_base_dir,
     resolve_temp_root,
@@ -287,9 +287,15 @@ def main() -> int:
         # headings/the wordmark the same distinct look as the approved
         # mockup. Bundled rather than loaded from Google Fonts since this
         # is an offline portable app with no guaranteed internet access.
+        # Research G32: a font is parsed inside this (often elevated) process
+        # like the Vendor DLLs - the shipped app loads one only as the signed
+        # manifest lists it (the Segoe UI fallback is fine).
+        vendor_trusted = not getattr(sys, "frozen", False) or not check_integrity(
+            raw_base_dir, dirs=("Vendor",), required=True
+        )
         for font_file in ("Sora-SemiBold.ttf", "Sora-Bold.ttf"):
             font_path = raw_base_dir / "Vendor" / "Fonts" / font_file
-            if font_path.exists():
+            if vendor_trusted and font_path.exists():
                 QFontDatabase.addApplicationFont(str(font_path))
         # style.stylesheet(), not style.STYLE: empty under Windows High
         # Contrast so the user's system colors win (see style.py).
