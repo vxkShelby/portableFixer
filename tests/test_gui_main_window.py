@@ -785,9 +785,15 @@ def test_running_a_batch_generates_a_report(qtbot, tmp_path):
 
     window.run_selected_actions()
 
+    # generate_report() writes the .html then the .json right after - on a
+    # loaded CI runner that gap is enough to lose the race if only the .html
+    # is awaited (seen once on main: the .json assert failed immediately
+    # after the .html wait succeeded).
     reports_dir = base_dir / "Reports"
-    qtbot.waitUntil(lambda: reports_dir.exists() and any(reports_dir.glob("*.html")), timeout=10000)
-    assert any(reports_dir.glob("*.json"))
+    qtbot.waitUntil(
+        lambda: reports_dir.exists() and any(reports_dir.glob("*.html")) and any(reports_dir.glob("*.json")),
+        timeout=10000,
+    )
 
 
 def test_opening_without_running_anything_generates_no_report(qtbot, tmp_path):
