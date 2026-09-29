@@ -1,6 +1,7 @@
 import pytest
 
-from portablefix import disk_health, preflight
+from portablefix import disk_health, preflight, signing
+from signing_keys import TEST_PUBLIC_KEY
 
 try:
     from PySide6.QtCore import QThread
@@ -26,6 +27,13 @@ def _refuse(kind: str):
         raise UnexpectedDialogError(f"unexpected modal {kind} in a test: {text!r}")
 
     return _raise
+
+
+@pytest.fixture(autouse=True)
+def _trust_the_test_signing_key(monkeypatch):
+    """The release key's private half is a CI secret; tests sign with
+    tests/signing_keys.TEST_SEED and the app trusts that key instead."""
+    monkeypatch.setattr(signing, "PUBLIC_KEY", TEST_PUBLIC_KEY)
 
 
 @pytest.fixture(autouse=True)
