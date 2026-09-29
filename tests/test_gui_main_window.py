@@ -4908,7 +4908,8 @@ def _review_window(qtbot, tmp_path, monkeypatch, run_id, dry_run=False, is_admin
     from portablefix import preflight, restore_point
 
     module_dir = tmp_path / "Modules" / "m02_cleanup"
-    module_dir.mkdir(parents=True)
+    # exist_ok: a resume test opens a second window on the same folder.
+    module_dir.mkdir(parents=True, exist_ok=True)
     (module_dir / "actions.yaml").write_text(yaml, encoding="utf-8")
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
     window = MainWindow(
@@ -7403,6 +7404,41 @@ def test_per_item_action_with_nothing_picked_is_skipped_and_cancel_stops_the_bat
     assert "no item was picked" in window.console.toPlainText()
     assert _executed_action_ids(audit_log_path(tmp_path, "run_items_none")) == []
     assert answers == []
+
+
+def test_batch_split_by_a_restart_resumes_with_the_same_item_picks(qtbot, tmp_path, monkeypatch):
+    # Research G03 + G05: the picks made before the restart travel in the
+    # resume file; the continued batch never shows the checklist again.
+    from portablefix import batch_resume
+
+    yaml = RESTART_YAML + ITEMS_YAML.split("actions:\n", 1)[1]
+    window = _restart_window(qtbot, tmp_path, monkeypatch, "run_resume_items", yaml=yaml)
+    _answer_review(monkeypatch)
+    monkeypatch.setattr(window, "_notify_restart_needed", lambda: None)
+    asked = []
+    monkeypatch.setattr(window, "_ask_items", lambda action, listed: asked.append(action.id) or ["b"])
+    _check(window, "sched_thing", "pick_things")
+    window.run_selected_actions()
+    _wait_batch_idle(qtbot, window)
+
+    assert asked == ["pick_things"]
+    log_path = audit_log_path(tmp_path, "run_resume_items")
+    assert _executed_action_ids(log_path) == ["sched_thing"]
+    pending = batch_resume.load_pending(tmp_path)
+    assert pending.action_ids == ["pick_things"] and pending.items == {"pick_things": ["b"]}
+
+    # After the restart: a new window, the same run.
+    resumed = _restart_window(qtbot, tmp_path, monkeypatch, "run_resume_items", yaml=yaml)
+    reviews = _answer_review(monkeypatch)
+    monkeypatch.setattr(resumed, "_ask_items", lambda action, listed: pytest.fail("checklist shown again"))
+    resumed.resume_batch(pending)
+    _wait_batch_idle(qtbot, resumed)
+
+    assert any("items picked (1): b" in note for note in reviews[0].review.notes)
+    entry = [e for e in _audit_entries(log_path) if e["action_id"] == "pick_things"][-1]
+    assert entry["items"] == ["b"]
+    console = resumed.console.toPlainText()
+    assert "<b>" in console and "<a>" not in console
 
 
 def test_items_dialog_starts_with_nothing_checked(qtbot):
