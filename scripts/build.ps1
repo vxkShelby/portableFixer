@@ -140,8 +140,10 @@ if ((-not $isccPath) -and $Tag) {
 # embedded copy was only extracted to %TEMP% on every launch and never
 # read - and Data/ would have baked the build machine's settings.json in.
 # _cffi_backend: PyNaCl (portablefix/signing.py, research G32) loads it only
-# through its cffi bindings, which PyInstaller does not trace - without it
-# the frozen app dies on its first signature check.
+# through its cffi bindings; without it the frozen app dies on import. Today
+# pyinstaller-hooks-contrib's nacl/cffi hooks pull it in (hooks-contrib
+# 2026.7: a build without this flag ran fine), but hooks-contrib is not
+# pinned - naming it keeps the release from depending on that hook.
 Invoke-Step "PyInstaller" {
     & $Python -m PyInstaller --onefile --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
       --add-data "$root\portablefix.ico;." `

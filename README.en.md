@@ -109,7 +109,8 @@ PowerShell.
   module whose files do not match (with a missing or unsigned
   `SHA256SUMS`, or a change in `Vendor/` or `Modules/symptoms.yaml`, no
   built-in module at all; the `Vendor/` DLLs and fonts are then not loaded
-  either). `UserModules/` is never blocked. Whoever edits the catalog on
+  either; a symlink/junction there or a file that cannot be read counts as
+  a change). `UserModules/` is never blocked. Whoever edits the catalog on
   purpose puts `"allow_modified_modules": true` into `Data/settings.json`
   by hand (the integrity warning still shows). Run from source
   (`python main.py`) nothing is blocked.

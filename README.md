@@ -114,7 +114,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   v `portablefix/signing.py`). Zbalená appka pri štarte overí podpis aj
   hashe a vstavaný modul, ktorého súbory nesedia, **nenačíta** (pri chýbajúcom
   alebo nepodpísanom `SHA256SUMS`, alebo zmene vo `Vendor/` či
-  `Modules/symptoms.yaml` žiadny vstavaný modul). `UserModules/` sa
+  `Modules/symptoms.yaml` žiadny vstavaný modul a ani DLL a fonty z
+  `Vendor/`; symlink/junction v týchto priečinkoch alebo súbor, ktorý sa
+  nedá prečítať, sa počíta ako zmena). `UserModules/` sa
   neblokuje nikdy. Kto katalóg upravuje zámerne, dá do
   `Data/settings.json` ručne `"allow_modified_modules": true` (varovanie o
   integrite sa zobrazí aj tak). Spustené zo zdrojákov (`python main.py`) sa
