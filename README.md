@@ -107,6 +107,16 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   (rovnaký formát ako `Modules/`) sa načítajú vedľa vstavaných, v okne aj v
   reporte majú odznak **vlastná** a aktualizácia ich nemení ani nemaže.
   Nemôžu prepísať vstavaný modul ani akciu s rovnakým ID.
+- **Podpísaný katalóg:** `Data/SHA256SUMS` (hashe `App/`, `Modules/`,
+  `Vendor/`) nesie ed25519 podpis release kľúča (verejný kľúč je zabudovaný
+  v `portablefix/signing.py`). Zbalená appka pri štarte overí podpis aj
+  hashe a vstavaný modul, ktorého súbory nesedia, **nenačíta** (pri chýbajúcom
+  alebo nepodpísanom `SHA256SUMS`, alebo zmene vo `Vendor/` či
+  `Modules/symptoms.yaml` žiadny vstavaný modul). `UserModules/` sa
+  neblokuje nikdy. Kto katalóg upravuje zámerne, dá do
+  `Data/settings.json` ručne `"allow_modified_modules": true` (varovanie o
+  integrite sa zobrazí aj tak). Spustené zo zdrojákov (`python main.py`) sa
+  nič neblokuje.
 - **HTML report:** v jazyku aplikácie, so súhrnom zlyhaných akcií (odkazy
   priamo na detail), prehľadom podľa modulov/kategórií, filtrom
   (všetky / len zlyhané / len zmeny) a vyhľadávaním. Tlačidlo **Tlačiť /
@@ -727,7 +737,7 @@ Ak USB nie je zapisovateľné, runtime priečinky sa presunú do
 ```powershell
 pip install -r requirements-build.txt
 .\scripts\build.ps1                  # vývojový build
-.\scripts\build.ps1 -Tag v1.12.0     # build releasu
+.\scripts\build.ps1 -Tag v1.12.0     # build releasu - len s kľúčom, pozri nižšie
 ```
 
 (Z PowerShellu v koreni repozitára; ak sú skripty blokované, najprv
@@ -736,21 +746,37 @@ pevne zoradená postupnosť krokov, ktorá sa zastaví pri prvom zlyhanom:
 
 1. `portablefix/version.py`, `installer/PortableFix.iss` a `-Tag` musia
    uvádzať tú istú verziu a použitý PyInstaller musí byť ten, ktorý je
-   zafixovaný v `requirements-build.txt`;
+   zafixovaný v `requirements-build.txt`; s `-Tag` musí byť nastavená
+   premenná `PORTABLEFIX_RELEASE_SIGNING_KEY` (inak build ani nezačne);
 2. `App/PortableFix.exe` (PyInstaller onefile, jeden spustiteľný súbor,
    žiadny `_internal` podpriečinok), voliteľne podpísaný (`-SignCommand`);
-3. `Data/SHA256SUMS`, potom `scripts/verify_release.py --tree` (manifest
-   presne zodpovedá `App/` a `Modules/`);
-4. `Output/PortableFix-Portable.zip` (+ `.sha256`), potom
+3. `Data/SHA256SUMS` a jeho ed25519 podpis (`scripts/sign_release.py`),
+   potom `scripts/verify_release.py --tree` (manifest presne zodpovedá
+   `App/` a `Modules/`);
+4. `Output/PortableFix-Portable.zip` (+ `.sha256`, tiež podpísaný - pokrýva
+   celý zip vrátane `PortableFix.cmd` a `Data/`), potom
    `verify_release.py --zip`, ktorý zip rozbalí tým istým kódom, aký
-   používa aktualizátor u klientov, a skontroluje, že `Data/` obsahuje len
-   povolené súbory;
+   používa aktualizátor u klientov (vrátane overenia podpisu), a
+   skontroluje, že `Data/` obsahuje len povolené súbory;
 5. `Output/PortableFix-Setup.exe` cez Inno Setup (`ISCC.exe`, s `-Tag`
    povinný; vývojový build bez neho inštalátor preskočí), voliteľne
    podpísaný.
 
 `-Python` určí interpreter, ak `python` nie je ten, v ktorom je
 nainštalovaný `requirements-build.txt`.
+
+**Podpisový kľúč (research G32):** súkromná časť ed25519 release kľúča
+existuje len ako GitHub Actions secret `PORTABLEFIX_RELEASE_SIGNING_KEY`
+(base64 32-bajtový seed), preto sa release builduje workflowom
+`.github/workflows/release.yml` (pozri „Release proces“). Podpis je
+posledný riadok podpísaného súboru (`ed25519:<base64>`), nie samostatný
+`.sig`: klienti do 1.14 si pri aktualizácii inštalujú len vymenované súbory
+z `Data/`, takže samostatný súbor by k nim nikdy nedošiel, a tento riadok ich
+parsery preskočia. Vývojový build bez kľúča je nepodpísaný, `verify_release.py
+--zip` preskočí a žiadny aktualizátor ho nenainštaluje; spustený zo zdrojákov
+funguje ako doteraz. Pri výmene kľúča treba zmeniť `PUBLIC_KEY` v
+`portablefix/signing.py` a vydať verziu podpísanú **starým** kľúčom -
+nainštalované kópie iný kľúč neprijmú.
 
 ## Manuálne kroky pred distribúciou
 
@@ -780,11 +806,19 @@ V tomto poradí - každý krok predpokladá, že predchádzajúci prešiel:
 1. Zvýš `APP_VERSION` v `portablefix/version.py` **a** `MyAppVersion`
    v `installer/PortableFix.iss` - kým sa líšia, `build.ps1` odmietne
    build spustiť.
-2. `.\scripts\build.ps1 -Tag v<verzia>` (s `-SignCommand`, ak máš
-   certifikát; nikdy nepodpisuj dodatočne - kontrolné súčty a zip by už
-   nesedeli s exe). Ak ktorýkoľvek krok zlyhá, nič nezverejňuj. Musí byť
-   nainštalovaný Inno Setup ([jrsoftware.org](https://jrsoftware.org/isinfo.php)).
-3. Vyskúšaj skutočnú aktualizáciu na novom zipe vývojárskym prepínačom
+2. Pushni commit releasu na `main` a spusti workflow **Release build**
+   (Actions > Release build > Run workflow, vstup `tag` = `v<verzia>`,
+   alebo `gh workflow run release.yml -f tag=v<verzia>`). Ten na čistom
+   Windows runneri spustí `.\scripts\build.ps1 -Tag v<verzia>` s kľúčom
+   `PORTABLEFIX_RELEASE_SIGNING_KEY` zo secrets (Inno Setup si doinštaluje)
+   a vytvorí **draft** release s tromi assetmi. Ak ktorýkoľvek krok zlyhá,
+   nič nezverejňuj. Lokálny `build.ps1 -Tag` bez kľúča v premennej
+   prostredia odmietne začať - nepodpísaný release by žiadny klient
+   nenainštaloval. Authenticode (`-SignCommand`) workflow nerobí, kým
+   neexistuje certifikát (pozri „Manuálne kroky pred distribúciou“); nikdy
+   nepodpisuj dodatočne - kontrolné súčty a zip by už nesedeli s exe.
+3. Stiahni zip a `.sha256` z draftu (`gh release download v<verzia> -D Output --clobber`) a
+   vyskúšaj skutočnú aktualizáciu na tomto zipe vývojárskym prepínačom
    (nižšie), spustenú z kópie **predchádzajúcej** verzie - u používateľov
    súbory vymieňa práve jej kód (pri 1.12.0, ktorej predchodcovia sa sami
    aktualizovať nevedia, z kópie nového buildu): Windows 10 aj 11,
@@ -796,11 +830,12 @@ V tomto poradí - každý krok predpokladá, že predchádzajúci prešiel:
    skutočným spustením PowerShellu a odovzdaním aktualizácie) aj
    `frozen-update-e2e` (appka zbalená PyInstallerom sa sama aktualizuje a
    znova spustí). Bez oboch nikdy netvrď, že je aktualizácia opravená.
-5. Vytvor GitHub Release s tagom `v<verzia>` (napr. `v1.1.0`), nahraj
-   **tri** súbory ako assety, presne s týmito menami (auto-update aj
-   inštalátor ich vyhľadávajú podľa fixného mena, nie podľa verzie):
+5. Doplň poznámky k vydaniu a draft zverejni (`Publish release`). Assety
+   nemeň a nenahrádzaj - workflow ich nahral presne s menami, ktoré
+   auto-update aj inštalátor hľadajú (podľa fixného mena, nie verzie), a
+   `.sha256` nesie podpis, ktorý by ručná úprava zničila:
    - `PortableFix-Portable.zip` — toto sťahuje aj auto-update mechanizmus
-   - `PortableFix-Portable.zip.sha256`
+   - `PortableFix-Portable.zip.sha256` (podpísaný release kľúčom)
    - `PortableFix-Setup.exe` — inštalátor pre bežných používateľov
 6. Po zverejnení aktualizuj jednu skutočnú inštaláciu predchádzajúcej
    verzie priamo z appky a odlož si jej záznamy z
@@ -811,7 +846,12 @@ V tomto poradí - každý krok predpokladá, že predchádzajúci prešiel:
 **Dôležité:** ak sa release vytvorí bez `.sha256` assetu, auto-update
 sťahovanie odmietne (fail-closed, banner "Stiahnutie zlyhalo") namiesto
 aplikovania neoverenej aktualizácie — no bez neho sa aktualizácia vôbec
-nedostane k používateľom, takže krok 5 nikdy nevynechaj.
+nedostane k používateľom, takže krok 5 nikdy nevynechaj. Rovnako
+(fail-closed) od verzie s research G32 odmietne `.sha256` bez platného
+podpisu release kľúča a pri rozbaľovaní aj `Data/SHA256SUMS` bez neho -
+preto release vždy len z workflowu. Klienti 1.14 a starší podpis
+nekontrolujú (riadok s podpisom ich parsery preskočia), takže prvá
+verzia s G32 sa k nim dostane bežnou aktualizáciou.
 
 Auto-update od tejto verzie sťahuje **celý balík** (exe + Data + Modules),
 nie len samotné `.exe` — takto sa k už nainštalovaným kópiám dostanú aj
@@ -825,7 +865,9 @@ spúšťaní aktualizačného skriptu) — z nich treba raz aktualizovať ručne
 
 Pred zverejnením releasu sa dá skutočná aktualizácia vyskúšať na
 lokálnom zipe - rovnakým postupom (overenie, rozbalenie, otázka na
-reštart, odovzdanie aktualizátoru), aký appka použije pre stiahnutý balík:
+reštart, odovzdanie aktualizátoru), aký appka použije pre stiahnutý balík.
+Zip musí byť podpísaný (z draftu, krok 2-3) - nepodpísaný `Data/SHA256SUMS`
+z lokálneho vývojového buildu appka pri rozbaľovaní odmietne:
 
 ```powershell
 Expand-Archive Output\PortableFix-Portable.zip C:\PFTest   # alebo starší release
