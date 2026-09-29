@@ -5410,7 +5410,12 @@ def _patch_network_runners(monkeypatch, frozen: bool = True) -> list:
         winget_updates, "WingetScanRunner", _recording_runner(log, "winget", "scan_finished", "scan_failed")
     )
     if frozen:
+        from portablefix import module_engine
+
         monkeypatch.setattr(sys_module, "frozen", True, raising=False)
+        # The test tree has no signed Data/SHA256SUMS: frozen, load_catalog
+        # would block every module (research G32, tested in test_module_engine).
+        monkeypatch.setattr(module_engine, "blocked_module_dirs", lambda base_dir: set())
     else:
         monkeypatch.delattr(sys_module, "frozen", raising=False)
     return log

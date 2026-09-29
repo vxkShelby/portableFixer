@@ -18,7 +18,12 @@ import os
 import sys
 from pathlib import Path
 
-from portablefix import update_swap
+from portablefix import signing, update_swap
+from signing_keys import TEST_PUBLIC_KEY
+
+# A separate process, so tests/conftest.py's key swap does not reach it: the
+# release it stages is signed with the test key (research G32).
+signing.PUBLIC_KEY = TEST_PUBLIC_KEY
 
 
 def _enter_kill_on_close_job():
