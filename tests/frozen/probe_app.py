@@ -20,7 +20,13 @@ import os
 import sys
 from pathlib import Path
 
-from portablefix import update_swap
+from nacl.signing import SigningKey
+
+from portablefix import signing, update_swap
+
+# The test signs its release with tests/signing_keys.TEST_SEED (the real key
+# is a CI secret); the probe trusts that key the way tests/conftest.py does.
+signing.PUBLIC_KEY = bytes(SigningKey(bytes(range(32))).verify_key)
 
 
 def _install_dir() -> Path:
