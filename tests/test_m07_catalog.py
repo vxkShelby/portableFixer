@@ -153,7 +153,7 @@ def _signed_view_command() -> str:
     return next(a for a in load_module(CATALOG_PATH).actions if a.id == SIGNED_VIEW_ID).command
 
 
-def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_property=None):
+def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_property=None, user_hive=None):
     """registry: {key: {value name: value}}; tasks: [(TaskPath, TaskName, State,
     [{Execute, Arguments} | {ClassId}])]; signatures: {file path: (Status,
     Subject, Issuer, IsOSBinary)} - any other file reports NotSigned;
@@ -225,6 +225,9 @@ def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_prope
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
     env_lines = [f"$env:{name} = {_ps_quote(value)}" for name, value in env.items()]
+    if user_hive:
+        # What the executor's prelude sets (research G25).
+        env_lines.append(f"$__pfUserHive = {_ps_quote(user_hive)}")
     # Windows PowerShell 5.1 (.NET Framework) cannot load an assembly once
     # SystemRoot points elsewhere ("The given assembly name or codebase ...
     # mscorlib.dll was invalid"). What the command loads lazily - the
@@ -240,8 +243,13 @@ def _run_signed_view(tmp, registry, tasks, signatures, shortcuts, get_item_prope
     script = "; ".join(
         ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + warm_up + env_lines + stubs + [guard, _signed_view_command()]
     )
+    # -Command with the script inline can exceed Windows' CreateProcess command-line
+    # limit as the catalog grows (surfaces as WinError 206) - write it to a file and
+    # use -File instead, which has no such limit.
+    script_path = tmp / "signed_view_script.ps1"
+    script_path.write_text(script, encoding="utf-8")
     result = subprocess.run(
-        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
         env=dict(os.environ), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -561,6 +569,72 @@ def test_signed_view_unreadable_source_still_reports_the_rest_but_exits_nonzero(
     # Sources that first enumerate subkeys find none in the empty fake
     # registry, so only the ones reading fixed keys hit the failure.
     assert "INCOMPLETE: could not read Run, Winlogon, AppInit, LSA, BootExecute" in result.stdout
+
+
+# --- G25: the signed-in user's hive, not the technician's HKCU ---------------
+#
+# HKEY_USERS\.DEFAULT stands in for the client's loaded hive: it always
+# exists, so the real Test-Path sees it, while every value is read from the
+# fake registry like everywhere else in these tests.
+CLIENT_HIVE = "Registry::HKEY_USERS\\.DEFAULT"
+USER_RUN = "\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+USER_WINLOGON = "\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+SHELL_FOLDERS = "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"
+
+
+def test_signed_view_reads_the_signed_in_users_hive_and_startup_folder(tmp_path):
+    client_startup = tmp_path / "Users" / "client" / "Startup"
+    _file(client_startup / "client.bat", b"@echo client")
+    _file(tmp_path / "AppData" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "tech.bat")
+    registry = {
+        CLIENT_HIVE + USER_RUN: {"ClientTray": str(tmp_path / "client.exe")},
+        CLIENT_HIVE + USER_WINLOGON: {"Shell": str(tmp_path / "clientshell.exe")},
+        CLIENT_HIVE + SHELL_FOLDERS: {"Startup": str(client_startup)},
+        "HKCU:" + USER_RUN: {"TechTray": str(tmp_path / "tech.exe")},
+    }
+    result, _ = _run_signed_view(tmp_path, registry, [], {}, {}, user_hive=CLIENT_HIVE)
+    assert result.returncode == 0, result.stdout + result.stderr
+    shown = {(e["category"], e["name"], e["location"]) for e in _parse_entries(result.stdout)}
+    assert shown == {
+        ("Run", "ClientTray", CLIENT_HIVE + USER_RUN),
+        ("Winlogon", "Shell", CLIENT_HIVE + USER_WINLOGON),
+        ("Startup", "client.bat", str(client_startup)),
+    }
+    assert f"Per-user entries from {CLIENT_HIVE}" in result.stdout
+
+
+def test_signed_view_with_the_users_hive_not_loaded_says_so_and_exits_nonzero(tmp_path):
+    gone = "Registry::HKEY_USERS\\S-1-5-21-1-2-3-424242"
+    ms = _file(tmp_path / "Windows" / "System32" / "rundll32.exe")
+    result, _ = _run_signed_view(tmp_path, {RUN_KEY: {"Ms": str(ms)}}, [], {ms: MS_SIG}, {}, user_hive=gone)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"Profile hive not loaded, skipped: {gone} (did the user sign out?)" in result.stdout
+    assert "INCOMPLETE: could not read user hive" in result.stdout
+
+
+def _run_plain(command: str, stubs: str) -> str:
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         f"$__pfUserHive = {_ps_quote(CLIENT_HIVE)}; {stubs}; {command}"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
+def test_run_and_startup_listings_use_the_signed_in_users_hive():
+    by_id = {a.id: a for a in load_module(CATALOG_PATH).actions}
+    # Stubs only: the host's autostart is never read.
+    out = _run_plain(by_id["autoruns_registry_run"].command, "function Get-ItemProperty { }")
+    assert f"=== {CLIENT_HIVE}\\Software\\Microsoft\\Windows\\CurrentVersion\\Run ===" in out
+    assert "=== HKCU:" not in out
+    out = _run_plain(
+        by_id["autoruns_startup_folder"].command,
+        "function Get-ItemProperty { param($Path) [pscustomobject]@{ Startup = 'C:\\Client\\Startup' } }; "
+        "function Get-ChildItem { param($Path, $ErrorAction) $Path | ForEach-Object { [pscustomobject]@{ FullName = 'DIR ' + $_; LastWriteTime = '' } } }",
+    )
+    assert "DIR C:\\Client\\Startup" in out and "AppData" not in out
 
 
 @pytest.fixture(scope="module")

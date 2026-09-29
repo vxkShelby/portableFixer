@@ -25,6 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from . import items as items_mod
+
 RESUME_FILE_NAME = "pending_batch.json"
 RESUME_FORMAT_VERSION = 1
 # A saved batch is for "restart, then carry on" - a day later the PC may have
@@ -88,6 +90,10 @@ class PendingBatch:
     undo_steps: list[str] = field(default_factory=list)
     irreversible: list[str] = field(default_factory=list)
     hive_backups: list[str] = field(default_factory=list)
+    # Per-item actions still waiting (research G05): the item ids the
+    # technician picked before the restart, so the continued batch uses the
+    # same picks instead of asking again.
+    items: dict[str, list[str]] = field(default_factory=dict)
     # The "before" snapshot of the first half, so the one report compares
     # against the PC as it was when the technician started.
     snapshot_before: dict = field(default_factory=dict)
@@ -203,6 +209,15 @@ def _parse(raw) -> PendingBatch | None:
 
     job = raw.get("job")
     snapshot = raw.get("snapshot_before")
+    picks = {}
+    if isinstance(raw.get("items"), dict):
+        for action_id, ids in raw["items"].items():
+            # The file sits on a USB stick between the halves: an id that
+            # fails the G05 rules is dropped, and that action asks again.
+            try:
+                picks[action_id] = items_mod.check_ids(ids)
+            except items_mod.ItemsError:
+                continue
     return PendingBatch(
         run_id=run_id,
         action_ids=list(action_ids),
@@ -212,6 +227,7 @@ def _parse(raw) -> PendingBatch | None:
         undo_steps=str_list("undo_steps"),
         irreversible=str_list("irreversible"),
         hive_backups=str_list("hive_backups"),
+        items={aid: ids for aid, ids in picks.items() if aid in action_ids and ids},
         snapshot_before=snapshot if isinstance(snapshot, dict) else {},
         computer=str(raw.get("computer") or ""),
         created=str(raw.get("created") or ""),

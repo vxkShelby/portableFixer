@@ -89,7 +89,9 @@ PowerShell.
   DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
   only and refuses up front when the preset holds anything riskier or the
   pre-flight check finds a blocker. Same audit log, restore point,
-  `undo.ps1` and report as the window. `--export-preset <name> <file.json>`
+  `undo.ps1` and report as the window; the registry hive backup is always
+  saved before the first DESTRUCTIVE action (there is no one to ask), and
+  when it fails the DESTRUCTIVE actions are skipped. `--export-preset <name> <file.json>`
   saves a preset to a file; the file may also carry `"items"` (item ids for
   per-item actions). Exit codes follow Tron: 0 OK, 1 error, 2 warning
   (something was skipped, or a diagnostic found a problem), 3 unsupported
@@ -458,7 +460,8 @@ PowerShell.
   account's hive when nothing differs) and `$__pfUserSid`. The M13
   actions that change user settings (Start suggestions, web results,
   Copilot, advertising ID, Explorer ads, the reinstall block, Recall)
-  write to that hive; run on their own outside PortableFix they use
+  write to that hive, and the M07 autostart actions read (Run, Winlogon,
+  the user's Startup folder) and disable from it; run on their own outside PortableFix they use
   `HKCU:`. If the user has signed out meanwhile (hive not loaded), the
   action changes nothing, prints "Profile hive not loaded, skipped" and
   fails (the hive is never loaded with `reg load`). The target user and
@@ -496,7 +499,9 @@ PowerShell.
   the restart are added to the file, so the continued batch keeps them;
   registry hive backups are saved relative to the PortableFix folder,
   so they are found on another USB drive letter too (a missing one is
-  reported). When continuing switches DRY-RUN to the first half's
+  reported). Per-item actions keep the items picked before the restart
+  and do not show the checklist again (items gone meanwhile are left
+  out). When continuing switches DRY-RUN to the first half's
   mode, the review screen says so. On the next start
   PortableFix offers to continue: "Yes" selects the remaining actions
   and opens the review screen again (even for a SAFE-only batch), "No"
@@ -886,11 +891,12 @@ retry on failure, instead of the whole file at once.
 
 ## Known limitations
 
-- Only the M13 actions use the signed-in user's hive (`$__pfUserHive`)
+- Only the M13 and M07 actions use the signed-in user's hive (`$__pfUserHive`)
   so far. HKCU in other modules still means the account PortableFix runs
   as: M12 *proxy reset* (and its check), M16 (add-ins, Outlook profile),
   M08 *restore Task Manager and Regedit*, the reports in M01, M05 (ESU),
-  M07, M17, M22, the M18 backup folders and the M09 tweaks (Storage
+  M17, M22, the autostart inventory in the before/after snapshot (new
+  entries since the last visit), the M18 backup folders and the M09 tweaks (Storage
   Sense and ESU at least print whose profile they use). AppX removal
   in M13 applies to the process's account.
 - Undo only covers actions with a static reversible command or with

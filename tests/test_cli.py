@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from portablefix import cli, preflight
+from portablefix import cli, hive_backup, preflight
 from portablefix.report import read_audit_entries
 from portablefix.target_user import TargetUser
 
@@ -72,15 +72,24 @@ def _deps(lines, **overrides):
         rp_calls.append(description)
         return rp_result
 
+    hive_calls = []
+    hive_ok = overrides.pop("hive_ok", True)
+
+    def save_hives(dest):
+        # Never the real reg.exe in a test.
+        hive_calls.append(Path(dest))
+        return hive_backup.HiveBackupResult(hive_ok, "" if hive_ok else "access denied", Path(dest))
+
     deps = cli.Deps(
         unsupported_os=lambda: False, running_from_temp=lambda app_dir: False, is_admin=lambda: True,
         target_user=TargetUser, probes=lambda: preflight.Probes(),
-        create_restore_point=restore_point, take_snapshot=lambda checks=None: {"checks": checks or {}},
-        out=lines.append,
+        create_restore_point=restore_point, save_hives=save_hives,
+        take_snapshot=lambda checks=None: {"checks": checks or {}}, out=lines.append,
     )
     for key, value in overrides.items():
         setattr(deps, key, value)
     deps.rp_calls = rp_calls
+    deps.hive_calls = hive_calls
     return deps
 
 
@@ -154,6 +163,42 @@ def test_failed_restore_point_skips_the_guarded_actions_with_a_warning(app, tmp_
     assert code == cli.EXIT_WARNING, lines
     ran = [e["action_id"] for e in read_audit_entries(tmp_path / "out", _run_id(lines)) if e["module_id"] != "_system"]
     assert ran == ["cli_read"]
+
+
+def test_live_destructive_run_saves_the_hives_first_and_undo_names_them(app, tmp_path):
+    # Research G24: what the window's review screen offers, taken unattended.
+    code, lines, deps = _run(
+        app, tmp_path, "--preset", _preset(tmp_path, ["cli_read", "cli_wipe", "cli_wipe"]), "--live",
+        "--accept-risk", "DESTRUCTIVE",
+    )
+    assert code == cli.EXIT_OK, lines
+    assert len(deps.hive_calls) == 1 and len(deps.rp_calls) == 1
+    run_id = _run_id(lines)
+    order = [e["action_id"] for e in read_audit_entries(tmp_path / "out", run_id)]
+    assert order.index("restore_point") < order.index("hive_backup") < order.index("cli_wipe")
+    assert order.index("cli_read") < order.index("hive_backup")
+    undo = (tmp_path / "out" / "Backups" / run_id / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert str(deps.hive_calls[0]) in undo
+
+
+def test_dry_run_and_non_destructive_runs_take_no_hive_backup(app, tmp_path):
+    _, _, deps = _run(app, tmp_path, "--preset", _preset(tmp_path, ["cli_wipe"]))
+    assert deps.hive_calls == []
+    _, _, deps = _run(app, tmp_path, "--preset", _preset(tmp_path, ["cli_change"]), "--live", "--accept-risk", "MODERATE")
+    assert deps.hive_calls == []
+
+
+def test_failed_hive_backup_skips_only_the_destructive_actions(app, tmp_path):
+    lines = []
+    code, _, _ = _run(
+        app, tmp_path, "--preset", _preset(tmp_path, ["cli_wipe", "cli_change"]), "--live",
+        "--accept-risk", "DESTRUCTIVE", deps=_deps(lines, hive_ok=False),
+    )
+    assert code == cli.EXIT_WARNING, lines
+    entries = read_audit_entries(tmp_path / "out", _run_id(lines))
+    assert [e["action_id"] for e in entries if e["module_id"] != "_system"] == ["cli_change"]
+    decision = next(e for e in entries if e["action_id"] == "hive_backup_decision")
+    assert decision["decision"] == "skip"
 
 
 def test_a_failed_action_is_exit_1_and_the_rest_still_runs(app, tmp_path):

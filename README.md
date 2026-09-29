@@ -97,7 +97,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
   odmietne sa hneď na začiatku, ak predvoľba obsahuje niečo rizikovejšie
   alebo kontrola pred spustením nájde blokujúci problém. Rovnaký audit,
-  bod obnovenia, `undo.ps1` aj report ako z okna. `--export-preset <názov>
+  bod obnovenia, `undo.ps1` aj report ako z okna; pred prvou DESTRUCTIVE
+  akciou sa vždy uloží záloha hive registra (bez okna sa nemá koho spýtať) a
+  keď zlyhá, DESTRUCTIVE akcie sa preskočia. `--export-preset <názov>
   <súbor.json>` uloží predvoľbu do súboru; v súbore môže byť aj `"items"`
   (ID položiek pre akcie s výberom položiek). Exit kódy podľa Tronu: 0 OK,
   1 chyba, 2 varovanie (niečo sa preskočilo alebo diagnostika našla
@@ -463,7 +465,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   `$__pfUserSid`. Akcie M13, ktoré menia nastavenia používateľa (návrhy
   v Štarte, webové výsledky, Copilot, reklamné ID, reklamy v
   Prieskumníkovi, blokovanie reinštalácie, Recall), zapisujú do tohto
-  hive; spustené samostatne mimo PortableFixu použijú `HKCU:`. Ak je
+  hive a akcie autoštartu M07 z neho čítajú (Run, Winlogon, priečinok
+  Startup používateľa) a vypínajú; spustené samostatne mimo PortableFixu
+  použijú `HKCU:`. Ak je
   používateľ medzitým odhlásený (hive nie je načítaný), akcia nič
   nezmení, vypíše „Profile hive not loaded, skipped“ a skončí s chybou
   (hive sa nikdy nenačítava cez `reg load`). Cieľový používateľ a SID sú
@@ -499,7 +503,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   istom okne pred reštartom sa do súboru dopisujú, aby o ne pokračovanie
   neprišlo; zálohy registrov sa ukladajú relatívne k priečinku
   PortableFix, takže ich nájde aj pri inom písmene USB (chýbajúcu
-  zálohu ohlási). Ak sa pri pokračovaní prepne DRY-RUN na režim prvej
+  zálohu ohlási). Akcie s výberom položiek si pamätajú, čo sa vybralo pred
+  reštartom, a zoznam sa znova neukáže (položky, ktoré medzitým zmizli, sa
+  vynechajú). Ak sa pri pokračovaní prepne DRY-RUN na režim prvej
   časti dávky, kontrolná obrazovka to povie. Pri ďalšom spustení PortableFix ponúkne
   pokračovanie: súhlas označí zvyšné akcie a znova otvorí kontrolnú
   obrazovku (aj pri dávke len zo SAFE akcií), odmietnutie uloženú dávku
@@ -935,10 +941,11 @@ lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
 ## Známe obmedzenia
 
 - Na hive prihláseného používateľa (`$__pfUserHive`) sú zatiaľ prevedené
-  len akcie M13. HKCU v ďalších moduloch stále znamená účet, pod ktorým
+  len akcie M13 a M07. HKCU v ďalších moduloch stále znamená účet, pod ktorým
   PortableFix beží: M12 *reset proxy* (a jej kontrola), M16 (doplnky a
   profil Outlooku), M08 *obnova Task Managera a Regeditu*, prehľady v
-  M01, M05 (ESU), M07, M17, M22, priečinky M18 (zálohy) a tweaky M09
+  M01, M05 (ESU), M17, M22, súpis autoštartu v snímke „pred/po“ (nové
+  položky od minulej návštevy), priečinky M18 (zálohy) a tweaky M09
   (Storage Sense a ESU aspoň vypíšu, do koho profilu siahajú).
   Odstraňovanie AppX balíkov v M13 platí pre účet procesu.
 - Undo pokrýva len akcie so statickým vratným príkazom alebo s `ops:`

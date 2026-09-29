@@ -14,6 +14,11 @@ run was refused), 2 warning (something was skipped, or a diagnostic found
 a problem - an Attention/Critical finding, research G02), 3 unsupported OS,
 4 a restart is pending (before or after the run), 5 running from %TEMP%.
 
+A live run with a DESTRUCTIVE action saves the registry hives right before
+the first one (research G24) - the backup the window's review screen offers;
+unattended there is no one to ask, so it is always taken, and when it fails
+the DESTRUCTIVE actions are skipped (exit 2), like after a failed restore point.
+
 A preset file is {"name": "...", "actions": [ids], "items": {id: [item ids]}};
 "items" picks the items of per-item actions (research G05) - such an action
 without them is skipped, never run on everything.
@@ -29,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import action_service, health, intake, paths, preflight, report, restore_point, snapshot, undo
+from . import action_service, health, hive_backup, intake, paths, preflight, report, restore_point, snapshot, undo
 from . import items as items_mod
 from .audit_log import append_entry, make_entry
 from .executor import PlanRun
@@ -148,6 +153,7 @@ class Deps:
     target_user: object = None
     probes: object = None
     create_restore_point: object = restore_point.create_restore_point
+    save_hives: object = hive_backup.save_hives
     take_snapshot: object = None
     out: object = None
 
@@ -164,6 +170,7 @@ class _Run:
         self.target = deps.target_user()
         self.undo_steps: list[str] = []
         self.irreversible: list[str] = []
+        self.hive_backups: list[Path] = []
         self.checks: dict[str, str] = {}
         self.findings: dict[str, dict] = {}
         self.selected: dict[str, list[str]] = {}
@@ -196,6 +203,7 @@ class _Run:
         try:
             undo.create_undo_script(
                 self.state_dir, self.run_id, steps=list(reversed(self.undo_steps)), irreversible=self.irreversible,
+                hive_backups=self.hive_backups,
             )
         except OSError:
             self.say("[PortableFix] Could not write undo.ps1.")
@@ -299,6 +307,33 @@ class _Run:
         self.warned = True
         return [aid for aid in queue if not preflight.needs_restore_point(*self.find(aid))]
 
+    def take_hive_backup(self, module: ModuleDef, action: ActionDef, queue: list[str]) -> list[str]:
+        """The registry hive backup right before the first DESTRUCTIVE action
+        (G24), as the window does after its review. A failure cannot be asked
+        about: the DESTRUCTIVE actions it guarded are skipped."""
+        dest = hive_backup.backup_dir(self.state_dir, self.run_id)
+        self.say(f"[PortableFix] Saving the registry hives to {dest} ...")
+        result = self.deps.save_hives(dest)
+        subject = f"{module.module_id}/{action.id}"
+        if result.success:
+            output = f"Registry hive backup saved: {dest} ({', '.join(h + hive_backup.HIVE_FILE_SUFFIX for h in hive_backup.HIVES)})."
+        else:
+            output = f"Registry hive backup failed: {result.detail}" if result.detail else "Registry hive backup failed."
+        self.log_system("hive_backup", 0 if result.success else 1, output,
+                        command=hive_backup.command_text(dest), subject=subject)
+        self.say(f"[PortableFix] {output}")
+        if result.success:
+            self.hive_backups.append(Path(dest))
+            self.write_undo()
+            return queue
+        self.log_system(
+            "hive_backup_decision", 0,
+            "Headless run: no registry hive backup, so the DESTRUCTIVE actions were skipped.",
+            subject=subject, decision="skip",
+        )
+        self.warned = True
+        return [aid for aid in queue if self.find(aid)[1].risk != RiskLevel.DESTRUCTIVE]
+
     def run_action(self, module: ModuleDef, action: ActionDef) -> int | None:
         """Runs one action; its exit code, or None when it was refused."""
         temp_protect, refusal = action_service.temp_protection(action)
@@ -356,13 +391,20 @@ class _Run:
             return refused
         started = time.monotonic()
         snapshot_before = self.deps.take_snapshot()
-        restore_point_done = False
+        restore_point_done = hive_backup_done = False
         while queue:
             aid = queue.pop(0)
             module, action = self.find(aid)
             if not self.dry_run and not restore_point_done and preflight.needs_restore_point(module, action):
                 restore_point_done = True
                 remaining = self.take_restore_point(module, action, [aid] + queue)
+                queue = remaining[1:] if remaining[:1] == [aid] else remaining
+                if remaining[:1] != [aid]:
+                    continue
+            if not self.dry_run and not hive_backup_done and action.risk == RiskLevel.DESTRUCTIVE:
+                # After the restore point, so it holds the state this action changes.
+                hive_backup_done = True
+                remaining = self.take_hive_backup(module, action, [aid] + queue)
                 queue = remaining[1:] if remaining[:1] == [aid] else remaining
                 if remaining[:1] != [aid]:
                     continue

@@ -4043,8 +4043,9 @@ class MainWindow(QMainWindow):
         # it cuts nothing off - and only after the report and undo.ps1 exist.
         queue = batch_resume.order_restarting_last(queue, lambda aid: self._find_action(aid)[1].restarts_pc)
         # Research G05: per-item actions ask which items first - the review
-        # screen then shows what was picked.
-        queue = self._choose_items(queue)
+        # screen then shows what was picked. A continued batch (G03) keeps
+        # the picks made before the restart.
+        queue = self._choose_items(queue, picked=resuming.items if resuming is not None else None)
         if queue is None:
             return
         self._reviewed_warnings = {}
@@ -4253,11 +4254,13 @@ class MainWindow(QMainWindow):
         finally:
             dialog.deleteLater()
 
-    def _choose_items(self, queue: list[str]) -> list[str] | None:
+    def _choose_items(self, queue: list[str], picked: dict[str, list[str]] | None = None) -> list[str] | None:
         """Research G05: lists the items of every per-item action in the
         queue and asks which of them to use. Returns the queue without the
         actions that got nothing to work on, or None when the technician
-        cancelled the batch."""
+        cancelled the batch. `picked`: ids chosen before a restart (G03) -
+        such an action is not asked again, it keeps the ones still listed."""
+        picked = picked or {}
         self._selected_items = {}
         result: list[str] = []
         for action_id in queue:
@@ -4275,11 +4278,17 @@ class MainWindow(QMainWindow):
             if not listed:
                 self.console.appendPlainText(self._t("items_none_found").format(action=label))
                 continue
-            chosen = self._ask_items(action, listed)
-            if chosen is None or self._closed:
-                return None
+            present = {item.id for item in listed}
+            if picked.get(action_id):
+                # The restart may have removed some (a disabled entry that
+                # is gone now) - the rest keep the earlier answer.
+                chosen = [i for i in picked[action_id] if i in present]
+            else:
+                chosen = self._ask_items(action, listed)
+                if chosen is None or self._closed:
+                    return None
             try:
-                chosen = items_mod.check_ids(chosen, allowed={item.id for item in listed})
+                chosen = items_mod.check_ids(chosen, allowed=present)
             except items_mod.ItemsError:
                 chosen = []
             if not chosen:
@@ -4718,6 +4727,7 @@ class MainWindow(QMainWindow):
             undo_steps=list(self._undo_steps),
             irreversible=list(self._irreversible_actions),
             hive_backups=batch_resume.saved_hive_paths(self.state_dir, self._hive_backups),
+            items={aid: list(self._selected_items[aid]) for aid in self._queue if self._selected_items.get(aid)},
             snapshot_before=self._snapshot_before,
         )
         try:
