@@ -610,3 +610,38 @@ def test_main_never_offers_a_batch_saved_on_another_computer(tmp_path, monkeypat
     assert asked == []
     assert not batch_resume.resume_path(tmp_path).exists()
     main_module.MainWindow.return_value.resume_batch.assert_not_called()
+
+
+# --- G32: bundled fonts and the icon are parsed in-process -------------------
+
+def test_frozen_app_loads_the_bundled_fonts_only_while_vendor_matches_the_signed_manifest(tmp_path, monkeypatch):
+    import hashlib
+
+    import main as main_module
+    from signing_keys import sign_for_tests
+
+    fonts = tmp_path / "Vendor" / "Fonts"
+    fonts.mkdir(parents=True)
+    for name in main_module.FONT_FILES:
+        (fonts / name).write_bytes(b"font " + name.encode())
+    expected = [fonts / name for name in main_module.FONT_FILES]
+    assert main_module._trusted_font_paths(tmp_path) == expected  # from source: no manifest to demand
+
+    monkeypatch.setattr(main_module.sys, "frozen", True, raising=False)
+    assert main_module._trusted_font_paths(tmp_path) == []  # no signed manifest
+    (tmp_path / "Data").mkdir()
+    lines = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  Vendor/Fonts/{p.name}\n" for p in expected)
+    (tmp_path / "Data" / "SHA256SUMS").write_bytes(sign_for_tests(lines.encode()))
+    assert main_module._trusted_font_paths(tmp_path) == expected
+
+    expected[0].write_bytes(b"planted")
+    assert main_module._trusted_font_paths(tmp_path) == []
+
+
+def test_frozen_app_takes_its_icon_from_inside_the_exe_not_the_drive(tmp_path, monkeypatch):
+    from portablefix import paths
+
+    assert paths.app_icon_path(tmp_path) == tmp_path / "portablefix.ico"
+    monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(paths.sys, "_MEIPASS", str(tmp_path / "meipass"), raising=False)
+    assert paths.app_icon_path(tmp_path) == tmp_path / "meipass" / "portablefix.ico"

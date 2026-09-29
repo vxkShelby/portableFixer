@@ -658,7 +658,7 @@ class MainWindow(QMainWindow):
 
         top_bar = QHBoxLayout()
         top_bar.setSpacing(10)
-        icon_path = self.assets_dir / "portablefix.ico"
+        icon_path = paths.app_icon_path(self.assets_dir)
         if icon_path.exists():
             logo_label = QLabel()
             logo_label.setPixmap(QIcon(str(icon_path)).pixmap(28, 28))

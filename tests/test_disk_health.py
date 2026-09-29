@@ -314,11 +314,14 @@ def test_frozen_app_does_not_probe_with_a_tampered_m03(tmp_path, monkeypatch):
 
     target.write_bytes(target.read_bytes() + b"\n# planted\n")
     assert disk_health.catalog_command(tmp_path / "Modules") is None
+    # Not lifted by settings.json: the catalog reads that from the state
+    # dir, which need not be this drive.
     (tmp_path / "Data" / "settings.json").write_text('{"allow_modified_modules": true}', encoding="utf-8")
-    assert disk_health.catalog_command(tmp_path / "Modules") == _command()
+    assert disk_health.catalog_command(tmp_path / "Modules") is None
 
+    target.write_bytes(CATALOG_PATH.read_bytes())
+    assert disk_health.catalog_command(tmp_path / "Modules") == _command()
     sums.write_bytes(b"")  # unsigned manifest: nothing built-in is trusted
-    (tmp_path / "Data" / "settings.json").unlink()
     assert disk_health.catalog_command(tmp_path / "Modules") is None
 
 

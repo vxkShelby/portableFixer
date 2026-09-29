@@ -10,6 +10,17 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def app_icon_path(base_dir: Path) -> Path:
+    """Research G32: the shipped app parses its icon from the copy bundled
+    inside the exe (build.ps1 --add-data), which the signed manifest covers
+    as App/PortableFix.exe - never the drive's root portablefix.ico, which
+    no manifest lists and anyone with the stick could swap."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if getattr(sys, "frozen", False) and meipass:
+        return Path(meipass) / "portablefix.ico"
+    return Path(base_dir) / "portablefix.ico"
+
+
 def _raw_temp_dir() -> str:
     # os.environ["TEMP"] directly, not tempfile.gettempdir() - the latter
     # checks TMPDIR before TEMP, but the PowerShell side reads $env:TEMP
