@@ -44,7 +44,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M10 | Diagnostika | Drivery: problémové zariadenia (+ reštart), ovládače tretích strán, sieť/GPU, záloha/obnova |
 | M11 | — | Reporting (HTML report po každej dávke, nie katalóg) |
 | M12 | Diagnostika | Online: test pripojenia po vrstvách, DNS, proxy |
-| M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri, Recall/Click to Do |
+| M13 | Čistenie | Debloat: telemetria, naplánované úlohy, Fast Startup, reklamy v Exploreri, Recall/Click to Do, história aktivít, poloha, Spotlight, spätná väzba |
 | M14 | Oprava | Tlač: tlačiarne, ovládače a ich triedy (WPP), záloha PrintBRM, kompatibilita SMB/NAS, offline/ghost tlačiarne, reset spooleru |
 | M15 | Oprava | Zavádzanie/platforma: BCD, TPM, Secure Boot, verdikt pre Secure Boot certifikáty 2023 (termín 19. 10. 2026), pripravenosť WinRE a Quick Machine Recovery, BitLocker, Bezpečný režim, F8 recovery |
 | M16 | Oprava | Office: verzia/kanál, doplnky Outlooku, OST/PST, rýchla/úplná oprava |

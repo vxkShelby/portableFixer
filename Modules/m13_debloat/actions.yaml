@@ -145,3 +145,53 @@ actions:
     undo_command: "$uh = if ($__pfUserHive) { $__pfUserHive } else { 'HKCU:' }; if (-not (Test-Path -Path $uh)) { Write-Output ('Profile hive not loaded, skipped: ' + $uh + ' (did the user sign out?)') } else { foreach ($hive in 'HKLM:',$uh) { $k = \"$hive\\Software\\Policies\\Microsoft\\Windows\\WindowsAI\"; foreach ($n in 'DisableAIDataAnalysis','AllowRecallEnablement','TurnOffSavingSnapshots','DisableClickToDo') { Remove-ItemProperty -Path $k -Name $n -EA SilentlyContinue } }; Write-Output 'Recall/Click to Do policy removed (back to Windows default).' }"
     description_sk: "Politikou (HKLM aj HKCU) vypne Windows Recall (automatické snímky obrazovky s vyhľadávaním pomocou AI) a Click to Do. Časť v HKLM vyžaduje administrátora. Undo politiku odstráni."
     description_en: "Disables Windows Recall (automatic AI-searchable screenshots) and Click to Do via policy (HKLM and HKCU). The HKLM part needs administrator. Undo removes the policy."
+
+  - id: debloat_disable_activity_history
+    label_sk: "Vypnutie histórie aktivít (Timeline)"
+    label_en: "Disable Activity History"
+    risk: MODERATE
+    check_command: '$p = Get-ItemProperty -Path ''HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'' -EA SilentlyContinue; if ($p -and $p.EnableActivityFeed -eq 0 -and $p.PublishUserActivities -eq 0 -and $p.UploadUserActivities -eq 0) { ''APPLIED'' } else { ''NOT_APPLIED'' }'
+    command: "try { $k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System'; if (-not (Test-Path -Path $k)) { New-Item -Path $k -Force -EA Stop | Out-Null }; foreach ($n in 'EnableActivityFeed','PublishUserActivities','UploadUserActivities') { Set-ItemProperty -Path $k -Name $n -Value 0 -Type DWord -EA Stop }; Write-Output 'Activity History (Timeline) disabled by policy.' } catch { Write-Output ('Failed to disable Activity History (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "foreach ($n in 'EnableActivityFeed','PublishUserActivities','UploadUserActivities') { Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System' -Name $n -EA SilentlyContinue }"
+    description_sk: "Politikou vypne históriu aktivít (Timeline): Windows prestane zaznamenávať aktivity lokálne aj ich odosielať do cloudu (pokračovanie medzi zariadeniami). Vyžaduje administrátora. Undo politiku odstráni."
+    description_en: "Disables Activity History (Timeline) by policy: Windows stops recording activities locally and uploading them to the cloud (cross-device resume). Needs administrator. Undo removes the policy."
+
+  - id: debloat_disable_location
+    label_sk: "Vypnutie služieb polohy"
+    label_en: "Disable location services"
+    risk: MODERATE
+    check_command: 'if ((Get-ItemProperty -Path ''HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors'' -Name DisableLocation -EA SilentlyContinue).DisableLocation -eq 1) { ''APPLIED'' } else { ''NOT_APPLIED'' }'
+    command: "try { $k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors'; if (-not (Test-Path -Path $k)) { New-Item -Path $k -Force -EA Stop | Out-Null }; Set-ItemProperty -Path $k -Name DisableLocation -Value 1 -Type DWord -EA Stop; Write-Output 'Location services disabled by policy for the whole PC.' } catch { Write-Output ('Failed to disable location services (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors' -Name DisableLocation -EA SilentlyContinue"
+    description_sk: "Politikou vypne služby polohy pre celý počítač a všetky aplikácie. POZOR: prestane fungovať automatické nastavenie časového pásma a funkcia Nájsť moje zariadenie (Find My Device) - na notebooku, s ktorým sa cestuje alebo ktorý sa môže stratiť, to vopred prekonzultujte s klientom. Vyžaduje administrátora. Undo politiku odstráni."
+    description_en: "Disables location services by policy for the whole PC and every app. WARNING: automatic time-zone detection and Find My Device stop working - on a laptop that travels or could get lost, check with the client first. Needs administrator. Undo removes the policy."
+
+  - id: debloat_disable_lockscreen_spotlight
+    label_sk: "Vypnutie reklám Windows Spotlight na uzamknutej obrazovke"
+    label_en: "Disable lock screen Spotlight ads"
+    risk: MODERATE
+    check_command: 'if ((Get-ItemProperty -Path ''HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'' -Name DisableWindowsSpotlightFeatures -EA SilentlyContinue).DisableWindowsSpotlightFeatures -eq 1) { ''APPLIED'' } else { ''NOT_APPLIED'' }'
+    command: "try { $k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent'; if (-not (Test-Path -Path $k)) { New-Item -Path $k -Force -EA Stop | Out-Null }; Set-ItemProperty -Path $k -Name DisableWindowsSpotlightFeatures -Value 1 -Type DWord -EA Stop; Write-Output 'Windows Spotlight (lock screen ads/tips) disabled by policy.' } catch { Write-Output ('Failed to disable Windows Spotlight (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent' -Name DisableWindowsSpotlightFeatures -EA SilentlyContinue"
+    description_sk: "Politikou vypne Windows Spotlight - rotujúce obrázky, tipy a propagačný obsah na uzamknutej obrazovke. Vyžaduje administrátora. Undo politiku odstráni."
+    description_en: "Disables Windows Spotlight by policy - the rotating images, tips and promo content on the lock screen. Needs administrator. Undo removes the policy."
+
+  - id: debloat_disable_tailored_experiences
+    label_sk: "Vypnutie prispôsobených skúseností z diagnostických údajov"
+    label_en: "Disable tailored experiences"
+    risk: MODERATE
+    check_command: 'if ((Get-ItemProperty -Path ''HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'' -Name DisableTailoredExperiencesWithDiagnosticData -EA SilentlyContinue).DisableTailoredExperiencesWithDiagnosticData -eq 1) { ''APPLIED'' } else { ''NOT_APPLIED'' }'
+    command: "try { $k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent'; if (-not (Test-Path -Path $k)) { New-Item -Path $k -Force -EA Stop | Out-Null }; Set-ItemProperty -Path $k -Name DisableTailoredExperiencesWithDiagnosticData -Value 1 -Type DWord -EA Stop; Write-Output 'Tailored experiences based on diagnostic data disabled by policy.' } catch { Write-Output ('Failed to disable tailored experiences (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent' -Name DisableTailoredExperiencesWithDiagnosticData -EA SilentlyContinue"
+    description_sk: "Politikou zakáže Microsoftu používať diagnostické údaje na prispôsobené tipy, návrhy a reklamy. Dopĺňa akciu obmedzenia telemetrie. Vyžaduje administrátora. Undo politiku odstráni."
+    description_en: "Stops Microsoft from using diagnostic data for personalized tips, suggestions and ads, by policy. Complements the telemetry reduction action. Needs administrator. Undo removes the policy."
+
+  - id: debloat_disable_feedback
+    label_sk: "Vypnutie žiadostí o spätnú väzbu"
+    label_en: "Disable feedback notifications"
+    risk: SAFE
+    changes_system: true  # an HKLM policy write - keep the restore point a SAFE action wouldn't get
+    command: "try { $k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection'; if (-not (Test-Path -Path $k)) { New-Item -Path $k -Force -EA Stop | Out-Null }; Set-ItemProperty -Path $k -Name DoNotShowFeedbackNotifications -Value 1 -Type DWord -EA Stop; Write-Output 'Feedback notifications disabled by policy (frequency: Never).' } catch { Write-Output ('Failed to disable feedback notifications (needs administrator): ' + $_.Exception.Message); exit 1 }"
+    undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name DoNotShowFeedbackNotifications -EA SilentlyContinue"
+    description_sk: "Politikou nastaví frekvenciu žiadostí o spätnú väzbu na Nikdy - Windows sa prestane pýtať na hodnotenie. Zber údajov nemení. Vyžaduje administrátora. Undo politiku odstráni."
+    description_en: "Sets the feedback request frequency to Never by policy - Windows stops prompting for ratings. Does not change data collection. Needs administrator. Undo removes the policy."
