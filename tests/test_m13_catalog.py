@@ -14,11 +14,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m13_debloat" / "actions.yaml"
 
 
-def test_m13_catalog_loads_17_actions_in_cleanup_category():
+def test_m13_catalog_loads_22_actions_in_cleanup_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m13_debloat"
     assert module.category == ModuleCategory.CLEANUP
-    assert len(module.actions) == 17
+    assert len(module.actions) == 22
 
 
 def test_m13_catalog_risk_distribution():
@@ -26,7 +26,7 @@ def test_m13_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert by_risk[RiskLevel.SAFE] == ["debloat_list_installed"]
+    assert by_risk[RiskLevel.SAFE] == ["debloat_list_installed", "debloat_disable_feedback"]
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "debloat_remove_promo_apps",
         "debloat_disable_telemetry",
@@ -43,6 +43,10 @@ def test_m13_catalog_risk_distribution():
         "debloat_disable_explorer_ads",
         "debloat_block_app_reinstall",
         "debloat_disable_recall_clicktodo",
+        "debloat_disable_activity_history",
+        "debloat_disable_location",
+        "debloat_disable_lockscreen_spotlight",
+        "debloat_disable_tailored_experiences",
     }
     assert by_risk[RiskLevel.DESTRUCTIVE] == ["debloat_remove_provisioned"]
 
@@ -63,6 +67,7 @@ def test_m13_registry_tweaks_have_undo_commands_removals_do_not():
         "debloat_disable_explorer_ads",
         "debloat_block_app_reinstall",
         "debloat_disable_recall_clicktodo",
+        *HKLM_POLICY_ACTIONS,
     ):
         assert by_id[undoable].undo_command is not None, undoable
     for not_undoable in (
@@ -104,10 +109,40 @@ def test_m13_hklm_policy_writes_verify_they_actually_worked():
     # -EA Stop + try/catch so it can't claim success on a silent no-op.
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
-    for action_id in ("debloat_disable_telemetry", "debloat_disable_widgets"):
+    for action_id in ("debloat_disable_telemetry", "debloat_disable_widgets", *HKLM_POLICY_ACTIONS):
         command = by_id[action_id].command
         assert "-EA Stop" in command, action_id
         assert "exit 1" in command, action_id
+
+
+# The research-debloat-additions.md gaps: one HKLM policy key each.
+HKLM_POLICY_ACTIONS = {
+    "debloat_disable_activity_history": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+    "debloat_disable_location": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors",
+    "debloat_disable_lockscreen_spotlight": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
+    "debloat_disable_tailored_experiences": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
+    "debloat_disable_feedback": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
+}
+
+
+def test_m13_hklm_policy_actions_never_recreate_a_shared_key():
+    # New-Item -Force on an existing registry key wipes all its values: these
+    # keys hold other policies (CloudContent is shared by two of them).
+    for action_id in HKLM_POLICY_ACTIONS:
+        action = _m13_action(action_id)
+        assert "if (-not (Test-Path -Path $k)) { New-Item" in action.command, action_id
+        # The loader refuses a check_command on a SAFE action.
+        assert bool(action.check_command) == (action.risk != RiskLevel.SAFE), action_id
+        assert "exit" not in action.undo_command, action_id
+
+
+@pytest.mark.parametrize("action_id", HKLM_POLICY_ACTIONS)
+@pytest.mark.parametrize("field", ["command", "undo_command"])
+def test_m13_hklm_policy_actions_touch_only_their_policy_key(action_id, field):
+    result, registry = _run_user_hive_command(getattr(_m13_action(action_id), field), "HKCU:")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert registry, result.stdout
+    assert set(registry) == {HKLM_POLICY_ACTIONS[action_id]}, registry
 
 
 # --- research G25: per-user settings go to the signed-in user's hive --------
