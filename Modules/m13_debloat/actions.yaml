@@ -190,6 +190,7 @@ actions:
     label_sk: "Vypnutie žiadostí o spätnú väzbu"
     label_en: "Disable feedback notifications"
     risk: SAFE
+    changes_system: true  # an HKLM policy write - keep the restore point a SAFE action wouldn't get
     command: "try { $k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection'; if (-not (Test-Path -Path $k)) { New-Item -Path $k -Force -EA Stop | Out-Null }; Set-ItemProperty -Path $k -Name DoNotShowFeedbackNotifications -Value 1 -Type DWord -EA Stop; Write-Output 'Feedback notifications disabled by policy (frequency: Never).' } catch { Write-Output ('Failed to disable feedback notifications (needs administrator): ' + $_.Exception.Message); exit 1 }"
     undo_command: "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name DoNotShowFeedbackNotifications -EA SilentlyContinue"
     description_sk: "Politikou nastaví frekvenciu žiadostí o spätnú väzbu na Nikdy - Windows sa prestane pýtať na hodnotenie. Zber údajov nemení. Vyžaduje administrátora. Undo politiku odstráni."
