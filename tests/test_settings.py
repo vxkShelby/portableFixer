@@ -149,3 +149,12 @@ def test_redact_for_client_defaults_off_round_trips_and_rejects_non_bool(tmp_pat
     for raw in ("true", 1, None, []):
         _write_raw(tmp_path, json.dumps({"redact_for_client": raw}))
         assert load_settings(tmp_path).redact_for_client is False, raw
+
+
+def test_first_run_hint_seen_defaults_off_and_round_trips(tmp_path):
+    assert Settings().first_run_hint_seen is False
+    assert load_settings(tmp_path).first_run_hint_seen is False
+    save_settings(tmp_path, Settings(first_run_hint_seen=True))
+    assert load_settings(tmp_path).first_run_hint_seen is True
+    _write_raw(tmp_path, json.dumps({"first_run_hint_seen": "true"}))
+    assert load_settings(tmp_path).first_run_hint_seen is False

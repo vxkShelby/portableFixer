@@ -1,5 +1,7 @@
 import dataclasses
+import html
 import os
+import re
 import shutil
 import socket
 import sys
@@ -66,6 +68,33 @@ from ..version import APP_VERSION
 CUSTOM_PRESET_PREFIX = "custom:"
 CONSOLE_MAX_LINES = 20000
 HISTORY_MAX_ROWS = 5
+# Lines of a card's preview output shown in its result box (the console
+# keeps all of them).
+PREVIEW_MAX_LINES = 30
+
+# Console severity by keyword (research-design-additions item 7). Command
+# output is free-form PowerShell text, so this sniffs words, not a format.
+# ponytail: keyword heuristic - a line like "error-free" still tints red;
+# a real per-line severity would need every command to emit PFJSON.
+_CONSOLE_ERROR_RE = re.compile(
+    r"\b(errors?|exception|failed|failure|fatal|timed out|access is denied|chyba|zlyhal\w*)\b"
+    r"|FullyQualifiedErrorId|CategoryInfo",
+    re.IGNORECASE,
+)
+_CONSOLE_NO_ERROR_RE = re.compile(r"\b(no|0|zero|without|not any)\s+(errors?|failures?|exceptions?)\b", re.IGNORECASE)
+_CONSOLE_WARNING_RE = re.compile(r"\b(warning|cancell?ed|upozornenie|varovanie)\b", re.IGNORECASE)
+_CONSOLE_SUCCESS_RE = re.compile(r"\b(success|successfully|succeeded|úspešne)\b", re.IGNORECASE)
+
+
+def _console_severity(line: str) -> str | None:
+    """"error", "warning", "success" or None (plain) for one console line."""
+    if _CONSOLE_ERROR_RE.search(line) and not _CONSOLE_NO_ERROR_RE.search(line):
+        return "error"
+    if _CONSOLE_WARNING_RE.search(line):
+        return "warning"
+    if _CONSOLE_SUCCESS_RE.search(line):
+        return "success"
+    return None
 
 
 try:
@@ -231,6 +260,21 @@ class MainWindow(QMainWindow):
         self._action_detail_toggles: dict[str, QToolButton] = {}
         self._action_detail_panels: dict[str, QWidget] = {}
         self._action_start_times: dict[str, float] = {}
+        # action_id -> seconds it took in the current batch (summary rows).
+        self._action_durations: dict[str, float] = {}
+        # Ticks the "RUNNING (12s)" text of the action running now - created
+        # here, not in _build_ui, so a language toggle doesn't stack timers.
+        self._action_tick_timer = QTimer(self)
+        self._action_tick_timer.setInterval(1000)
+        self._action_tick_timer.timeout.connect(self._on_action_tick)
+        # A card's one-shot Preview run (research-design-additions item 6).
+        self._preview_runner: ActionRunner | None = None
+        self._preview_buttons: dict[str, QPushButton] = {}
+        self._preview_box: QMessageBox | None = None
+        # Shown for this whole session (it survives a language toggle's
+        # rebuild); marked seen at once, main.py saves settings at exit.
+        self._first_run_hint_visible = not settings.first_run_hint_seen
+        settings.first_run_hint_seen = True
         self._queue_total = 0
         self._queue: list[str] = []
         self._runner: ActionRunner | None = None
@@ -693,6 +737,19 @@ class MainWindow(QMainWindow):
         self.target_user_banner = self._build_target_user_banner()
         root_layout.addWidget(self.target_user_banner)
 
+        self.first_run_hint = QFrame()
+        self.first_run_hint.setObjectName("firstRunHint")
+        hint_layout = QHBoxLayout(self.first_run_hint)
+        hint_layout.setContentsMargins(12, 8, 10, 8)
+        hint_label = QLabel(self._t("first_run_hint"))
+        hint_label.setWordWrap(True)
+        hint_layout.addWidget(hint_label, 1)
+        hint_dismiss = self._make_selection_button(self._t("first_run_hint_dismiss"), self._dismiss_first_run_hint)
+        hint_layout.addWidget(hint_dismiss)
+        self.first_run_hint.setAccessibleName(self._t("first_run_hint"))
+        self.first_run_hint.setVisible(self._first_run_hint_visible)
+        root_layout.addWidget(self.first_run_hint)
+
         self.update_banner = QWidget()
         self.update_banner.setObjectName("updateBanner")
         update_banner_layout = QHBoxLayout(self.update_banner)
@@ -993,6 +1050,19 @@ class MainWindow(QMainWindow):
                         row.addWidget(check_chip)
                         self._set_check_chip(action.id, self._check_results.get(action.id))
                     row.addStretch(1)
+                    if action.preview_command:
+                        # Only where a real preview exists - no guessed numbers
+                        # for the rest (research-design-additions item 6).
+                        preview_button = self._make_selection_button(
+                            self._t("preview_button"), lambda a=action.id: self._on_preview_clicked(a)
+                        )
+                        preview_button.setToolTip(self._t("preview_tooltip"))
+                        preview_button.setAccessibleName(
+                            f"{self._t('preview_button')}: {action.label(self.settings.language)}"
+                        )
+                        preview_button.setEnabled(not _thread_running(self._preview_runner))
+                        self._preview_buttons[action.id] = preview_button
+                        row.addWidget(preview_button)
                     detail_toggle, detail_panel = self._make_action_detail_toggle(action)
                     self._action_detail_toggles[action.id] = detail_toggle
                     self._action_detail_panels[action.id] = detail_panel
@@ -1081,6 +1151,7 @@ class MainWindow(QMainWindow):
         self.run_button = QPushButton(self._t("run_selected"))
         self.run_button.setObjectName("runButton")
         self.run_button.clicked.connect(self.run_selected_actions)
+        self._apply_run_button_dry_run_tint()
         run_row.addWidget(self.run_button, 1)
 
         self.cancel_button = QPushButton(self._t("cancel_batch"))
@@ -1103,9 +1174,16 @@ class MainWindow(QMainWindow):
         self.console.setMaximumBlockCount(CONSOLE_MAX_LINES)
         self._console_window: QDialog | None = None
         self._console_fullscreen = False
+        self._console_collapsed = False
         self._console_splitter_sizes: list[int] | None = None
+        # High Contrast gets no stylesheet (style.stylesheet) - nor tinted lines.
+        self._console_colors = {} if style.is_high_contrast() else style.CONSOLE_COLORS
 
         console_toolbar = QHBoxLayout()
+        self.console_collapse_button = self._make_selection_button(
+            f"▾ {self._t('console_collapse')}", lambda: self._on_console_collapse_toggled()
+        )
+        console_toolbar.addWidget(self.console_collapse_button)
         console_toolbar.addStretch(1)
         self.console_fullscreen_button = self._make_selection_button(
             "⤢", lambda: self._on_console_fullscreen_toggled()
@@ -1141,17 +1219,15 @@ class MainWindow(QMainWindow):
             # A language toggle mid-batch rebuilds run_button/cancel_button/
             # progress_bar/console fresh - restore the in-flight state onto
             # the new widgets, otherwise a freshly-enabled run_button lets a
-            # second click stomp on the still-running batch's queue/runner,
-            # and the still-running action's output silently stops reaching
-            # the (now orphaned) old console.
+            # second click stomp on the still-running batch's queue/runner.
+            # The running action's output keeps arriving: it is connected to
+            # self._append_console, which writes to whichever console is current.
             self.run_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(self._queue_total - len(self._queue))
             self.progress_bar.setVisible(True)
-            if self._runner is not None:
-                self._runner.output_line.connect(self.console.appendPlainText)
         if self._pending_update_info is not None:
             if self._update_in_progress:
                 self.update_banner_label.setText(self._t(_UPDATE_PHASE_KEYS.get(self._update_phase, "update_downloading")))
@@ -1600,9 +1676,9 @@ class MainWindow(QMainWindow):
         if self._closed:
             return
         if write_failed:
-            self.console.appendPlainText(self._t("disk_write_failed"))
+            self._append_console(self._t("disk_write_failed"))
         elif html_path is not None:
-            self.console.appendPlainText(self._t("report_refreshed"))
+            self._append_console(self._t("report_refreshed"))
         self._run_pending_report_refresh()
 
     def _run_pending_report_refresh(self) -> None:
@@ -1730,7 +1806,7 @@ class MainWindow(QMainWindow):
         try:
             save_settings(self.state_dir, self.settings)
         except OSError:
-            self.console.appendPlainText(self._t("disk_write_failed"))
+            self._append_console(self._t("disk_write_failed"))
 
     def _on_save_preset_clicked(self) -> None:
         selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
@@ -2865,7 +2941,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
             return None
         except OSError as exc:
-            self.console.appendPlainText(self._t("handoff_failed"))
+            self._append_console(self._t("handoff_failed"))
             QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{exc}")
             return None
         self._show_handoff_saved(saved)
@@ -2875,8 +2951,8 @@ class MainWindow(QMainWindow):
         # The reports only read the system, so DRY-RUN does not stop them -
         # but the technician is told, and diagnostics/README.txt says so too.
         if self.settings.dry_run:
-            self.console.appendPlainText(self._t("handoff_diag_dry_run_note"))
-        self.console.appendPlainText(self._t("handoff_diag_started"))
+            self._append_console(self._t("handoff_diag_dry_run_note"))
+        self._append_console(self._t("handoff_diag_started"))
         runner = handoff.HandoffRunner(
             self.state_dir, hostname, run_id, dest, dry_run=self.settings.dry_run,
             redact=self.settings.redact_for_client, parent=self,
@@ -2893,7 +2969,7 @@ class MainWindow(QMainWindow):
             return
         text = self._t("handoff_diag_progress").format(index=index, total=total, name=name)
         self.statusBar().showMessage(text)
-        self.console.appendPlainText(text)
+        self._append_console(text)
 
     def _on_handoff_result(self, saved, error: str, detail: str, parent: QWidget | None) -> None:
         self._handoff_runner = None
@@ -2912,10 +2988,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(parent or self, self._t("app_title"), self._t("handoff_no_files"))
             return
         if error:
-            self.console.appendPlainText(self._t("handoff_failed"))
+            self._append_console(self._t("handoff_failed"))
             QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{detail}")
             return
-        self.console.appendPlainText(self._t("handoff_saved").format(path=saved))
+        self._append_console(self._t("handoff_saved").format(path=saved))
         self._show_handoff_saved(saved)
 
     def _show_handoff_saved(self, saved: Path) -> None:
@@ -3482,7 +3558,7 @@ class MainWindow(QMainWindow):
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
             if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+                self._append_console(self._t("disk_write_failed"))
 
     def _panel_refused_without_admin(self, console: QPlainTextEdit) -> bool:
         """True (and shown) when a panel's real run needs admin rights it
@@ -4134,7 +4210,7 @@ class MainWindow(QMainWindow):
                 "resume_hive_backup_missing", None,
                 f"Registry hive backup of the first half not found: {', '.join(missing_hives)}.",
             )
-            self.console.appendPlainText(self._t("resume_hive_backup_missing").format(paths=", ".join(missing_hives)))
+            self._append_console(self._t("resume_hive_backup_missing").format(paths=", ".join(missing_hives)))
         self._hive_backups = hive_backups + self._hive_backups
         self._resume_mode_note = ""
         if self.settings.dry_run != pending.dry_run:
@@ -4142,7 +4218,7 @@ class MainWindow(QMainWindow):
             # never silently: the review screen says the mode was switched.
             self.dry_run_checkbox.setChecked(pending.dry_run)
             self._resume_mode_note = "review_note_resumed_dry_run" if pending.dry_run else "review_note_resumed_real_run"
-            self.console.appendPlainText(self._t(self._resume_mode_note))
+            self._append_console(self._t(self._resume_mode_note))
         self._apply_selection(list(self._action_checkboxes), "none")
         for action_id in known:
             self._action_checkboxes[action_id].setChecked(True)
@@ -4273,10 +4349,10 @@ class MainWindow(QMainWindow):
             if cancelled or self._closed:
                 return None
             if listed is None:
-                self.console.appendPlainText(self._t("items_list_failed").format(action=label))
+                self._append_console(self._t("items_list_failed").format(action=label))
                 continue
             if not listed:
-                self.console.appendPlainText(self._t("items_none_found").format(action=label))
+                self._append_console(self._t("items_none_found").format(action=label))
                 continue
             present = {item.id for item in listed}
             if picked.get(action_id):
@@ -4292,7 +4368,7 @@ class MainWindow(QMainWindow):
             except items_mod.ItemsError:
                 chosen = []
             if not chosen:
-                self.console.appendPlainText(self._t("items_none_chosen").format(action=label))
+                self._append_console(self._t("items_none_chosen").format(action=label))
                 continue
             self._selected_items[action_id] = chosen
             result.append(action_id)
@@ -4421,7 +4497,7 @@ class MainWindow(QMainWindow):
             self.dashboard_analyze_button.setEnabled(True)
             self.language_button.setEnabled(True)
             if write_failed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+                self._append_console(self._t("disk_write_failed"))
         self._refresh_dashboard()
         if not self._closed:
             self._notify_batch_finished()
@@ -4444,7 +4520,7 @@ class MainWindow(QMainWindow):
         text = self._t("restart_needed_to_continue").format(
             action=self._action_label(self._restart_needed_after), count=count,
         )
-        self.console.appendPlainText(text)
+        self._append_console(text)
         QMessageBox.information(self, self._t("app_title"), text)
 
     def _app_dir_intact(self) -> bool:
@@ -4591,7 +4667,7 @@ class MainWindow(QMainWindow):
         ):
             self._hive_backup_attempted = True
             dest = hive_backup.backup_dir(self.state_dir, self.run_id)
-            self.console.appendPlainText(self._t("hive_backup_running").format(path=dest))
+            self._append_console(self._t("hive_backup_running").format(path=dest))
             runner = hive_backup.HiveBackupRunner(dest, parent=self)
             runner.result_ready.connect(
                 lambda success, detail, result, m=module, a=action: self._on_hive_backup_finished(success, detail, result, m, a)
@@ -4621,7 +4697,7 @@ class MainWindow(QMainWindow):
             self._run_next()
             return
         if not self._closed:
-            self.console.appendPlainText(
+            self._append_console(
                 self._t("hive_backup_done").format(path=dest) if success else self._t("hive_backup_failed_console")
             )
         if not success:
@@ -4712,7 +4788,7 @@ class MainWindow(QMainWindow):
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
             if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+                self._append_console(self._t("disk_write_failed"))
 
     def _save_resume(self, restart_action_id: str) -> bool:
         """Saves what is still queued to the resume file (G03). False when
@@ -4734,7 +4810,7 @@ class MainWindow(QMainWindow):
             batch_resume.save_pending(self.state_dir, pending)
         except OSError:
             if not self._closed:
-                self.console.appendPlainText(self._t("resume_save_failed"))
+                self._append_console(self._t("resume_save_failed"))
             return False
         self._resume_saved_for = restart_action_id
         return True
@@ -4765,7 +4841,7 @@ class MainWindow(QMainWindow):
         # the report written now.
         self._log_batch_duration()
         self._write_undo_script()
-        self.console.appendPlainText(self._t("restart_writing_report").format(action=action.label(self.settings.language)))
+        self._append_console(self._t("restart_writing_report").format(action=action.label(self.settings.language)))
         # Everything up to this point, snapshot included - the PC may not
         # come back to this process.
         self._snapshot_after = self._take_snapshot()
@@ -4784,7 +4860,7 @@ class MainWindow(QMainWindow):
     def _on_pre_restart_report_ready(self, html_path, write_failed: bool, module: ModuleDef, action: ActionDef) -> None:
         self._report_runner = None
         if write_failed and not self._closed:
-            self.console.appendPlainText(self._t("disk_write_failed"))
+            self._append_console(self._t("disk_write_failed"))
         if self._cancel_requested or self._closed:
             # Cancelled while the report was written: the restart never
             # comes, so there is nothing to continue after it.
@@ -4862,7 +4938,7 @@ class MainWindow(QMainWindow):
                 target_user=self.target_user, temp_protect=action_temp_protect, item_ids=item_ids,
             )
         except (OSError, items_mod.ItemsError):
-            self.console.appendPlainText(self._t("disk_write_failed"))
+            self._append_console(self._t("disk_write_failed"))
             self._run_next()
             return
         plan = prepared.plan
@@ -4880,7 +4956,7 @@ class MainWindow(QMainWindow):
             check_plan=action_service.check_plan(action, dry_run=self.settings.dry_run, target_user=self.target_user),
         )
         self._runner = runner
-        runner.output_line.connect(self.console.appendPlainText)
+        runner.output_line.connect(self._append_console)
         runner.finished_with_code.connect(
             lambda code, m=module.module_id, a=action.id, c=action.command, r=runner, w=warning_text: self._on_action_finished(
                 m, a, c, code, r, w
@@ -4919,7 +4995,7 @@ class MainWindow(QMainWindow):
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
             if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+                self._append_console(self._t("disk_write_failed"))
         self._batch_results.append((action_id, exit_code))
         for finding in entry.findings:
             # Newest last, so health.latest_findings-style order holds.
@@ -4990,7 +5066,7 @@ class MainWindow(QMainWindow):
             self._undo_written_state = state
         except OSError:
             if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+                self._append_console(self._t("disk_write_failed"))
         # A batch saved for after a restart under this run_id rewrites
         # undo.ps1 from its own copy of these lists - keep that copy in step
         # with every change made since, or the continued batch drops them.
@@ -5001,7 +5077,7 @@ class MainWindow(QMainWindow):
             )
         except OSError:
             if not self._closed:
-                self.console.appendPlainText(self._t("disk_write_failed"))
+                self._append_console(self._t("disk_write_failed"))
 
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
