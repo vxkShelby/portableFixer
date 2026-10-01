@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m04_integrity" / "actions.yaml"
 
 
-def test_m04_catalog_loads_13_actions_in_repair_category():
+def test_m04_catalog_loads_14_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m04_integrity"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 13
+    assert len(module.actions) == 14
 
 
 def test_m04_catalog_risk_distribution():
@@ -18,7 +18,7 @@ def test_m04_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 6
+    assert len(by_risk[RiskLevel.SAFE]) == 7
     assert len(by_risk[RiskLevel.MODERATE]) == 5
     assert len(by_risk[RiskLevel.DESTRUCTIVE]) == 1
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
@@ -41,6 +41,7 @@ def test_m04_catalog_covers_expected_ids():
         "store_cache_reset",
         "perf_counters_rebuild",
         "profile_list_report",
+        "secpol_export_snapshot",
     }
 
 
@@ -91,3 +92,22 @@ def test_m04_catalog_profile_list_report_is_read_only_and_flags_temp_profile_cau
         assert flag in command, flag
     for verb in ("Set-ItemProperty", "Remove-Item", "Rename-Item", "New-ItemProperty"):
         assert verb not in command, verb
+
+
+def test_m04_catalog_secpol_export_snapshot_only_writes_a_new_backup_file():
+    # Backup-only stand-in for the rejected group-policy reset
+    # (research-repair-additions.md): exports, never applies a policy.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "secpol_export_snapshot")
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None
+    command = action.command
+    assert "secedit /export /cfg $bk /quiet" in command
+    assert "$env:ProgramData\\PortableFix" in command
+    # A timestamped name, so a second run never overwrites the pre-change snapshot.
+    assert "Get-Date -Format 'yyyyMMdd_HHmmss'" in command
+    for verb in ("/configure", "/import", "gpupdate", "Remove-Item"):
+        assert verb not in command, verb
+    # No file written = failure, not a silent "success".
+    missing = command.index("if (-not (Test-Path -LiteralPath $bk))")
+    assert "exit 1" in command[missing : command.index("}", missing)]

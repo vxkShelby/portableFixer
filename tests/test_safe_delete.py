@@ -125,6 +125,7 @@ SAFE_DELETE_ACTIONS = {
     ("m02_cleanup", "gpu_driver_install_leftovers"),
     ("m02_cleanup", "directx_shader_cache"),
     ("m02_cleanup", "crash_dumps"),
+    ("m02_cleanup", "thirdparty_app_caches"),
     ("m05_windows_update", "wu_reset_cache"),
     ("m14_printing", "print_reset_print_system"),
 }
