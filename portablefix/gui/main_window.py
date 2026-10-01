@@ -5145,6 +5145,8 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self._set_check_chip(action_id, self._check_results.get(action_id))
         entry.command = command
+        elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
+        entry.duration_sec = round(elapsed, 2)
         try:
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
@@ -5155,7 +5157,6 @@ class MainWindow(QMainWindow):
             # Newest last, so health.latest_findings-style order holds.
             self._findings.pop(finding["id"], None)
             self._findings[finding["id"]] = finding
-        elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         if not self._action_start_times:
             self._action_tick_timer.stop()
         self._action_durations[action_id] = elapsed
