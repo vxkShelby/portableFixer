@@ -180,17 +180,19 @@ def _pwsh_or_skip() -> str:
     return exe
 
 
-def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, target=None):
+def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, target=None, keys_exist: bool = True):
     """Runs `command` the way the executor does (prelude included when
     `target` is given) with every registry and file cmdlet stubbed: each
     registry call prints "REG <cmdlet> <path>" straight to the console (a
     command's own "| Out-Null" must not hide it), nothing touches the real
-    registry. Test-Path answers `hive_loaded` for the hive, $true otherwise."""
+    registry. Test-Path answers `hive_loaded` for the hive, `keys_exist`
+    otherwise."""
     stubs = [
         f"$global:__pfTestHive = '{hive}'",
         f"$global:__pfTestLoaded = ${str(hive_loaded).lower()}",
+        f"$global:__pfTestKeysExist = ${str(keys_exist).lower()}",
         "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) "
-        "if ($Path -eq $global:__pfTestHive) { return $global:__pfTestLoaded }; $true }",
+        "if ($Path -eq $global:__pfTestHive) { return $global:__pfTestLoaded }; $global:__pfTestKeysExist }",
         "function Get-Content { [CmdletBinding()] param([Parameter(Position=0)] $Path, [switch] $Raw) "
         f"'{BACKUP_JSON}' }}",
         "function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $Encoding) process { } }",
@@ -219,6 +221,37 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
         if line.startswith("REG ") and ("HK" in line or "Registry::" in line)
     ]
     return result, registry
+
+
+# Every action that creates a registry key (folders use New-Item -ItemType Directory).
+KEY_CREATING_ACTIONS = tuple(
+    a.id for a in load_module(CATALOG_PATH).actions if "New-Item -Path" in a.command + (a.undo_command or "")
+)
+
+
+def test_m13_key_creating_actions_are_the_known_ones():
+    assert set(KEY_CREATING_ACTIONS) == {
+        "debloat_disable_telemetry",
+        "debloat_disable_web_search",
+        "debloat_disable_copilot",
+        "debloat_disable_widgets",
+        "debloat_disable_advertising_id",
+        "debloat_disable_explorer_ads",
+        "debloat_disable_recall_clicktodo",
+        *HKLM_POLICY_ACTIONS,
+    }
+
+
+@pytest.mark.parametrize("action_id", KEY_CREATING_ACTIONS)
+@pytest.mark.parametrize("keys_exist", [True, False])
+def test_m13_new_item_only_creates_a_missing_key(action_id, keys_exist):
+    # New-Item -Force on an existing registry key deletes all its values and
+    # subkeys - e.g. telemetry would wipe feedback's DataCollection policy,
+    # web search would wipe explorer ads' HideRecommendedSection.
+    result, _ = _run_user_hive_command(_m13_action(action_id).command, "HKCU:", keys_exist=keys_exist)
+    assert result.returncode == 0, result.stdout + result.stderr
+    created = [line for line in result.stdout.splitlines() if line.startswith("REG New-Item ") and "HK" in line]
+    assert bool(created) == (not keys_exist), created
 
 
 def _client():
@@ -288,14 +321,17 @@ def test_m13_undo_for_signed_out_user_skips_without_ending_undo_script(action_id
     assert registry == []
 
 
-def test_m13_catalog_parses_in_powershell():
+def test_m13_catalog_parses_in_powershell(tmp_path):
     texts = []
     for action in load_module(CATALOG_PATH).actions:
         for text in (action.command, action.undo_command, action.preview_command):
             if text:
                 texts.append(base64.b64encode(text.encode("utf-8")).decode())
+    # Through a file: inlined, the catalog outgrows the 32K command-line limit.
+    data = tmp_path / "texts.txt"
+    data.write_text("\n".join(texts), encoding="ascii")
     script = (
-        "$bad = 0; foreach ($b in @(" + ",".join(f"'{t}'" for t in texts) + ")) { "
+        f"$bad = 0; foreach ($b in (Get-Content -LiteralPath '{data}')) {{ "
         "$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)); $errs = $null; "
         "[void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errs); "
         "if ($errs.Count) { $bad++; Write-Output $errs[0].Message } }; exit $bad"
