@@ -355,13 +355,16 @@ class _Run:
             prepared.plan, inactivity_timeout_sec=action.inactivity_timeout_sec, hard_cap_sec=action.hard_cap_sec,
             check_plan=action_service.check_plan(action, dry_run=self.dry_run, target_user=self.target),
         )
+        started = time.monotonic()
         code = run.run(self.say)
+        duration = time.monotonic() - started
         entry = action_service.audit_entry(
             module.module_id, action, code, run.captured_output, dry_run=self.dry_run, run_id=self.run_id,
             elevated=self.admin, target_user=self.target, payloads=run.pfjson, item_ids=item_ids,
             decision=action_service.ALREADY_APPLIED if run.skipped_applied else "",
         )
         entry.command = prepared.plan.display_command
+        entry.duration_sec = round(duration, 2)
         self._append(entry)
         for finding in entry.findings:
             self.findings.pop(finding["id"], None)

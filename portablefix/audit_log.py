@@ -53,6 +53,10 @@ class AuditEntry:
     # Structured findings the action reported (research G02,
     # portablefix/pfjson.py), already validated.
     findings: list[dict] = field(default_factory=list)
+    # Wall-clock seconds the action ran (research #17), set by the runner
+    # after make_entry like `command`. None = not timed (_system events,
+    # logs written before the field existed).
+    duration_sec: float | None = None
 
 
 def make_entry(

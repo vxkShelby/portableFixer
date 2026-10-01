@@ -4915,6 +4915,8 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self._set_check_chip(action_id, self._check_results.get(action_id))
         entry.command = command
+        elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
+        entry.duration_sec = round(elapsed, 2)
         try:
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
@@ -4925,7 +4927,6 @@ class MainWindow(QMainWindow):
             # Newest last, so health.latest_findings-style order holds.
             self._findings.pop(finding["id"], None)
             self._findings[finding["id"]] = finding
-        elapsed = time.monotonic() - self._action_start_times.pop(action_id, time.monotonic())
         status_text = f"{self._t('status_ok') if exit_code == 0 else self._t('status_failed')} ({elapsed:.1f}s)"
         if skipped:
             status_text = self._t("status_already_applied")
