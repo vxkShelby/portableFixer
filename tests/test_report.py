@@ -113,6 +113,54 @@ def test_html_report_has_collapsible_escaped_output_and_failure_marker(tmp_path)
     assert "FAILED" in content
 
 
+def test_report_shows_duration_and_collapsed_command(tmp_path):
+    # Research #17: how long each action ran, and the command it ran -
+    # collapsed by default with a short preview, the full text in the <pre>.
+    long_command = "Get-ChildItem -LiteralPath 'C:\\x' <&> " + "; Remove-Item foo" * 200
+    entry = make_entry("m02_cleanup", "user_temp", long_command, 0, "done", False, "run_cmd")
+    entry.duration_sec = 72.4
+    append_entry(tmp_path, "run_cmd", entry)
+    short = make_entry("m02_cleanup", "user_temp", "Remove-Item $env:TEMP", 0, "done", False, "run_cmd")
+    short.duration_sec = 2.34
+    append_entry(tmp_path, "run_cmd", short)
+
+    html_path, json_path = generate_report(tmp_path, "run_cmd", _fixture_modules(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    actions = json.loads(json_path.read_text(encoding="utf-8"))["actions"]
+
+    assert actions[0]["command"] == long_command
+    assert actions[0]["duration_sec"] == 72.4
+    assert "Duration: 1 min 12 s" in content
+    assert "Duration: 2.3 s" in content
+    # Not open by default; escaped; the preview is truncated, the <pre> is not.
+    assert '<details class="cmd"><summary>Command: <code>' in content
+    assert '<details class="cmd" open' not in content
+    assert "&lt;&amp;&gt;" in content and "<&>" not in content
+    preview = content.split('<details class="cmd"><summary>Command: <code>', 1)[1].split("</code>", 1)[0]
+    assert preview.endswith("\u2026") and len(preview) < 120
+    assert content.count("; Remove-Item foo") >= 200
+
+
+def test_report_duration_is_localized_and_old_entries_have_none(tmp_path):
+    timed = make_entry("m02_cleanup", "user_temp", "", 0, "done", False, "run_dur")
+    timed.duration_sec = 0.45
+    append_entry(tmp_path, "run_dur", timed)
+    entry = make_entry("m02_cleanup", "user_temp", "", 0, "done", False, "run_dur")
+    record = {k: v for k, v in entry.__dict__.items() if k != "duration_sec"}
+    with audit_log_path(tmp_path, "run_dur").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({**record, "duration_sec": "bogus"}) + "\n")
+
+    html_path, json_path = generate_report(tmp_path, "run_dur", _fixture_modules(), "sk", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    actions = json.loads(json_path.read_text(encoding="utf-8"))["actions"]
+
+    assert "Trvanie: 0,5 s" in content
+    assert content.count("Trvanie:") == 1
+    assert actions[1]["duration_sec"] is None
+    # No command recorded -> no empty command block.
+    assert 'class="cmd"' not in content
+
+
 def test_build_report_data_skips_corrupted_audit_line(tmp_path):
     modules = _fixture_modules()
     entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "done", False, "run_bad")

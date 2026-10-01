@@ -381,6 +381,10 @@ def build_report_data(
                 "exit_code": entry["exit_code"],
                 "dry_run": entry["dry_run"],
                 "output": entry.get("output", ""),
+                # Research #17: what ran and how long it took. "" / None
+                # in logs written before these were recorded.
+                "command": str(entry.get("command") or ""),
+                "duration_sec": _duration(entry.get("duration_sec")),
                 "category": _module_category(modules, entry["module_id"]),
                 # None = not recorded (log written before these fields existed).
                 "warned": entry.get("warned"),
@@ -619,6 +623,9 @@ h1 { color: #7aa2f7; font-size: 22px; margin: 0 0 4px 0; }
 .dry-tag { color: #e0af68; font-size: 11px; font-weight: bold; }
 details { margin-top: 8px; }
 summary { color: #7aa2f7; cursor: pointer; font-size: 12px; }
+details.cmd summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+details.cmd[open] summary code { display: none; }
+summary code { font-family: 'Cascadia Mono', Consolas, monospace; color: #9aa5ce; }
 pre { background: #16161e; border-radius: 6px; padding: 10px; overflow-x: auto;
       font-family: 'Cascadia Mono', Consolas, monospace; font-size: 12px; color: #a9b1d6;
       white-space: pre-wrap; word-break: break-word; }
@@ -839,6 +846,35 @@ def _exit_text(code, language: str) -> str:
     return translate("report_exit", language).format(code=code)
 
 
+def _duration(value) -> float | None:
+    # A corrupted log or hand-edited report.json can hold any JSON value.
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return None
+
+
+def _format_action_duration(seconds: float, language: str) -> str:
+    """"2.3 s", "1 min 12 s", "1 h 05 min" - an action's run time, with the
+    decimal comma in Slovak."""
+    if seconds < 60:
+        text = f"{seconds:.1f} s"
+        return text.replace(".", ",") if language == "sk" else text
+    whole = int(seconds)
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60} s"
+    return f"{whole // 3600} h {whole % 3600 // 60:02d} min"
+
+
+# Characters of the command shown in the collapsed <summary>; the full text
+# is one click away in the <pre>.
+_COMMAND_PREVIEW_CHARS = 80
+
+
+def _command_preview(command: str) -> str:
+    first = " ".join(command.split())
+    return first if len(first) <= _COMMAND_PREVIEW_CHARS else first[:_COMMAND_PREVIEW_CHARS].rstrip() + "…"
+
+
 def _render_action_card(a: dict, language: str, index: int) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
@@ -852,6 +888,24 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
     if a.get("output"):
         output_block = (
             f"<details><summary>{t('report_output')}</summary><pre>{html.escape(a['output'])}</pre></details>"
+        )
+    # a.get(): report JSON written before these fields existed has no key.
+    command = str(a.get("command") or "")
+    command_block = ""
+    if command:
+        # Collapsed by default - some catalog commands are thousands of
+        # characters on one line and would bury the card.
+        command_block = (
+            f'<details class="cmd"><summary>{t("report_command")}: '
+            f'<code>{html.escape(_command_preview(command))}</code></summary>'
+            f"<pre>{html.escape(command)}</pre></details>"
+        )
+    duration = _duration(a.get("duration_sec"))
+    duration_tag = ""
+    if duration is not None:
+        duration_tag = (
+            f'<span class="ts dur">{t("report_duration")}: '
+            f"{html.escape(_format_action_duration(duration, language))}</span>"
         )
     exit_note = "" if ok else f'<span class="mod">{html.escape(_exit_text(a["exit_code"], language))}</span>'
     # a.get(): report JSON written before these fields existed has no key.
@@ -877,7 +931,8 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         f'<span class="badge" style="background:{badge_color}">{html.escape(a["risk"])}</span>'
         f'<span class="mod">{html.escape(a["module_id"])}</span>'
         f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"]))}</span>'
-        f"</div>{warn_text}{output_block}</div>"
+        f"{duration_tag}"
+        f"</div>{warn_text}{command_block}{output_block}</div>"
     )
 
 
