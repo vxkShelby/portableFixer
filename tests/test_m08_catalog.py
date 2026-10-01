@@ -12,11 +12,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_24_actions_in_security_category():
+def test_m08_catalog_loads_26_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 24
+    assert len(module.actions) == 26
 
 
 def test_m08_catalog_risk_distribution():
@@ -24,7 +24,7 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 15
+    assert len(by_risk[RiskLevel.SAFE]) == 17
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "hard_uac_restore_default",
         "sec_wpbt_disable",
@@ -70,6 +70,8 @@ def test_m08_catalog_only_hardening_actions_have_undo_command():
         "sec_windows_update_last",
         "sec_hosts_anomaly",
         "sec_suspicious_scheduled_tasks",
+        "sec_wdigest_status",
+        "sec_exploit_mitigation_baseline",
     ):
         assert by_id[not_undoable].undo_command is None, not_undoable
 
@@ -158,7 +160,43 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "hard_disable_autologon",
         "hard_lsa_protection_enable",
         "hard_smartscreen_default",
+        "sec_wdigest_status",
+        "sec_exploit_mitigation_baseline",
     }
+
+
+def test_m08_catalog_wdigest_and_exploit_baseline_are_read_only_with_a_clear_verdict():
+    # research-security-audit.md 5.10/5.12: status reads only (disabling
+    # WDigest or applying mitigations is hardening, not audit). Each emits a
+    # security finding so the dashboard tile gets a verdict, not a raw value.
+    module = load_module(CATALOG_PATH)
+    by_id = {a.id: a for a in module.actions}
+    for action_id, finding_id in (
+        ("sec_wdigest_status", "security.wdigest"),
+        ("sec_exploit_mitigation_baseline", "security.exploit_protection"),
+    ):
+        action = by_id[action_id]
+        assert action.risk == RiskLevel.SAFE, action_id
+        assert action.undo_command is None and action.check_command is None, action_id
+        assert f"id = '{finding_id}'" in action.command, action_id
+        assert "area = 'security'" in action.command, action_id
+        for verb in ("Set-ItemProperty", "Remove-ItemProperty", "New-Item", "Set-ProcessMitigation"):
+            assert verb not in action.command, (action_id, verb)
+
+    wdigest = by_id["sec_wdigest_status"].command
+    assert "SecurityProviders\\WDigest" in wdigest
+    assert "-Name UseLogonCredential" in wdigest
+    # Only the value 1 is the credential-caching state; absent/0 is off.
+    assert "if ($v -eq 1) { $sev = 'critical'" in wdigest
+
+    baseline = by_id["sec_exploit_mitigation_baseline"].command
+    assert "Get-ProcessMitigation -System -EA Stop" in baseline
+    # Reshaped into named rows, not a dump of the nested policy objects.
+    for prop in ("$m.Dep.Enable", "$m.Aslr.ForceRelocateImages", "$m.Aslr.BottomUp",
+                 "$m.Aslr.HighEntropy", "$m.Cfg.Enable"):
+        assert prop in baseline, prop
+    assert "Format-List *" not in baseline
+    assert "DataExecutionPrevention_SupportPolicy" in baseline
 
 
 def test_m08_catalog_rootkit_adjacent_heuristics_disclose_their_own_limits():

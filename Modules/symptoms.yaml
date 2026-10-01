@@ -765,7 +765,7 @@ symptoms:
       - security check
       - is my pc secure
       - security audit
-    diagnostics: [sec_defender_status, sec_firewall_status, sec_uac_status, sec_local_admins, sec_autologon_check, feature_legacy_insecure_report]
+    diagnostics: [sec_defender_status, sec_firewall_status, sec_uac_status, sec_local_admins, sec_autologon_check, sec_wdigest_status, sec_exploit_mitigation_baseline, feature_legacy_insecure_report]
     fixes: [hard_firewall_enable_all, hard_uac_restore_default, hard_disable_smb1, hard_smartscreen_default]
 
   - id: start_menu_ads
