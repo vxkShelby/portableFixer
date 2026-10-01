@@ -9,10 +9,10 @@ from portablefix.preflight import is_long_action
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m02_cleanup" / "actions.yaml"
 
 
-def test_m02_catalog_loads_24_actions_all_with_preview():
+def test_m02_catalog_loads_26_actions_all_with_preview():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m02_cleanup"
-    assert len(module.actions) == 24
+    assert len(module.actions) == 26
     assert all(a.preview_command for a in module.actions)
 
 
@@ -21,7 +21,7 @@ def test_m02_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 11
+    assert len(by_risk[RiskLevel.SAFE]) == 13
     assert len(by_risk[RiskLevel.MODERATE]) == 8
     assert len(by_risk[RiskLevel.DESTRUCTIVE]) == 5
 
@@ -682,3 +682,217 @@ def test_browser_cache_sweep_label_and_description_name_all_browsers_profiles_an
         assert browser in action.description_en and browser in action.description_sk
     assert "profil" in action.description_sk and "profile" in action.description_en
     assert "beží" in action.description_sk and "running" in action.description_en
+
+
+# --- thirdparty_app_caches: Teams / Discord / Spotify -----------------------
+#
+# Same safety model as browser_cache_sweep (same _run_browser_ps harness):
+# only the listed cache folders are emptied, a running app is skipped and
+# named, a link anywhere on the way to a cache folder is never followed.
+
+TEAMS_NEW = "Packages/MSTeams_8wekyb3d8bbwe/LocalCache/Microsoft/MSTeams/EBWebView/Default"
+
+
+def _apps_action():
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == "thirdparty_app_caches")
+
+
+def _apps_tree(tmp_path: Path) -> dict:
+    local = tmp_path / "Local"
+    roaming = tmp_path / "Roaming"
+    t = {"local": local, "roaming": roaming}
+    for key, base, rels, keepers in (
+        ("teams_classic", roaming / "Microsoft" / "Teams", ("Cache", "Code Cache", "GPUCache"), ("Cookies", "desktop-config.json")),
+        ("teams_new", local / TEAMS_NEW, ("Cache", "Code Cache", "GPUCache"), ("Cookies", "Local Storage/leveldb/000003.log")),
+        ("discord", roaming / "discord", ("Cache", "Code Cache", "GPUCache"), ("Local Storage/leveldb/000003.log", "settings.json")),
+        ("spotify", local / "Spotify", ("Storage", "Data"), ()),
+    ):
+        info = {"blobs": [], "keepers": [], "caches": []}
+        for rel in rels:
+            info["blobs"].append(_fill_cache(base / rel))
+            info["caches"].append(base / rel)
+        for rel in keepers:
+            p = base / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("keep", encoding="utf-8")
+            info["keepers"].append(p)
+        t[key] = info
+    # Spotify's settings and login live in Roaming - never touched.
+    prefs = roaming / "Spotify" / "prefs"
+    prefs.parent.mkdir(parents=True)
+    prefs.write_text("keep", encoding="utf-8")
+    t["spotify"]["keepers"].append(prefs)
+    return t
+
+
+def test_thirdparty_app_caches_command_and_preview_parse_without_powershell_7_only_syntax(tmp_path):
+    action = _apps_action()
+    scripts_file = tmp_path / "scripts.json"
+    scripts_file.write_text(_json.dumps({"command": action.command, "preview": action.preview_command}), encoding="utf-8")
+    result = _subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-Command", PARSE_CHECKER],
+        env=dict(_os.environ, PFSCRIPTS_FILE=str(scripts_file)),
+        capture_output=True, text=True, timeout=120,
+        creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert "PARSE_DONE" in result.stdout, result.stdout + result.stderr
+    assert [line for line in result.stdout.splitlines() if line.startswith("ERR")] == []
+
+
+def test_thirdparty_app_caches_is_safe_never_closes_an_app_and_preview_shares_the_enumeration():
+    action = _apps_action()
+    assert action.risk == RiskLevel.SAFE
+    assert action.check_command is None
+    for script in (action.command, action.preview_command):
+        assert "Stop-Process" not in script and "taskkill" not in script.lower()
+        for proc in ("'Teams'", "'ms-teams'", "'Discord'", "'Spotify'"):
+            assert proc in script, proc
+    shared = action.command[action.command.index("function Test-PfRealDir") : action.command.index("$skipped = 0;")]
+    assert shared in action.preview_command
+    assert "Remove-PfSafe" not in action.preview_command
+
+
+def test_thirdparty_app_caches_clears_every_app_cache_and_keeps_app_data(tmp_path):
+    t = _apps_tree(tmp_path)
+    result, stops = _run_browser_ps(tmp_path, _apps_action().command, t["local"], t["roaming"])
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    for key in ("teams_classic", "teams_new", "discord", "spotify"):
+        _assert_swept(t[key])
+    assert (
+        "Cleared 11 app cache folder(s) [Teams (classic), Teams (new), Discord, Spotify], skipped/locked: 0"
+    ) in out.splitlines(), out
+    assert "Skipped," not in out
+    assert stops == []
+
+
+def test_thirdparty_app_caches_skips_and_names_a_running_app_without_closing_it(tmp_path):
+    t = _apps_tree(tmp_path)
+    result, stops = _run_browser_ps(
+        tmp_path, _apps_action().command, t["local"], t["roaming"], running=("Discord", "Spotify", "chrome")
+    )
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    _assert_untouched(t["discord"])
+    _assert_untouched(t["spotify"])
+    _assert_swept(t["teams_classic"])
+    _assert_swept(t["teams_new"])
+    assert "Skipped, app running (quit it completely, including from the tray, and run again): Discord, Spotify" in out
+    assert "Cleared 6 app cache folder(s) [Teams (classic), Teams (new)], skipped/locked: 0" in out, out
+    assert stops == []
+
+
+def test_thirdparty_app_caches_with_nothing_installed_is_a_no_op(tmp_path):
+    # Wrong/absent paths (e.g. the unverified new-Teams one) are harmless.
+    action = _apps_action()
+    result, _ = _run_browser_ps(tmp_path, action.command, tmp_path / "Local", None, running=("Teams",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().splitlines() == ["Cleared 0 app cache folder(s) [], skipped/locked: 0"]
+    preview, _ = _run_browser_ps(tmp_path, action.preview_command, tmp_path / "Local", None)
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert preview.stdout.strip().splitlines() == ["Would delete 0 files, 0 MB from Teams/Discord/Spotify caches"]
+
+
+@_pytest.mark.parametrize("where", ["app_root", "cache"])
+def test_thirdparty_app_caches_never_follows_a_link_on_the_way_to_a_cache(tmp_path, where):
+    victim = _victim(tmp_path)
+    for sub in ("Cache/x.bin", "Code Cache/x.bin"):
+        f = victim / sub
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("precious", encoding="utf-8")
+    local = tmp_path / "Local"
+    roaming = tmp_path / "Roaming"
+    roaming.mkdir(parents=True)
+    if where == "app_root":
+        link = roaming / "discord"
+    else:
+        (roaming / "discord").mkdir()
+        link = roaming / "discord" / "Cache"
+    _link(link, victim, "symlink")
+    before = sorted(str(p.relative_to(victim)) for p in victim.rglob("*"))
+    action = _apps_action()
+    preview, _ = _run_browser_ps(tmp_path, action.preview_command, local, roaming)
+    result, _ = _run_browser_ps(tmp_path, action.command, local, roaming)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(str(p.relative_to(victim)) for p in victim.rglob("*")) == before
+    _assert_victim_intact(victim)
+    assert _os.path.islink(link)
+    assert "Skipped, junction/symbolic link not followed: " in result.stdout and link.name in result.stdout, result.stdout
+    assert "Cleared 0 app cache folder(s)" in result.stdout
+    assert "Would skip, junction/symbolic link not followed: " in preview.stdout, preview.stdout
+    assert "Would delete 0 files, 0 MB" in preview.stdout, preview.stdout
+
+
+def test_thirdparty_app_caches_preview_deletes_nothing(tmp_path):
+    t = _apps_tree(tmp_path)
+    result, _ = _run_browser_ps(tmp_path, _apps_action().preview_command, t["local"], t["roaming"], running=("ms-teams",))
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    for key in ("teams_classic", "teams_new", "discord", "spotify"):
+        _assert_untouched(t[key])
+    assert "Would skip, app running: Teams (new)" in out, out
+    assert "Would delete 8 files, 8 MB from Teams/Discord/Spotify caches" in out, out
+
+
+def test_thirdparty_app_caches_description_states_the_spotify_and_new_teams_caveats():
+    action = _apps_action()
+    for app in ("Teams", "Discord", "Spotify"):
+        assert app in action.label_en and app in action.label_sk
+    assert "offline" in action.description_en and "downloaded again" in action.description_en
+    assert "offline" in action.description_sk and "stiahnuť znova" in action.description_sk
+    assert "not verified" in action.description_en and "nie je overená" in action.description_sk
+    assert "running" in action.description_en and "beží" in action.description_sk
+
+
+def test_thirdparty_app_caches_is_excluded_from_select_all():
+    # Wipes Spotify's offline downloads - same opt-out as crash_dumps, for the
+    # same reason: a destructive side effect "Select all" shouldn't trigger blindly.
+    assert _apps_action().exclude_from_select_all is True
+
+
+# --- downloads_aging_report ---------------------------------------------------
+#
+# Not redundant with largest_files_report: that one ranks by size across six
+# folders and has no age filter or total, so it cannot answer "how much of
+# Downloads has sat untouched for months".
+
+
+def _downloads_action():
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == "downloads_aging_report")
+
+
+def test_downloads_aging_report_is_report_only():
+    action = _downloads_action()
+    assert action.risk == RiskLevel.SAFE
+    assert action.check_command is None
+    assert action.preview_command == action.command
+    assert "AddDays(-90)" in action.command and "'Downloads'" in action.command
+    for verb in ("Remove-Item", "Remove-PfSafe", "Move-Item", "Clear-Content"):
+        assert verb not in action.command, verb
+
+
+def test_downloads_aging_report_counts_only_old_files_and_deletes_nothing(tmp_path):
+    import time
+
+    profile = tmp_path / "Profile"
+    downloads = profile / "Downloads"
+    (downloads / "sub").mkdir(parents=True)
+    old = time.time() - 200 * 86400
+    old_files = []
+    for name, size in (("big_old.iso", 3 * MIB), ("sub/small_old.zip", MIB)):
+        p = downloads / name
+        p.write_bytes(b"\0" * size)
+        _os.utime(p, (old, old))
+        old_files.append(p)
+    fresh = downloads / "fresh.exe"
+    fresh.write_bytes(b"\0" * (5 * MIB))
+    script = f"$env:USERPROFILE = {_ps_quote(str(profile))}; " + _downloads_action().command
+    result, _ = _run_browser_ps(tmp_path, script, tmp_path / "Local", None)
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    assert f"2 file(s) in {downloads} not modified for over 90 days, 4 MB total. Nothing was deleted." in out, out
+    assert "big_old.iso" in out and "small_old.zip" in out
+    assert "fresh.exe" not in out
+    assert out.index("big_old.iso") < out.index("small_old.zip")  # largest first
+    for p in old_files + [fresh]:
+        assert p.exists(), p
