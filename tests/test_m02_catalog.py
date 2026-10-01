@@ -844,6 +844,12 @@ def test_thirdparty_app_caches_description_states_the_spotify_and_new_teams_cave
     assert "running" in action.description_en and "beží" in action.description_sk
 
 
+def test_thirdparty_app_caches_is_excluded_from_select_all():
+    # Wipes Spotify's offline downloads - same opt-out as crash_dumps, for the
+    # same reason: a destructive side effect "Select all" shouldn't trigger blindly.
+    assert _apps_action().exclude_from_select_all is True
+
+
 # --- downloads_aging_report ---------------------------------------------------
 #
 # Not redundant with largest_files_report: that one ranks by size across six
