@@ -22,6 +22,14 @@ RISK_COLORS = {
     "REQUIRES_REBOOT": "#b26bff",
 }
 
+# Console line tints by severity - the same ok/warn/fail colours the action
+# status labels and the summary rows already use.
+CONSOLE_COLORS = {
+    "success": RISK_COLORS["SAFE"],
+    "warning": RISK_COLORS["MODERATE"],
+    "error": RISK_COLORS["DESTRUCTIVE"],
+}
+
 STYLE = """
 QMainWindow, QWidget#central {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -184,6 +192,9 @@ QPushButton#runButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 #4ee6ff, stop:1 #4dffc0);
 }
+/* DRY-RUN on: amber, so it is obvious the batch will change nothing. */
+QPushButton#runButton[dryrun="true"] { background: #ffb020; }
+QPushButton#runButton[dryrun="true"]:hover { background: rgba(255, 176, 32, 210); }
 QPushButton#runButton:disabled {
     background: #232d3a;
     color: #4b5568;

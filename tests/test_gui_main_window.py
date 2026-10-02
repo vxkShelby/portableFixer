@@ -7546,3 +7546,215 @@ def test_user_modules_actions_get_a_custom_badge(qtbot, tmp_path):
 
     assert badges("shop_action") == ["SAFE", "custom"]
     assert badges("clean_action") == ["SAFE"]
+
+
+# --- research-design-additions items 2, 6, 7, 9, 15 ---------------------------
+
+
+def test_console_severity_sniffs_error_warning_and_success_lines():
+    from portablefix.gui.main_window import _console_severity
+
+    assert _console_severity("ERROR: Access is denied.") == "error"
+    assert _console_severity("    + FullyQualifiedErrorId : PathNotFound") == "error"
+    assert _console_severity("Scan finished, no errors found.") is None
+    assert _console_severity("WARNING: Restart pending") == "warning"
+    assert _console_severity("Removed 12 files successfully") == "success"
+    assert _console_severity("Freed 120 MB") is None
+
+
+def _block_colors(console) -> list[tuple[str, str]]:
+    from PySide6.QtGui import QTextFormat
+
+    doc = console.document()
+    out = []
+    block = doc.begin()
+    while block.isValid():
+        fmt = block.begin().fragment().charFormat()
+        out.append((block.text(), fmt.foreground().color().name() if fmt.hasProperty(QTextFormat.Property.ForegroundBrush) else ""))
+        block = block.next()
+    return out
+
+
+def test_console_lines_are_tinted_by_severity_with_the_risk_palette(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import style
+
+    monkeypatch.setattr(style, "is_high_contrast", lambda *a, **k: False)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_tint")
+    qtbot.addWidget(window)
+
+    window._append_console("ERROR: <Name>  &  Size")
+    window._append_console("plain   line")
+    window._append_console("WARNING: careful")
+    window._append_console("done successfully")
+
+    colors = dict(_block_colors(window.console)[-4:])
+    # Escaped and space-preserving: a PowerShell table's < & and padding survive.
+    assert colors["ERROR: <Name>  &  Size"] == style.RISK_COLORS["DESTRUCTIVE"]
+    assert colors["plain   line"] == ""
+    assert colors["WARNING: careful"] == style.RISK_COLORS["MODERATE"]
+    assert colors["done successfully"] == style.RISK_COLORS["SAFE"]
+
+
+def test_console_is_not_tinted_under_high_contrast(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import style
+
+    monkeypatch.setattr(style, "is_high_contrast", lambda *a, **k: True)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_tint_hc")
+    qtbot.addWidget(window)
+
+    window._append_console("ERROR: boom")
+
+    assert _block_colors(window.console)[-1] == ("ERROR: boom", "")
+
+
+def test_console_collapse_folds_to_the_toolbar_and_restores(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_collapse")
+    qtbot.addWidget(window)
+    window.show()
+    window.resize(1000, 700)
+    console_height = window._main_splitter.sizes()[1]
+
+    window.console_collapse_button.click()
+    qtbot.waitUntil(lambda: window._main_splitter.sizes()[1] < console_height)
+    assert window.console.isHidden()
+    assert window.console_collapse_button.text() == "▸ Show output"
+    assert not window.console_fullscreen_button.isEnabled()
+    assert window._main_splitter.sizes()[1] <= window.console_collapse_button.sizeHint().height() + 20
+
+    window.console_collapse_button.click()
+    assert not window.console.isHidden()
+    assert window.console_collapse_button.text() == "▾ Hide output"
+    assert window.console_fullscreen_button.isEnabled()
+    qtbot.waitUntil(lambda: abs(window._main_splitter.sizes()[1] - console_height) <= 2)
+
+
+def test_console_collapse_is_off_while_popped_out(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_collapse_pop")
+    qtbot.addWidget(window)
+
+    window.console_popout_button.click()
+    assert not window.console_collapse_button.isEnabled()
+    window._console_window.close()
+    assert window.console_collapse_button.isEnabled()
+
+
+def test_run_button_is_amber_while_dry_run_is_on(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True), is_admin=True, run_id="run_tint_btn")
+    qtbot.addWidget(window)
+    assert window.run_button.property("dryrun") == "true"
+    assert "DRY-RUN" in window.run_button.toolTip()
+
+    window.dry_run_checkbox.setChecked(False)
+    assert window.run_button.property("dryrun") == "false"
+    assert window.run_button.toolTip() == ""
+
+    # Survives the language toggle's rebuild.
+    window.dry_run_checkbox.setChecked(True)
+    window._on_toggle_language()
+    assert window.run_button.property("dryrun") == "true"
+
+
+def test_batch_summary_copy_button_puts_the_results_on_the_clipboard(qtbot, tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "a1")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=True), is_admin=True, run_id="run_copy")
+    qtbot.addWidget(window)
+    window._action_checkboxes["a1"].setChecked(True)
+    QApplication.clipboard().setText("")
+
+    window.run_selected_actions()
+    qtbot.waitUntil(lambda: window._summary_dialog is not None, timeout=15000)
+    copy_button = next(b for b in window._summary_dialog.findChildren(QPushButton) if b.text() == "Copy summary")
+    copy_button.click()
+
+    copied = QApplication.clipboard().text()
+    assert copied.splitlines()[0] == "OK: 1    FAILED: 0"
+    assert "[OK] X (" in copied  # the row, with its time
+    assert copy_button.text() == "Copied ✓"
+    _wait_batch_idle(qtbot, window)
+
+
+_SLOW_PREVIEW_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: slow
+    label_sk: "Pomala"
+    label_en: "Slow"
+    risk: SAFE
+    command: "Write-Output 'slow-ran'"
+    preview_command: "Start-Sleep -Milliseconds 2500; Write-Output 'slow-preview'"
+"""
+
+
+def test_running_action_ticks_its_elapsed_time_and_keeps_it_for_the_summary(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path, _SLOW_PREVIEW_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True), is_admin=True, run_id="run_tick")
+    qtbot.addWidget(window)
+    window._action_checkboxes["slow"].setChecked(True)
+
+    window.run_selected_actions()
+
+    label = window._action_status_labels["slow"]
+    qtbot.waitUntil(lambda: label.text().startswith("RUNNING (") and label.text().endswith("s)"), timeout=10000)
+    qtbot.waitUntil(lambda: label.text().startswith("OK ("), timeout=15000)
+    assert not window._action_tick_timer.isActive()
+    assert window._action_durations["slow"] >= 2.0
+    _wait_batch_idle(qtbot, window)
+
+
+def test_elapsed_text_switches_to_a_clock_past_a_minute():
+    from portablefix.gui.main_window import _elapsed_text
+
+    assert _elapsed_text(3.24) == "3.2s"
+    assert _elapsed_text(125) == "0:02:05"
+
+
+def test_preview_button_runs_only_the_preview_command_even_with_dry_run_off(qtbot, tmp_path, monkeypatch):
+    from portablefix import restore_point
+
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: pytest.fail("no restore point"))
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False), is_admin=True, run_id="run_card_preview")
+    qtbot.addWidget(window)
+    assert set(window._preview_buttons) == {"risky_thing", "safe_thing"}
+
+    window._preview_buttons["risky_thing"].click()
+    # A batch can't start next to it - both would write into one console.
+    assert window._batch_start_blocked()
+    assert not window._preview_buttons["safe_thing"].isEnabled()
+    assert not window.run_button.isEnabled()
+
+    qtbot.waitUntil(lambda: window._preview_box is not None, timeout=15000)
+    assert "destructive-preview" in window._preview_box.text()
+    assert window._preview_box.windowTitle() == "Preview – Risky thing"
+    assert "destructive-preview" in window.console.toPlainText()
+    assert "destructive-ran" not in window.console.toPlainText()
+    assert window._preview_buttons["safe_thing"].isEnabled() and window.run_button.isEnabled()
+    # Read-only and outside any batch: nothing on record.
+    assert _audit_entries(audit_log_path(base_dir, "run_card_preview")) == []
+
+
+def test_actions_without_a_preview_command_get_no_preview_button(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_no_preview")
+    qtbot.addWidget(window)
+    assert "hello" not in window._preview_buttons
+
+
+def test_preview_is_refused_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_preview_busy")
+    qtbot.addWidget(window)
+    window._batch_active = True
+
+    window._on_preview_clicked("safe_thing")
+
+    assert window._preview_runner is None
+    assert window.statusBar().currentMessage() == "A preview can't start while a batch or another preview is running."
+    window._batch_active = False
