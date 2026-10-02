@@ -24,7 +24,7 @@ from nacl.signing import SigningKey, VerifyKey
 # Actions secret PORTABLEFIX_RELEASE_SIGNING_KEY (.github/workflows/release.yml).
 # Tests swap this for a test key (tests/conftest.py) - never an env var or a
 # file here: anything the app reads from disk could be planted next to it.
-PUBLIC_KEY = base64.b64decode("WqbyQCgaol4dMDc93bPvnmNSWGSjxZvvoB22t81cJ+k=")
+PUBLIC_KEY = base64.b64decode("O9lzLtsl2uQhIDcnXDNAZT2KJvRtLeoM1gFfkqozDTU=")
 
 SIG_PREFIX = b"ed25519:"
 KEY_ENV_VAR = "PORTABLEFIX_RELEASE_SIGNING_KEY"

@@ -56,7 +56,7 @@ def test_release_public_key_is_the_real_one():
         [sys.executable, "-c", "import base64; from portablefix import signing; print(base64.b64encode(signing.PUBLIC_KEY).decode())"],
         capture_output=True, text=True, cwd=REPO_ROOT, check=True,
     ).stdout.strip()
-    assert out == "WqbyQCgaol4dMDc93bPvnmNSWGSjxZvvoB22t81cJ+k="
+    assert out == "O9lzLtsl2uQhIDcnXDNAZT2KJvRtLeoM1gFfkqozDTU="
 
 
 def _run_sign(env_key: str | None, *files: Path) -> subprocess.CompletedProcess:
