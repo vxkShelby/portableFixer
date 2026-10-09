@@ -175,3 +175,72 @@ def test_appx_reregister_targets_the_signed_in_user_and_never_registers_other_us
     assert "all users" not in action.description_en
 
 
+SEARCH_FILES = ("Windows.edb", "Windows.db", "Windows-gather.db", "Windows-usn.db")
+
+
+def _search_stubs(set_fails=False):
+    fail = "throw [System.UnauthorizedAccessException]::new('Prístup odmietnutý.')" if set_fails else ""
+    return [
+        "$global:PfSvc = 'Running'",
+        "function Get-Service { [CmdletBinding()] param([string] $Name) "
+        "$o = [pscustomobject]@{ Name = $Name; Status = $global:PfSvc }; "
+        "$o | Add-Member -MemberType ScriptMethod -Name Refresh -Value { $this.Status = $global:PfSvc } -PassThru }",
+        "function Stop-Service { [CmdletBinding()] param([string] $Name, [switch] $Force) "
+        "Add-Content -Path $global:PfLog -Value ('stop ' + $Name); $global:PfSvc = 'Stopped' }",
+        "function Start-Service { [CmdletBinding()] param([string] $Name) "
+        "Add-Content -Path $global:PfLog -Value ('start ' + $Name); $global:PfSvc = 'Running' }",
+        "function Set-ItemProperty { [CmdletBinding()] param([string] $Path, [string] $Name, $Value, [string] $Type) "
+        f"Add-Content -Path $global:PfLog -Value ('set ' + $Path + ' ' + $Name + ' ' + $Value); {fail} }}",
+    ]
+
+
+SEARCH_NAMES = ["Get-Service", "Stop-Service", "Start-Service", "Set-ItemProperty"]
+
+
+def _search_tree(tmp_path, *files):
+    program_data = tmp_path / "ProgramData"
+    folder = program_data / "Microsoft" / "Search" / "Data" / "Applications" / "Windows"
+    folder.mkdir(parents=True)
+    for name in files:
+        (folder / name).write_bytes(b"\0" * 16)
+    (folder / "GatherLogs").mkdir()  # not an index file - stays
+    return program_data, folder
+
+
+def test_search_index_rebuild_removes_the_windows_11_index_and_marks_the_rebuild(tmp_path):
+    # Windows 11 keeps the index in Windows.db; deleting only the legacy
+    # Windows.edb removed nothing while printing success.
+    program_data, folder = _search_tree(tmp_path, "Windows.db", "Windows-gather.db")
+    result, calls = _run_ps(tmp_path, _search_stubs(), SEARCH_NAMES, _action("search_index_rebuild").command,
+                            {"ProgramData": program_data})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed 2 index file(s): Windows.db, Windows-gather.db" in result.stdout
+    assert sorted(p.name for p in folder.iterdir()) == ["GatherLogs"]
+    assert calls == ["stop WSearch", "set HKLM:\\SOFTWARE\\Microsoft\\Windows Search SetupCompletedSuccessfully 0",
+                     "start WSearch"]
+
+
+def test_search_index_rebuild_fails_when_no_index_file_exists(tmp_path):
+    program_data, _ = _search_tree(tmp_path)
+    result, calls = _run_ps(tmp_path, _search_stubs(), SEARCH_NAMES, _action("search_index_rebuild").command,
+                            {"ProgramData": program_data})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "No index database found" in result.stdout
+    assert calls[-1] == "start WSearch"  # the service is never left stopped
+
+
+def test_search_index_rebuild_restarts_the_service_when_the_registry_write_fails(tmp_path):
+    program_data, _ = _search_tree(tmp_path, "Windows.edb")
+    result, calls = _run_ps(tmp_path, _search_stubs(set_fails=True), SEARCH_NAMES,
+                            _action("search_index_rebuild").command, {"ProgramData": program_data})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "needs administrator" in result.stdout
+    assert calls[-1] == "start WSearch"
+
+
+def test_search_index_rebuild_names_every_index_file():
+    command = _action("search_index_rebuild").command
+    for name in SEARCH_FILES:
+        assert f"'{name}'" in command, name
+
+
