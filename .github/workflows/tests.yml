@@ -13,6 +13,12 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+# Unbuffered: pytest-timeout ends a hung run with os._exit, which skips the
+# flush, so a buffered stack dump never reached the log.
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONFAULTHANDLER: "1"
+
 jobs:
   test:
     runs-on: windows-latest
