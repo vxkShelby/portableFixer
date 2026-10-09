@@ -374,6 +374,26 @@ def test_emails_sids_and_admin_share_paths_are_masked(text, expected):
     assert redact_text(text) == expected
 
 
+def test_local_account_names_are_masked_in_the_report_by_default(monkeypatch):
+    # Get-LocalUser lists accounts without a profile folder too.
+    from portablefix import redaction
+    from portablefix.report import redact_report_data
+
+    monkeypatch.setattr(redaction, "local_profile_names", lambda: [])
+    monkeypatch.setattr(redaction, "local_account_names", lambda: ["Marienka"])
+    table = "Name      Enabled\n----      -------\nMarienka  True\nGuest     False"
+    out = redact_report_data({"run_id": "r", "hostname": "PC", "job": {}, "actions": [{"output": table}]})
+    assert out["actions"][0]["output"] == f"Name      Enabled\n----      -------\n{USER}  True\nGuest     False"
+
+
+def test_local_account_names_returns_strings_or_nothing():
+    from portablefix.redaction import local_account_names
+
+    names = local_account_names()
+    assert all(isinstance(n, str) and n for n in names)
+    assert "Administrator" not in names and "Guest" not in names
+
+
 def test_report_target_user_sid_is_masked():
     from portablefix.report import redact_report_data
 

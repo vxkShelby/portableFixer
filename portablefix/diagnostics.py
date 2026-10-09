@@ -84,7 +84,7 @@ def export_diagnostics_zip(base_dir: Path, dest_path: Path, run_id: str | None =
     from . import handoff, redaction, report
 
     run_id = run_id or _current_run_id(base_dir)
-    mask = redaction.local_profile_names()
+    mask = redaction.local_profile_names() + redaction.local_account_names()
     members: list[tuple[str, bytes]] = []
     crash = crash_log_path(base_dir)
     if crash.is_file():

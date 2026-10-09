@@ -456,6 +456,43 @@ def local_profile_names(users_dir: Path | None = None) -> list[str]:
     return sorted(names)
 
 
+def local_account_names() -> list[str]:
+    """The local account names (NetUserEnum level 0, no subprocess) apart
+    from the built-in ones - an account that never signed in, or was
+    renamed, has no matching profile folder, yet "Get-LocalUser" prints it.
+    [] off Windows or on any error."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class UserInfo0(ctypes.Structure):
+            _fields_ = [("name", wintypes.LPWSTR)]
+
+        netapi = ctypes.WinDLL("netapi32")
+        netapi.NetUserEnum.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.POINTER(UserInfo0)),
+            wintypes.DWORD, wintypes.LPDWORD, wintypes.LPDWORD, wintypes.LPDWORD,
+        ]
+        netapi.NetUserEnum.restype = wintypes.DWORD
+        netapi.NetApiBufferFree.argtypes = [ctypes.c_void_p]
+        buffer = ctypes.POINTER(UserInfo0)()
+        read, total, resume = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD(0)
+        # FILTER_NORMAL_ACCOUNT, MAX_PREFERRED_LENGTH: every account in one call.
+        status = netapi.NetUserEnum(None, 0, 2, ctypes.byref(buffer), 0xFFFFFFFF,
+                                    ctypes.byref(read), ctypes.byref(total), ctypes.byref(resume))
+        if status not in (0, 234) or not buffer:  # 234 = ERROR_MORE_DATA
+            return []
+        try:
+            names = [buffer[i].name for i in range(read.value)]
+        finally:
+            netapi.NetApiBufferFree(buffer)
+    except (OSError, AttributeError, ValueError):
+        return []
+    return sorted(n for n in names if n and n.lower() not in _GENERIC_ACCOUNTS)
+
+
 def account_names(accounts: Iterable[str]) -> list[str]:
     """The account part of "DOMAIN\\user" names (the target user of G25),
     for `mask`: an AzureAD or renamed account ("AzureAD\\JanNovak") need not

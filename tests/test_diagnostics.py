@@ -39,6 +39,7 @@ def _write_run(base, run_id, output):
 
 def test_export_diagnostics_zip_holds_only_the_current_run_redacted(tmp_path, monkeypatch):
     monkeypatch.setattr("portablefix.redaction.local_profile_names", lambda: [])
+    monkeypatch.setattr("portablefix.redaction.local_account_names", lambda: [])
     _write_run(tmp_path, "run1", "C:\\Users\\jan\\x SSID : Home5G")
     _write_run(tmp_path, "run2", "old C:\\Users\\jan\\x SSID : Home5G")
     (tmp_path / "Logs" / "crash.log").write_text("Traceback C:\\Users\\jan\\app.py", encoding="utf-8")

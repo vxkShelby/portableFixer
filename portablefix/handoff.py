@@ -669,7 +669,7 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     keep = [hostname, *(str(value) for value in job.values())]
     # The package is saved on the client PC: its profile folders name the
     # people to hide even where a name is printed without its path.
-    mask = redaction.local_profile_names()
+    mask = redaction.local_profile_names() + redaction.local_account_names()
     # Plus every target user (research G25) the audit log recorded: an
     # AzureAD or renamed account need not match its profile folder name.
     if ARC_AUDIT_LOG in paths:
