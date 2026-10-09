@@ -1,4 +1,5 @@
 import os
+import shutil
 
 # Before any Qt import: test windows and dialogs that show() must not pop up
 # on the developer's desktop and steal focus.
@@ -26,6 +27,13 @@ _EVENT_LOOP_LIMIT_MS = 30_000
 # Threads that outlived even the teardown wait: kept referenced for the rest
 # of the session, because dropping them would abort the whole process.
 _LEAKED_THREADS = []
+
+
+def pytest_sessionstart(session):
+    # ~20 test files skip themselves without PowerShell; on CI that would be
+    # a silently green run of a fraction of the suite.
+    if os.environ.get("CI") and not (shutil.which("powershell") or shutil.which("pwsh")):
+        pytest.exit("PowerShell missing on CI", returncode=1)
 
 
 class UnexpectedDialogError(AssertionError):
