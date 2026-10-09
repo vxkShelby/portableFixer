@@ -279,6 +279,8 @@ class MainWindow(QMainWindow):
         # then say (research-reporting.md F4).
         self._storage_fallback = Path(state_dir) != Path(assets_dir)
         self.modules, module_load_errors = load_catalog(assets_dir, settings.allow_modified_modules)
+        self._action_index: dict[str, tuple[ModuleDef, ActionDef]] = {}
+        self._bulk_selecting = False
         # Research G27: client complaint -> the symptoms to suggest. A broken
         # entry is skipped and reported with the module errors.
         self._symptoms, symptom_errors = symptoms.load(
@@ -1069,7 +1071,7 @@ class MainWindow(QMainWindow):
                     checkbox.setToolTip(action.description(self.settings.language))
                     checkbox.setAccessibleDescription(action.description(self.settings.language))
                     checkbox.setAccessibleName(self._action_accessible_name(action))
-                    checkbox.stateChanged.connect(lambda _state=0: self._update_status_bar())
+                    checkbox.stateChanged.connect(self._on_checkbox_state_changed)
                     self._action_checkboxes[action.id] = checkbox
                     row.addWidget(checkbox)
                     badge = QLabel(action.risk.value)
@@ -2029,6 +2031,10 @@ class MainWindow(QMainWindow):
         container_layout.addWidget(detail_panel)
         return container
 
+    def _on_checkbox_state_changed(self, _state: int = 0) -> None:
+        if not self._bulk_selecting:
+            self._update_status_bar()
+
     def _apply_selection(self, action_ids: list[str], mode: str) -> None:
         # mode is "all", "none", or a RiskLevel value (e.g. "SAFE") meaning
         # "check only actions at exactly this risk level".
@@ -2047,6 +2053,15 @@ class MainWindow(QMainWindow):
             self._preset_button_group.setExclusive(False)
             checked_preset.setChecked(False)
             self._preset_button_group.setExclusive(True)
+        # One status-bar recount for the whole sweep, not one per checkbox.
+        self._bulk_selecting = True
+        try:
+            self._set_checks(action_ids, mode)
+        finally:
+            self._bulk_selecting = False
+        self._update_status_bar()
+
+    def _set_checks(self, action_ids: list[str], mode: str) -> None:
         for action_id in action_ids:
             if mode == "none":
                 checked = False
@@ -4232,11 +4247,18 @@ class MainWindow(QMainWindow):
             self.close()
 
     def _find_action(self, action_id: str) -> tuple[ModuleDef, ActionDef]:
-        for module in self.modules:
-            for action in module.actions:
-                if action.id == action_id:
-                    return module, action
-        raise KeyError(action_id)
+        hit = self._action_index.get(action_id)
+        if hit is None:
+            # Built on first use and again on a miss: self.modules is public
+            # and can be extended after construction.
+            self._action_index = {}
+            for module in self.modules:
+                for action in module.actions:
+                    self._action_index.setdefault(action.id, (module, action))
+            hit = self._action_index.get(action_id)
+            if hit is None:
+                raise KeyError(action_id)
+        return hit
 
     def _skip_high_risk_actions_in_queue(self) -> None:
         def _is_high_risk(action_id: str) -> bool:

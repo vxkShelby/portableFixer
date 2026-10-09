@@ -240,6 +240,25 @@ def test_language_toggle_keeps_selection_console_search_and_size(qtbot, tmp_path
     assert (window.width(), window.height()) == (1111, 700)
 
 
+def test_select_all_recounts_the_status_bar_once(qtbot, tmp_path, monkeypatch):
+    base_dir = tmp_path
+    _write_module(base_dir, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(base_dir, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_bulk_once")
+    qtbot.addWidget(window)
+    calls = []
+    original = window._update_status_bar
+    monkeypatch.setattr(window, "_update_status_bar", lambda: calls.append(1) or original())
+
+    window._apply_selection(list(window._action_checkboxes), "all")
+
+    assert len(calls) == 1
+    assert all(cb.isChecked() for cb in window._action_checkboxes.values())
+    assert window.statusBar().currentMessage() == window._t("status_bar_selected").format(count=2, risk="SAFE")
+    window._action_checkboxes["clean_action"].setChecked(False)  # a single click still updates
+    assert len(calls) == 2
+
+
 def test_language_toggle_closes_a_popped_out_console_first(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_popout")
