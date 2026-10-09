@@ -11,6 +11,7 @@ build import this module without PySide6.
 import ctypes
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -27,9 +28,9 @@ from pathlib import Path
 
 from . import signing
 from .paths import powershell_executable
-from .sha256sums import _sha256_unless_stopped, parse_sha256sums_text
+from .sha256sums import _sha256_unless_stopped, parse_manifest_version, parse_sha256sums_text
 from .update_swap_script import SWAP_SCRIPT
-from .version import APP_VERSION
+from .version import APP_VERSION, is_newer, parse_version
 
 # Same values as the subprocess constants, spelled out so the flags can be
 # built (and tested) on any platform.
@@ -543,12 +544,21 @@ def stage_update(
     should_stop: Callable[[], bool] | None = None,
     progress: Callable[[int, int], None] | None = None,
     version: str | None = None,
+    *,
+    current_version: str | None = APP_VERSION,
 ) -> StagedUpdate:
     """Extracts and verifies the downloaded release zip into
     <install>\\_update_stage - the same volume as the install, so the swap is
     renames only (a cross-volume move onto a USB stick takes minutes, while
     no App\\ exists). Deletes the zip on success; leaves no partial stage on
-    failure or interruption."""
+    failure or interruption.
+
+    version is what the caller calls the package (the GitHub tag, or the
+    developer switch's zip name) and is handed back as staged.version; a
+    tag that names a different version than the signed manifest is refused.
+    version.txt - what cleanup_update_leftovers trusts - carries the
+    manifest's own version. current_version=None skips the newer-than check
+    (the release build verifies its own package)."""
     zip_path = Path(zip_path)
     install_dir = Path(install_dir)
     stage_dir = install_dir / STAGE_DIR_NAME
@@ -557,10 +567,13 @@ def stage_update(
     except OSError as exc:
         raise UpdateStageError(f"could not remove the previous staged update {stage_dir}: {exc}") from exc
     try:
-        staged = _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress)
-        if version:
-            (stage_dir / "version.txt").write_text(version, encoding="utf-8")
-        staged.version = version
+        staged = _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress, current_version)
+        tagged = version if version and _VERSION_RE.fullmatch(version) else None
+        if tagged and staged.version and parse_version(tagged) != parse_version(staged.version):
+            raise UpdateStageError(f"the release is tagged {version} but its SHA256SUMS says version {staged.version}")
+        if staged.version or version:
+            (stage_dir / "version.txt").write_text(staged.version or version, encoding="utf-8")
+        staged.version = version or staged.version
     except UpdateStageError:
         _discard(stage_dir)
         raise
@@ -577,7 +590,10 @@ def stage_update(
     return staged
 
 
-def _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress) -> StagedUpdate:
+_VERSION_RE = re.compile(r"[vV]?\d+(\.\d+)*")
+
+
+def _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress, current_version) -> StagedUpdate:
     with zipfile.ZipFile(zip_path) as zf:
         entries = []
         seen: set[str] = set()
@@ -631,8 +647,10 @@ def _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress)
 
     root = stage_dir / top
     _verify_layout(root)
-    _verify_manifest(root, should_stop)
-    return StagedUpdate(stage_dir=stage_dir, stage_root=root, file_count=len(entries), byte_count=done)
+    manifest_version = _verify_manifest(root, should_stop, current_version)
+    return StagedUpdate(
+        stage_dir=stage_dir, stage_root=root, file_count=len(entries), byte_count=done, version=manifest_version,
+    )
 
 
 def _verify_layout(root: Path) -> None:
@@ -651,7 +669,14 @@ def _verify_layout(root: Path) -> None:
         raise UpdateStageError("the update package has no PortableFix.cmd")
 
 
-def _verify_manifest(root: Path, should_stop) -> None:
+def _verify_manifest(root: Path, should_stop, current_version: str | None) -> str | None:
+    """Checks every file against the signed manifest and returns the version
+    the manifest names. The GitHub tag is not signed: without the version
+    inside the signed body, whoever can edit the release page could offer
+    any older signed release as 'newer' - a permanent downgrade. So the
+    shipped app refuses a manifest without a version, and any one that is
+    not newer than the running APP_VERSION. Run from source (tests, the
+    release build) an unversioned manifest is still accepted."""
     try:
         raw = (root / "Data" / "SHA256SUMS").read_bytes()
         # Research G32: the manifest is what every file is checked against,
@@ -660,9 +685,18 @@ def _verify_manifest(root: Path, should_stop) -> None:
         signed = signing.verified_body(raw)
         if signed is None:
             raise UpdateStageError("the update's SHA256SUMS is not signed with the PortableFix release key")
-        manifest = parse_sha256sums_text(signed.decode("utf-8"))
+        text = signed.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise UpdateStageError(f"the update's SHA256SUMS is unreadable: {exc}") from exc
+    manifest = parse_sha256sums_text(text)
+    manifest_version = parse_manifest_version(text)
+    if manifest_version is None:
+        if getattr(sys, "frozen", False):
+            raise UpdateStageError("the update's SHA256SUMS names no version - it could be an older release")
+    elif current_version is not None and not is_newer(manifest_version, current_version):
+        raise UpdateStageError(
+            f"the update's SHA256SUMS says version {manifest_version}, not newer than the running {current_version}"
+        )
     if MANIFEST_EXE not in manifest:
         raise UpdateStageError("the update's SHA256SUMS does not cover App/PortableFix.exe")
     for rel_path, expected in manifest.items():
@@ -674,6 +708,7 @@ def _verify_manifest(root: Path, should_stop) -> None:
             raise UpdateStageCancelled("staging the update was cancelled")
         if actual != expected:
             raise UpdateStageError(f"{rel_path} does not match SHA256SUMS - damaged or tampered package")
+    return manifest_version
 
 
 # --- The job and the handshake --------------------------------------------

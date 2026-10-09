@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from portablefix import signing
 from portablefix.integrity import TARGET_DIRS
-from portablefix.sha256sums import compute_sha256, parse_sha256sums
+from portablefix.sha256sums import compute_sha256, parse_manifest_version, parse_sha256sums
 from portablefix.update_swap import (
     DATA_ALLOWLIST,
     MANIFEST_EXE,
@@ -42,9 +42,13 @@ def _manifest_problems(root: Path) -> list[str]:
         return ["Data/SHA256SUMS is missing - run scripts/generate_sha256sums.py"]
     try:
         manifest = parse_sha256sums(sums_path)
+        version = parse_manifest_version(sums_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as exc:
         return [f"Data/SHA256SUMS is unreadable: {exc}"]
     problems = []
+    if version is None:
+        # The shipped app refuses such a package (update_swap._verify_manifest).
+        problems.append("Data/SHA256SUMS names no version - run scripts/generate_sha256sums.py")
     if MANIFEST_EXE not in manifest:
         problems.append(f"Data/SHA256SUMS does not list {MANIFEST_EXE}")
     # Same file set as scripts/generate_sha256sums.py collects.
@@ -114,7 +118,8 @@ def check_zip(zip_path: Path) -> list[str]:
         copy = Path(tmp) / zip_path.name
         shutil.copyfile(zip_path, copy)
         try:
-            staged = stage_update(copy, install_dir)
+            # The package is this very version: no newer-than check here.
+            staged = stage_update(copy, install_dir, current_version=None)
         except UpdateStageError as exc:
             return problems + [f"clients would refuse this package: {exc}"]
         root = staged.stage_root

@@ -143,8 +143,11 @@ def test_an_unsigned_sha256_file_fails(tmp_path, capsys):
         (_without("Vendor/"), None, "Vendor/ is missing or empty"),
         (_good_files(), sums_for({**_good_files(), "App/gone.dll": b"x"}),
          "App/gone.dll is listed in Data/SHA256SUMS but missing"),
+        # The shipped app refuses a package whose signed manifest names no
+        # version (it could be any older release under a newer tag).
+        (_good_files(), sums_for(_good_files(), version=None), "Data/SHA256SUMS names no version"),
     ],
-    ids=["stale-sums", "no-exe-in-sums", "no-vendor", "listed-but-missing"],
+    ids=["stale-sums", "no-exe-in-sums", "no-vendor", "listed-but-missing", "no-version"],
 )
 def test_a_broken_tree_fails(tmp_path, capsys, files, sums, expected):
     tree = _tree(tmp_path, files, sums=sums)

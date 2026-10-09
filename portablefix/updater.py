@@ -14,7 +14,7 @@ from PySide6.QtCore import QThread, Signal
 
 from . import elevation, signing
 from .sha256sums import _sha256_unless_stopped
-from .version import APP_VERSION
+from .version import APP_VERSION, is_newer, parse_version  # noqa: F401
 
 # The Qt-free core lives in update_swap; these names are re-exported because
 # main.py, the GUI and the tests have always reached them through updater.
@@ -74,23 +74,6 @@ class UpdateInfo:
     package_url: str
     sha256_url: str | None
     notes: str
-
-
-def parse_version(v: str) -> tuple[int, ...]:
-    v = v.lstrip("vV")
-    parts = []
-    for p in v.split("."):
-        digits = ""
-        for ch in p:
-            if not ch.isdigit():
-                break
-            digits += ch
-        parts.append(int(digits) if digits else 0)
-    return tuple(parts)
-
-
-def is_newer(remote: str, local: str) -> bool:
-    return parse_version(remote) > parse_version(local)
 
 
 def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo | None:

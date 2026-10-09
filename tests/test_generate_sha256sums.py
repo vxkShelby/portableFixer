@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from portablefix.integrity import parse_sha256sums
+from portablefix.sha256sums import MANIFEST_VERSION_PREFIX, parse_manifest_version, parse_sha256sums_text
+from portablefix.version import APP_VERSION
 from scripts.generate_sha256sums import build_sums_content, collect_files
 
 
@@ -30,3 +32,24 @@ def test_build_sums_content_round_trips_with_parser(tmp_path):
     parsed = parse_sha256sums(sums_path)
     assert "App/a.txt" in parsed
     assert len(parsed["App/a.txt"]) == 64
+
+
+def test_build_sums_content_names_the_version_in_a_line_older_parsers_skip(tmp_path):
+    (tmp_path / "App").mkdir()
+    (tmp_path / "App" / "a.txt").write_bytes(b"content-a")
+
+    content = build_sums_content(tmp_path, [tmp_path / "App" / "a.txt"])
+    first = content.splitlines()[0]
+
+    assert first == f"{MANIFEST_VERSION_PREFIX}{APP_VERSION}"
+    # Clients up to 1.16 keep only lines that split in two; a space in this
+    # one would turn it into a "missing file" and make them refuse the update.
+    assert first.split() == [first]
+    assert list(parse_sha256sums_text(content)) == ["App/a.txt"]
+    assert parse_manifest_version(content) == APP_VERSION
+    assert build_sums_content(tmp_path, [], "1.17.0").splitlines() == [f"{MANIFEST_VERSION_PREFIX}1.17.0"]
+
+
+def test_parse_manifest_version_is_none_for_a_manifest_without_one():
+    assert parse_manifest_version("abc  App/x\n") is None
+    assert parse_manifest_version(f"{MANIFEST_VERSION_PREFIX}\n") is None

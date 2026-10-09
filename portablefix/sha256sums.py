@@ -6,6 +6,26 @@ from collections.abc import Callable
 from pathlib import Path
 
 
+# The release version travels inside the signed manifest body (the GitHub
+# tag is not signed) as one line with no whitespace: parse_sha256sums_text
+# of every client since 1.11 keeps only lines that split in two, so one
+# word is skipped, while "# version 1.17.0" would have been read as the
+# entry "version 1.17.0" and refused as a missing file.
+MANIFEST_VERSION_PREFIX = "#portablefix-version:"
+
+
+def manifest_version_line(version: str) -> str:
+    return f"{MANIFEST_VERSION_PREFIX}{version}\n"
+
+
+def parse_manifest_version(text: str) -> str | None:
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith(MANIFEST_VERSION_PREFIX):
+            return line[len(MANIFEST_VERSION_PREFIX):] or None
+    return None
+
+
 def compute_sha256(path: Path) -> str:
     digest = _sha256_unless_stopped(path, None)
     assert digest is not None  # only a should_stop callback can cut it short

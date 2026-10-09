@@ -28,7 +28,7 @@ from portablefix.update_swap import (
     spawn_swap,
     stage_update,
 )
-from update_fixtures import NEW_EXE, make_install, release_files, sums_for, write_release_zip
+from update_fixtures import NEW_EXE, NEW_VERSION, make_install, release_files, sums_for, write_release_zip
 
 DETACHED_PROCESS = 0x00000008
 
@@ -233,7 +233,7 @@ def test_stage_update_unpacks_a_release_shaped_zip(tmp_path):
     make_install(install_dir)
     zip_path = _zip(tmp_path)
 
-    staged = stage_update(zip_path, install_dir, version="1.12.0")
+    staged = stage_update(zip_path, install_dir, version=NEW_VERSION)
 
     root = install_dir / "_update_stage" / "PortableFix"
     assert staged.stage_root == root
@@ -244,10 +244,101 @@ def test_stage_update_unpacks_a_release_shaped_zip(tmp_path):
     assert (root / "Data" / "SHA256SUMS").read_bytes() == sums_for(release_files())
     assert staged.file_count == len(release_files()) + 1
     assert staged.byte_count == sum(len(d) for d in release_files().values()) + len(sums_for(release_files()))
-    assert (install_dir / "_update_stage" / "version.txt").read_text() == "1.12.0"
+    assert (install_dir / "_update_stage" / "version.txt").read_text() == NEW_VERSION
+    assert staged.version == NEW_VERSION
     assert not zip_path.exists()
     # Nothing live is touched by staging.
     assert (install_dir / "App" / "PortableFix.exe").read_bytes() == b"old-exe"
+
+
+# --- The version inside the signed manifest ---------------------------------
+#
+# The GitHub tag is not signed: whoever can edit the release page could offer
+# an older signed release (say one that cannot update itself) under a newer
+# tag, and every client would "update" to it and be stuck. The version in
+# the signed Data/SHA256SUMS is the only thing a client may believe.
+
+
+def test_stage_update_refuses_an_older_release_offered_under_a_newer_tag(tmp_path):
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path, sums=sums_for(release_files(), version="1.12.0"))
+
+    with pytest.raises(UpdateStageError, match="1.12.0.*not newer"):
+        stage_update(zip_path, install_dir, version="99.0.0")
+
+    assert not (install_dir / "_update_stage").exists()
+    assert zip_path.exists()
+
+
+def test_stage_update_refuses_the_running_version_again(tmp_path):
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path, sums=sums_for(release_files(), version=update_swap.APP_VERSION))
+
+    with pytest.raises(UpdateStageError, match="not newer"):
+        stage_update(zip_path, install_dir)
+
+
+def test_stage_update_refuses_a_tag_that_names_another_version_than_the_manifest(tmp_path):
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+
+    with pytest.raises(UpdateStageError, match="tagged v99.1.0 but its SHA256SUMS says version 99.0.0"):
+        stage_update(_zip(tmp_path), install_dir, version="v99.1.0")
+    assert not (install_dir / "_update_stage").exists()
+
+
+def test_stage_update_records_the_manifest_version_not_the_tag(tmp_path):
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+
+    # The tag "v99.0.0" is the manifest's 99.0.0 - accepted, but version.txt
+    # (what cleanup_update_leftovers compares) is the signed one.
+    staged = stage_update(_zip(tmp_path), install_dir, version="v99.0.0")
+
+    assert (install_dir / "_update_stage" / "version.txt").read_text() == NEW_VERSION
+    assert staged.version == "v99.0.0"
+
+
+def test_stage_update_keeps_the_developer_switch_label_as_the_staged_version(tmp_path):
+    # The dev switch names the zip, not a version (main_window matches
+    # staged.version against it); only the manifest's own version is written.
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+
+    staged = stage_update(_zip(tmp_path), install_dir, version="p.zip (dev)")
+
+    assert staged.version == "p.zip (dev)"
+    assert (install_dir / "_update_stage" / "version.txt").read_text() == NEW_VERSION
+
+
+def test_stage_update_requires_the_manifest_version_in_the_frozen_app(tmp_path, monkeypatch):
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path, sums=sums_for(release_files(), version=None))
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    with pytest.raises(UpdateStageError, match="names no version"):
+        stage_update(zip_path, install_dir, version="99.0.0")
+    assert not (install_dir / "_update_stage").exists()
+
+    # From source (tests, the release build's own check) a manifest of <= 1.16
+    # still stages; version.txt then falls back to what the caller said.
+    monkeypatch.delattr(sys, "frozen")
+    staged = stage_update(zip_path, install_dir, version="99.0.0")
+    assert staged.version == "99.0.0"
+    assert (install_dir / "_update_stage" / "version.txt").read_text() == "99.0.0"
+
+
+def test_stage_update_can_skip_the_newer_than_check_for_the_release_build(tmp_path):
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path, sums=sums_for(release_files(), version="1.0.0"))
+
+    staged = stage_update(zip_path, install_dir, current_version=None)
+
+    assert staged.version == "1.0.0"
 
 
 def test_stage_update_reports_progress(tmp_path):
