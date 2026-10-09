@@ -475,6 +475,52 @@ def test_set_public_dns_undo_without_a_backup_changes_nothing(tmp_path):
     assert calls == [] and "No backup found" in undo.stdout
 
 
+# --- net_adapter_power_disable ------------------------------------------------
+
+def _power_stubs(states: dict):
+    table = "@{ " + "; ".join(f"{_ps_quote(n)} = {_ps_quote(s)}" for n, s in states.items()) + " }"
+    return [
+        _adapter_stub(),
+        f"$global:PfPower = {table}; "
+        "function Get-NetAdapterPowerManagement { [CmdletBinding()] param([string] $Name) "
+        "if ($global:PfPower.ContainsKey($Name)) { [pscustomobject]@{ Name = $Name; AllowComputerToTurnOffDevice = $global:PfPower[$Name] } } }",
+        "function Set-NetAdapterPowerManagement { [CmdletBinding()] param([string] $Name, [string] $AllowComputerToTurnOffDevice) "
+        "Add-Content -Path $global:PfLog -Value ('power ' + $Name + ' ' + $AllowComputerToTurnOffDevice); "
+        "if (-not $global:PfPower.ContainsKey($Name)) { throw [System.InvalidOperationException]::new('Nepodporované.') } }",
+    ]
+
+
+POWER_NAMES = ["Get-NetAdapter", "Get-NetAdapterPowerManagement", "Set-NetAdapterPowerManagement"]
+
+
+def test_adapter_power_disable_undo_touches_only_adapters_that_had_power_management_on(tmp_path):
+    # Undo re-enabled power management on every adapter, including ones that
+    # shipped with it off (many Wi-Fi drivers, USB NICs).
+    action = _action("net_adapter_power_disable")
+    stubs = _power_stubs({"Ethernet": "Enabled", "Wi-Fi": "Disabled"})  # Bluetooth: unsupported
+    result, calls = _run_ps(tmp_path, stubs, POWER_NAMES, action.command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["power Ethernet Disabled", "power Wi-Fi Disabled", "power Bluetooth Disabled"]
+    assert "Disabled power management on 2 adapter(s), unsupported/failed: 1" in result.stdout
+    assert _backup(tmp_path, "adapter_power_backup.json") == ["Ethernet"]
+    again, _ = _run_ps(tmp_path, _power_stubs({"Ethernet": "Disabled", "Wi-Fi": "Disabled"}), POWER_NAMES, action.command)
+    assert again.returncode == 0
+    assert _backup(tmp_path, "adapter_power_backup.json") == ["Ethernet"]
+    undo, calls = _run_ps(tmp_path, stubs, POWER_NAMES, action.undo_command)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert calls == ["power Ethernet Enabled"]
+
+
+def test_adapter_power_disable_undo_with_nothing_recorded_changes_nothing(tmp_path):
+    action = _action("net_adapter_power_disable")
+    stubs = _power_stubs({"Ethernet": "Disabled"})
+    _run_ps(tmp_path, stubs, POWER_NAMES, action.command)
+    assert _backup(tmp_path, "adapter_power_backup.json") == []
+    undo, calls = _run_ps(tmp_path, stubs, POWER_NAMES, action.undo_command)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert calls == []
+
+
 # --- net_time_sync_repair -----------------------------------------------------
 
 W32TM_STUB = "function w32tm { Add-Content -Path $global:PfLog -Value ('w32tm ' + ($args -join ' ')); $global:LASTEXITCODE = 0 }"
