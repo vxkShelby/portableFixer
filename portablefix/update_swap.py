@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import signing
+from . import elevation, signing
 from .paths import powershell_executable
 from .sha256sums import _sha256_unless_stopped, parse_manifest_version, parse_sha256sums_text
 from .update_swap_script import SWAP_SCRIPT
@@ -726,8 +726,10 @@ def write_swap_job(
     poll_ms: int = 250,
     sums_tries: int = 5,
     sums_delay_ms: int = 1000,
+    script_dir: Path | None = None,
 ) -> SwapJob:
-    """Writes the static script and its JSON job into log_dir. The JSON is
+    """Writes the static script and its JSON job into script_dir (default
+    log_dir); the marker and the logs always go to log_dir. The JSON is
     pure ASCII (non-ASCII path characters become \\u escapes), so how
     PowerShell 5.1 guesses a file's encoding cannot matter. Pairs are
     objects, not nested arrays, and every list is wrapped in @() by the
@@ -738,6 +740,7 @@ def write_swap_job(
         raise ValueError("the swap needs at least one process to wait for")
     install_dir = Path(os.path.abspath(install_dir))
     log_dir = Path(os.path.abspath(log_dir))
+    script_dir = log_dir if script_dir is None else Path(os.path.abspath(script_dir))
     stage_root = Path(os.path.abspath(staged.stage_root))
     # Created here, not by the script: the script does no path arithmetic
     # and must be able to write its log and status from the first line.
@@ -745,8 +748,8 @@ def write_swap_job(
     (install_dir / "Data").mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
     base = f"swap_{pid}_{secrets.token_hex(4)}"
-    script_path = log_dir / f"{base}.ps1"
-    job_path = log_dir / f"{base}.json"
+    script_path = script_dir / f"{base}.ps1"
+    job_path = script_dir / f"{base}.json"
     marker_path = log_dir / f"{base}.marker"
     marker_path.unlink(missing_ok=True)
 
@@ -917,8 +920,17 @@ def launch_swap(
 
     if log_dir is None:
         return finish(LaunchResult(ok=False, reason=REASON_SPAWN_ERROR, detail="no usable temp folder for the updater"))
+    # Elevated (a Program Files install), the script and its job must not sit
+    # in %TEMP%, which every non-elevated process of the same user can write:
+    # swapping either there would have the elevated PowerShell run anything.
+    # The stage was created by this process on the install's own volume.
+    # Non-elevated nothing is gained, and the ASCII %TEMP% path stays the
+    # safer -File argument for PowerShell 5.1 (see short_path).
+    options = dict(job_options or {})
+    if sys.platform == "win32" and elevation.is_admin():
+        options.setdefault("script_dir", staged.stage_dir)
     try:
-        job = write_swap_job(staged, install_dir, pids, log_dir, **(job_options or {}))
+        job = write_swap_job(staged, install_dir, pids, log_dir, **options)
     except OSError as exc:
         return finish(LaunchResult(ok=False, reason=REASON_SPAWN_ERROR, detail=f"could not write the updater files: {exc}"))
 

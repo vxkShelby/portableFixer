@@ -551,6 +551,35 @@ def test_write_swap_job_installs_only_allowlisted_data_files(tmp_path, staged):
     assert job.script_path.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
+def test_write_swap_job_can_keep_the_script_and_job_in_the_stage(tmp_path, staged):
+    job = update_swap.write_swap_job(staged, tmp_path / "install", [1], tmp_path / "logs", script_dir=staged.stage_dir)
+
+    assert job.script_path.parent == staged.stage_dir
+    assert job.job_path.parent == staged.stage_dir
+    assert job.job_path.name == job.script_path.name.replace(".ps1", ".json")
+    assert job.marker_path.parent == tmp_path / "logs"
+    assert job.log_file.parent == tmp_path / "logs"
+    assert job.launch_log.parent == tmp_path / "logs"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="elevation is a Windows notion")
+def test_launch_swap_keeps_the_script_and_job_out_of_temp_when_elevated(tmp_path, staged, fake_popen, monkeypatch):
+    # %TEMP% is writable by every non-elevated process of the same user: a
+    # script or job swapped there would run elevated. The stage is on the
+    # install's volume, created by this process.
+    monkeypatch.setattr(update_swap.elevation, "is_admin", lambda: True)
+    fake_popen.behaviour = {"marker": "ready 1 5.1"}
+
+    result = _launch(tmp_path, staged)
+
+    assert result.ok is True
+    script = Path(fake_popen.calls[0][0][-1])
+    assert script.parent == staged.stage_dir
+    assert (staged.stage_dir / script.name.replace(".ps1", ".json")).is_file()
+    assert not list((tmp_path / "temp" / "PortableFixUpdate").glob("swap_*.ps1"))
+    assert list((tmp_path / "temp" / "PortableFixUpdate").glob("swap_*.marker"))
+
+
 def test_launch_swap_succeeds_on_ready_and_marks_the_hand_off(tmp_path, staged, fake_popen):
     fake_popen.behaviour = {"marker": "ready 4321 5.1.19041.1"}
 
