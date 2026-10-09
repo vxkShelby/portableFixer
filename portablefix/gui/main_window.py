@@ -2585,8 +2585,10 @@ class MainWindow(QMainWindow):
             # has to refuse, or one the closing app has to wait for.
             if self._update_in_progress or self._closing_for_update:
                 return
-            runner = self._winget_update_runner
-            if runner is None or not runner.isRunning():
+            # _thread_running, not isRunning(): the update runner deletes
+            # itself when done, and the dead wrapper raised on every tick -
+            # the periodic scan silently never ran again.
+            if not _thread_running(self._winget_update_runner):
                 start_scan()
 
         auto_check_timer = QTimer(panel)

@@ -8041,3 +8041,46 @@ def test_close_orphans_a_runner_that_outlives_its_wait(qtbot, tmp_path, monkeypa
         release.set()
         qInstallMessageHandler(previous)
     assert seen == []
+
+
+# --- the winget auto-check survives a finished update (GUI review A6) ---------
+
+
+def test_winget_auto_check_still_scans_after_the_update_runner_deleted_itself(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import QCoreApplication, QEvent, QThread, QTimer
+
+    from portablefix import winget_updates
+
+    window, card, _row = _winget_window(
+        qtbot, tmp_path, monkeypatch, "run_auto_check_dead_runner", False, _fake_outdated_package(),
+        winget_auto_check_minutes=15,
+    )
+    timers = [t for t in card.findChildren(QTimer) if t.isActive() and t.interval() == 15 * 60_000]
+    assert len(timers) == 1
+    # WingetUpdateRunner has finished -> deleteLater: after the first update
+    # the attribute points at a dead wrapper whose isRunning() raises.
+    dead = QThread()
+    dead.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    window._winget_update_runner = dead
+    started = []
+
+    class _RecordingScan:
+        def __init__(self, parent=None):
+            started.append(True)
+            self.scan_finished = self
+            self.scan_failed = self
+
+        def connect(self, slot):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(winget_updates, "WingetScanRunner", _RecordingScan)
+
+    timers[0].timeout.emit()
+
+    assert started == [True]
+    window._winget_scan_runner = None
+    window._winget_update_runner = None
