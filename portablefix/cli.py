@@ -34,7 +34,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import action_service, health, hive_backup, intake, paths, preflight, report, restore_point, snapshot, undo
+from . import (
+    action_service, diagnostics, health, hive_backup, intake, paths, preflight, report, restore_point, snapshot, undo,
+)
 from . import items as items_mod
 from .audit_log import append_entry, make_entry
 from .executor import PlanRun
@@ -463,6 +465,7 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
     """The headless run for sys.argv-style `argv`; returns the exit code."""
     deps = deps or Deps()
     out = deps.out = deps.out or say
+    state_dir = None
     try:
         args = build_parser().parse_args(argv[1:])
         if deps.unsupported_os():
@@ -510,4 +513,12 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
         return EXIT_ERROR
     except OSError as exc:
         out(f"[PortableFix] {exc}")
+        return EXIT_ERROR
+    except Exception as exc:
+        # A bug (a corrupt previous report, a module edge case) escaping here
+        # ends in the windowed bootloader's error box - which an unattended
+        # RMM run waits on forever. crash.log is the only trace otherwise.
+        if state_dir is not None:
+            diagnostics.write_crash_log(state_dir, exc)
+        out(f"[PortableFix] internal error: {exc!r}")
         return EXIT_ERROR

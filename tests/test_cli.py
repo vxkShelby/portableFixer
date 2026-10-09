@@ -293,3 +293,18 @@ def test_real_catalog_presets_resolve():
     known = {a.id for m in modules for a in m.actions}
     for name, ids in PRESETS.items():
         assert set(ids) <= known, name
+
+
+def test_an_internal_error_is_exit_1_and_written_to_crash_log(app, tmp_path, monkeypatch):
+    # cli.run caught only CliError/OSError: anything else reached the
+    # windowed bootloader's error box, which an unattended run waits on.
+    from portablefix.diagnostics import crash_log_path
+
+    def broken(*args, **kwargs):
+        raise TypeError("previous report is not a dict")
+
+    monkeypatch.setattr(cli.report, "generate_report", broken)
+    code, lines, _ = _run(app, tmp_path, "--preset", _preset(tmp_path, ["cli_read"]))
+    assert code == cli.EXIT_ERROR
+    assert any("internal error" in line and "TypeError" in line for line in lines), lines
+    assert "TypeError: previous report is not a dict" in crash_log_path(tmp_path / "out").read_text(encoding="utf-8")
