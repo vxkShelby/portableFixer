@@ -443,16 +443,16 @@ def _run_m02(tmp_path: Path, stubs: list, names: list, command: str, env: dict |
     script; returns (result, logged calls)."""
     log = tmp_path / "calls.log"
     log.write_text("", encoding="utf-8")
-    guard = (
+    guard = [
         "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
-    )
+    ] if names else []
     prelude = ["[Console]::OutputEncoding=[Text.Encoding]::UTF8", f"$global:PfLog = {_ps_quote(str(log))}"]
     prelude += [f"$env:{k} = {_ps_quote(str(v))}" for k, v in (env or {}).items()]
     result = _subprocess.run(
         [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-         "; ".join(prelude + stubs + [guard, command])],
+         "; ".join(prelude + stubs + guard + [command])],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -523,6 +523,90 @@ def test_component_store_cleanup_never_resets_the_base_and_declares_long_timeout
     assert action.inactivity_timeout_sec >= 900
     assert action.hard_cap_sec >= 3600
     assert is_long_action(action)
+
+
+# --- "Removed N" must count what actually went, not the targets -------------
+
+# Remove-Item stand-in that refuses anything named *locked* with a
+# non-terminating error (what a file in use produces) and deletes the rest.
+REMOVE_ITEM_LOCKED = (
+    "function Remove-Item { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $InputObject, [switch] $Force) "
+    "process { if (-not $InputObject) { return }; if ($InputObject.Name -like '*locked*') { Write-Error ('locked: ' + $InputObject.Name) } "
+    "else { [IO.File]::Delete($InputObject.FullName) } } }"
+)
+
+
+def test_cbs_logs_reports_only_the_files_that_really_went(tmp_path):
+    import time
+
+    windir = tmp_path / "Windows"
+    cbs = windir / "Logs" / "CBS"
+    cbs.mkdir(parents=True)
+    now = time.time()
+    for name, age in (("CBS.log", 0), ("CBS.old.log", 100), ("CbsPersist_1.cab", 50), ("CbsPersist_locked.cab", 60)):
+        p = cbs / name
+        p.write_text("x", encoding="utf-8")
+        _os.utime(p, (now - age, now - age))
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "cbs_logs").command
+    result, _ = _run_m02(tmp_path, [REMOVE_ITEM_LOCKED], ["Remove-Item"], command, {"WINDIR": windir})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed 2 old CBS file(s), skipped/locked: 1" in result.stdout
+    assert sorted(p.name for p in cbs.iterdir()) == ["CBS.log", "CbsPersist_locked.cab"]
+
+
+def test_cbs_logs_with_only_the_newest_log_removes_and_counts_nothing(tmp_path):
+    # @($logs) of an empty Select -Skip 1 used to pipe $null into Remove-Item
+    # and count that binding error as a locked file.
+    windir = tmp_path / "Windows"
+    cbs = windir / "Logs" / "CBS"
+    cbs.mkdir(parents=True)
+    (cbs / "CBS.log").write_text("x", encoding="utf-8")
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "cbs_logs").command
+    result, _ = _run_m02(tmp_path, [REMOVE_ITEM_LOCKED], ["Remove-Item"], command, {"WINDIR": windir})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed 0 old CBS file(s), skipped/locked: 0" in result.stdout
+
+
+def test_stale_user_profiles_reports_removed_minus_errors(tmp_path):
+    stubs = [
+        "function Get-CimInstance { [CmdletBinding()] param([Parameter(Position=0)] [string] $ClassName) "
+        "@([pscustomobject]@{ LocalPath = 'C:\\Users\\old'; Special = $false; Loaded = $false; LastUseTime = [datetime]::new(2020, 1, 1) }, "
+        "[pscustomobject]@{ LocalPath = 'C:\\Users\\locked'; Special = $false; Loaded = $false; LastUseTime = [datetime]::new(2020, 1, 1) }) }",
+        "function Remove-CimInstance { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $InputObject) "
+        "process { Add-Content -Path $global:PfLog -Value ('remove ' + $InputObject.LocalPath); "
+        "if ($InputObject.LocalPath -like '*locked*') { Write-Error 'in use' } } }",
+    ]
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "stale_user_profiles").command
+    result, calls = _run_m02(tmp_path, stubs, ["Get-CimInstance", "Remove-CimInstance"], command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["remove C:\\Users\\old", "remove C:\\Users\\locked"]
+    assert "Removed profiles: 1, errors: 1" in result.stdout
+
+
+def test_gpu_driver_leftovers_count_a_folder_as_removed_only_when_it_is_gone():
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "gpu_driver_install_leftovers").command
+    body = command[command.index("$paths = "):]
+    assert "if (-not (Test-Path -LiteralPath $p)) { $removed++ }" in body
+
+
+def test_prefetch_deletes_only_pf_files_and_leaves_readyboot_alone(tmp_path):
+    # Remove-Item on Prefetch\* without -Recurse errored on the ReadyBoot
+    # folder every run and reported it as a locked item.
+    windir = tmp_path / "Windows"
+    prefetch = windir / "Prefetch"
+    (prefetch / "ReadyBoot").mkdir(parents=True)
+    (prefetch / "ReadyBoot" / "Trace1.fx").write_text("x", encoding="utf-8")
+    (prefetch / "Layout.ini").write_text("x", encoding="utf-8")
+    for name in ("NOTEPAD.EXE-1234.pf", "CHROME.EXE-5678.pf"):
+        (prefetch / name).write_text("x", encoding="utf-8")
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "prefetch")
+    preview, _ = _run_m02(tmp_path, [], [], action.preview_command, {"WINDIR": windir})
+    assert "Would delete 2 .pf files" in preview.stdout, preview.stdout + preview.stderr
+    result, _ = _run_m02(tmp_path, [], [], action.command, {"WINDIR": windir})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Skipped locked/in-use items: 0" in result.stdout
+    assert sorted(p.name for p in prefetch.iterdir()) == ["Layout.ini", "ReadyBoot"]
+    assert (prefetch / "ReadyBoot" / "Trace1.fx").exists()
 
 
 def _run_browser_ps(tmp_path: Path, script: str, local, roaming, running=()):
