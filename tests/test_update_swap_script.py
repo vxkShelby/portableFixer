@@ -406,6 +406,25 @@ def test_swap_refuses_when_a_process_to_wait_for_is_not_visible(tmp_path):
     _assert_untouched(install_dir)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="kernel object names are a Windows notion")
+def test_swap_refuses_to_run_without_the_update_mutex(tmp_path):
+    # The mutex is the only thing holding off a PortableFix started by hand
+    # mid-swap (it would restore X.old under the renames). A name with a
+    # backslash past the Global\ prefix cannot be created.
+    install_dir, _, job = _prepare(tmp_path)
+    data = json.loads(job.job_path.read_text(encoding="ascii"))
+    data["MutexName"] = "Global\\PortableFix\\no_such_namespace"
+    job.job_path.write_text(json.dumps(data), encoding="ascii")
+
+    result = _run(job, tmp_path)
+
+    assert result.returncode == 6
+    assert _marker(job).startswith("error could not create the update mutex")
+    _assert_untouched(install_dir)
+    assert not (install_dir / "Data" / "update_status.txt").exists()
+    assert (install_dir / "_update_stage").exists()
+
+
 def test_swap_recovers_leftovers_of_an_interrupted_swap_before_swapping(tmp_path):
     # State after a USB stick was pulled mid-swap: App\ only exists as
     # App.old, plus a stale Modules.old next to a live Modules\.
