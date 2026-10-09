@@ -607,13 +607,15 @@ def test_launcher_cmd_restores_app_folder_stranded_as_app_old():
     assert cmd.index(restore) < cmd.rindex('"%~dp0App\\PortableFix.exe"')
 
 
-def test_launcher_cmd_never_rereads_itself_after_the_app_exits():
-    # cmd.exe waits on the app, then reads its next command from the batch
-    # file by byte offset - from the NEW launcher once an update replaced it.
-    # Starting the app and leaving on one line means nothing is read again.
+def test_launcher_cmd_starts_the_app_and_leaves_without_keeping_a_console_open():
+    # `start` and leave on one line: the console closes at once instead of
+    # staying open behind the app for the whole session (the installer's
+    # shortcuts run this minimized), and cmd.exe never reads the batch file
+    # again - by byte offset, from the NEW launcher once an update replaced
+    # it. /D keeps the working directory off App\ (renamed by the update).
     root = Path(__file__).resolve().parent.parent
     lines = [line for line in (root / "PortableFix.cmd").read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert lines[-1] == '"%~dp0App\\PortableFix.exe" %* & exit /b'
+    assert lines[-1] == 'start "" /D "%~dp0" "%~dp0App\\PortableFix.exe" %* & exit /b'
     assert "*.cmd text eol=crlf" in (root / ".gitattributes").read_text(encoding="utf-8").splitlines()
 
 
@@ -622,6 +624,13 @@ def test_installer_starts_the_app_in_the_install_root_and_ships_data_by_allowlis
     # A current directory of App\ blocks the update's App -> App.old rename.
     assert 'WorkingDir: "{app}\\App"' not in iss
     assert iss.count('WorkingDir: "{app}";') == 3  # both shortcuts and the post-install launch
+    # Through the launcher, which is the only thing that restores an App.old
+    # stranded by an interrupted update; minimized, so its console does not
+    # flash. A shortcut straight to App\PortableFix.exe is dead after that.
+    assert 'Filename: "{app}\\App\\PortableFix.exe"' not in iss
+    assert iss.count('Filename: "{app}\\PortableFix.cmd"; WorkingDir: "{app}";') == 3
+    code = "\n".join(line for line in iss.splitlines() if not line.startswith(";"))
+    assert code.count("runminimized") == 3
     # The build machine's settings.json must never reach a user's install.
     assert "Data\\*" not in iss
     for name in update_swap.DATA_ALLOWLIST:
