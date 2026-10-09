@@ -224,13 +224,14 @@ function Load-PfReg { $global:PFR = @{}; $j = Microsoft.PowerShell.Management\Ge
 function Save-PfReg { $o = [ordered]@{}; foreach ($k in $global:PFR.Keys) { $vals = [ordered]@{}; foreach ($n in $global:PFR[$k].values.Keys) { $vals[$n] = @{ kind = $global:PFR[$k].values[$n][0]; value = $global:PFR[$k].values[$n][1] } }; $o[$k] = @{ values = $vals; sub = $global:PFR[$k].sub } }; ConvertTo-Json -InputObject $o -Depth 6 | Microsoft.PowerShell.Management\Set-Content -LiteralPath $env:PF_REGFILE -Encoding UTF8 }
 function Typed-PfVal($kind, $val) { switch ($kind) { 'DWord' { [int]$val } 'QWord' { [int64]$val } 'Binary' { ,([byte[]]@($val)) } 'MultiString' { ,([string[]]@($val)) } default { $val } } }
 function Log-Pf([string]$m) { Microsoft.PowerShell.Management\Add-Content -LiteralPath $env:PF_LOGFILE -Value $m }
-function Test-Path { [CmdletBinding()] param([Parameter(Position = 0)] [string] $Path, [string] $LiteralPath) $p = $(if ($LiteralPath) { $LiteralPath } else { $Path }); if ($p -like 'HK*:*') { Load-PfReg; $global:PFR.ContainsKey($p) } else { Microsoft.PowerShell.Management\Test-Path -LiteralPath $p } }
+function Pf-IsReg([string]$p) { ($p -like 'HK*:*') -or ($p -like 'Registry::*') }
+function Test-Path { [CmdletBinding()] param([Parameter(Position = 0)] [string] $Path, [string] $LiteralPath) $p = $(if ($LiteralPath) { $LiteralPath } else { $Path }); if (Pf-IsReg $p) { Load-PfReg; $global:PFR.ContainsKey($p) } else { Microsoft.PowerShell.Management\Test-Path -LiteralPath $p } }
 function Get-Item { [CmdletBinding()] param([string] $LiteralPath) Load-PfReg; if (-not $global:PFR.ContainsKey($LiteralPath)) { throw [System.Management.Automation.ItemNotFoundException]::new('Nenájdené.') }; $o = [pscustomobject]@{ KeyPath = $LiteralPath; SubKeyCount = $global:PFR[$LiteralPath].sub }; $o | Add-Member ScriptMethod GetValueNames { Load-PfReg; ,([string[]]@($global:PFR[$this.KeyPath].values.Keys)) }; $o | Add-Member ScriptMethod GetValue { param($n, $d, $opt) Load-PfReg; $e = $global:PFR[$this.KeyPath].values[$n]; if ($null -eq $e) { return $d }; Typed-PfVal $e[0] $e[1] }; $o | Add-Member ScriptMethod GetValueKind { param($n) Load-PfReg; $global:PFR[$this.KeyPath].values[$n][0] }; $o }
 function Get-ItemProperty { [CmdletBinding()] param([string] $LiteralPath) Load-PfReg; if (-not $global:PFR.ContainsKey($LiteralPath)) { return }; $h = [ordered]@{}; foreach ($n in $global:PFR[$LiteralPath].values.Keys) { $h[$n] = Typed-PfVal $global:PFR[$LiteralPath].values[$n][0] $global:PFR[$LiteralPath].values[$n][1] }; [pscustomobject]$h }
-function New-Item { [CmdletBinding()] param([Parameter(Position = 0)] [string] $Path, [string] $ItemType, [switch] $Force) if ($Path -like 'HK*:*') { Load-PfReg; Log-Pf ('New-Item ' + $Path); if (-not $global:PFR.ContainsKey($Path)) { $global:PFR[$Path] = @{ values = [ordered]@{}; sub = 0 } }; Save-PfReg; [pscustomobject]@{ Path = $Path } } else { Microsoft.PowerShell.Management\New-Item -Path $Path -ItemType $ItemType -Force:$Force } }
+function New-Item { [CmdletBinding()] param([Parameter(Position = 0)] [string] $Path, [string] $ItemType, [switch] $Force) if (Pf-IsReg $Path) { Load-PfReg; Log-Pf ('New-Item ' + $Path); if (-not $global:PFR.ContainsKey($Path)) { $global:PFR[$Path] = @{ values = [ordered]@{}; sub = 0 } }; Save-PfReg; [pscustomobject]@{ Path = $Path } } else { Microsoft.PowerShell.Management\New-Item -Path $Path -ItemType $ItemType -Force:$Force } }
 function New-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [string] $Name, $Value, [string] $PropertyType, [switch] $Force) Load-PfReg; Log-Pf ('New-ItemProperty ' + $Name + ' ' + $PropertyType); if ($env:PF_FAIL_NAME -eq $Name) { throw [System.UnauthorizedAccessException]::new('Prístup odmietnutý.') }; if ($env:PF_IGNORE_NAME -eq $Name) { return }; if (-not $global:PFR.ContainsKey($LiteralPath)) { throw [System.Management.Automation.ItemNotFoundException]::new('Nenájdené.') }; $v = $Value; if ($v -is [array]) { $v = @($v | ForEach-Object { $_ }) }; $global:PFR[$LiteralPath].values[$Name] = @($PropertyType, $v); Save-PfReg; [pscustomobject]@{ Name = $Name } }
 function Remove-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [string] $Name) Load-PfReg; Log-Pf ('Remove-ItemProperty ' + $Name); $global:PFR[$LiteralPath].values.Remove($Name); Save-PfReg }
-function Remove-Item { [CmdletBinding()] param([string] $LiteralPath, [switch] $Force) if ($LiteralPath -like 'HK*:*') { Load-PfReg; Log-Pf ('Remove-Item ' + $LiteralPath); $global:PFR.Remove($LiteralPath); Save-PfReg } else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force } }
+function Remove-Item { [CmdletBinding()] param([string] $LiteralPath, [switch] $Force) if (Pf-IsReg $LiteralPath) { Load-PfReg; Log-Pf ('Remove-Item ' + $LiteralPath); $global:PFR.Remove($LiteralPath); Save-PfReg } else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force } }
 function icacls { Log-Pf ('icacls ' + ($args -join ' ')); $global:LASTEXITCODE = 0 }
 function Pf-WindowsIdentity { if (-not $env:PF_WHO_NAME) { throw [System.Security.SecurityException]::new('Prístup odmietnutý.') }; [pscustomobject]@{ Name = $env:PF_WHO_NAME; User = [pscustomobject]@{ Value = $env:PF_WHO_SID } } }
 function Get-CimInstance { [CmdletBinding()] param([string] $ClassName) [pscustomobject]@{ UserName = $env:PF_CONSOLE_USER } }
@@ -295,7 +296,10 @@ class _StorageSenseRig:
     def backup(self) -> Path:
         return self.program_data / "PortableFix" / "storage_sense_backup.json"
 
-    def run(self, command, fail_name="", ignore_name=""):
+    def run(self, command, fail_name="", ignore_name="", prelude=""):
+        """prelude: the executor's $__pfUserHive/$__pfUserSid assignments
+        (research G25), empty when PortableFix runs without one."""
+        command = prelude + command
         env_vars = {
             "ProgramData": str(self.program_data), "PF_REGFILE": str(self.regfile), "PF_LOGFILE": str(self.logfile),
             "PF_WHO_NAME": self.who[0] if self.who else "", "PF_WHO_SID": self.who[1] if self.who else "",
@@ -610,6 +614,48 @@ def test_storage_sense_enable_warns_about_over_the_shoulder_elevation(tmp_path):
     result = rig.run(_action("storage_sense_enable").command)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WARNING: the signed-in user is PC\\zakaznik, but PortableFix runs as PC\\technik" in result.stdout
+
+
+CLIENT = ("PC\\zakaznik", "S-1-5-21-1000-2000-3000-1002")
+CLIENT_HIVE = "Registry::HKEY_USERS\\" + CLIENT[1]
+CLIENT_PRELUDE = f"$__pfUserHive = '{CLIENT_HIVE}'; $__pfUserSid = '{CLIENT[1]}'; "
+SS_KEY_CLIENT = CLIENT_HIVE + "\\Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy"
+
+
+def test_storage_sense_enable_targets_the_signed_in_user_from_the_prelude(tmp_path):
+    # Over the shoulder the prelude names the client's hive and SID: the
+    # values land there, the backup carries the client's SID and the
+    # "elevated with another account" warning does not apply.
+    reg = _reg()
+    reg[CLIENT_HIVE] = {"values": {}, "sub": 1}
+    rig = _StorageSenseRig(tmp_path, reg, console=CLIENT[0])
+    action = _action("storage_sense_enable")
+    result = rig.run(action.preview_command, prelude=CLIENT_PRELUDE)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{CLIENT_HIVE} = registry hive of the signed-in user PC\\zakaznik ({CLIENT[1]})" in result.stdout
+    assert "WARNING" not in result.stdout and rig.calls() == []
+    result = rig.run(action.command, prelude=CLIENT_PRELUDE)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{CLIENT_HIVE} = registry hive of the signed-in user PC\\zakaznik ({CLIENT[1]})" in result.stdout
+    assert "WARNING" not in result.stdout
+    assert rig.state()[SS_KEY_CLIENT] == _as_state(WANT) and SS_KEY not in rig.state()
+    backup = json.loads(rig.backup.read_text(encoding="utf-8-sig"))
+    assert backup["Sid"] == CLIENT[1] and backup["Key"] == SS_KEY_CLIENT
+    # Undo without the prelude (the technician's own hive) refuses; with it, restores.
+    result = rig.run(action.undo_command)
+    assert result.returncode == 1 and "the backup belongs to PC\\zakaznik" in result.stdout
+    assert rig.state()[SS_KEY_CLIENT] == _as_state(WANT)
+    result = rig.run(action.undo_command, prelude=CLIENT_PRELUDE)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert SS_KEY_CLIENT not in rig.state() and not rig.backup.exists()
+
+
+def test_storage_sense_enable_skips_a_signed_out_user(tmp_path):
+    rig = _StorageSenseRig(tmp_path, _reg())
+    result = rig.run(_action("storage_sense_enable").command, prelude=CLIENT_PRELUDE)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Profile hive not loaded, skipped: " + CLIENT_HIVE in result.stdout
+    assert rig.state() == {} and not rig.backup.exists()
 
 
 def test_storage_sense_enable_failed_write_keeps_backup_so_undo_works(tmp_path):

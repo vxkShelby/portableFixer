@@ -40,7 +40,7 @@ function Set-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Pat
 function New-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Name, $Value, $PropertyType, [switch] $Force) $p = Pf-Path $Path $LiteralPath; Pf-Reg 'New-ItemProperty' $p; $global:__pfVals[$p + '\' + $Name] = $Value }
 function Remove-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Name) $p = Pf-Path $Path $LiteralPath; Pf-Reg 'Remove-ItemProperty' $p; $global:__pfVals.Remove($p + '\' + $Name) }
 function New-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $ItemType, [switch] $Force) if ($ItemType -eq 'Directory') { return (Microsoft.PowerShell.Management\New-Item -Path $Path -ItemType Directory -Force:$Force) }; Pf-Reg 'New-Item' $Path }
-function Remove-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, [switch] $Recurse, [switch] $Force) $p = Pf-Path $Path $LiteralPath; if (-not (Pf-IsReg $p)) { return (Microsoft.PowerShell.Management\Remove-Item -LiteralPath $p -Force:$Force -Recurse:$Recurse) }; Pf-Reg 'Remove-Item' $p; $global:__pfGone[$p] = $true }
+function Remove-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, [switch] $Recurse, [switch] $Force) $p = Pf-Path $Path $LiteralPath; if (-not (Pf-IsReg $p)) { return (Microsoft.PowerShell.Management\Remove-Item -LiteralPath $p -Force:$Force -Recurse:$Recurse -EA SilentlyContinue) }; Pf-Reg 'Remove-Item' $p; $global:__pfGone[$p] = $true }
 function Get-ChildItem { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Filter, [switch] $Directory, [switch] $Force) $p = Pf-Path $Path $LiteralPath; if (-not (Pf-IsReg $p)) { return (Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $p -Force:$Force) }; Pf-Reg 'Get-ChildItem' $p; foreach ($n in 'Microsoft.VbaAddin', 'Acme.Addin') { [pscustomobject]@{ PSChildName = $n; PSPath = ($p + '\' + $n) } } }
 function Get-Content { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, [switch] $Raw, $Encoding) $env:PF_BACKUP_JSON }
 function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $LiteralPath, $Encoding) begin { [Console]::Out.WriteLine('FILE ' + (Pf-Path $Path $LiteralPath)) } process { } }
@@ -124,6 +124,11 @@ CASES = [
     # The clear action's undo is reg import of .reg files - no registry cmdlet.
     ("m17_browser_deep", "browser_policy_report", ("command",), None),
     ("m17_browser_deep", "browser_clear_policy_keys", ("command",), None),
+    ("m09_tuning", "storage_sense_enable", ("command", "undo_command", "preview_command"), {
+        "User": "PC\\klient", "Sid": CLIENT_SID, "KeyExisted": True,
+        "Key": CLIENT_HIVE + "\\Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy",
+        "Values": [{"Name": n, "Existed": False, "Kind": None, "Value": None} for n in ("01", "2048", "04", "08", "256", "32")],
+    }),
 ]
 
 
@@ -156,10 +161,12 @@ def test_per_user_actions_fall_back_to_hkcu_without_the_prelude(tmp_path, module
     script = script.replace(IDENTITY_CALL, "(Pf-WindowsIdentity)")
     program_data = tmp_path / "ProgramData"
     program_data.mkdir(exist_ok=True)
+    # Without the prelude the backup is the process user's own.
+    backup_json = json.dumps(backup).replace(CLIENT_HIVE, "HKCU:").replace(CLIENT_SID, PROCESS_SID) if backup is not None else ""
     full = "\n".join([
         f"$env:ProgramData = {_ps_quote(str(program_data))}", "$env:PF_HIVE = 'HKCU:'",
         f"$env:PF_PROCESS_SID = '{PROCESS_SID}'",
-        f"$env:PF_BACKUP_JSON = {_ps_quote(json.dumps(backup) if backup is not None else '')}",
+        f"$env:PF_BACKUP_JSON = {_ps_quote(backup_json)}",
         STUBS, "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script,
     ])
     result = subprocess.run(
