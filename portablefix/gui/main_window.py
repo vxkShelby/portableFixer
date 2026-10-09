@@ -553,6 +553,17 @@ class MainWindow(QMainWindow):
             # minutes on a slow stick - same non-blocking close.
             rp_runner = self._pending_hive_backup_runner
             waiting_key = "closing_waiting_hive_backup"
+        if not _thread_running(rp_runner) and _thread_running(self._winget_update_runner):
+            # A winget call can run for minutes (its timeout is 5 min); the
+            # uninstaller waits for the technician's clicks with no timeout
+            # at all - a blocking wait here froze the window for that long.
+            rp_runner = self._winget_update_runner
+            waiting_key = "closing_waiting_winget"
+            rp_runner.request_stop()
+        if not _thread_running(rp_runner) and _thread_running(self._uninstall_runner):
+            rp_runner = self._uninstall_runner
+            waiting_key = "closing_waiting_uninstall"
+            rp_runner.requestInterruption()
         if rp_runner is not None and _thread_running(rp_runner):
             # Checkpoint-Computer can take minutes and can't be interrupted.
             # Blocking in closeEvent froze the window ("Not Responding" -

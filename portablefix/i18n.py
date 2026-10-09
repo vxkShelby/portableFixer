@@ -572,6 +572,8 @@ _STRINGS = {
         "sysinfo_title": "Systém",
         "sysinfo_collapse": "Skryť panel systému",
         "sysinfo_expand": "Zobraziť panel systému",
+        "closing_waiting_winget": "Čakám na dokončenie prebiehajúcej aktualizácie winget, potom sa aplikácia zavrie…",
+        "closing_waiting_uninstall": "Čakám na dokončenie prebiehajúceho odinštalovania, potom sa aplikácia zavrie…",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1146,6 +1148,8 @@ _STRINGS = {
         "sysinfo_title": "System",
         "sysinfo_collapse": "Hide the system panel",
         "sysinfo_expand": "Show the system panel",
+        "closing_waiting_winget": "Waiting for the running winget update to finish, then the app closes…",
+        "closing_waiting_uninstall": "Waiting for the running uninstall to finish, then the app closes…",
     },
 }
 

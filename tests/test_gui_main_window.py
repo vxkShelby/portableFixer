@@ -4670,17 +4670,54 @@ def test_closing_during_an_uninstall_waits_for_the_running_one_and_skips_the_res
     programs = [_fake_installed_program(name, plain=f"{name}.exe") for name in ("One", "Two", "Three")]
     runner = _RecordingRunner(programs, parent=window)
     window._uninstall_runner = runner
+    finished = []
+    runner.finished.connect(lambda: finished.append(True))
     runner.start()
     assert started.wait(5)
     threading.Timer(0.5, release.set).start()
 
     window.close()
 
-    # Uncapped (research G15): an interactive uninstaller has no timeout, so
-    # any cap could run out and destroy the live QThread.
-    assert waits == [()]
-    assert runner.isFinished()
+    # Non-blocking (GUI review A7): an interactive uninstaller has no timeout,
+    # so the window stays up, says why, and closes once the runner is done -
+    # it is never waited for with a cap that could destroy the live QThread.
+    assert window.isVisible()
+    assert window.statusBar().currentMessage() == window._t("closing_waiting_uninstall")
+    assert waits == []
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=10_000)
+    assert finished == [True]
     assert ran == ["One"]
+
+
+def test_closing_during_a_winget_update_waits_without_blocking(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import winget_updates
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake_update(package, *a, **k):
+        started.set()
+        release.wait(10)
+        return True, ""
+
+    monkeypatch.setattr(winget_updates, "update_package", fake_update, raising=False)
+    window = _update_window(qtbot, tmp_path, "run_close_mid_winget")
+    runner = winget_updates.WingetUpdateRunner([_fake_outdated_package()], parent=window)
+    window._winget_update_runner = runner
+    finished = []
+    runner.finished.connect(lambda: finished.append(True))
+    runner.start()
+    qtbot.waitUntil(lambda: runner.isRunning(), timeout=5000)
+    threading.Timer(0.5, release.set).start()
+
+    window.close()
+
+    assert window.isVisible()
+    assert window.statusBar().currentMessage() == window._t("closing_waiting_winget")
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=10_000)
+    assert finished == [True]
 
 
 def test_winget_update_says_why_it_does_nothing_while_the_app_update_starts(qtbot, tmp_path, monkeypatch):
