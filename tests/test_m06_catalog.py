@@ -297,3 +297,45 @@ def test_multimedia_throttling_undo_restores_the_backed_up_values(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert after[THROTTLE_KEY] == {"NetworkThrottlingIndex": 10, "SystemResponsiveness": 20}
+
+
+# --- net_dns_client_restart ---------------------------------------------------
+
+def _service_stubs(status="Running", start_type="Manual", stop_fails=False, start_fails_times=0):
+    """Get-Service hands out an object whose Refresh() re-reads the shared
+    status; Start-Service flips it to Running unless told to fail."""
+    stop = "throw [System.InvalidOperationException]::new('Službu nie je možné zastaviť.')" if stop_fails else \
+        "$global:PfSvcStatus = 'Stopped'"
+    return [
+        f"$global:PfSvcStatus = {_ps_quote(status)}; $global:PfStartFails = {start_fails_times}",
+        "function Get-Service { [CmdletBinding()] param([string] $Name) "
+        f"$o = [pscustomobject]@{{ Name = $Name; Status = $global:PfSvcStatus; StartType = {_ps_quote(start_type)} }}; "
+        "$o | Add-Member -MemberType ScriptMethod -Name Refresh -Value { $this.Status = $global:PfSvcStatus } -PassThru }",
+        "function Stop-Service { [CmdletBinding()] param([string] $Name, [switch] $Force) "
+        f"Add-Content -Path $global:PfLog -Value ('stop ' + $Name); {stop} }}",
+        "function Start-Service { [CmdletBinding()] param([string] $Name) "
+        "Add-Content -Path $global:PfLog -Value ('start ' + $Name); "
+        "if ($global:PfStartFails -gt 0) { $global:PfStartFails--; return }; $global:PfSvcStatus = 'Running' }",
+        "function Set-Service { [CmdletBinding()] param([string] $Name, [string] $StartupType) "
+        "Add-Content -Path $global:PfLog -Value ('set-service ' + $Name + ' ' + $StartupType) }",
+    ]
+
+
+SERVICE_NAMES = ["Get-Service", "Stop-Service", "Start-Service", "Set-Service"]
+
+
+def test_dns_client_restart_reports_a_protected_service_instead_of_claiming_a_restart(tmp_path):
+    # Dnscache cannot be stopped on Windows 10/11; the old command swallowed
+    # the error and printed "restarted" because the service never stopped.
+    result, calls = _run_ps(tmp_path, _service_stubs(stop_fails=True), SERVICE_NAMES, _action("net_dns_client_restart").command)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DNS Client service restarted." not in result.stdout
+    assert "protected service" in result.stdout and "Flush DNS cache" in result.stdout
+    assert calls == ["stop Dnscache"]
+
+
+def test_dns_client_restart_succeeds_when_the_stop_really_happened(tmp_path):
+    result, calls = _run_ps(tmp_path, _service_stubs(), SERVICE_NAMES, _action("net_dns_client_restart").command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DNS Client service restarted." in result.stdout
+    assert calls == ["stop Dnscache", "start Dnscache"]
