@@ -5874,8 +5874,10 @@ def test_manual_update_click_during_the_start_up_check_reports_its_answer(qtbot,
     from portablefix.i18n import translate
 
     log = _patch_network_runners(monkeypatch)
-    running = _recording_runner(log, "update", "check_finished")
+    # Still running at close: the window orphans it (setParent, finished).
+    running = _recording_runner(log, "update", "check_finished", "finished")
     running.isRunning = lambda self: True
+    running.setParent = lambda self, parent: None
     monkeypatch.setattr(updater, "UpdateCheckRunner", running)
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
