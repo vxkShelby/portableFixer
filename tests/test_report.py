@@ -341,16 +341,29 @@ def test_previous_report_with_non_list_actions_does_not_crash(tmp_path):
     assert data["previous_comparison"]["previous_action_count"] == 0
 
 
-def test_html_report_shows_readable_utc_timestamps(tmp_path):
+def test_html_report_shows_local_timestamps_with_offset(tmp_path, monkeypatch):
+    # A Slovak client read "08:15 UTC" for a 10:15 visit, next to the
+    # hand-over line in local time. Local time plus the offset, in the
+    # language's date format; the JSON keeps ISO UTC.
+    from datetime import timedelta, timezone
+
+    from portablefix import report
+
+    monkeypatch.setattr(report, "_local_tz", lambda: timezone(timedelta(hours=2)))
     entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, "run_ts")
     entry.timestamp = "2026-09-24T12:54:03.410593+00:00"
     append_entry(tmp_path, "run_ts", entry)
     html_path, json_path = generate_report(tmp_path, "run_ts", _fixture_modules(), "en", {}, {})
     content = html_path.read_text(encoding="utf-8")
-    assert "2026-09-24 12:54:03 UTC" in content
-    assert "12:54:03.410593" not in content
-    # The machine-readable JSON keeps the full ISO timestamp.
+    assert "2026-09-24 14:54 UTC+02:00" in content
+    assert "12:54:03.410593" not in content and "12:54" not in content
     assert json.loads(json_path.read_text(encoding="utf-8"))["actions"][0]["timestamp"] == entry.timestamp
+
+    html_path, _ = generate_report(tmp_path, "run_ts", _fixture_modules(), "sk", {"free_gb": 10.5}, {"free_gb": 12.0})
+    content = html_path.read_text(encoding="utf-8")
+    assert "24.09.2026 14:54 UTC+02:00" in content
+    # Decimal comma for the GB figures in Slovak, like the durations.
+    assert "10,5 GB &rarr; 12,0 GB (+1,5 GB)" in content
 
 
 def _two_module_fixture():

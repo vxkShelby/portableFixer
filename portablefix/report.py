@@ -814,13 +814,27 @@ _JS = """
 """
 
 
-def _format_timestamp(value) -> str:
+def _local_tz():
+    return None  # datetime.astimezone(None) = the system's local zone.
+
+
+def _format_timestamp(value, language: str = "sk") -> str:
     # Audit timestamps are ISO-8601 UTC with microseconds - readable for
-    # machines (the JSON keeps them as-is) but noisy on screen.
+    # machines (the JSON keeps them as-is) but noisy on screen. Shown in
+    # local time with the offset: a Slovak client read "08:15 UTC" for a
+    # 10:15 visit, next to the hand-over line printed in local time.
     try:
-        return datetime.fromisoformat(str(value)).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        local = datetime.fromisoformat(str(value)).astimezone(_local_tz())
     except ValueError:
         return str(value)
+    offset = local.strftime("%z")
+    return local.strftime("%d.%m.%Y %H:%M" if language == "sk" else "%Y-%m-%d %H:%M") + f" UTC{offset[:3]}:{offset[3:]}"
+
+
+def _gb(value, language: str) -> str:
+    """"12.5" / "12,5" - a free-space figure, with the decimal comma in Slovak."""
+    text = str(value)
+    return text.replace(".", ",") if language == "sk" else text
 
 
 # executor.ActionRunner's sentinel exit codes (TIMEOUT / CANCELLED /
@@ -930,7 +944,7 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         f"{dry_tag}{warned_tag}{exit_note}"
         f'<span class="badge" style="background:{badge_color}">{html.escape(a["risk"])}</span>'
         f'<span class="mod">{html.escape(a["module_id"])}</span>'
-        f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"]))}</span>'
+        f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"], language))}</span>'
         f"{duration_tag}"
         f"</div>{warn_text}{command_block}{output_block}</div>"
     )
@@ -1042,7 +1056,7 @@ def _restore_point_text(point: dict, language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
 
-    when = html.escape(_format_timestamp(point["timestamp"]))
+    when = html.escape(_format_timestamp(point["timestamp"], language))
     title = t("report_restore_point")
     # point.get(): report JSON written before panels had restore points.
     if point.get("panel"):
@@ -1128,7 +1142,7 @@ def _render_event(event: dict, language: str) -> str:
             body += f'<div class="warn-text">{html.escape(reason)}</div>'
         # The timestamp is already part of _restore_point_text.
         return f"<li>{body}</li>"
-    when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"]))}</span>'
+    when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"], language))}</span>'
     if kind == "restore_point_decision":
         if event.get("decision") == "proceed":
             key = "report_rp_proceeded"
@@ -1264,10 +1278,10 @@ def _render_branding(brand, language: str) -> str:
     return f'<header class="brand">{logo_html}{text_html}</header>'
 
 
-def _recorded_note(timestamp, t) -> str:
+def _recorded_note(timestamp, t, language: str) -> str:
     if not timestamp:
         return ""
-    when = html.escape(_format_timestamp(timestamp))
+    when = html.escape(_format_timestamp(timestamp, language))
     return f'<p class="form-note">{t("report_form_recorded")}: {when}</p>'
 
 
@@ -1302,7 +1316,7 @@ def _render_intake(form, language: str) -> str:
         return ""
     return (
         f'<section aria-labelledby="pf-h-intake"><h2 id="pf-h-intake">{t("report_intake_heading")}</h2>'
-        f'<dl class="form">{"".join(rows)}</dl>{_recorded_note(form.get("timestamp"), t)}</section>'
+        f'<dl class="form">{"".join(rows)}</dl>{_recorded_note(form.get("timestamp"), t, language)}</section>'
     )
 
 
@@ -1344,7 +1358,7 @@ def _render_outtake(form, language: str) -> str:
         return ""
     return (
         f'<section aria-labelledby="pf-h-outtake"><h2 id="pf-h-outtake">{t("report_outtake_heading")}</h2>'
-        f'{table}{handed}{_recorded_note(form.get("timestamp"), t)}</section>'
+        f'{table}{handed}{_recorded_note(form.get("timestamp"), t, language)}</section>'
     )
 
 
@@ -1447,13 +1461,13 @@ def _render_html(data: dict) -> str:
     raw_before = data["snapshot_before"].get("free_gb")
     raw_after = data["snapshot_after"].get("free_gb")
     # None = the snapshot couldn't measure it (snapshot.py never raises).
-    free_before = html.escape(str("?" if raw_before is None else raw_before))
-    free_after = html.escape(str("?" if raw_after is None else raw_after))
+    free_before = html.escape("?" if raw_before is None else _gb(raw_before, language))
+    free_after = html.escape("?" if raw_after is None else _gb(raw_after, language))
     delta = ""
     if isinstance(raw_before, (int, float)) and isinstance(raw_after, (int, float)):
         diff = round(raw_after - raw_before, 2)
         sign = "+" if diff >= 0 else ""
-        delta = f" ({sign}{diff} GB)"
+        delta = f" ({sign}{_gb(diff, language)} GB)"
 
     restart_section = ""
     if data["requires_restart"]:
@@ -1487,11 +1501,11 @@ def _render_html(data: dict) -> str:
     comparison = data.get("previous_comparison")
     if comparison:
         cmp_delta = comparison["free_gb_delta"]
-        delta_txt = f"{'+' if cmp_delta > 0 else ''}{cmp_delta} GB" if cmp_delta is not None else "?"
+        delta_txt = f"{'+' if cmp_delta > 0 else ''}{_gb(cmp_delta, language)} GB" if cmp_delta is not None else "?"
         comparison_section = (
             f"<section><h2>{t('report_since_last_visit')}</h2>"
             f"<div class=\"meta\">{t('report_previous_run')} {html.escape(str(comparison['previous_run_id']))} "
-            f"({html.escape(_format_timestamp(comparison['previous_generated_at']))})<br>"
+            f"({html.escape(_format_timestamp(comparison['previous_generated_at'], language))})<br>"
             f"{t('report_free_space_change')}: {delta_txt}<br>"
             f"{t('report_actions_then_now')}: {comparison['previous_action_count']} &rarr; {comparison['action_count']}</div></section>"
         )
@@ -1521,7 +1535,7 @@ def _render_html(data: dict) -> str:
 {storage_banner}
 {_render_job(data.get('job') or dict(), t, data.get('target_user'))}
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
-{t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
+{t('report_generated')}: {html.escape(_format_timestamp(data['generated_at'], language))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}{extra_meta}</div>
 {_render_client_summary(data.get('client_summary'), language)}
 <div class="chips">
