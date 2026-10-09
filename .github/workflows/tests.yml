@@ -172,3 +172,24 @@ jobs:
           PF_E2E_V2: ${{ github.workspace }}\dist2\PortableFix.exe
           PF_E2E_WORKDIR: ${{ runner.temp }}\frozen-e2e
         run: python -m pytest tests/test_frozen_update_e2e.py -m frozen_e2e -s -q --timeout=300
+
+  # The real app frozen by the release script, so a missing hidden import or
+  # a PyInstaller regression shows up on the PR, not on release day. No -Tag
+  # and no key: build.ps1 skips signing and the zip check, and still runs
+  # verify_release.py --tree on the result.
+  build-smoke:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Development build
+        shell: powershell
+        run: .\scripts\build.ps1
