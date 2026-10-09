@@ -163,10 +163,11 @@ _STRINGS = {
         "system_temp_blocked_app_is_temp_root": "Čistenie $env:WINDIR\\Temp bolo preskočené - nie je možné bezpečne určiť, čo vymazať (priečinok appky JE $env:WINDIR\\Temp, alebo je presmerovaný cez junction/symlink).",
         "batch_stopped_app_dir_missing": "Beh dávky bol zastavený - priečinok appky (alebo Modules) počas behu nečakane zmizol. Zvyšné naplánované akcie neboli spustené.",
         "select_all": "Vybrať všetko",
-        "select_safe_only": "Len SAFE",
-        "select_moderate_only": "Len MODERATE",
-        "select_destructive_only": "Len DESTRUCTIVE",
-        "select_reboot_only": "Len REQUIRES_REBOOT",
+        "select_risk_only": "Len {risk}",
+        "risk_label_SAFE": "Bezpečné",
+        "risk_label_MODERATE": "Mení nastavenia",
+        "risk_label_DESTRUCTIVE": "Nevratné",
+        "risk_label_REQUIRES_REBOOT": "Vyžaduje reštart",
         "select_none": "Zrušiť výber",
         "risk_tab_prefix": "Riziko:",
         "all_categories": "Všetky kategórie:",
@@ -751,10 +752,11 @@ _STRINGS = {
         "system_temp_blocked_app_is_temp_root": "Clearing $env:WINDIR\\Temp was skipped - couldn't safely determine what to delete (the app's own folder IS $env:WINDIR\\Temp, or it's redirected via a junction/symlink).",
         "batch_stopped_app_dir_missing": "The batch was stopped - the app's own folder (or Modules) unexpectedly disappeared mid-run. Remaining queued actions were not executed.",
         "select_all": "Select all",
-        "select_safe_only": "SAFE only",
-        "select_moderate_only": "MODERATE only",
-        "select_destructive_only": "DESTRUCTIVE only",
-        "select_reboot_only": "REQUIRES_REBOOT only",
+        "select_risk_only": "{risk} only",
+        "risk_label_SAFE": "Safe",
+        "risk_label_MODERATE": "Changes settings",
+        "risk_label_DESTRUCTIVE": "Irreversible",
+        "risk_label_REQUIRES_REBOOT": "Needs restart",
         "select_none": "Clear selection",
         "risk_tab_prefix": "Risk:",
         "all_categories": "All categories:",
@@ -1185,6 +1187,17 @@ def plural(n: int, one: str, few: str, many: str) -> str:
     if n == 1:
         return one
     return few if 2 <= n <= 4 else many
+
+
+# A shape next to the word, so the level never rests on colour alone.
+_RISK_GLYPHS = {"SAFE": "●", "MODERATE": "▲", "DESTRUCTIVE": "■", "REQUIRES_REBOOT": "↻"}
+
+
+def risk_text(risk: str, language: str, glyph: bool = True) -> str:
+    """Plain-language risk name ("Nevratné") for the screen; the RiskLevel
+    value stays in tooltips, the audit log and the report."""
+    label = translate(f"risk_label_{risk}", language)
+    return f"{_RISK_GLYPHS[risk]} {label}" if glyph and risk in _RISK_GLYPHS else label
 
 
 def count_noun(noun: str, n: int, language: str) -> str:

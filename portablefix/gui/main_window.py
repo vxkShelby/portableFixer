@@ -743,6 +743,9 @@ class MainWindow(QMainWindow):
     def _t(self, key: str) -> str:
         return i18n.translate(key, self.settings.language)
 
+    def _risk_text(self, risk: RiskLevel, glyph: bool = True) -> str:
+        return i18n.risk_text(risk.value, self.settings.language, glyph)
+
     def _tn(self, key: str, count: int, noun: str, **fields) -> str:
         """A string with a counted noun ("1 akcia", "3 akcie", "5 akcií")."""
         noun_text = i18n.count_noun(noun, int(count), self.settings.language)
@@ -869,7 +872,7 @@ class MainWindow(QMainWindow):
         self.category_list = QListWidget()
         self.category_list.setObjectName("categoryList")
         category_labels = [self._t(category_i18n_keys[category]) for category in self._categories_order]
-        category_labels += [f"{self._t('risk_tab_prefix')} {risk.value}" for risk in self._risk_tabs_order]
+        category_labels += [f"{self._t('risk_tab_prefix')} {self._risk_text(risk)}" for risk in self._risk_tabs_order]
         for label in category_labels:
             self.category_list.addItem(QListWidgetItem(label))
         # Fixed 190px clipped longer entries (e.g. "Risk: REQUIRES_REBOOT")
@@ -906,18 +909,22 @@ class MainWindow(QMainWindow):
         self.global_select_button.setCursor(Qt.CursorShape.PointingHandCursor)
         global_select_menu = QMenu(self.global_select_button)
 
-        def _select_action(text_key: str, mode: str):
-            action = global_select_menu.addAction(self._t(text_key))
+        def _select_action(text: str, mode: str):
+            action = global_select_menu.addAction(text)
             action.triggered.connect(lambda _checked=False: self._apply_selection(list(self._action_checkboxes), mode))
             return action
 
-        self.global_select_all_button = _select_action("select_all", "all")
-        self.global_select_safe_button = _select_action("select_safe_only", RiskLevel.SAFE.value)
-        self.global_select_moderate_button = _select_action("select_moderate_only", RiskLevel.MODERATE.value)
-        self.global_select_destructive_button = _select_action("select_destructive_only", RiskLevel.DESTRUCTIVE.value)
-        self.global_select_reboot_button = _select_action("select_reboot_only", RiskLevel.REQUIRES_REBOOT.value)
+        def _select_only(risk: RiskLevel):
+            text = self._t("select_risk_only").format(risk=self._risk_text(risk))
+            return _select_action(text, risk.value)
+
+        self.global_select_all_button = _select_action(self._t("select_all"), "all")
+        self.global_select_safe_button = _select_only(RiskLevel.SAFE)
+        self.global_select_moderate_button = _select_only(RiskLevel.MODERATE)
+        self.global_select_destructive_button = _select_only(RiskLevel.DESTRUCTIVE)
+        self.global_select_reboot_button = _select_only(RiskLevel.REQUIRES_REBOOT)
         global_select_menu.addSeparator()
-        self.global_select_none_button = _select_action("select_none", "none")
+        self.global_select_none_button = _select_action(self._t("select_none"), "none")
         self.global_select_none_button.setEnabled(False)
         self.global_select_button.setMenu(global_select_menu)
         global_select_row.addWidget(self.global_select_button)
@@ -1086,8 +1093,9 @@ class MainWindow(QMainWindow):
                     checkbox.stateChanged.connect(self._on_checkbox_state_changed)
                     self._action_checkboxes[action.id] = checkbox
                     row.addWidget(checkbox)
-                    badge = QLabel(action.risk.value)
+                    badge = QLabel(self._risk_text(action.risk))
                     badge.setObjectName("riskBadge")
+                    badge.setToolTip(action.risk.value)
                     badge.setProperty("risk", action.risk.value)
                     row.addWidget(badge)
                     if module.custom:
@@ -1153,7 +1161,7 @@ class MainWindow(QMainWindow):
             card_layout.setSpacing(2)
             heading_row = QHBoxLayout()
             heading_row.setSpacing(6)
-            heading = QLabel(f"{self._t('risk_tab_prefix')} {risk.value}")
+            heading = QLabel(f"{self._t('risk_tab_prefix')} {self._risk_text(risk)}")
             heading.setObjectName("cardHeading")
             heading_row.addWidget(heading)
             heading_row.addStretch(1)
@@ -1573,7 +1581,7 @@ class MainWindow(QMainWindow):
             if risk_order.index(action.risk) < risk_order.index(highest):
                 highest = action.risk
         self.statusBar().showMessage(
-            self._t("status_bar_selected").format(count=len(selected), risk=highest.value)
+            self._t("status_bar_selected").format(count=len(selected), risk=self._risk_text(highest))
         )
 
     def _append_console(self, line: str) -> None:
@@ -4304,7 +4312,7 @@ class MainWindow(QMainWindow):
     def _action_accessible_name(self, action: ActionDef, status_text: str = "") -> str:
         # "riziko"/"risk" translated - Narrator reads the whole name in the
         # UI language, and a lone English word mid-sentence is jarring.
-        name = f"{action.label(self.settings.language)} — {self._t('a11y_risk')}: {action.risk.value}"
+        name = f"{action.label(self.settings.language)} — {self._t('a11y_risk')}: {self._risk_text(action.risk, glyph=False)}"
         if status_text:
             name += f", {status_text}"
         return name

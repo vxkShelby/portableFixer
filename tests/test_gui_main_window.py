@@ -178,7 +178,7 @@ def test_action_checkbox_accessible_name_includes_risk_level(qtbot, tmp_path):
 
     name = window._action_checkboxes["first_action"].accessibleName()
     assert "First action" in name
-    assert "SAFE" in name
+    assert "Safe" in name
 
 
 def test_action_status_update_appends_status_to_accessible_name(qtbot, tmp_path):
@@ -189,7 +189,7 @@ def test_action_status_update_appends_status_to_accessible_name(qtbot, tmp_path)
     window._set_action_status("first_action", "ok", "OK (1.2s)")
 
     name = window._action_checkboxes["first_action"].accessibleName()
-    assert "SAFE" in name
+    assert "Safe" in name
     assert "OK (1.2s)" in name
 
 
@@ -240,7 +240,31 @@ def test_language_toggle_keeps_selection_console_search_and_size(qtbot, tmp_path
     assert (window.width(), window.height()) == (1111, 700)
 
 
+def test_risk_levels_read_in_plain_words_with_a_shape_and_keep_the_enum_in_the_tooltip(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    from portablefix import i18n
+    from portablefix.models import RiskLevel
+
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="sk"), is_admin=True, run_id="run_risk_text")
+    qtbot.addWidget(window)
+
+    badge = next(
+        lb for lb in window._action_checkboxes["destructive_one"].parentWidget().findChildren(QLabel)
+        if lb.objectName() == "riskBadge"
+    )
+
+    assert badge.text() == "■ Nevratné" and badge.toolTip() == "DESTRUCTIVE"
+    assert window._risk_text(RiskLevel.REQUIRES_REBOOT) == "↻ Vyžaduje reštart"
+    assert window.global_select_destructive_button.text() == "Len ■ Nevratné"
+    assert i18n.risk_text("MODERATE", "en") == "▲ Changes settings"
+    assert i18n.risk_text("SAFE", "en", glyph=False) == "Safe"
+
+
 def test_select_all_recounts_the_status_bar_once(qtbot, tmp_path, monkeypatch):
+    from portablefix.models import RiskLevel
+
     base_dir = tmp_path
     _write_module(base_dir, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
     _write_module(base_dir, "m02_cleanup", "CLEANUP", "clean_action")
@@ -254,7 +278,7 @@ def test_select_all_recounts_the_status_bar_once(qtbot, tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert all(cb.isChecked() for cb in window._action_checkboxes.values())
-    assert window.statusBar().currentMessage() == window._t("status_bar_selected").format(count=2, risk="SAFE")
+    assert window.statusBar().currentMessage() == window._t("status_bar_selected").format(count=2, risk=window._risk_text(RiskLevel.SAFE))
     window._action_checkboxes["clean_action"].setChecked(False)  # a single click still updates
     assert len(calls) == 2
 
@@ -1041,7 +1065,7 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     # Uninstaller, +1 for the "Risk: SAFE" tab (both test actions are SAFE).
     assert window.category_list.count() == 5
     labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
-    assert labels == {"Dashboard", "Diagnostics", "System repair", "Uninstall programs", "Risk: SAFE"}
+    assert labels == {"Dashboard", "Diagnostics", "System repair", "Uninstall programs", "Risk: ● Safe"}
 
 
 def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
@@ -1807,10 +1831,10 @@ def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
     assert window.statusBar().currentMessage() == "Nothing selected"
 
     window._action_checkboxes["temp_cleanup"].setChecked(True)
-    assert window.statusBar().currentMessage() == "Selected: 1  |  Highest risk: SAFE"
+    assert window.statusBar().currentMessage() == "Selected: 1  |  Highest risk: ● Safe"
 
     window._action_checkboxes["firewall_check"].setChecked(True)
-    assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: MODERATE"
+    assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: ▲ Changes settings"
 
 
 def test_global_clear_selection_button_only_enabled_when_something_is_selected(qtbot, tmp_path):
@@ -2249,7 +2273,7 @@ def test_risk_tabs_are_appended_after_categories_in_nav_list(qtbot, tmp_path):
     # 1 category (all four test actions default to the same category) + one
     # risk tab per distinct risk level actually present (4 here).
     labels = [window.category_list.item(i).text() for i in range(window.category_list.count())]
-    assert labels[-4:] == ["Risk: SAFE", "Risk: MODERATE", "Risk: DESTRUCTIVE", "Risk: REQUIRES_REBOOT"]
+    assert labels[-4:] == ["Risk: ● Safe", "Risk: ▲ Changes settings", "Risk: ■ Irreversible", "Risk: ↻ Needs restart"]
 
 
 def test_clicking_a_risk_tab_shows_only_that_risk_card(qtbot, tmp_path):
@@ -3281,7 +3305,7 @@ def test_action_accessible_name_is_translated(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     name = window._action_checkboxes["first_action"].accessibleName()
-    assert "riziko: SAFE" in name
+    assert "riziko: Bezpečné" in name
     assert "risk:" not in name
 
 
@@ -7788,8 +7812,8 @@ def test_user_modules_actions_get_a_custom_badge(qtbot, tmp_path):
         row = window._action_checkboxes[action_id].parentWidget()
         return [label.text() for label in row.findChildren(QLabel) if label.objectName() == "riskBadge"]
 
-    assert badges("shop_action") == ["SAFE", "custom"]
-    assert badges("clean_action") == ["SAFE"]
+    assert badges("shop_action") == ["● Safe", "custom"]
+    assert badges("clean_action") == ["● Safe"]
 
 
 # --- research-design-additions items 2, 6, 7, 9, 15 ---------------------------
