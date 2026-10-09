@@ -577,7 +577,8 @@ def _write_bytes(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
 # The placeholders as they must appear in HTML source.
 _HTML_PLACEHOLDERS = {
     p: p.replace("<", "&lt;").replace(">", "&gt;")
-    for p in (redaction.USER, redaction.IP, redaction.MAC, redaction.SERIAL, redaction.KEY, redaction.SSID)
+    for p in (redaction.USER, redaction.IP, redaction.MAC, redaction.SERIAL, redaction.KEY, redaction.SSID,
+              redaction.DOMAIN)
 }
 
 

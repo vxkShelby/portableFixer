@@ -27,6 +27,7 @@ MAC = "<mac>"
 SERIAL = "<serial>"
 KEY = "<key>"
 SSID = "<ssid>"
+DOMAIN = "<domain>"
 
 # Profile folders every Windows has - naming them says nothing about the client.
 _SHARED_PROFILES = {"public", "default", "default user", "all users", "defaultapppool"}
@@ -96,10 +97,23 @@ _PARTIAL_KEY = re.compile(
 )
 
 # "SSID : name" as netsh wlan prints it (the field names are not localized)
-# and "SSID": "..." in JSON. BSSID is a MAC and handled by _MAC.
+# and "SSID": "..." in JSON. BSSID is a MAC and handled by _MAC. The network
+# profile name Get-NetIPConfiguration (NetProfile.Name) and netsh (Profile,
+# "All User Profile") print is the SSID on Wi-Fi and the AD domain on a LAN.
 _SSID = re.compile(
-    r"(?P<key>(?<![A-Za-z])SSID\"?[ \t]*[:=][ \t]*\"?)(?P<value>[^\s\"](?:[^\r\n\"]*[^\s\"])?)(?=[^\S\r\n]*(?:\"|\r|\n|$))",
+    r"(?P<key>(?<![A-Za-z])(?:SSID|NetProfile\.Name|ProfileName|Profile)\"?[ \t]*[:=][ \t]*\"?)"
+    r"(?![A-Za-z]:[\\/])(?P<value>[^\s\"](?:[^\r\n\"]*[^\s\"])?)(?=[^\S\r\n]*(?:\"|\r|\n|$))",
 )
+
+# "Domain : contoso.local" (Win32_ComputerSystem), the DNS suffixes of
+# Get-DnsClient / ipconfig and the user's domain. WORKGROUP names no one.
+_DOMAIN = re.compile(
+    r"(?P<key>\b(?:Domain|DnsDomain|UserDomain|PrimaryDnsSuffix|ConnectionSpecificSuffix"
+    r"|Connection-specific DNS Suffix|DNS Suffix Search List)\"?[ \t]*[:=][ \t]*\"?)"
+    r"(?P<value>[^\s\",;](?:[^\r\n\",;]*[^\s\",;])?)(?=[^\S\r\n]*(?:[\",;\r\n]|$))",
+    re.IGNORECASE,
+)
+_WORKGROUP = "workgroup"
 
 # Values collected once (an SSID, a serial number, a profile name) are masked
 # wherever else they appear too - e.g. the Wi-Fi profile line naming the
@@ -114,6 +128,8 @@ _NOT_COLLECTED = {
     "home", "pro", "professional", "enterprise", "education", "core", "windows",
     "default string", "to be filled by o.e.m.", "system serial number", "chassis serial number",
     "not specified", "not applicable", "none", "n/a", "oem", "o.e.m.", "unknown", "invalid",
+    # Firewall / network-category profile names, printed under "Profile :" too.
+    "domain", "private", "public", "any", _WORKGROUP,
 }
 
 
@@ -240,8 +256,14 @@ def _redact(text: str, kept: tuple[str, ...], masker: "_Masker") -> str:
             return value
         return IP
 
+    def domain(match: re.Match) -> str:
+        if match.group("value").strip().lower() == _WORKGROUP:
+            return match.group(0)
+        return match.group("key") + DOMAIN
+
     text = _sub(_USER_PATH, text, (), user)
     text = _sub(_SSID, text, kept, lambda m: m.group("key") + SSID)
+    text = _sub(_DOMAIN, text, kept, domain)
     text = _sub(_SERIAL, text, kept, lambda m: m.group("key") + SERIAL)
     text = _sub(_PARTIAL_KEY, text, kept, lambda m: m.group("key") + KEY)
     text = _sub(_MAC, text, kept, lambda m: MAC)
@@ -264,7 +286,7 @@ def _looks_like_key(value: str) -> bool:
 def _worth_collecting(value: str) -> bool:
     if len(value) < _MIN_COLLECTED_LENGTH or value.lower() in _NOT_COLLECTED:
         return False
-    if value in (USER, SSID, SERIAL):
+    if value in (USER, SSID, SERIAL, DOMAIN):
         return False
     # "Home", "Dell": an all-letter word this short is too likely to be
     # ordinary text somewhere else in the report.
@@ -285,6 +307,7 @@ class _Collected:
     def __init__(self) -> None:
         self.kinds: dict[str, str] = {}
         self.names: set[str] = set()
+        self.domains: set[str] = set()
 
     def add_from(self, text: str) -> None:
         for pattern, placeholder in ((_SSID, SSID), (_SERIAL, SERIAL)):
@@ -292,6 +315,13 @@ class _Collected:
                 value = match.group("value").strip()
                 if _worth_collecting(value):
                     self.kinds.setdefault(value, placeholder)
+        # A domain is also the "CONTOSO\" prefix of account names: its first
+        # label, case-insensitively - DNS and NetBIOS names differ in case.
+        for match in _DOMAIN.finditer(text):
+            value = match.group("value").strip()
+            for part in (value, value.split(".", 1)[0]):
+                if _worth_collecting(part):
+                    self.domains.add(part.lower())
         # Only a name followed by a separator is certain to be the whole
         # folder name; a trailing one may have swallowed or lost a word.
         for match in _USER_PATH.finditer(text):
@@ -304,7 +334,7 @@ class _Collected:
                 self.names.add(name.strip().lower())
 
     def masker(self) -> "_Masker":
-        return _Masker(self.kinds, self.names)
+        return _Masker(self.kinds, self.names, self.domains)
 
 
 _WORD = re.compile(r"\w+")
@@ -352,11 +382,12 @@ class _ValueSet:
 class _Masker:
     """The collected values of one document, prepared once for all its strings."""
 
-    def __init__(self, kinds: dict[str, str], names: set[str]) -> None:
+    def __init__(self, kinds: dict[str, str], names: set[str], domains: set[str] = frozenset()) -> None:
         self._kinds = kinds
         self._values = _ValueSet(kinds, ignore_case=False)
         # Windows compares account and folder names case-insensitively.
         self._users = _ValueSet(names, ignore_case=True)
+        self._domains = _ValueSet(domains, ignore_case=True)
 
     def apply(self, text: str, kept: tuple[str, ...]) -> str:
         pattern = self._values.pattern_for(text)
@@ -366,6 +397,9 @@ class _Masker:
                 return value if value.lower() in kept else self._kinds.get(value, value)
 
             text = _sub(pattern, text, kept, one)
+        pattern = self._domains.pattern_for(text)
+        if pattern is not None:
+            text = _sub(pattern, text, kept, lambda m: DOMAIN)
         pattern = self._users.pattern_for(text)
         if pattern is not None:
             # A profile name is personal whatever else it matches, like the
