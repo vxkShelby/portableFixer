@@ -176,6 +176,28 @@ def _thread_running(runner) -> bool:
         return False
 
 
+# Waits closeEvent gives the quick one-shot runners: PowerShell-backed
+# sysinfo checks run subprocess.run(timeout=10) plus process start, the
+# update check's urlopen(timeout=5) does not cover DNS, and the speed test
+# is two 20 s socket timeouts plus a ping.
+QUICK_RUNNER_WAIT_MS = 5_000
+SUBPROCESS_RUNNER_WAIT_MS = 15_000
+SPEED_TEST_WAIT_MS = 45_000
+
+# Runners a closing window could not wait out: re-parented away from it so
+# its destruction cannot take a live QThread down with it (qFatal), and
+# referenced here until they finish.
+_ORPHANED_RUNNERS: list = []
+
+
+def _orphan_if_running(runner) -> None:
+    if not _thread_running(runner):
+        return
+    runner.setParent(None)
+    _ORPHANED_RUNNERS.append(runner)
+    runner.finished.connect(lambda r=runner: r in _ORPHANED_RUNNERS and _ORPHANED_RUNNERS.remove(r))
+
+
 class _DiskHealthProbeRunner(QThread):
     """The G13 disk health probe off the GUI thread: it launches PowerShell
     and may take up to disk_health.PROBE_TIMEOUT_SEC on a dying disk.
@@ -639,16 +661,16 @@ class MainWindow(QMainWindow):
         # proceed while that QThread is still alive, which is the exact crash
         # this loop exists to prevent.
         quick_runners = (
-            self._static_info_runner,
-            self._hw_sensor_runner,
-            self._ping_runner,
-            self._vpn_runner,
-            self._runner,
-            self._preview_runner,
-            self._update_check_runner,
+            (self._static_info_runner, SUBPROCESS_RUNNER_WAIT_MS),
+            (self._hw_sensor_runner, QUICK_RUNNER_WAIT_MS),
+            (self._ping_runner, QUICK_RUNNER_WAIT_MS),
+            (self._vpn_runner, SUBPROCESS_RUNNER_WAIT_MS),
+            (self._runner, QUICK_RUNNER_WAIT_MS),
+            (self._preview_runner, QUICK_RUNNER_WAIT_MS),
+            (self._update_check_runner, SUBPROCESS_RUNNER_WAIT_MS),
         )
         slow_runners = (
-            (self._speed_test_runner, 25_000),
+            (self._speed_test_runner, SPEED_TEST_WAIT_MS),
             # A state check (G09) was just killed; its pipe drains at once.
             (self._check_runner, 15_000),
             # Checkpoint-Computer can legitimately run for minutes (VSS on a
@@ -676,20 +698,16 @@ class MainWindow(QMainWindow):
             (self._winget_scan_runner, 65_000),
             (self._winget_update_runner, winget_updates._UPDATE_TIMEOUT_SEC * 1000 + 10_000),
         )
-        for runner in quick_runners:
-            if runner is None:
-                continue
-            try:
-                runner.wait(5000)
-            except RuntimeError:
-                pass
-        for runner, timeout_ms in slow_runners:
+        for runner, timeout_ms in quick_runners + slow_runners:
             if runner is None:
                 continue
             try:
                 runner.wait(timeout_ms)
             except RuntimeError:
                 pass
+            # Still running past its wait (a DNS lookup that hangs, a
+            # stalled VSS): it must not be destroyed with this window.
+            _orphan_if_running(runner)
         # No cap: all of them stop within a chunk or a poll once interrupted
         # (the handoff kills the report it is waiting on),
         # and a capped wait that ran out would destroy a live QThread (the

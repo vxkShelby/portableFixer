@@ -2346,7 +2346,7 @@ def test_close_event_waits_longer_for_uncancellable_network_runners(qtbot, tmp_p
 
     window.close()
 
-    assert speed_test_runner.wait_calls == [(25_000,)]
+    assert speed_test_runner.wait_calls == [(45_000,)]
     for runner in update_runners:
         assert runner.interrupted is True
         assert runner.wait_calls == [()]
@@ -7955,3 +7955,89 @@ def test_detail_panels_are_built_on_first_expand_only(qtbot, tmp_path):
     assert "detailed_action" in window._risk_view_checkboxes
     window._action_checkboxes["detailed_action"].setChecked(True)
     assert window._risk_view_checkboxes["detailed_action"].isChecked() is True
+
+
+# --- closing never destroys a live quick runner (GUI review A5) ---------------
+
+
+def _fatal_qt_messages(qtbot):
+    from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+
+    seen = []
+
+    def handler(kind, _context, text):
+        if kind in (QtMsgType.QtFatalMsg, QtMsgType.QtCriticalMsg) or "Destroyed while thread" in text:
+            seen.append(text)
+
+    previous = qInstallMessageHandler(handler)
+    return seen, previous
+
+
+def test_close_waits_long_enough_for_a_slow_vpn_check(qtbot, tmp_path, monkeypatch):
+    import gc
+    import time as time_module
+
+    from PySide6.QtCore import qInstallMessageHandler
+
+    from portablefix import sysinfo
+    from portablefix.gui import main_window
+
+    # Get-VpnConnection runs with subprocess.run(timeout=10); the old 5 s
+    # wait let closeEvent destroy the still-running QThread.
+    monkeypatch.setattr(sysinfo, "check_vpn_status", lambda: time_module.sleep(7) or None)
+    seen, previous = _fatal_qt_messages(qtbot)
+    try:
+        base_dir = _make_base_dir(tmp_path)
+        window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_vpn")
+        runner = window._vpn_runner
+        assert main_window._thread_running(runner)
+
+        started = time_module.monotonic()
+        window.close()
+
+        assert time_module.monotonic() - started >= 6
+        assert not main_window._thread_running(runner)
+        assert main_window._ORPHANED_RUNNERS == []
+        del window
+        gc.collect()
+        qtbot.wait(50)
+    finally:
+        qInstallMessageHandler(previous)
+    assert seen == []
+
+
+def test_close_orphans_a_runner_that_outlives_its_wait(qtbot, tmp_path, monkeypatch):
+    import gc
+    import threading
+    import time as time_module
+
+    from PySide6.QtCore import qInstallMessageHandler
+
+    from portablefix import sysinfo
+    from portablefix.gui import main_window
+
+    release = threading.Event()
+    monkeypatch.setattr(sysinfo, "check_vpn_status", lambda: release.wait(20) and None)
+    monkeypatch.setattr(main_window, "SUBPROCESS_RUNNER_WAIT_MS", 300)
+    seen, previous = _fatal_qt_messages(qtbot)
+    try:
+        base_dir = _make_base_dir(tmp_path)
+        window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_orphan")
+        runner = window._vpn_runner
+        assert main_window._thread_running(runner)
+
+        window.close()
+
+        # Still running after its wait: re-parented away from the window and
+        # kept alive by the module, so freeing the window is safe.
+        assert runner in main_window._ORPHANED_RUNNERS
+        assert runner.parent() is None
+        del window
+        gc.collect()
+        qtbot.wait(50)
+        release.set()
+        qtbot.waitUntil(lambda: runner not in main_window._ORPHANED_RUNNERS, timeout=5000)
+    finally:
+        release.set()
+        qInstallMessageHandler(previous)
+    assert seen == []
