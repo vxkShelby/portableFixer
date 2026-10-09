@@ -68,6 +68,8 @@ def _update_status_message(install_dir, language: str) -> str | None:
     pulled USB stick can leave Modules/ stranded as Modules.old."""
     restored = updater.recover_interrupted_swap(install_dir)
     status = updater.consume_update_status(install_dir)
+    if status == updater.UPDATE_STATUS_IN_PROGRESS and not restored and updater.finish_interrupted_swap(install_dir):
+        status = updater.UPDATE_STATUS_OK
     key = updater.update_status_message_key(status, restored)
     if key is None:
         return None

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 import urllib.error
@@ -13,12 +14,14 @@ from urllib.parse import urlparse
 from PySide6.QtCore import QThread, Signal
 
 from . import elevation, signing
-from .sha256sums import _sha256_unless_stopped
+from .sha256sums import _sha256_unless_stopped, compute_sha256, parse_sha256sums_text
 from .version import APP_VERSION, is_newer, parse_version  # noqa: F401
 
 # The Qt-free core lives in update_swap; these names are re-exported because
 # main.py, the GUI and the tests have always reached them through updater.
 from .update_swap import (  # noqa: F401
+    DATA_ALLOWLIST,
+    MANIFEST_EXE,
     REASON_BLOCKED,
     REASON_CANCELLED,
     REASON_EXITED,
@@ -283,6 +286,35 @@ def recover_interrupted_swap(install_dir: Path) -> list[str]:
         except OSError:
             continue
     return restored
+
+
+def finish_interrupted_swap(install_dir: Path) -> bool:
+    """A swap killed (power loss, logoff) after it renamed the new App,
+    Modules and Vendor into place but before it copied the package's Data
+    files leaves the new exe next to the OLD signed manifest: every module
+    blocked, and the stage - the only copy of the right manifest - about to
+    be deleted by cleanup_update_leftovers, because its version is now the
+    running one. When the stage has nothing left to rename and its signed
+    manifest names the exe that is running, the Data copies are finished
+    here. True when they were."""
+    stage_dir = Path(install_dir) / STAGE_DIR_NAME
+    try:
+        roots = [p for p in stage_dir.iterdir() if p.is_dir()]
+        if len(roots) != 1 or any((roots[0] / name).exists() for name in SWAP_FOLDERS):
+            return False
+        data = roots[0] / "Data"
+        signed = signing.verified_body((data / "SHA256SUMS").read_bytes())
+        if signed is None:
+            return False
+        manifest = parse_sha256sums_text(signed.decode("utf-8"))
+        if compute_sha256(Path(install_dir) / "App" / "PortableFix.exe") != manifest.get(MANIFEST_EXE):
+            return False
+        for name in DATA_ALLOWLIST:
+            if (data / name).is_file():
+                shutil.copyfile(data / name, Path(install_dir) / "Data" / name)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return True
 
 
 def consume_update_status(install_dir: Path) -> str | None:

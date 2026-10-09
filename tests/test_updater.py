@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -521,6 +522,53 @@ def test_recover_interrupted_swap_restores_only_missing_live_folders(tmp_path):
     assert restored == ["Modules"]
     assert (tmp_path / "Modules" / "m.yaml").exists()
     assert (tmp_path / "Vendor.old").exists()  # live Vendor present - left alone
+
+
+def _swap_killed_after_the_renames(tmp_path):
+    """The install after a swap died between its three renames and the Data
+    copies: the new folders are live, the stage holds only Data/ and the
+    root files, Data/SHA256SUMS is still the old one."""
+    from update_fixtures import make_install, write_release_zip
+
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    staged = update_swap.stage_update(write_release_zip(tmp_path / "u.zip"), install_dir)
+    for name in update_swap.SWAP_FOLDERS:
+        shutil.rmtree(install_dir / name)
+        (staged.stage_root / name).rename(install_dir / name)
+    updater_module.update_status_path(install_dir).write_text("in_progress\n", encoding="ascii")
+    return install_dir, staged
+
+
+def test_finish_interrupted_swap_installs_the_data_files_the_dead_swap_did_not(tmp_path):
+    from portablefix.integrity import blocked_module_dirs
+
+    install_dir, staged = _swap_killed_after_the_renames(tmp_path)
+    assert blocked_module_dirs(install_dir) == {"*"}  # the old manifest next to the new files
+
+    assert updater_module.finish_interrupted_swap(install_dir) is True
+
+    assert (install_dir / "Data" / "SHA256SUMS").read_bytes() == (staged.stage_root / "Data" / "SHA256SUMS").read_bytes()
+    assert (install_dir / "Data" / "PortableFix-SelfSigned.cer").read_bytes() == b"new-cer"
+    assert (install_dir / "Data" / "settings.json").read_bytes() == b'{"k": "v"}'  # never the package's
+    assert blocked_module_dirs(install_dir) == set()
+
+
+@pytest.mark.parametrize("damage", ["exe_differs", "modules_not_renamed", "unsigned_manifest", "no_stage"])
+def test_finish_interrupted_swap_leaves_an_install_it_cannot_vouch_for_alone(tmp_path, damage):
+    install_dir, staged = _swap_killed_after_the_renames(tmp_path)
+    sums = staged.stage_root / "Data" / "SHA256SUMS"
+    if damage == "exe_differs":
+        (install_dir / "App" / "PortableFix.exe").write_bytes(b"old-exe")
+    elif damage == "modules_not_renamed":
+        (install_dir / "Modules").rename(staged.stage_root / "Modules")
+    elif damage == "unsigned_manifest":
+        sums.write_bytes(sums.read_bytes().split(b"ed25519:")[0])
+    else:
+        shutil.rmtree(staged.stage_dir)
+
+    assert updater_module.finish_interrupted_swap(install_dir) is False
+    assert (install_dir / "Data" / "SHA256SUMS").read_bytes() == b"old-sums"
 
 
 def test_consume_update_status_reads_once_then_deletes(tmp_path):
