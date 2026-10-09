@@ -252,6 +252,22 @@ def test_the_build_pins_the_pyinstaller_it_checks():
     lines = (ROOT / "requirements-build.txt").read_text(encoding="utf-8").splitlines()
     assert "-r requirements.txt" in lines
     assert "pyinstaller==6.22.3" in lines
+    # Its hooks run in the release job next to the signing key.
+    assert any(re.fullmatch(r"pyinstaller-hooks-contrib==\d{4}\.\d+", line) for line in lines)
+
+
+@pytest.mark.parametrize("workflow", ["release.yml", "tests.yml"])
+def test_workflows_pin_third_party_code_the_signing_job_runs(workflow):
+    # A tag like @v4 can be moved to any commit; the release job holds the
+    # key every client trusts, so what runs there is pinned by SHA.
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    uses = re.findall(r"^\s*-\s*uses:\s*(\S+)", text, re.MULTILINE)
+    assert uses
+    for ref in uses:
+        assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), ref
+    for line in text.splitlines():
+        if "choco install" in line:
+            assert re.search(r"--version=\d+\.\d+\.\d+", line), line
 
 
 def test_a_release_build_refuses_to_start_without_the_signing_key():
