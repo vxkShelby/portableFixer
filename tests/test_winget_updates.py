@@ -83,7 +83,8 @@ def _fake_process(returncode: int, output: str) -> MagicMock:
 
 def test_update_package_retries_with_location_when_required():
     package = OutdatedPackage(name="Battle.net", id="Blizzard.BattleNet", installed_version="1", available_version="2", source="winget")
-    fail_process = _fake_process(1, "Install location is required by the package but it was not provided")
+    # Matched by winget's exit code, not its (localized) message.
+    fail_process = _fake_process(0x8A15005F, "Je potrebné zadať umiestnenie inštalácie.")
     ok_process = _fake_process(0, "Successfully installed")
     fake_program = type("P", (), {"name": "Battle.net", "install_location": r"C:\Games\Battle.net"})()
     with patch("portablefix.winget_updates.subprocess.Popen", side_effect=[fail_process, ok_process]) as mock_popen, \
@@ -98,12 +99,38 @@ def test_update_package_retries_with_location_when_required():
 
 def test_update_package_does_not_retry_when_no_install_location_found():
     package = OutdatedPackage(name="Mystery App", id="Mystery.App", installed_version="1", available_version="2", source="winget")
-    fail_process = _fake_process(1, "Install location is required by the package but it was not provided")
+    fail_process = _fake_process(0x8A15005F, "Install location is required by the package but it was not provided")
     with patch("portablefix.winget_updates.subprocess.Popen", return_value=fail_process) as mock_popen, \
          patch("portablefix.uninstaller.list_installed_programs", return_value=[]):
         ok, _ = update_package(package)
     assert ok is False
     assert mock_popen.call_count == 1
+
+
+def test_update_package_does_not_retry_on_a_message_match_alone():
+    package = OutdatedPackage(name="Mystery App", id="Mystery.App", installed_version="1", available_version="2", source="winget")
+    fail_process = _fake_process(1, "Install location is required by the package but it was not provided")
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=fail_process) as mock_popen:
+        ok, _ = update_package(package)
+    assert ok is False and mock_popen.call_count == 1
+
+
+def test_update_output_is_decoded_as_utf8():
+    # The progress bar (U+2588) is undefined in cp1250: decoded strictly in
+    # the reader thread it came back as None, an empty failure reason.
+    package = OutdatedPackage(name="App", id="App.App", installed_version="1", available_version="2", source="winget")
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured.update(kwargs)
+        raw = "█ done".encode("utf-8")
+        text = raw.decode(kwargs.get("encoding") or "cp1250", errors=kwargs.get("errors", "strict"))
+        return _fake_process(0, text)
+
+    with patch("portablefix.winget_updates.subprocess.Popen", side_effect=fake_popen):
+        ok, output = update_package(package)
+    assert ok is True and output == "█ done"
+    assert "â" not in output and captured["encoding"] == "utf-8"
 
 
 def test_run_winget_upgrade_kills_process_tree_on_timeout():
@@ -123,6 +150,7 @@ def test_run_winget_upgrade_kills_process_tree_on_timeout():
     assert output == "Update timed out."
     taskkill_args = mock_taskkill.call_args[0][0]
     assert taskkill_args == ["taskkill", "/F", "/T", "/PID", "4242"]
+    assert mock_taskkill.call_args[1]["timeout"] == 30
 
 
 def test_winget_update_runner_request_stop_skips_remaining_packages():

@@ -26,6 +26,9 @@ _UPDATE_TIMEOUT_SEC = 300
 _NO_APPLICATIONS_FOUND = 0x8A150014
 _UPDATE_NOT_APPLICABLE = 0x8A15002B
 _INVALID_CL_ARGUMENTS = 0x8A150002
+# APPINSTALLER_CLI_ERROR_INSTALL_LOCATION_REQUIRED (returnCodes.md): the
+# package needs --location; matched by code, never by the localized text.
+_INSTALL_LOCATION_REQUIRED = 0x8A15005F
 _SOURCE_ERROR_CODES = {
     0x8A15000B,  # SOURCES_INVALID
     0x8A15000F,  # SOURCE_DATA_MISSING
@@ -444,7 +447,8 @@ def _find_install_location(package_name: str) -> str | None:
     return None
 
 
-def _run_winget_upgrade(package_id: str, timeout_sec: int, extra_args: list[str] | None = None) -> tuple[bool, str]:
+def _run_winget_upgrade(package_id: str, timeout_sec: int,
+                        extra_args: list[str] | None = None) -> tuple[bool, str, int | None]:
     # Same lookup as the scan: a winget the scan found outside PATH must
     # not then fail to update with "file not found".
     args = [
@@ -454,8 +458,11 @@ def _run_winget_upgrade(package_id: str, timeout_sec: int, extra_args: list[str]
     ]
     if extra_args:
         args.extend(extra_args)
+    # winget writes UTF-8 (like the scan path); decoded as the ANSI code page
+    # with strict errors, its progress bar killed the reader thread and the
+    # output came back empty.
     process = subprocess.Popen(
-        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
         creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
     )
     try:
@@ -467,19 +474,23 @@ def _run_winget_upgrade(package_id: str, timeout_sec: int, extra_args: list[str]
         # and possibly holding a file lock. taskkill /T reaps the whole tree.
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30,
         )
         raise
-    return process.returncode == 0, (output or "").strip()
+    return process.returncode == 0, (output or "").strip(), process.returncode
+
+
+def _needs_install_location(process_returncode) -> bool:
+    return isinstance(process_returncode, int) and (process_returncode & 0xFFFFFFFF) == _INSTALL_LOCATION_REQUIRED
 
 
 def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str]:
     try:
-        ok, output = _run_winget_upgrade(package.id, timeout_sec)
-        if not ok and "install location is required" in output.lower():
+        ok, output, code = _run_winget_upgrade(package.id, timeout_sec)
+        if not ok and _needs_install_location(code):
             location = _find_install_location(package.name)
             if location:
-                ok, output = _run_winget_upgrade(package.id, timeout_sec, ["--location", location])
+                ok, output, _ = _run_winget_upgrade(package.id, timeout_sec, ["--location", location])
         return ok, output
     except subprocess.TimeoutExpired:
         return False, "Update timed out."
