@@ -192,6 +192,13 @@ def test_export_then_import_package_list_round_trip(tmp_path):
     assert imported_ids == {"AnyDeskSoftwareGmbH.AnyDesk", "CPUID.CPU-Z"}
 
 
+def test_import_package_ids_rejects_a_non_list_root(tmp_path):
+    path = tmp_path / "packages.json"
+    path.write_text("42", encoding="utf-8")
+    with pytest.raises(ValueError):
+        import_package_ids(path)
+
+
 def test_import_package_ids_ignores_malformed_entries(tmp_path):
     path = tmp_path / "packages.json"
     path.write_text('[{"id": "Good.Id"}, "not a dict", {"name": "no id"}]', encoding="utf-8")

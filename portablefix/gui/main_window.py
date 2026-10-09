@@ -2545,7 +2545,11 @@ class MainWindow(QMainWindow):
             )
             if not path_str:
                 return
-            winget_updates.export_package_list(packages, Path(path_str))
+            try:
+                winget_updates.export_package_list(packages, Path(path_str))
+            except OSError as exc:
+                set_status(self._t("winget_export_failed"), "warn", str(exc))
+                return
             set_status(self._t("winget_export_success").format(count=len(packages)), "ok")
 
         def import_list() -> None:

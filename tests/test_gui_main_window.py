@@ -4082,6 +4082,19 @@ def _fake_outdated_package():
     )
 
 
+def test_winget_export_to_an_unwritable_path_shows_a_warning_not_a_traceback(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QLabel
+
+    window, card, _row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_export_fail", True, _fake_outdated_package())
+    missing = tmp_path / "no_such_dir" / "list.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(missing), ""))
+
+    _panel_button(card, window._t("winget_export_button")).click()
+
+    label = next(lb for lb in card.findChildren(QLabel) if lb.text() == window._t("winget_export_failed"))
+    assert label.property("state") == "warn" and label.toolTip()
+
+
 def test_winget_update_dry_run_starts_no_runner_and_logs_each_package(qtbot, tmp_path, monkeypatch):
     from portablefix import winget_updates
 
