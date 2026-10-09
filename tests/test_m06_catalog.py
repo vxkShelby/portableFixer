@@ -107,12 +107,15 @@ def test_m06_catalog_new_service_repair_actions_verify_the_restart_worked():
         assert "exit 1" in action.command
 
 
-def test_m06_catalog_new_latency_tweaks_refresh_backup_on_every_run():
+def test_m06_catalog_latency_tweaks_write_their_backup_on_the_first_run_only():
+    # Refreshing the backup on every run meant: run, run again (backup now
+    # holds the tweaked values), undo restores the tweak. Same guard as
+    # net_hosts_reset.
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
     for action_id in ("net_disable_multimedia_throttling", "net_tcp_latency_tuning"):
         command = by_id[action_id].command
-        assert "if (-not (Test-Path $bk))" not in command, action_id
+        assert "if (-not (Test-Path $bk))" in command, action_id
 
 
 def test_m06_catalog_tcp_latency_tuning_targets_only_active_adapters():
@@ -120,6 +123,11 @@ def test_m06_catalog_tcp_latency_tuning_targets_only_active_adapters():
     action = next(a for a in module.actions if a.id == "net_tcp_latency_tuning")
     assert action.risk == RiskLevel.REQUIRES_REBOOT
     assert "-eq 'Up'" in action.command
+    # Ignored since Vista (dynamic port range) - must not be sold as a tweak.
+    for dead in ("MaxUserPort", "TcpTimedWaitDelay"):
+        for text in (action.command, action.undo_command, action.label_sk, action.label_en,
+                     action.description_sk, action.description_en):
+            assert dead not in text, dead
 
 
 def test_m06_catalog_lan_inspector_has_an_inactivity_timeout():
@@ -298,6 +306,15 @@ def test_multimedia_throttling_writes_a_dword_that_fits_int32(tmp_path):
     assert before.stdout.strip() == "NOT_APPLIED"
 
 
+def test_multimedia_throttling_second_run_keeps_the_original_backup(tmp_path):
+    action = _action("net_disable_multimedia_throttling")
+    registry = {THROTTLE_KEY: {"NetworkThrottlingIndex": 10, "SystemResponsiveness": 20}}
+    _, _, after = _run_registry(tmp_path, action.command, registry)
+    again, _, _ = _run_registry(tmp_path, action.command, after)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _backup(tmp_path, "network_throttle_backup.json") == {"NetworkThrottlingIndex": 10, "SystemResponsiveness": 20}
+
+
 def test_multimedia_throttling_undo_restores_the_backed_up_values(tmp_path):
     action = _action("net_disable_multimedia_throttling")
     registry = {THROTTLE_KEY: {"NetworkThrottlingIndex": 10, "SystemResponsiveness": 20}}
@@ -307,6 +324,33 @@ def test_multimedia_throttling_undo_restores_the_backed_up_values(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert after[THROTTLE_KEY] == {"NetworkThrottlingIndex": 10, "SystemResponsiveness": 20}
+
+
+# --- net_tcp_latency_tuning ---------------------------------------------------
+
+def _adapter_stub():
+    return (
+        f"function Get-NetAdapter {{ [CmdletBinding()] param() @({', '.join(_ps_object(a) for a in ADAPTERS)}) }}"
+    )
+
+
+def test_tcp_latency_tuning_twice_keeps_the_original_backup_and_undo_restores_it(tmp_path):
+    action = _action("net_tcp_latency_tuning")
+    registry = {TCPIP_KEY: {"MaxUserPort": 5000}, IFACE_KEY: {"TcpAckFrequency": 2}}
+    result, calls, after = _run_registry(tmp_path, action.command, registry, [_adapter_stub()], ["Get-NetAdapter"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert after[IFACE_KEY] == {"TcpAckFrequency": 1, "TcpNoDelay": 1}
+    assert after[TCPIP_KEY] == {"MaxUserPort": 5000}  # never touched
+    assert "applied to 1 active adapter(s), failed: 0" in result.stdout
+    expected_backup = {"Interfaces": [{"Path": IFACE_KEY, "TcpAckFrequency": 2, "TcpNoDelay": None}]}
+    assert _backup(tmp_path, "tcp_latency_backup.json") == expected_backup
+    again, _, after = _run_registry(tmp_path, action.command, after, [_adapter_stub()], ["Get-NetAdapter"])
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _backup(tmp_path, "tcp_latency_backup.json") == expected_backup
+    undo, calls, after = _run_registry(tmp_path, action.undo_command, after)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert after[IFACE_KEY] == {"TcpAckFrequency": 2}
+    assert calls == [f"set {IFACE_KEY} TcpAckFrequency 2", f"remove {IFACE_KEY} TcpNoDelay"]
 
 
 # --- net_dns_client_restart ---------------------------------------------------
