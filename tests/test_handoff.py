@@ -762,3 +762,14 @@ def test_scanner_logs_go_into_the_zip_but_not_the_tools_data(tmp_path):
     with zipfile.ZipFile(dest) as zf:
         redacted = zf.read("scanners/msert_scan/msert.log").decode("utf-8")
     assert "jan" not in redacted and "Threat Detected: X" in redacted
+
+def test_json_escaped_names_in_the_text_fallbacks_are_masked_whole(tmp_path):
+    # A torn audit line / unparsable report.json is redacted as text: the
+    # \uXXXX tail of "Jiří" stayed readable after <user>.
+    from portablefix import handoff
+    from portablefix.redaction import USER
+
+    log = tmp_path / "run.jsonl"
+    log.write_bytes(b'{"output": "C:\\\\Users\\\\Ji\\u0159\\u00ed\\\\x"' + b"\n")
+    out = handoff._redacted_audit_log(log, [], []).decode("utf-8")
+    assert "0159" not in out and f"{USER}" in out

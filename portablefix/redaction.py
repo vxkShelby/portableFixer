@@ -29,6 +29,8 @@ SERIAL = "<serial>"
 KEY = "<key>"
 SSID = "<ssid>"
 DOMAIN = "<domain>"
+EMAIL = "<email>"
+SID = "<sid>"
 
 # Profile folders every Windows has - naming them says nothing about the client.
 _SHARED_PROFILES = {"public", "default", "default user", "all users", "defaultapppool"}
@@ -47,7 +49,7 @@ _GENERIC_ACCOUNTS = _SHARED_PROFILES | {
 # of two spaces; otherwise it ends at whitespace, because the rest of the
 # line may be ordinary text.
 _USER_PATH = re.compile(
-    r"(?P<prefix>(?<![A-Za-z])[A-Za-z]:(?P<sep>\\\\|\\|/)Users(?P=sep))"
+    r"(?P<prefix>(?<![A-Za-z])(?:[A-Za-z]:|\\{2,4}[^\\/\s]+\\{1,2}[A-Za-z]\$)(?P<sep>\\\\|\\|/)Users(?P=sep))"
     r"(?:(?P<name>[^\\/:*?\"<>|\r\n\t]+?)(?=(?P=sep))"
     r"|(?P<full>[^\\/:*?\"<>|\s'&;,)\]]+(?: [^\\/:*?\"<>|\s'&;,)\]]+){1,2})(?=[ \t]*(?:[\r\n\"']|$)|[ \t]{2})"
     r"|(?P<tail>[^\\/:*?\"<>|\s'&;,)\]]+))",
@@ -115,6 +117,12 @@ _DOMAIN = re.compile(
     re.IGNORECASE,
 )
 _WORKGROUP = "workgroup"
+
+# Event-log output, Microsoft-account names and the intake free text.
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# The machine-unique part of an account SID (target_user.sid, HKU paths).
+# The RID stays - it tells accounts apart.
+_SID = re.compile(r"\bS-1-5-21(?:-\d+){3}(?P<rid>-\d+)?\b")
 
 # Values collected once (an SSID, a serial number, a profile name) are masked
 # wherever else they appear too - e.g. the Wi-Fi profile line naming the
@@ -244,7 +252,7 @@ def _normalize_keep(keep: Iterable[str]) -> tuple[str, ...]:
 
 def redact_text(text: str, keep: Iterable[str] = (), mask: Iterable[str] = ()) -> str:
     """`text` with personal data replaced by placeholders (<user>, <ip>,
-    <mac>, <serial>, <key>, <ssid>). `keep`: values never masked (the
+    <mac>, <serial>, <key>, <ssid>, <domain>, <email>, <sid>). `keep`: values never masked (the
     computer name, the technician and client). `mask`: user profile names
     masked wherever they appear (see local_profile_names). Idempotent."""
     if not isinstance(text, str) or not text:
@@ -277,6 +285,8 @@ def _redact(text: str, kept: tuple[str, ...], masker: "_Masker") -> str:
         return match.group("key") + DOMAIN
 
     text = _sub(_USER_PATH, text, (), user)
+    text = _sub(_EMAIL, text, kept, lambda m: EMAIL)
+    text = _sub(_SID, text, kept, lambda m: f"S-1-5-21-{SID}{m.group('rid') or ''}")
     text = _sub(_SSID, text, kept, lambda m: m.group("key") + SSID)
     text = _sub(_DOMAIN, text, kept, domain)
     text = _sub(_SERIAL, text, kept, lambda m: m.group("key") + SERIAL)

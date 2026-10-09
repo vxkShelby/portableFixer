@@ -6,7 +6,7 @@ import time
 import pytest
 
 from portablefix.redaction import (
-    DOMAIN, IP, KEY, MAC, SERIAL, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
+    DOMAIN, EMAIL, IP, KEY, MAC, SERIAL, SID, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
 )
 
 
@@ -358,3 +358,27 @@ def test_a_short_kept_value_does_not_make_redaction_quadratic():
     out = redact_text("1.2.3.4 " * 50000, keep=["1"])
     assert time.monotonic() - started < 3
     assert out == f"{IP} " * 50000
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("UserEmail : jan.novak@firma.sk", f"UserEmail : {EMAIL}"),
+    ("call jan+pc@firma-x.co.uk today", f"call {EMAIL} today"),
+    ("User SID S-1-5-21-1234567890-987654321-55555-1001 here", f"User SID S-1-5-21-{SID}-1001 here"),
+    (r"HKU\S-1-5-21-1234567890-987654321-55555\Software", rf"HKU\S-1-5-21-{SID}\Software"),
+    # The well-known SIDs name no one.
+    ("S-1-5-18 and S-1-5-32-544", "S-1-5-18 and S-1-5-32-544"),
+    (r"\\PC01\c$\Users\jano\Desktop", rf"\\PC01\c$\Users\{USER}\Desktop"),
+    (r'{"p": "\\\\PC01\\c$\\Users\\jano\\x"}', rf'{{"p": "\\\\PC01\\c$\\Users\\{USER}\\x"}}'),
+])
+def test_emails_sids_and_admin_share_paths_are_masked(text, expected):
+    assert redact_text(text) == expected
+
+
+def test_report_target_user_sid_is_masked():
+    from portablefix.report import redact_report_data
+
+    data = {"run_id": "r", "hostname": "PC", "job": {},
+            "target_user": {"status": "same", "user": "CONTOSO\\jnovak", "sid": "S-1-5-21-111-222-333-1001"}}
+    out = redact_report_data(data, mask=[])
+    assert out["target_user"]["sid"] == f"S-1-5-21-{SID}-1001"
+    assert out["target_user"]["user"] == f"CONTOSO\\{USER}"
