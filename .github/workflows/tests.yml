@@ -137,16 +137,34 @@ jobs:
 
       # The swap's logs and diagnostics, crash dumps and the JUnit reports:
       # without them a CI-only failure leaves only its assertion message.
+      # upload-artifact refuses a path list whose files do not share the
+      # workspace root (the junit files sit in RUNNER_TEMP, D:\a\_temp), so
+      # everything is copied under one folder and that folder is uploaded.
+      - name: Collect failure evidence
+        if: failure()
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:RUNNER_TEMP "evidence"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Path (Join-Path $env:RUNNER_TEMP "junit-*.xml") -Destination $dst -ErrorAction SilentlyContinue
+          $folders = @{
+            "pt"                = (Join-Path $env:RUNNER_TEMP "pt")
+            "PortableFixUpdate" = (Join-Path $env:LOCALAPPDATA "Temp\PortableFixUpdate")
+            "CrashDumps"        = (Join-Path $env:LOCALAPPDATA "CrashDumps")
+          }
+          foreach ($name in $folders.Keys) {
+            if (Test-Path -LiteralPath $folders[$name]) {
+              Copy-Item -LiteralPath $folders[$name] -Destination (Join-Path $dst $name) -Recurse -ErrorAction SilentlyContinue
+            }
+          }
+          exit 0
+
       - name: Upload failure evidence
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: test-failure-evidence
-          path: |
-            ${{ runner.temp }}/pt/**
-            ${{ runner.temp }}/junit-*.xml
-            ~/AppData/Local/Temp/PortableFixUpdate/**
-            ~/AppData/Local/CrashDumps/**
+          path: ${{ runner.temp }}/evidence
           if-no-files-found: ignore
 
   # A PyInstaller-built probe (tests/frozen/probe_app.py) updates itself from

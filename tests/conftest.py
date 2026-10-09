@@ -1,5 +1,8 @@
 import os
 import shutil
+import time
+import traceback
+import warnings
 
 # Before any Qt import: test windows and dialogs that show() must not pop up
 # on the developer's desktop and steal focus.
@@ -96,8 +99,24 @@ def _bounded_event_loops(monkeypatch):
     original_exec = QEventLoop.exec
 
     def exec_(self, *args, **kwargs):
+        started = time.monotonic()
+
         def give_up():
-            expired.append(self)
+            waited = time.monotonic() - started
+            if waited < _EVENT_LOOP_LIMIT_MS / 1000 - 0.5:
+                # On the windows-2025 runner this timer was seen firing within
+                # seconds of start() (a 30 s guard for a loop that took
+                # <15 s, so the loop never really stalled). Quitting then
+                # failed a healthy test; re-arm for the time left instead, and
+                # leave a warning so a recurrence shows in the CI log.
+                warnings.warn(
+                    f"event-loop guard timer fired after {waited:.3f} s of "
+                    f"{_EVENT_LOOP_LIMIT_MS // 1000} s, re-armed", stacklevel=1,
+                )
+                timer.start(int((_EVENT_LOOP_LIMIT_MS / 1000 - waited) * 1000) + 1)
+                return
+            # Runs inside the stuck loop, so the stack shows who waits in it.
+            expired.append("".join(traceback.format_stack(limit=12)))
             self.quit()
 
         timer = QTimer()
@@ -112,7 +131,9 @@ def _bounded_event_loops(monkeypatch):
     monkeypatch.setattr(QEventLoop, "exec", exec_)
     yield
     if expired:
-        pytest.fail(f"a QEventLoop.exec ran {_EVENT_LOOP_LIMIT_MS // 1000} s and was quit")
+        pytest.fail(
+            f"a QEventLoop.exec ran {_EVENT_LOOP_LIMIT_MS // 1000} s and was quit; waiting at:\n{expired[0]}"
+        )
 
 
 @pytest.fixture(autouse=True)
