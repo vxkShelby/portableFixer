@@ -114,11 +114,13 @@ TASKMGR_BACKUP = [
     {"Path": "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "DisableTaskMgr": None, "DisableRegistryTools": None},
 ]
 PROXY_BACKUP = {"ProxyEnable": 1, "ProxyServer": "127.0.0.1:8080", "AutoConfigURL": None}
+ADDINS_BACKUP = [{"Key": "Acme.Addin", "LoadBehavior": 3}]
 
 CASES = [
     ("m08_security", "sec_restore_taskmgr_regedit", ("command", "undo_command"), TASKMGR_BACKUP),
     ("m12_online", "online_proxy_check", ("command",), None),
     ("m12_online", "online_proxy_reset", ("command", "undo_command"), PROXY_BACKUP),
+    ("m16_office_repair", "office_com_addin_disable_all_thirdparty", ("command", "undo_command"), ADDINS_BACKUP),
 ]
 
 

@@ -88,6 +88,7 @@ def test_m16_catalog_outlook_profile_reset_fails_the_action_if_rename_fails():
     assert "exit 1" in action.command
 
 
+import json  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
@@ -169,6 +170,76 @@ def test_m16_outlook_profile_reset_runs_for_the_same_user():
     result, ran = _run_outlook_reset(_target(target_user.SAME, PROCESS_SID))
     assert result.returncode == 0, result.stdout + result.stderr
     assert any(line.startswith("STUB Rename-Item ") and "Profiles.bak-" in line for line in ran), ran
+
+
+ADDIN_STUBS = [
+    "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) "
+    "if ($Path -like '*.json') { Microsoft.PowerShell.Management\\Test-Path -LiteralPath $Path } else { $true } }",
+    "function Get-ChildItem { [CmdletBinding()] param([Parameter(Position=0)] $Path) "
+    "foreach ($n in 'Microsoft.VbaAddin', 'Acme.Addin', 'Contoso.Sync') { [pscustomobject]@{ PSChildName = $n; PSPath = ($Path + '\\' + $n) } } }",
+    "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) "
+    "$v = $global:__pfLoad[$Path]; if ($null -eq $v) { $v = [int]$env:PF_LOAD_DEFAULT }; [pscustomobject]@{ LoadBehavior = $v } }",
+    "function Set-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name, $Value, $Type) "
+    "[Console]::Out.WriteLine('STUB Set-ItemProperty ' + $Path + ' ' + $Value); if ($env:PF_FAIL -and ($Path -like ('*' + $env:PF_FAIL))) { throw 'Prístup odmietnutý.' }; $global:__pfLoad[$Path] = $Value }",
+    "function Get-Process { [CmdletBinding()] param($Name) if ($env:PF_OUTLOOK_RUNNING) { [pscustomobject]@{ ProcessName = 'OUTLOOK' } } }",
+]
+ADDIN_STUBBED = ("Test-Path", "Get-ChildItem", "Get-ItemProperty", "Set-ItemProperty", "Get-Process")
+
+
+def _run_addins(tmp_path, field="command", outlook_running=False, fail="", target=None, load_default=3):
+    """load_default: the LoadBehavior every add-in reads before the run
+    (3 = loaded at startup; 0 after a previous run disabled them)."""
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir(exist_ok=True)
+    env = [
+        f"$env:ProgramData = '{program_data}'", f"$env:PF_OUTLOOK_RUNNING = '{'1' if outlook_running else ''}'",
+        f"$env:PF_FAIL = '{fail}'", f"$env:PF_LOAD_DEFAULT = '{load_default}'", "$global:__pfLoad = @{}",
+    ]
+    result, ran = _run_stubbed(getattr(_m16("office_com_addin_disable_all_thirdparty"), field), env + ADDIN_STUBS, ADDIN_STUBBED, target)
+    return result, ran, program_data / "PortableFix" / "office_addins_backup.json"
+
+
+def test_m16_addin_disable_writes_the_backup_only_once(tmp_path):
+    # The backup was rewritten on every run: after the first run every
+    # add-in reads 0, so a second run's backup was all zeros and undo
+    # re-disabled everything.
+    result, ran, backup = _run_addins(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Disabled 2 of 2 third-party Outlook add-in(s)." in result.stdout
+    assert [line for line in ran if "Microsoft.VbaAddin" in line] == []
+    first = backup.read_text(encoding="utf-8-sig")
+    assert {e["Key"]: e["LoadBehavior"] for e in json.loads(first)} == {"Acme.Addin": 3, "Contoso.Sync": 3}
+    # Second run: every add-in now reads 0 - a rewritten backup would be all zeros.
+    result, _, _ = _run_addins(tmp_path, load_default=0)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Earlier backup kept" in result.stdout
+    assert backup.read_text(encoding="utf-8-sig") == first
+
+
+def test_m16_addin_disable_lists_failed_writes_and_fails(tmp_path):
+    result, _, _ = _run_addins(tmp_path, fail="Contoso.Sync")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Disabled 1 of 2" in result.stdout
+    assert "Failed: Contoso.Sync (" in result.stdout
+
+
+def test_m16_addin_disable_refuses_while_outlook_runs(tmp_path):
+    result, ran, backup = _run_addins(tmp_path, outlook_running=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Outlook is running" in result.stdout and "Nothing was changed." in result.stdout
+    assert ran == [] and not backup.exists()
+
+
+def test_m16_addin_disable_and_undo_use_the_signed_in_users_hive(tmp_path):
+    target = _target(target_user.DIFFERENT, CLIENT_SID)
+    result, ran, backup = _run_addins(tmp_path, target=target)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ran and all(target.hive + "\\Software\\Microsoft\\Office\\Outlook\\Addins\\" in line for line in ran), ran
+    result, ran, _ = _run_addins(tmp_path, field="undo_command", target=target)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(ran) == sorted(
+        f"STUB Set-ItemProperty {target.hive}\\Software\\Microsoft\\Office\\Outlook\\Addins\\{k} 3" for k in ("Acme.Addin", "Contoso.Sync")
+    ), ran
 
 
 def test_m16_long_running_repairs_have_extended_inactivity_timeouts():
