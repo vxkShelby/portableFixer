@@ -72,12 +72,13 @@ def client_summary(actions: list[dict], language: str, label_of=None) -> dict:
         for f in sorted(problems(findings), key=lambda f: -_RANK[f["severity"]])
     ]
     succeeded = {a.get("action_id") for a in actions if a.get("exit_code") == 0 and not a.get("dry_run")}
-    fixed = [
-        {"action_id": a.get("action_id"), "label": a.get("label") or a.get("action_id")}
+    # Once per action id - one run twice in a session is one fix.
+    fixed = list({
+        a.get("action_id"): {"action_id": a.get("action_id"), "label": a.get("label") or a.get("action_id")}
         for a in actions
         if a.get("exit_code") == 0 and not a.get("dry_run") and not a.get("already_applied")
         and a.get("risk") not in ("SAFE", "UNKNOWN")
-    ]
+    }.values())
     labels = {a.get("action_id"): a.get("label") for a in actions}
     recommended = [
         {"action_id": aid, "label": labels.get(aid) or (label_of(aid) if label_of else None) or aid}

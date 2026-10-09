@@ -47,6 +47,8 @@ def test_client_summary_found_fixed_recommended():
         {"action_id": "skipped", "label": "Already", "risk": "MODERATE", "exit_code": 0, "dry_run": False, "already_applied": True},
         {"action_id": "broke", "label": "Broke", "risk": "MODERATE", "exit_code": 1, "dry_run": False},
         {"action_id": "preview", "label": "Preview", "risk": "MODERATE", "exit_code": 0, "dry_run": True},
+        # Run twice in the session: one fix, not two.
+        {"action_id": "fix_ran", "label": "Fix that ran", "risk": "MODERATE", "exit_code": 0, "dry_run": False},
     ]
     summary = health.client_summary(actions, "en", label_of=lambda aid: {"chk": "Check disk"}.get(aid))
     assert summary["found"] == [{"id": "disk.smart", "severity": "critical", "area": "disk", "message": "disk.smart en"}]

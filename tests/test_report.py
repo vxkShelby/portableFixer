@@ -450,9 +450,40 @@ def test_html_report_cards_carry_filter_data_attributes(tmp_path):
     html_path, _ = generate_report(tmp_path, "run_attr", _two_module_fixture(), "en", {}, {})
     content = html_path.read_text(encoding="utf-8")
     assert '<div class="card ok" id="action-1" data-status="ok" data-dry="0"' in content
-    assert '<div class="card ok" id="action-2" data-status="ok" data-dry="1"' in content
+    # A dry-run is a grey preview, not a green OK, and not counted as one.
+    assert '<div class="card preview" id="action-2" data-status="preview" data-dry="1"' in content
+    assert '<span class="status preview">PREVIEW</span>' in content
     assert '<div class="card fail" id="action-3" data-status="fail" data-dry="0"' in content
     assert 'data-search="system file check m03_repair sfc"' in content
+    assert '<div class="chip ok"><span class="num">2</span>' in content
+    assert '<div class="chip dry"><span class="num">1</span>' in content
+
+
+def test_html_report_has_a_csp_hash_of_its_script_and_no_referrer(tmp_path):
+    import base64
+    import hashlib
+
+    from portablefix import report
+
+    html_path, _ = generate_report(tmp_path, "run_csp", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    script = content.split("<script>", 1)[1].split("</script>", 1)[0]
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    assert f"script-src 'sha256-{digest}'" in content and digest == report._JS_SHA256
+    assert "default-src 'none'" in content
+    assert '<meta name="referrer" content="no-referrer">' in content
+
+
+def test_autostart_diff_is_skipped_against_a_redacted_previous_report(tmp_path):
+    import socket
+
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    old = {"run_id": "old_red", "generated_at": "2026-01-01T00:00:00+00:00", "actions": [], "redacted": True,
+           "snapshot_after": {"autostart": ["Startup: <user>.lnk"]}}
+    (reports_dir / f"{socket.gethostname()}_old_red.json").write_text(json.dumps(old), encoding="utf-8")
+    data = build_report_data(tmp_path, "run_red2", _fixture_modules(), "en", {"autostart": ["Startup: Jan Novak.lnk"]}, {})
+    assert "new_autostart" not in data and data["previous_comparison"]["previous_run_id"] == "old_red"
 
 
 def test_html_report_has_filter_bar_print_css_and_is_self_contained(tmp_path):
@@ -486,6 +517,17 @@ def test_html_report_escapes_labels_in_new_sections(tmp_path):
     assert '<a href="#action-1">&lt;img src=x onerror=alert(1)&gt;&quot;</a>' in content
     assert "<td>&lt;img src=x onerror=alert(1)&gt;&quot;</td>" in content
     assert 'data-search="&lt;img src=x onerror=alert(1)&gt;&quot;' in content
+    # The numeric fields too: ints when built, anything when the page is
+    # re-rendered from a report.json edited on a writable stick.
+    from portablefix.report import render_report_html
+
+    data = build_report_data(tmp_path, "run_xss2", [], "en", {}, {})
+    data["module_summary"][0]["total"] = evil
+    data["module_summary"][0]["ok"] = evil
+    data["previous_comparison"] = {"previous_run_id": "p", "previous_generated_at": "x", "free_gb_delta": evil,
+                                   "previous_action_count": evil, "action_count": evil}
+    content = render_report_html(data)
+    assert "<img src=x" not in content and content.count("&lt;img src=x onerror=alert(1)&gt;&quot;") >= 7
 
 
 def test_html_report_new_sections_are_localized_to_slovak(tmp_path):

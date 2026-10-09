@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import html
 import json
 import platform
@@ -459,7 +461,9 @@ def build_report_data(
     # Research G04: what starts with Windows now that did not at the last
     # visit - measured on arrival (snapshot_before), before this run's work.
     if previous is not None:
-        new_autostart = new_autostart_entries(previous.get("snapshot_after"), snapshot_before)
+        # A redacted previous report holds masked entries ("Startup:
+        # <user>.lnk"), which would read as new at every visit.
+        new_autostart = None if previous.get("redacted") else new_autostart_entries(previous.get("snapshot_after"), snapshot_before)
         if new_autostart is not None:
             data["new_autostart"] = {"previous_run_id": previous.get("run_id"), "entries": new_autostart}
         # Research G09: applied at the last visit, not any more on arrival.
@@ -622,6 +626,7 @@ h1 { color: #7aa2f7; font-size: 22px; margin: 0 0 4px 0; }
 .status { font-weight: bold; font-size: 12px; border-radius: 8px; padding: 1px 9px; color: #1a1b26; }
 .status.ok { background: #9ece6a; }
 .status.fail { background: #f7768e; }
+.status.preview { background: #8b93b8; }
 .label { font-weight: 600; flex: 1; min-width: 12em; }
 .badge { font-size: 10px; font-weight: bold; border-radius: 7px; padding: 1px 8px; color: #1a1b26; }
 .mod { color: #9aa5ce; font-size: 12px; }
@@ -820,6 +825,11 @@ _JS = """
 """
 
 
+# The page is opened from mail and zips: a strict CSP neutralises any
+# future escaping slip. Hashed once - the script never changes per report.
+_JS_SHA256 = base64.b64encode(hashlib.sha256(_JS.encode("utf-8")).digest()).decode("ascii")
+
+
 def _local_tz():
     return None  # datetime.astimezone(None) = the system's local zone.
 
@@ -900,8 +910,9 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         return html.escape(translate(key, language))
 
     ok = a["exit_code"] == 0
-    status_cls = "ok" if ok else "fail"
-    status_txt = t("report_status_ok") if ok else t("report_status_failed")
+    # A dry-run's green "OK" read as if something had been repaired.
+    status_cls = "fail" if not ok else ("preview" if a["dry_run"] else "ok")
+    status_txt = t({"ok": "report_status_ok", "fail": "report_status_failed", "preview": "report_status_preview"}[status_cls])
     badge_color = _RISK_COLORS.get(a["risk"], _RISK_COLORS["UNKNOWN"])
     dry_tag = '<span class="dry-tag">DRY-RUN</span>' if a["dry_run"] else ""
     output_block = ""
@@ -971,14 +982,16 @@ def _render_module_summary(rows: list[dict], language: str) -> str:
         name = translate(key, language)
         return html.escape(str(raw) if name == key else name)
 
+    # html.escape(str()): ints when freshly built, anything when the page
+    # is re-rendered from a report.json on a writable stick.
     def num(value: int, cls: str) -> str:
-        return f'<td class="n {cls}{" zero" if value == 0 else ""}">{value}</td>'
+        return f'<td class="n {cls}{" zero" if value == 0 else ""}">{html.escape(str(value))}</td>'
 
     body = "".join(
         "<tr>"
         f'<td>{html.escape(str(r["module_id"]))}</td>'
         f'<td class="cat">{category_name(r["category"])}</td>'
-        f'<td class="n">{r["total"]}</td>'
+        f'<td class="n">{html.escape(str(r["total"]))}</td>'
         f'{num(r["ok"], "ok-n")}{num(r["failed"], "fail-n")}{num(r["dry_run"], "dry-n")}'
         "</tr>"
         for r in rows
@@ -1480,8 +1493,9 @@ def _render_html(data: dict) -> str:
         return html.escape(translate(key, language))
 
     actions = data["actions"]
-    ok_count = sum(1 for a in actions if a["exit_code"] == 0)
-    fail_count = len(actions) - ok_count
+    # A dry-run changed nothing, so it is neither OK nor failed on the chips.
+    ok_count = sum(1 for a in actions if a["exit_code"] == 0 and not a["dry_run"])
+    fail_count = sum(1 for a in actions if a["exit_code"] != 0)
     dry_count = sum(1 for a in actions if a["dry_run"])
     cards = "\n".join(_render_action_card(a, language, i) for i, a in enumerate(actions, start=1))
     if not cards:
@@ -1538,13 +1552,17 @@ def _render_html(data: dict) -> str:
     comparison = data.get("previous_comparison")
     if comparison:
         cmp_delta = comparison["free_gb_delta"]
-        delta_txt = f"{'+' if cmp_delta > 0 else ''}{_gb(cmp_delta, language)} GB" if cmp_delta is not None else "?"
+        if isinstance(cmp_delta, (int, float)) and not isinstance(cmp_delta, bool):
+            delta_txt = f"{'+' if cmp_delta > 0 else ''}{html.escape(_gb(cmp_delta, language))} GB"
+        else:
+            delta_txt = "?"
         comparison_section = (
             f"<section><h2>{t('report_since_last_visit')}</h2>"
             f"<div class=\"meta\">{t('report_previous_run')} {html.escape(str(comparison['previous_run_id']))} "
             f"({html.escape(_format_timestamp(comparison['previous_generated_at'], language))})<br>"
             f"{t('report_free_space_change')}: {delta_txt}<br>"
-            f"{t('report_actions_then_now')}: {comparison['previous_action_count']} &rarr; {comparison['action_count']}</div></section>"
+            f"{t('report_actions_then_now')}: {html.escape(str(comparison['previous_action_count']))} &rarr; "
+            f"{html.escape(str(comparison['action_count']))}</div></section>"
         )
     new_autostart = data.get("new_autostart")
     if isinstance(new_autostart, dict) and isinstance(new_autostart.get("entries"), list):
@@ -1564,6 +1582,8 @@ def _render_html(data: dict) -> str:
     return f"""<!DOCTYPE html>
 <html lang="{html.escape(language)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'sha256-{_JS_SHA256}'">
+<meta name="referrer" content="no-referrer">
 <title>PortableFix report {html.escape(data['run_id'])}</title>
 <style>{_CSS}</style></head>
 <body><main class="wrap">
