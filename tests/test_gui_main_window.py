@@ -88,6 +88,12 @@ def _toggle_language(qtbot, window):
     window._on_toggle_language()
 
 
+def _build_risk_cards(window):
+    # Risk cards fill their rows on the first visit (GUI review A4).
+    for risk in window._risk_tabs_order:
+        window._ensure_risk_card(risk)
+
+
 def _make_base_dir(tmp_path: Path, yaml_text: str = ACTIONS_YAML) -> Path:
     module_dir = tmp_path / "Modules" / "m01_diagnostics"
     module_dir.mkdir(parents=True)
@@ -1520,6 +1526,7 @@ def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_risk")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     window.search_box.setText("moderate")
 
@@ -1542,6 +1549,7 @@ def test_search_box_searches_globally_not_just_the_open_category(qtbot, tmp_path
     base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_hint")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
     window.category_list.setCurrentRow(1)  # SAFE risk tab - only safe_one lives here
 
     window.search_box.setText("moderate")
@@ -2138,6 +2146,7 @@ def test_risk_tab_mirror_checkbox_syncs_bidirectionally_with_canonical(qtbot, tm
     base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_mirror")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     canonical = window._action_checkboxes["moderate_one"]
     mirror = window._risk_view_checkboxes["moderate_one"]
@@ -2388,6 +2397,7 @@ def test_action_detail_panel_starts_hidden_in_both_views(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail1")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     assert window._action_detail_panels["detailed_action"].isHidden() is True
     assert window._risk_view_detail_panels["detailed_action"].isHidden() is True
@@ -2446,6 +2456,7 @@ def test_expand_state_is_independent_between_category_and_risk_tab_views(qtbot, 
     base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail5")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     window._action_detail_toggles["detailed_action"].click()
 
@@ -4396,6 +4407,7 @@ def test_global_risk_buttons_skip_excluded_actions(qtbot, tmp_path):
     base_dir = _write_module_with_excluded_risk_actions(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_excl")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     window.global_select_moderate_button.trigger()
     assert _checked_ids(window) == {"mod_normal"}
@@ -7916,3 +7928,30 @@ def test_sysinfo_panel_collapses_to_a_rail_and_remembers_it(qtbot, tmp_path):
     window.sysinfo_toggle_button.click()
     assert settings.sysinfo_collapsed is False
     assert panel.minimumWidth() == 280
+
+
+# --- detail panels and risk cards are built on first use (GUI review A4) ------
+
+
+def test_detail_panels_are_built_on_first_expand_only(qtbot, tmp_path):
+    from PySide6.QtWidgets import QPlainTextEdit
+
+    base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lazy_detail")
+    qtbot.addWidget(window)
+
+    # Only the consoles exist - no detail panel was built for any row.
+    assert all(w.objectName() == "console" for w in window.findChildren(QPlainTextEdit))
+    assert window._risk_view_rows == {}
+
+    window._action_detail_toggles["detailed_action"].click()
+
+    panel = window._action_detail_panels["detailed_action"]
+    assert panel.isHidden() is False
+    assert "Write-Output 'run-me'" in [w.toPlainText() for w in panel.findChildren(QPlainTextEdit)]
+
+    # The first visit of a risk card fills its rows, mirrors included.
+    window.category_list.setCurrentRow(len(window._categories_order))
+    assert "detailed_action" in window._risk_view_checkboxes
+    window._action_checkboxes["detailed_action"].setChecked(True)
+    assert window._risk_view_checkboxes["detailed_action"].isChecked() is True

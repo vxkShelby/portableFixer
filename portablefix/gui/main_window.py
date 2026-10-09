@@ -1098,6 +1098,10 @@ class MainWindow(QMainWindow):
         self._risk_view_rows: dict[str, QWidget] = {}
         self._risk_view_detail_toggles: dict[str, QToolButton] = {}
         self._risk_view_detail_panels: dict[str, QWidget] = {}
+        # The four risk cards repeat every row of the catalog - their rows
+        # are built on the first visit (_ensure_risk_card), which took the
+        # start-up build from ~10 s to a few.
+        self._risk_card_layouts: dict[RiskLevel, QVBoxLayout] = {}
         for risk in self._risk_tabs_order:
             card = QFrame()
             card.setObjectName("actionCard")
@@ -1117,42 +1121,7 @@ class MainWindow(QMainWindow):
                 self._t("select_none"), lambda r=risk: self._apply_selection(self._risk_action_ids[r], "none")
             ))
             card_layout.addLayout(heading_row)
-            for action_id in self._risk_action_ids[risk]:
-                module, action = self._find_action(action_id)
-                row_widget = QWidget()
-                row = QHBoxLayout(row_widget)
-                row.setContentsMargins(0, 0, 0, 0)
-                row.setSpacing(8)
-                mirror_checkbox = QCheckBox(action.label(self.settings.language))
-                mirror_checkbox.setToolTip(action.description(self.settings.language))
-                mirror_checkbox.setAccessibleDescription(action.description(self.settings.language))
-                canonical_checkbox = self._action_checkboxes[action_id]
-                mirror_checkbox.setChecked(canonical_checkbox.isChecked())
-                # Two views, one source of truth: setChecked() only emits
-                # stateChanged on an actual value change, so this pair never
-                # loops - whichever view the user clicks, the other follows.
-                mirror_checkbox.stateChanged.connect(
-                    lambda state, c=canonical_checkbox: c.setChecked(state != 0)
-                )
-                canonical_checkbox.stateChanged.connect(
-                    lambda state, m=mirror_checkbox: m.setChecked(state != 0)
-                )
-                self._risk_view_checkboxes[action_id] = mirror_checkbox
-                row.addWidget(mirror_checkbox)
-                category_label = QLabel(self._t(category_i18n_keys[module.category]))
-                category_label.setObjectName("actionStatus")
-                row.addWidget(category_label)
-                row.addStretch(1)
-                # Independent from the category view's toggle on purpose:
-                # expand/collapse is display-only, not selection state, so
-                # unlike the checkboxes above it has no two-way sync to break.
-                detail_toggle, detail_panel = self._make_action_detail_toggle(action)
-                self._risk_view_detail_toggles[action_id] = detail_toggle
-                self._risk_view_detail_panels[action_id] = detail_panel
-                row.addWidget(detail_toggle)
-                row_container = self._wrap_row_with_detail_panel(row_widget, detail_panel)
-                self._risk_view_rows[action_id] = row_container
-                card_layout.addWidget(row_container)
+            self._risk_card_layouts[risk] = card_layout
             scroll_layout.addWidget(card)
             card.setHidden(True)
             self._nav_row_order.append(card)
@@ -1282,6 +1251,55 @@ class MainWindow(QMainWindow):
             widget.setHidden(index != row)
         if 0 <= row < len(self._categories_order):
             self._start_checks(self._category_action_ids.get(self._categories_order[row], []))
+        elif 0 <= row - len(self._categories_order) < len(self._risk_tabs_order):
+            self._ensure_risk_card(self._risk_tabs_order[row - len(self._categories_order)])
+
+    def _ensure_risk_card(self, risk: RiskLevel) -> None:
+        """Fills a risk card's rows on its first visit (see _build_ui)."""
+        card_layout = self._risk_card_layouts.pop(risk, None)
+        if card_layout is None:
+            return
+        for action_id in self._risk_action_ids[risk]:
+            module, action = self._find_action(action_id)
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            mirror_checkbox = QCheckBox(action.label(self.settings.language))
+            mirror_checkbox.setToolTip(action.description(self.settings.language))
+            mirror_checkbox.setAccessibleDescription(action.description(self.settings.language))
+            canonical_checkbox = self._action_checkboxes[action_id]
+            mirror_checkbox.setChecked(canonical_checkbox.isChecked())
+            # Two views, one source of truth: setChecked() only emits
+            # stateChanged on an actual value change, so this pair never
+            # loops - whichever view the user clicks, the other follows.
+            mirror_checkbox.stateChanged.connect(
+                lambda state, c=canonical_checkbox: c.setChecked(state != 0)
+            )
+            canonical_checkbox.stateChanged.connect(
+                lambda state, m=mirror_checkbox: m.setChecked(state != 0)
+            )
+            self._risk_view_checkboxes[action_id] = mirror_checkbox
+            row.addWidget(mirror_checkbox)
+            category_label = QLabel(self._t(self._category_i18n_keys[module.category]))
+            category_label.setObjectName("actionStatus")
+            row.addWidget(category_label)
+            row.addStretch(1)
+            # Independent from the category view's toggle on purpose:
+            # expand/collapse is display-only, not selection state, so
+            # unlike the checkboxes above it has no two-way sync to break.
+            detail_toggle, detail_panel = self._make_action_detail_toggle(action)
+            self._risk_view_detail_toggles[action_id] = detail_toggle
+            self._risk_view_detail_panels[action_id] = detail_panel
+            row.addWidget(detail_toggle)
+            row_container = self._wrap_row_with_detail_panel(row_widget, detail_panel)
+            self._risk_view_rows[action_id] = row_container
+            card_layout.addWidget(row_container)
+        needle = self.search_box.text().strip().lower()
+        if needle:
+            for action_id in self._risk_action_ids[risk]:
+                _, action = self._find_action(action_id)
+                self._risk_view_rows[action_id].setHidden(needle not in self._action_search_haystack(action))
 
     # --- "already applied?" status chips (research G09) ----------------------
 
@@ -1926,9 +1944,24 @@ class MainWindow(QMainWindow):
         toggle.setToolTip(self._t("show_action_details"))
         toggle.setText("▼")
 
+        # An empty placeholder until the first expand: ~540 of these panels,
+        # each with 1-2 QPlainTextEdits polished against the stylesheet,
+        # were ~60 % of the 10 s start-up build.
         panel = QWidget()
         panel.setObjectName("actionDetailPanel")
         panel.setHidden(True)
+
+        def _on_toggled(checked: bool) -> None:
+            if checked and panel.layout() is None:
+                self._fill_action_detail_panel(panel, action)
+            panel.setHidden(not checked)
+            toggle.setText("▲" if checked else "▼")
+            toggle.setToolTip(self._t("hide_action_details") if checked else self._t("show_action_details"))
+
+        toggle.toggled.connect(_on_toggled)
+        return toggle, panel
+
+    def _fill_action_detail_panel(self, panel: QWidget, action: ActionDef) -> None:
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(10, 8, 10, 8)
         panel_layout.setSpacing(4)
@@ -1955,14 +1988,6 @@ class MainWindow(QMainWindow):
             undo_box.setReadOnly(True)
             undo_box.setFixedHeight(48)
             panel_layout.addWidget(undo_box)
-
-        def _on_toggled(checked: bool) -> None:
-            panel.setHidden(not checked)
-            toggle.setText("▲" if checked else "▼")
-            toggle.setToolTip(self._t("hide_action_details") if checked else self._t("show_action_details"))
-
-        toggle.toggled.connect(_on_toggled)
-        return toggle, panel
 
     @staticmethod
     def _wrap_row_with_detail_panel(row_widget: QWidget, detail_panel: QWidget) -> QWidget:
