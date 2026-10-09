@@ -68,6 +68,28 @@ def test_m09_catalog_memory_actions_are_safe_and_undoless():
         assert by_id[action_id].undo_command is None, action_id
 
 
+def test_m09_clear_working_sets_calls_empty_working_set(tmp_path):
+    # `$p.MinWorkingSet = $p.MinWorkingSet` re-applied the current limits
+    # and emptied nothing; the "freed MB" delta over 300 ms was noise.
+    action = _action("tune_clear_working_sets")
+    assert "EmptyWorkingSet" in action.command and "psapi.dll" in action.command
+    for gone in ("MinWorkingSet", "FreePhysicalMemory", "MB change"):
+        assert gone not in action.command, gone
+    assert "LanguageMode" in action.command
+    script = (
+        "function Get-Process { [CmdletBinding()] param() [Diagnostics.Process]::GetCurrentProcess() }; "
+        "if ((Get-Command Get-Process | Select-Object -First 1).CommandType -ne 'Function') { exit 97 }; "
+        + action.command
+    )
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Emptied the working set of 1 process(es); 0 skipped" in result.stdout
+
+
 def test_m09_catalog_new_service_restart_actions_have_no_undo_and_verify_success():
     # Stop-Service/Start-Service silently no-op without administrator - each
     # new service-restart action must check actual post-restart status
