@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # "Tests passed for this commit" reads the Tests workflow's runs.
+  actions: read
 
 concurrency:
   group: release
@@ -23,6 +25,8 @@ concurrency:
 
 jobs:
   build:
+    # Releases come from main only (README.md, "Release proces").
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 60
     # Everything below runs on the machine that later holds the signing key
@@ -32,6 +36,19 @@ jobs:
     # (requirements-build.txt).
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # The job holds the signing key and a contents: write token; no
+          # step needs git to push, so the token stays out of .git/config.
+          persist-credentials: false
+
+      - name: Tests passed for this commit
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $green = gh run list --repo $env:GITHUB_REPOSITORY --workflow tests.yml --commit $env:GITHUB_SHA --status success --json conclusion --jq length
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not list the Tests runs for $env:GITHUB_SHA"; exit 1 }
+          if ([int]$green -lt 1) { Write-Host "::error::no successful Tests run for $env:GITHUB_SHA - wait for CI to pass on main"; exit 1 }
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
@@ -53,9 +70,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+        # Fails closed: an API or network error stops the build instead of
+        # reading as "new". The git tag is checked too - gh release create
+        # ignores --target for an existing tag, so a stale tag would point
+        # at another commit than the one built here.
         run: |
-          gh release view $env:TAG *> $null
-          if ($LASTEXITCODE -eq 0) { Write-Host "::error::release $env:TAG already exists"; exit 1 }
+          git ls-remote --exit-code --tags origin "refs/tags/$env:TAG" *> $null
+          $code = $LASTEXITCODE
+          if ($code -eq 0) { Write-Host "::error::tag $env:TAG already exists"; exit 1 }
+          if ($code -ne 2) { Write-Host "::error::git ls-remote failed (exit $code)"; exit 1 }
+          # The list, not "gh release view": the by-tag lookup does not see drafts.
+          $tags = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not list the releases"; exit 1 }
+          if ($tags -contains $env:TAG) { Write-Host "::error::release $env:TAG already exists"; exit 1 }
           exit 0
 
       # The key is handed to build.ps1 (and so to scripts/sign_release.py)
