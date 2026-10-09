@@ -275,6 +275,12 @@ QLabel#selectionScope {
     font-size: 9pt;
 }
 
+QLabel#emptyState {
+    color: #7c8799;
+    font-size: 11pt;
+    padding: 24px 8px;
+}
+
 QLabel#actionStatus {
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 8pt;

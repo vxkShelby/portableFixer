@@ -998,6 +998,11 @@ class MainWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 6, 0)
         scroll_layout.setSpacing(8)
+        self._search_empty_label = QLabel()
+        self._search_empty_label.setObjectName("emptyState")
+        self._search_empty_label.setWordWrap(True)
+        self._search_empty_label.setHidden(True)
+        scroll_layout.addWidget(self._search_empty_label)
 
         self._category_groups: dict[ModuleCategory, QWidget] = {}
         self._category_action_ids: dict[ModuleCategory, list[str]] = {}
@@ -1279,12 +1284,9 @@ class MainWindow(QMainWindow):
 
     def _on_category_changed(self, row: int) -> None:
         if self.search_box.text().strip():
-            # A search is active - every card stays visible (with only the
-            # matching rows shown, per _on_search_changed) so results from
-            # every category are reachable, not just whichever one the
-            # sidebar happens to be on.
-            for widget in self._nav_row_order:
-                widget.setHidden(False)
+            # A search is active - it decides which cards show, whatever
+            # the sidebar is on (see _on_search_changed).
+            self._on_search_changed(self.search_box.text())
             return
         for index, widget in enumerate(self._nav_row_order):
             widget.setHidden(index != row)
@@ -1408,13 +1410,8 @@ class MainWindow(QMainWindow):
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
-        if needle:
-            # Search every category/risk card at once instead of just the
-            # one the sidebar currently has open - a match hidden inside an
-            # unopened card looked identical to "no such action".
-            for widget in self._nav_row_order:
-                widget.setHidden(False)
-        else:
+        if not needle:
+            self._search_empty_label.setHidden(True)
             self._on_category_changed(self.category_list.currentRow())
         matched_ids: set[str] = set()
         for action_id, row_widget in self._action_rows.items():
@@ -1439,9 +1436,18 @@ class MainWindow(QMainWindow):
             self._update_status_bar()
             return
 
-        # Search now shows every matching card at once (see above), so
-        # there's no more "hidden in a tab you're not looking at" case -
-        # just report whether anything matched at all.
+        # Search every category at once instead of just the one the sidebar
+        # has open - a match hidden inside an unopened card looked identical
+        # to "no such action". Only cards with a hit are shown: the
+        # Dashboard, the Uninstaller and the risk views (which repeat every
+        # row) would only bury the results.
+        for category in self._categories_order:
+            ids = self._category_action_ids.get(category, ())
+            self._category_groups[category].setHidden(not any(aid in matched_ids for aid in ids))
+        for card in self._nav_row_order[len(self._categories_order):]:
+            card.setHidden(True)
+        self._search_empty_label.setText(self._t("search_empty_state").format(query=text.strip()))
+        self._search_empty_label.setHidden(bool(matched_ids))
         if not matched_ids:
             self.statusBar().showMessage(self._t("search_no_matches").format(query=text.strip()))
         else:

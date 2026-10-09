@@ -1619,39 +1619,55 @@ def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
     assert window._risk_view_rows["safe_one"].isHidden() is False
 
 
-def test_search_box_searches_globally_not_just_the_open_category(qtbot, tmp_path):
-    # Searching used to only unhide matching rows inside whichever
-    # category/risk card the sidebar currently had open - a match sitting in
-    # any other card stayed invisible because _on_category_changed had
-    # hidden that whole card. Search must now show every matching card at
-    # once regardless of which sidebar row is selected.
-    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
-    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_hint")
+def _two_category_window(qtbot, tmp_path, run_id):
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(tmp_path, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id=run_id)
     qtbot.addWidget(window)
-    _build_risk_cards(window)
-    window.category_list.setCurrentRow(1)  # SAFE risk tab - only safe_one lives here
-
-    window.search_box.setText("moderate")
-
-    assert "1" in window.statusBar().currentMessage()
-    # The card containing the match (a different risk tab than the one
-    # selected) must actually be visible, not just counted in the message.
-    moderate_card = window._risk_view_rows["moderate_one"]
-    while moderate_card.parentWidget() is not None and moderate_card not in window._nav_row_order:
-        moderate_card = moderate_card.parentWidget()
-    assert moderate_card.isHidden() is False
+    return window
 
 
-def test_selecting_a_category_while_searching_keeps_all_cards_visible(qtbot, tmp_path):
-    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
-    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_switch")
-    qtbot.addWidget(window)
+def test_search_shows_only_the_categories_with_a_hit(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
 
-    window.search_box.setText("moderate")
+    window = _two_category_window(qtbot, tmp_path, "run_search_cards")
+    window.category_list.setCurrentRow(1)  # the other category is open
+
+    window.search_box.setText("clean_action")
+
+    groups = window._category_groups
+    assert groups[ModuleCategory.CLEANUP].isHidden() is False
+    assert groups[ModuleCategory.DIAGNOSTICS].isHidden() is True
+    assert groups[ModuleCategory.DASHBOARD].isHidden() is True
+    assert all(card.isHidden() for card in window._nav_row_order[len(window._categories_order):])
+    assert window._search_empty_label.isHidden() is True
+
+    window.search_box.setText("")
+
+    assert groups[ModuleCategory.DIAGNOSTICS].isHidden() is False  # the open sidebar row again
+    assert groups[ModuleCategory.CLEANUP].isHidden() is True
+
+
+def test_selecting_a_category_while_searching_keeps_the_hit_cards_only(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
+
+    window = _two_category_window(qtbot, tmp_path, "run_search_switch")
+
+    window.search_box.setText("clean_action")
     window.category_list.setCurrentRow(1)
 
-    for card in window._nav_row_order:
-        assert card.isHidden() is False
+    assert window._category_groups[ModuleCategory.CLEANUP].isHidden() is False
+    assert window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden() is True
+
+
+def test_search_with_no_hit_shows_an_empty_state(qtbot, tmp_path):
+    window = _two_category_window(qtbot, tmp_path, "run_search_empty")
+
+    window.search_box.setText("zzz")
+
+    assert window._search_empty_label.isHidden() is False
+    assert "zzz" in window._search_empty_label.text()
+    assert all(card.isHidden() for card in window._nav_row_order)
 
 
 def test_search_box_shows_no_matches_message(qtbot, tmp_path):
