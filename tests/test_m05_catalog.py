@@ -101,12 +101,76 @@ def test_m05_catalog_uninstall_last_update_requires_reboot():
 def test_m05_catalog_uninstall_last_update_uses_wua_history_not_gethotfix():
     # Get-HotFix's InstalledOn field is unreliable (frequently null on real
     # machines), so sorting by it doesn't reliably surface the actual most
-    # recent update. The WUA COM API's update history is more consistent.
+    # recent update. The WUA COM API's update history is more consistent;
+    # Get-HotFix only tells whether a KB is an installed servicing package.
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "wu_uninstall_last_update")
-    assert "Get-HotFix" not in action.command
+    assert "InstalledOn" not in action.command
     assert "Microsoft.Update.Session" in action.command
     assert "QueryHistory" in action.command
+
+
+UNINSTALL_STUBS = r"""
+function New-Object { [CmdletBinding()] param([string] $ComObject) $searcher = [pscustomobject]@{}; $searcher | Add-Member ScriptMethod GetTotalHistoryCount { @($global:WUH).Count }; $searcher | Add-Member ScriptMethod QueryHistory { param($start, $count) $global:WUH }; $session = [pscustomobject]@{ S = $searcher }; $session | Add-Member ScriptMethod CreateUpdateSearcher { $this.S }; $session }
+function Get-HotFix { [CmdletBinding()] param() foreach ($id in $global:HOTFIX) { [pscustomobject]@{ HotFixID = $id } } }
+function wusa.exe { [Console]::Out.WriteLine('STUB wusa ' + ($args -join ' ')); $global:LASTEXITCODE = 3010 }
+foreach ($n in 'New-Object', 'Get-HotFix', 'wusa.exe') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
+"""
+
+
+def _run_uninstall(history, hotfixes):
+    """history: (title, days ago, operation, result code)."""
+    entries = ", ".join(
+        f"[pscustomobject]@{{ Title = {_ps_quote(title)}; Date = [DateTime]::UtcNow.AddDays(-{days}); Operation = {op}; ResultCode = {rc} }}"
+        for title, days, op, rc in history
+    )
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "wu_uninstall_last_update").command
+    script = "\n".join([
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8",
+        f"$global:WUH = @({entries})",
+        "$global:HOTFIX = @(" + ", ".join(_ps_quote(h) for h in hotfixes) + ")",
+        UNINSTALL_STUBS, command,
+    ])
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a system lookup was not stubbed - refusing to run the real one"
+    return result
+
+
+DEFENDER = "Security Intelligence Update for Microsoft Defender Antivirus - KB2267602 (Version 1.431.0.0)"
+CUMULATIVE = "2026-03 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5055523)"
+DOTNET = "2026-02 Cumulative Update for .NET Framework 3.5 and 4.8.1 (KB5054980)"
+
+
+def test_m05_uninstall_last_update_skips_defender_and_picks_the_installed_cumulative_update():
+    # The newest successful entry is nearly always a Defender definition
+    # update - wusa /uninstall /kb:2267602 always fails. The cumulative
+    # update that Get-HotFix still lists is what the technician means.
+    history = [(DEFENDER, 0.1, 1, 2), (DEFENDER, 0.6, 1, 2), (DOTNET, 1.5, 1, 4), (CUMULATIVE, 2.5, 1, 2),
+               ("2026-02 Cumulative Update (KB5050000)", 30.5, 1, 2)]
+    result = _run_uninstall(history, hotfixes=["KB5055523", "KB5050000"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Chosen: KB5055523 - " + CUMULATIVE in result.stdout
+    assert "reason: newest successful install still listed by Get-HotFix" in result.stdout
+    assert "Skipped newer Defender/definition entries: KB2267602" in result.stdout
+    assert "STUB wusa /uninstall /kb:5055523 /quiet /norestart" in result.stdout
+    assert "Uninstall of KB5055523 started (exit code 3010)" in result.stdout
+
+
+def test_m05_uninstall_last_update_falls_back_to_the_newest_non_defender_entry_and_says_so():
+    result = _run_uninstall([(DEFENDER, 0.1, 1, 2), (DOTNET, 1.5, 1, 2)], hotfixes=["KB9999999"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Chosen: KB5054980" in result.stdout and "NOT listed by Get-HotFix" in result.stdout
+
+
+def test_m05_uninstall_last_update_refuses_when_only_defender_updates_are_in_history():
+    result = _run_uninstall([(DEFENDER, 0.1, 1, 2)], hotfixes=["KB2267602"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "No removable update found" in result.stdout and "KB2267602" in result.stdout
+    assert "STUB wusa" not in result.stdout
 
 
 def test_m05_reset_cache_in_use_warning_fails_and_points_at_stop_services():
