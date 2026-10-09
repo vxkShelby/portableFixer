@@ -411,6 +411,61 @@ def test_m13_onedrive_removal_reports_the_installer_exit_code(setup_exit, expect
     assert ("failed with exit code 1" in result.stdout) == (setup_exit == 1)
 
 
+# --- Appx removals count successes, not attempts, and target the user ------
+
+
+def _run_appx_removal(action_id: str, target=None, fail_names=("Bad",)):
+    """Get-AppxPackage answers two packages for the first list entry (Good
+    and Bad); Remove-AppxPackage raises an error for `fail_names`. Each stub
+    reports the -User it was given."""
+    command = _m13_action(action_id).command
+    fail = ", ".join(f"'{n}'" for n in fail_names)
+    stubs = [
+        "function Get-AppxPackage { [CmdletBinding()] param($Name, $User) [Console]::Out.WriteLine('STUB Get-AppxPackage user=' + $User); "
+        "if ($Name -eq 'Microsoft.XboxIdentityProvider' -or $Name -eq 'Microsoft.549981C3F5F10') { @([pscustomobject]@{ Name = 'Good' }, [pscustomobject]@{ Name = 'Bad' }) } }",
+        "function Remove-AppxPackage { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Package, $User) "
+        f"process {{ [Console]::Out.WriteLine('STUB Remove-AppxPackage ' + $Package.Name + ' user=' + $User); if (@({fail}) -contains $Package.Name) {{ Write-Error ('locked: ' + $Package.Name) }} }} }}",
+        "foreach ($n in 'Get-AppxPackage', 'Remove-AppxPackage') { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}",
+    ]
+    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(stubs + [plan.argv[-1]])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")]
+
+
+@pytest.mark.parametrize("action_id", ["debloat_remove_promo_apps", "debloat_remove_xbox_identity"])
+def test_m13_appx_removal_counts_only_real_successes(action_id):
+    # $removed++ used to run after Remove-AppxPackage -EA SilentlyContinue,
+    # so a package that failed (in use, policy-blocked) counted as removed.
+    result, ran = _run_appx_removal(action_id)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed packages: 1, errors: 1" in result.stdout
+    assert all(line.endswith(" user=") for line in ran), ran
+
+
+@pytest.mark.parametrize("action_id", ["debloat_remove_promo_apps", "debloat_remove_xbox_identity"])
+def test_m13_appx_removal_fails_when_nothing_was_removed_and_errors_occurred(action_id):
+    result, _ = _run_appx_removal(action_id, fail_names=("Good", "Bad"))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Removed packages: 0, errors: 2" in result.stdout
+
+
+@pytest.mark.parametrize("action_id", ["debloat_remove_promo_apps", "debloat_remove_xbox_identity"])
+def test_m13_appx_removal_targets_the_signed_in_user(action_id):
+    # Over the shoulder, Get-AppxPackage without -User lists the technician's
+    # packages - nothing is removed from the client's account.
+    result, ran = _run_appx_removal(action_id, target=_client())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ran and all(line.endswith(" user=" + CLIENT_SID) for line in ran), ran
+
+
 def test_m13_catalog_parses_in_powershell(tmp_path):
     texts = []
     for action in load_module(CATALOG_PATH).actions:
