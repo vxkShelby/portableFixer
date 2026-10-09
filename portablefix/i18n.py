@@ -568,6 +568,10 @@ _STRINGS = {
         "report_drift": "Vrátené od minulej návštevy",
         "report_drift_intro": "Pri minulej návšteve boli tieto nastavenia aplikované, teraz už nie sú (Windows alebo program ich vrátil):",
         "language_busy": "Jazyk sa dá prepnúť až po skončení prebiehajúcej kontroly winget, aktualizácie alebo odinštalovania.",
+        "select_menu": "Vybrať ▾",
+        "sysinfo_title": "Systém",
+        "sysinfo_collapse": "Skryť panel systému",
+        "sysinfo_expand": "Zobraziť panel systému",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1138,6 +1142,10 @@ _STRINGS = {
         "report_drift": "Turned back since the last visit",
         "report_drift_intro": "These settings were applied at the last visit and are not any more (Windows or a program turned them back):",
         "language_busy": "The language can be switched once the running winget check, update or uninstall has finished.",
+        "select_menu": "Select ▾",
+        "sysinfo_title": "System",
+        "sysinfo_collapse": "Hide the system panel",
+        "sysinfo_expand": "Show the system panel",
     },
 }
 

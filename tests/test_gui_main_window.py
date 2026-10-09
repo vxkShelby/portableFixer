@@ -1025,13 +1025,13 @@ def test_global_select_buttons_cover_all_categories(qtbot, tmp_path):
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_selall")
     qtbot.addWidget(window)
 
-    window.global_select_all_button.click()
+    window.global_select_all_button.trigger()
     assert all(cb.isChecked() for cb in window._action_checkboxes.values())
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
     assert not any(cb.isChecked() for cb in window._action_checkboxes.values())
 
-    window.global_select_safe_button.click()
+    window.global_select_safe_button.trigger()
     assert window._action_checkboxes["d_safe"].isChecked()
     assert window._action_checkboxes["r_safe"].isChecked()
     assert not window._action_checkboxes["d_mod"].isChecked()
@@ -1662,7 +1662,7 @@ def test_clearing_selection_unchecks_the_lit_preset_button(qtbot, tmp_path):
     # button (now disabled with nothing selected) is actually clickable.
     window._action_checkboxes["temp_cleanup"].setChecked(True)
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
 
     assert window._preset_buttons["quick_clean"].isChecked() is False
     assert all(not cb.isChecked() for cb in window._action_checkboxes.values())
@@ -1692,7 +1692,7 @@ def test_global_clear_selection_button_only_enabled_when_something_is_selected(q
     window._action_checkboxes["temp_cleanup"].setChecked(True)
     assert window.global_select_none_button.isEnabled() is True
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
     assert window.global_select_none_button.isEnabled() is False
 
 
@@ -2100,13 +2100,13 @@ def test_global_select_moderate_destructive_reboot_buttons_select_only_that_risk
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_select")
     qtbot.addWidget(window)
 
-    window.global_select_moderate_button.click()
+    window.global_select_moderate_button.trigger()
     assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["moderate_one"]
 
-    window.global_select_destructive_button.click()
+    window.global_select_destructive_button.trigger()
     assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["destructive_one"]
 
-    window.global_select_reboot_button.click()
+    window.global_select_reboot_button.trigger()
     assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["reboot_one"]
 
 
@@ -4397,16 +4397,16 @@ def test_global_risk_buttons_skip_excluded_actions(qtbot, tmp_path):
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_excl")
     qtbot.addWidget(window)
 
-    window.global_select_moderate_button.click()
+    window.global_select_moderate_button.trigger()
     assert _checked_ids(window) == {"mod_normal"}
 
-    window.global_select_reboot_button.click()
+    window.global_select_reboot_button.trigger()
     assert _checked_ids(window) == {"reboot_normal"}
 
-    window.global_select_safe_button.click()
+    window.global_select_safe_button.trigger()
     assert _checked_ids(window) == {"safe_normal"}
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
     _all_btn, category_safe_btn, _none_btn = window._category_select_buttons[ModuleCategory.SECURITY]
     category_safe_btn.click()
     assert _checked_ids(window) == {"safe_normal"}
@@ -7867,3 +7867,52 @@ def test_dry_run_checkbox_is_locked_for_the_batch_and_the_mode_cannot_change_mid
     entries = [e for e in _audit_entries(audit_log_path(base_dir, "run_dry_run_lock")) if e["module_id"] != "_system"]
     assert [e["action_id"] for e in entries] == ["slow_safe", "risky"]
     assert all(e["dry_run"] is True for e in entries)
+
+
+# --- the window fits a 1366 x 768 / 125 % screen (GUI review A3) --------------
+
+
+@pytest.mark.skipif(
+    os.environ.get("QT_QPA_PLATFORM") == "offscreen",
+    reason="the offscreen platform has no system fonts, so its text metrics say nothing about a real screen",
+)
+@pytest.mark.parametrize("language", ["sk", "en"])
+def test_window_minimum_size_fits_a_small_laptop_screen(qtbot, monkeypatch, language):
+    from portablefix import winget_updates
+
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [])
+    # The real catalog: 269 actions, the longest labels and every panel.
+    base_dir = Path(__file__).resolve().parent.parent
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language=language, quiet_mode=True),
+        is_admin=True, run_id="run_min_size",
+    )
+    qtbot.addWidget(window)
+    window.ensurePolished()
+
+    hint = window.minimumSizeHint()
+    assert hint.width() <= 1280, hint
+    assert hint.height() <= 720, hint
+    assert window.width() <= 1200 and window.height() <= 760
+
+
+def test_sysinfo_panel_collapses_to_a_rail_and_remembers_it(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", quiet_mode=True)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_sysinfo_fold")
+    qtbot.addWidget(window)
+    panel = window._sysinfo_labels["os"].parentWidget()
+    while panel.objectName() != "actionCard":
+        panel = panel.parentWidget()
+    assert panel.minimumWidth() == 280
+
+    window.sysinfo_toggle_button.click()
+
+    assert settings.sysinfo_collapsed is True
+    assert panel.maximumWidth() <= 60
+    assert window._sysinfo_labels["os"].isVisibleTo(window) is False
+    assert window.sysinfo_toggle_button.toolTip() == window._t("sysinfo_expand")
+
+    window.sysinfo_toggle_button.click()
+    assert settings.sysinfo_collapsed is False
+    assert panel.minimumWidth() == 280

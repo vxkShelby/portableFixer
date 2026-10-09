@@ -444,6 +444,18 @@ class MainWindow(QMainWindow):
         # i18n key of the review note when resume_batch switched DRY-RUN.
         self._resume_mode_note = ""
         self._build_ui()
+        # Sized from the screen once, here - not in _build_ui, which a
+        # language toggle reruns (it re-sized a maximised window). On the
+        # 1366 x 768 / 125 %-scaled laptops this tool is run on, main.py
+        # shows the window maximised instead.
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None and available.width() > 0:
+            self.resize(min(1200, int(available.width() * 0.95)), min(760, int(available.height() * 0.92)))
+            self.prefer_maximized = available.width() < 1400 or available.height() < 850
+        else:
+            self.resize(1200, 760)
+            self.prefer_maximized = False
         # Quiet mode: no GitHub request at start; the sysinfo panel has a
         # button for an explicit check instead.
         if self.settings.quiet_mode:
@@ -720,7 +732,6 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
         self.setStyleSheet(style.stylesheet())
-        self.resize(1200, 760)
         central = QWidget(self)
         central.setObjectName("central")
         self.setCentralWidget(central)
@@ -846,36 +857,30 @@ class MainWindow(QMainWindow):
         scope_label = QLabel(self._t("all_categories"))
         scope_label.setObjectName("selectionScope")
         global_select_row.addWidget(scope_label)
-        self.global_select_all_button = self._make_selection_button(
-            self._t("select_all"), lambda: self._apply_selection(list(self._action_checkboxes), "all")
-        )
-        global_select_row.addWidget(self.global_select_all_button)
-        self.global_select_safe_button = self._make_selection_button(
-            self._t("select_safe_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.SAFE.value),
-        )
-        global_select_row.addWidget(self.global_select_safe_button)
-        self.global_select_moderate_button = self._make_selection_button(
-            self._t("select_moderate_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.MODERATE.value),
-        )
-        global_select_row.addWidget(self.global_select_moderate_button)
-        self.global_select_destructive_button = self._make_selection_button(
-            self._t("select_destructive_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.DESTRUCTIVE.value),
-        )
-        global_select_row.addWidget(self.global_select_destructive_button)
-        self.global_select_reboot_button = self._make_selection_button(
-            self._t("select_reboot_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.REQUIRES_REBOOT.value),
-        )
-        global_select_row.addWidget(self.global_select_reboot_button)
-        self.global_select_none_button = self._make_selection_button(
-            self._t("select_none"), lambda: self._apply_selection(list(self._action_checkboxes), "none")
-        )
-        self.global_select_none_button.setProperty("danger", True)
+        # One menu instead of six buttons in a row: the row alone needed
+        # ~800 px and kept the window from fitting a 1366 x 768 laptop.
+        self.global_select_button = QToolButton()
+        self.global_select_button.setObjectName("selectionBtn")
+        self.global_select_button.setText(self._t("select_menu"))
+        self.global_select_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.global_select_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        global_select_menu = QMenu(self.global_select_button)
+
+        def _select_action(text_key: str, mode: str):
+            action = global_select_menu.addAction(self._t(text_key))
+            action.triggered.connect(lambda _checked=False: self._apply_selection(list(self._action_checkboxes), mode))
+            return action
+
+        self.global_select_all_button = _select_action("select_all", "all")
+        self.global_select_safe_button = _select_action("select_safe_only", RiskLevel.SAFE.value)
+        self.global_select_moderate_button = _select_action("select_moderate_only", RiskLevel.MODERATE.value)
+        self.global_select_destructive_button = _select_action("select_destructive_only", RiskLevel.DESTRUCTIVE.value)
+        self.global_select_reboot_button = _select_action("select_reboot_only", RiskLevel.REQUIRES_REBOOT.value)
+        global_select_menu.addSeparator()
+        self.global_select_none_button = _select_action("select_none", "none")
         self.global_select_none_button.setEnabled(False)
-        global_select_row.addWidget(self.global_select_none_button)
+        self.global_select_button.setMenu(global_select_menu)
+        global_select_row.addWidget(self.global_select_button)
         global_select_row.addStretch(1)
         center_layout.addLayout(global_select_row)
 
@@ -5270,11 +5275,48 @@ class MainWindow(QMainWindow):
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("actionCard")
-        panel.setMinimumWidth(460)
-        panel.setMaximumWidth(640)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 10, 14, 10)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(14, 10, 14, 10)
+        panel_layout.setSpacing(4)
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        title = QLabel(self._t("sysinfo_title"))
+        title.setObjectName("cardHeading")
+        header.addWidget(title)
+        header.addStretch(1)
+        self.sysinfo_toggle_button = QToolButton()
+        self.sysinfo_toggle_button.setObjectName("actionDetailToggle")
+        self.sysinfo_toggle_button.setCheckable(True)
+        self.sysinfo_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        header.addWidget(self.sysinfo_toggle_button)
+        panel_layout.addLayout(header)
+        # The rows scroll inside the panel so its minimum width is the 280 px
+        # set here, not the longest GPU name or button caption - the old
+        # 460 px floor was a third of the 1501 px minimum window width.
+        body_scroll = QScrollArea()
+        body_scroll.setWidgetResizable(True)
+        body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        body_scroll.setWidget(body)
+        panel_layout.addWidget(body_scroll, 1)
+
+        def apply_collapsed(collapsed: bool) -> None:
+            self.settings.sysinfo_collapsed = collapsed
+            body_scroll.setVisible(not collapsed)
+            title.setVisible(not collapsed)
+            panel.setMinimumWidth(0 if collapsed else 280)
+            panel.setMaximumWidth(60 if collapsed else 640)
+            self.sysinfo_toggle_button.setText("»" if collapsed else "«")
+            tip = self._t("sysinfo_expand") if collapsed else self._t("sysinfo_collapse")
+            self.sysinfo_toggle_button.setToolTip(tip)
+            self.sysinfo_toggle_button.setAccessibleName(tip)
+
+        self.sysinfo_toggle_button.toggled.connect(apply_collapsed)
+        self.sysinfo_toggle_button.setChecked(bool(self.settings.sysinfo_collapsed))
+        apply_collapsed(bool(self.settings.sysinfo_collapsed))
 
         self._sysinfo_labels: dict[str, QLabel] = {}
 

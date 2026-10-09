@@ -352,7 +352,10 @@ def main() -> int:
             is_admin=is_admin(),
             run_id=run_id,
         )
-        window.show()
+        if window.prefer_maximized:
+            window.showMaximized()
+        else:
+            window.show()
 
         def _on_integrity_checked(mismatches: list) -> None:
             if mismatches:
