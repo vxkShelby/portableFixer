@@ -117,11 +117,12 @@ actions:
     label_sk: "Vypnutie rýchleho spustenia (Fast Startup)"
     label_en: "Disable Fast Startup"
     risk: MODERATE
-    check_command: 'if ((Get-ItemProperty -Path ''HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'' -Name HiberbootEnabled -EA SilentlyContinue).HiberbootEnabled -eq 0) { ''APPLIED'' } else { ''NOT_APPLIED'' }'
-    command: "New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -Value 0 -PropertyType DWord -Force -EA SilentlyContinue | Out-Null; $v = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -EA SilentlyContinue).HiberbootEnabled; Write-Output ('HiberbootEnabled: ' + $v + ' (0=Fast Startup off)')"
-    undo_command: "New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -Value 1 -PropertyType DWord -Force -EA SilentlyContinue | Out-Null; $v = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' -Name HiberbootEnabled -EA SilentlyContinue).HiberbootEnabled; Write-Output ('HiberbootEnabled: ' + $v + ' (1=Fast Startup on)')"
-    description_sk: "Vypne rýchle spustenie (hybridný hibernačný štart), častý zdroj problémov s ovládačmi a dual-bootom. Hibernáciu ani spánok nemení."
-    description_en: "Disables Fast Startup (hybrid hiberboot), a common source of driver and dual-boot issues. Does not change hibernation or sleep."
+    # ops (research G10): undo restores the real prior value, not a fixed 1.
+    ops:
+      - reg_set: {path: 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power', name: HiberbootEnabled, type: DWord, value: 0}
+    ops_message: "Fast Startup disabled (HiberbootEnabled = 0)."
+    description_sk: "Vypne rýchle spustenie (hybridný hibernačný štart), častý zdroj problémov s ovládačmi a dual-bootom. Hibernáciu ani spánok nemení. Pred zmenou uloží presnú predošlú hodnotu HiberbootEnabled a undo ju obnoví (aj keď predtým neexistovala alebo už bola 0)."
+    description_en: "Disables Fast Startup (hybrid hiberboot), a common source of driver and dual-boot issues. Does not change hibernation or sleep. The exact previous HiberbootEnabled value is saved before the change and undo restores it (also when it did not exist or was already 0)."
 
   - id: debloat_disable_explorer_ads
     label_sk: "Vypnutie reklám v Prieskumníkovi"

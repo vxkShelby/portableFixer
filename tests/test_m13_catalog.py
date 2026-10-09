@@ -70,7 +70,9 @@ def test_m13_registry_tweaks_have_undo_commands_removals_do_not():
         "debloat_disable_recall_clicktodo",
         *HKLM_POLICY_ACTIONS,
     ):
-        assert by_id[undoable].undo_command is not None, undoable
+        # has_undo: an ops action (debloat_disable_fast_startup) generates
+        # its undo from the captured state instead of an undo_command.
+        assert by_id[undoable].has_undo, undoable
     for not_undoable in (
         "debloat_list_installed",
         "debloat_remove_promo_apps",
@@ -237,7 +239,8 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
 
 # Every action that creates a registry key (folders use New-Item -ItemType Directory).
 KEY_CREATING_ACTIONS = tuple(
-    a.id for a in load_module(CATALOG_PATH).actions if "New-Item -Path" in a.command + (a.undo_command or "")
+    a.id for a in load_module(CATALOG_PATH).actions
+    if not a.ops and "New-Item -Path" in a.command + (a.undo_command or "")
 )
 
 
@@ -473,6 +476,29 @@ def test_m13_ceip_tasks_are_addressed_by_folder(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "STUB Enable \\Microsoft\\Windows\\Feedback\\Siuf\\DmClient" in result.stdout
     assert "Restored 7 task(s)" in result.stdout
+
+
+# --- debloat_disable_fast_startup is an ops action --------------------------
+
+from ops_rig import Machine, command_with_state  # noqa: E402
+
+from portablefix import ops  # noqa: E402
+
+
+def test_m13_fast_startup_undo_restores_the_real_prior_value(tmp_path):
+    # The old undo wrote HiberbootEnabled = 1 unconditionally - also on a PC
+    # where it was 0 before (hibernation_off ran, or the value was absent).
+    action = _m13_action("debloat_disable_fast_startup")
+    assert action.ops and action.undo_command is None and action.has_undo and action.check_command
+    power = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power"
+    machine = Machine(tmp_path, registry={power: {"HiberbootEnabled": ("DWord", 0)}})
+    state_path = ops.state_file_path(tmp_path, "run1", action.id)
+    result = machine.run(command_with_state(action.command, state_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Fast Startup disabled (HiberbootEnabled = 0)." in result.stdout
+    result = machine.run(ops.undo_step(action.id, action.ops, state_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert machine.values(power) == {"HiberbootEnabled": ("DWord", 0)}
 
 
 # --- debloat_remove_onedrive: refuses over-the-shoulder, checks the exit code -
