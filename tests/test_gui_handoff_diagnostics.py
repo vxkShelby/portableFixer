@@ -70,7 +70,10 @@ def fake_reports(monkeypatch):
     monkeypatch.setattr(handoff, "_has_battery", lambda: True)
     monkeypatch.setattr(handoff, "_find_winget", lambda: None)
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda parent, title, default, filters: (default, filters))
-    return _FakeReport
+    yield _FakeReport
+    # Torn down before qtbot closes the window: a test that failed while
+    # `hang` was set would otherwise block closeEvent's wait forever.
+    _FakeReport.hang = False
 
 
 def _window(qtbot, tmp_path, dry_run=False):

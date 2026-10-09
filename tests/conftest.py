@@ -1,16 +1,27 @@
+import os
+
+# Before any Qt import: test windows and dialogs that show() must not pop up
+# on the developer's desktop and steal focus.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
 
 from portablefix import disk_health, preflight, signing
 from signing_keys import TEST_PUBLIC_KEY
 
 try:
-    from PySide6.QtCore import QThread
-    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+    from PySide6.QtCore import QEventLoop, QThread, QTimer
+    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMenu, QMessageBox
 
     from portablefix.gui.batch_review import BatchReviewDialog
     from portablefix.gui.items_dialog import ItemsDialog
 except ImportError:  # pragma: no cover - non-GUI environments
     QThread = QMessageBox = QInputDialog = QFileDialog = BatchReviewDialog = ItemsDialog = None
+    QEventLoop = QTimer = QMenu = None
+
+# A nested event loop no test should need for longer than this; past it the
+# loop is quit and the test failed instead of hanging the run.
+_EVENT_LOOP_LIMIT_MS = 30_000
 
 # Threads that outlived even the teardown wait: kept referenced for the rest
 # of the session, because dropping them would abort the whole process.
@@ -60,6 +71,40 @@ def _no_blocking_modal_dialogs(monkeypatch):
     monkeypatch.setattr(BatchReviewDialog, "exec", _refuse("BatchReviewDialog.exec"))
     # So is the per-item checklist (G05).
     monkeypatch.setattr(ItemsDialog, "exec", _refuse("ItemsDialog.exec"))
+    # And a context menu: QMenu.exec blocks until someone picks an entry.
+    monkeypatch.setattr(QMenu, "exec", _refuse("QMenu.exec"))
+
+
+@pytest.fixture(autouse=True)
+def _bounded_event_loops(monkeypatch):
+    """QEventLoop.exec (MainWindow._run_in_background, pytest-qt's
+    waitSignal) returns only when something quits it; a lost quit hung the
+    run with no output. Each loop gets a safety quit, and a test whose loop
+    needed it fails."""
+    if QEventLoop is None:
+        yield
+        return
+    expired = []
+    original_exec = QEventLoop.exec
+
+    def exec_(self, *args, **kwargs):
+        def give_up():
+            expired.append(self)
+            self.quit()
+
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(give_up)
+        timer.start(_EVENT_LOOP_LIMIT_MS)
+        try:
+            return original_exec(self, *args, **kwargs)
+        finally:
+            timer.stop()
+
+    monkeypatch.setattr(QEventLoop, "exec", exec_)
+    yield
+    if expired:
+        pytest.fail(f"a QEventLoop.exec ran {_EVENT_LOOP_LIMIT_MS // 1000} s and was quit")
 
 
 @pytest.fixture(autouse=True)
