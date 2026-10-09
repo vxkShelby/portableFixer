@@ -108,7 +108,9 @@ jobs:
               # Exit code, not just the text: "1 passed, 1 error" (test body
               # passed, teardown raised - e.g. conftest's unexpected-dialog
               # guard) still matched "1 passed" and was counted as green.
-              if ($code -eq 0 -and $lastOutput -match "1 passed") {
+              # A skip is fine too (the real-screen size test skips itself on
+              # the offscreen platform); "1 skipped" with code 0 is not a failure.
+              if ($code -eq 0 -and $lastOutput -match "1 (passed|skipped)") {
                 $ok = $true
                 break
               }
