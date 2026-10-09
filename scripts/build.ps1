@@ -128,6 +128,34 @@ if ((-not $isccPath) -and $Tag) {
     # must not be uploaded in its place.
     throw "Inno Setup (ISCC.exe) not found - a release build needs it. Install it from https://jrsoftware.org/isinfo.php"
 }
+if ($Tag -and (Test-Path -LiteralPath "$root\Output")) {
+    # Nothing from an earlier build may be uploaded next to this one's assets.
+    Remove-Item -Path "$root\Output\*" -Recurse -Force
+}
+
+# The exe's Properties > Details (also what AV reputation looks at).
+$verParts = @(($appVersion -split '[^0-9]+') | Where-Object { $_ } | Select-Object -First 4)
+while ($verParts.Count -lt 4) { $verParts += "0" }
+$verTuple = $verParts -join ", "
+$versionFile = "$root\build\version_info.txt"
+New-Item -ItemType Directory -Force -Path "$root\build" | Out-Null
+Set-Content -LiteralPath $versionFile -Encoding ascii -Value @"
+VSVersionInfo(
+  ffi=FixedFileInfo(filevers=($verTuple), prodvers=($verTuple)),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [
+      StringStruct('CompanyName', 'vxkShelby'),
+      StringStruct('FileDescription', 'PortableFix'),
+      StringStruct('FileVersion', '$appVersion'),
+      StringStruct('InternalName', 'PortableFix'),
+      StringStruct('LegalCopyright', 'Copyright (c) vxkShelby'),
+      StringStruct('OriginalFilename', 'PortableFix.exe'),
+      StringStruct('ProductName', 'PortableFix'),
+      StringStruct('ProductVersion', '$appVersion')])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"@
 
 # 3. --onefile bundles everything (bootloader + all Python bytecode + deps)
 # into a single .exe. This matters for auto-update: swapping just the
@@ -148,6 +176,8 @@ Invoke-Step "PyInstaller" {
     & $Python -m PyInstaller --onefile --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
       --add-data "$root\portablefix.ico;." `
       --hidden-import _cffi_backend `
+      --noupx `
+      --version-file $versionFile `
       --icon "$root\portablefix.ico" `
       --name PortableFix `
       "$root\main.py"
