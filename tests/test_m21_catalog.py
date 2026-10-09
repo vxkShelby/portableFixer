@@ -48,6 +48,25 @@ def test_m21_catalog_install_uses_official_latest_release_url():
     assert "-silent" in action.command
 
 
+def test_pawnio_install_undo_runs_the_uninstaller_directly_and_checks_its_exit_code():
+    # cmd.exe /c <registry string> handed a registry-sourced command line to
+    # cmd.exe and reported "uninstalled" whatever happened.
+    undo = next(a for a in load_module(CATALOG_PATH).actions if a.id == "pawnio_install").undo_command
+    assert "cmd.exe" not in undo and "cmd /c" not in undo
+    assert "Start-Process -FilePath $exe -ArgumentList $rest -Wait -PassThru" in undo
+    assert "$p.ExitCode" in undo
+    assert "exit 1" in undo
+    assert "Test-Path -LiteralPath $exe" in undo
+
+
+def test_no_undo_command_in_any_catalog_runs_through_cmd_exe():
+    modules_dir = CATALOG_PATH.parent.parent
+    for path in sorted(modules_dir.glob("*/actions.yaml")):
+        for action in load_module(path).actions:
+            undo = action.undo_command or ""
+            assert "cmd.exe /c" not in undo and "cmd /c" not in undo, f"{path.parent.name}/{action.id}"
+
+
 def test_m21_catalog_covers_expected_ids():
     module = load_module(CATALOG_PATH)
     ids = {a.id for a in module.actions}
