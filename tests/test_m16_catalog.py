@@ -88,6 +88,89 @@ def test_m16_catalog_outlook_profile_reset_fails_the_action_if_rename_fails():
     assert "exit 1" in action.command
 
 
+import os  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
+
+from portablefix import target_user  # noqa: E402
+from portablefix.executor import build_execution_plan  # noqa: E402
+
+IDENTITY_CALL = "[Security.Principal.WindowsIdentity]::GetCurrent()"
+PROCESS_SID = "S-1-5-21-1111-2222-3333-1001"
+CLIENT_SID = "S-1-5-21-1111-2222-3333-1002"
+STUB_GUARD_EXIT = 97
+
+
+def _m16(action_id):
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == action_id)
+
+
+def _pwsh_or_skip() -> str:
+    exe = os.environ.get("PORTABLEFIX_TEST_PWSH") or shutil.which("powershell") or shutil.which("pwsh")
+    if not exe:
+        pytest.skip("no PowerShell available")
+    return exe
+
+
+def _target(status, sid):
+    return target_user.TargetUser(
+        status=status, process_sid=PROCESS_SID, process_user="PC\\technik", target_sid=sid, target_user="PC\\x", session_id=1,
+    )
+
+
+def _run_stubbed(command: str, stubs: list[str], stubbed: tuple, target=None):
+    """Runs a catalog command the way the executor does (prelude included),
+    with every system cmdlet in `stubbed` replaced by the given stub
+    functions; refuses (exit 97) when a stub did not take."""
+    command = command.replace(IDENTITY_CALL, "(Pf-WindowsIdentity)")
+    assert "WindowsIdentity]" not in command
+    guard = (
+        "foreach ($n in " + ", ".join(f"'{n}'" for n in stubbed) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    )
+    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(stubs + [guard, plan.argv[-1]])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")]
+
+
+def _run_outlook_reset(target):
+    stubs = [
+        f"function Pf-WindowsIdentity {{ [pscustomobject]@{{ User = [pscustomobject]@{{ Value = '{PROCESS_SID}' }} }} }}",
+        "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $true }",
+        "function Get-Process { [CmdletBinding()] param($Name) }",
+        "function Stop-Process { [CmdletBinding()] param($Name, [switch] $Force) [Console]::Out.WriteLine('STUB Stop-Process') }",
+        "function Rename-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $NewName, $LiteralPath) [Console]::Out.WriteLine('STUB Rename-Item ' + $Path + ' -> ' + $NewName) }",
+    ]
+    return _run_stubbed(
+        _m16("office_reset_outlook_profile").command, stubs,
+        ("Pf-WindowsIdentity", "Test-Path", "Get-Process", "Stop-Process", "Rename-Item"), target,
+    )
+
+
+def test_m16_outlook_profile_reset_refuses_when_the_signed_in_user_is_someone_else():
+    # Over-the-shoulder elevation: HKCU is the technician's hive, so the
+    # rename would park the technician's profile and leave the client's.
+    result, ran = _run_outlook_reset(_target(target_user.DIFFERENT, CLIENT_SID))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Nothing was changed." in result.stdout
+    assert ran == []
+
+
+def test_m16_outlook_profile_reset_runs_for_the_same_user():
+    result, ran = _run_outlook_reset(_target(target_user.SAME, PROCESS_SID))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(line.startswith("STUB Rename-Item ") and "Profiles.bak-" in line for line in ran), ran
+
+
 def test_m16_long_running_repairs_have_extended_inactivity_timeouts():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}

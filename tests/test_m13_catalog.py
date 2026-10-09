@@ -354,6 +354,63 @@ def test_m13_recall_policy_forbids_recall_instead_of_allowing_it():
     assert any(p.startswith("HKLM:\\") for p in registry) and any(p.startswith(CLIENT_HIVE + "\\") for p in registry)
 
 
+# --- debloat_remove_onedrive: refuses over-the-shoulder, checks the exit code -
+
+IDENTITY_CALL = "[Security.Principal.WindowsIdentity]::GetCurrent()"
+PROCESS_SID = "S-1-5-21-1111-2222-3333-1001"
+
+
+def _same_user():
+    return target_user.TargetUser(
+        status=target_user.SAME, process_sid=PROCESS_SID, process_user="PC\\technik",
+        target_sid=PROCESS_SID, target_user="PC\\technik", session_id=1,
+    )
+
+
+def _run_onedrive(target, setup_exit: int):
+    """OneDriveSetup, Stop-Process and the identity lookup stubbed; every
+    stub prints "STUB <cmdlet> ..." so the test sees what ran."""
+    command = _m13_action("debloat_remove_onedrive").command.replace(IDENTITY_CALL, "(Pf-WindowsIdentity)")
+    assert "WindowsIdentity]" not in command
+    stubbed = ("Test-Path", "Stop-Process", "Start-Process", "Pf-WindowsIdentity")
+    stubs = [
+        f"function Pf-WindowsIdentity {{ [pscustomobject]@{{ User = [pscustomobject]@{{ Value = '{PROCESS_SID}' }} }} }}",
+        "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $true }",
+        "function Stop-Process { [CmdletBinding()] param($Name, [switch] $Force) [Console]::Out.WriteLine('STUB Stop-Process ' + $Name) }",
+        "function Start-Process { [CmdletBinding()] param([Parameter(Position=0)] $FilePath, $ArgumentList, [switch] $Wait, [switch] $PassThru) "
+        f"[Console]::Out.WriteLine('STUB Start-Process ' + $FilePath + ' ' + $ArgumentList); [pscustomobject]@{{ ExitCode = {setup_exit} }} }}",
+        "foreach ($n in " + ", ".join(f"'{n}'" for n in stubbed) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}",
+    ]
+    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(stubs + [plan.argv[-1]])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")]
+
+
+def test_m13_onedrive_removal_refuses_when_the_signed_in_user_is_someone_else():
+    # OneDriveSetup /uninstall removes the per-user install of the account
+    # running it - over the shoulder that is the technician's, not the client's.
+    result, ran = _run_onedrive(_client(), setup_exit=0)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Nothing was changed." in result.stdout
+    assert ran == []
+
+
+@pytest.mark.parametrize("setup_exit, expected", [(0, 0), (1, 1)])
+def test_m13_onedrive_removal_reports_the_installer_exit_code(setup_exit, expected):
+    result, ran = _run_onedrive(_same_user(), setup_exit=setup_exit)
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert any(line.startswith("STUB Start-Process ") and line.endswith(" /uninstall") for line in ran), ran
+    assert ("failed with exit code 1" in result.stdout) == (setup_exit == 1)
+
+
 def test_m13_catalog_parses_in_powershell(tmp_path):
     texts = []
     for action in load_module(CATALOG_PATH).actions:
