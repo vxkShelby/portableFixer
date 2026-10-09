@@ -281,6 +281,10 @@ class MainWindow(QMainWindow):
         self.modules, module_load_errors = load_catalog(assets_dir, settings.allow_modified_modules)
         self._action_index: dict[str, tuple[ModuleDef, ActionDef]] = {}
         self._bulk_selecting = False
+        # One group for the window's life: a language toggle rebuilds its
+        # buttons (Qt drops the deleted ones), not the group.
+        self._preset_button_group = QButtonGroup(self)
+        self._preset_button_group.setExclusive(True)
         # Research G27: client complaint -> the symptoms to suggest. A broken
         # entry is skipped and reported with the module errors.
         self._symptoms, symptom_errors = symptoms.load(
@@ -739,6 +743,11 @@ class MainWindow(QMainWindow):
     def _t(self, key: str) -> str:
         return i18n.translate(key, self.settings.language)
 
+    def _tn(self, key: str, count: int, noun: str, **fields) -> str:
+        """A string with a counted noun ("1 akcia", "3 akcie", "5 akcií")."""
+        noun_text = i18n.count_noun(noun, int(count), self.settings.language)
+        return self._t(key).format(count=count, noun=noun_text, **fields)
+
     def _build_target_user_banner(self) -> QLabel:
         """Over-the-shoulder elevation (research G25): say up front that
         user settings go to the signed-in client, not the technician. Hidden
@@ -921,8 +930,6 @@ class MainWindow(QMainWindow):
         preset_label.setObjectName("selectionScope")
         preset_row.addWidget(preset_label)
         self._preset_buttons: dict[str, QPushButton] = {}
-        self._preset_button_group = QButtonGroup(self)
-        self._preset_button_group.setExclusive(True)
         preset_row.addWidget(self._make_preset_button(self._t("preset_quick_clean"), "quick_clean"))
         preset_row.addWidget(self._make_preset_button(self._t("preset_full_diagnostic"), "full_diagnostic"))
         preset_row.addWidget(self._make_preset_button(self._t("preset_privacy_debloat"), "privacy_debloat"))
@@ -1688,6 +1695,7 @@ class MainWindow(QMainWindow):
 
     def _open_job_dialog(self) -> None:
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.setWindowTitle(self._t("job_dialog_title"))
         dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
@@ -1806,6 +1814,7 @@ class MainWindow(QMainWindow):
             saved_outtake[0] if saved_outtake else None,
             parent=parent or self,
         )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._forms_dialog = dialog
         dialog.accepted.connect(lambda: self._save_forms(dialog.intake_form(), dialog.outtake_form()))
         dialog.open()
@@ -1838,6 +1847,7 @@ class MainWindow(QMainWindow):
             "logo": self.settings.branding_logo,
         }
         dialog = job_forms.BrandingDialog(self.settings.language, values, parent=parent or self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._branding_dialog = dialog
         dialog.accepted.connect(lambda: self._set_branding(dialog.values()))
         dialog.open()
@@ -1903,7 +1913,7 @@ class MainWindow(QMainWindow):
         for name, action_ids in self.settings.custom_presets.items():
             button = self._make_preset_button(name, CUSTOM_PRESET_PREFIX + name)
             button.setProperty("custom", True)
-            button.setToolTip(self._t("preset_custom_tooltip").format(count=len(action_ids)))
+            button.setToolTip(self._tn("preset_custom_tooltip", len(action_ids), "action"))
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda pos, b=button, n=name: self._show_custom_preset_menu(b, n, pos)
@@ -1947,7 +1957,7 @@ class MainWindow(QMainWindow):
         button = self._preset_buttons.get(CUSTOM_PRESET_PREFIX + name)
         if button is not None:
             button.setChecked(True)
-        self.statusBar().showMessage(self._t("preset_saved").format(name=name, count=len(action_ids)), 5000)
+        self.statusBar().showMessage(self._tn("preset_saved", len(action_ids), "action", name=name), 5000)
         return True
 
     def _show_custom_preset_menu(self, button: QPushButton, name: str, pos) -> None:
@@ -2112,6 +2122,7 @@ class MainWindow(QMainWindow):
 
     def _show_batch_summary(self, html_path: Path) -> None:
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.setWindowTitle(self._t("batch_results_title"))
         dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
@@ -2421,12 +2432,14 @@ class MainWindow(QMainWindow):
         def ignore_package(package_id: str) -> None:
             if package_id not in self.settings.winget_ignored_ids:
                 self.settings.winget_ignored_ids.append(package_id)
+                self._persist_settings()
             remove_row(package_id)
             refresh_ignored_panel()
 
         def unignore_package(package_id: str) -> None:
             if package_id in self.settings.winget_ignored_ids:
                 self.settings.winget_ignored_ids.remove(package_id)
+                self._persist_settings()
             refresh_ignored_panel()
             start_scan()
 
@@ -2565,7 +2578,7 @@ class MainWindow(QMainWindow):
             except OSError as exc:
                 set_status(self._t("winget_export_failed"), "warn", str(exc))
                 return
-            set_status(self._t("winget_export_success").format(count=len(packages)), "ok")
+            set_status(self._tn("winget_export_success", len(packages), "package"), "ok")
 
         def import_list() -> None:
             path_str, _ = QFileDialog.getOpenFileName(
@@ -2583,7 +2596,7 @@ class MainWindow(QMainWindow):
                 if pid in imported_ids:
                     checkbox.setChecked(True)
                     checked += 1
-            set_status(self._t("winget_import_success").format(count=checked), "ok")
+            set_status(self._tn("winget_import_success", checked, "package"), "ok")
 
         def apply_auto_check_setting() -> None:
             minutes = auto_check_interval.currentData() if auto_check_checkbox.isChecked() else 0
@@ -2631,8 +2644,12 @@ class MainWindow(QMainWindow):
         else:
             auto_check_interval.setEnabled(False)
         apply_auto_check_setting()
-        auto_check_checkbox.toggled.connect(lambda _checked=False: apply_auto_check_setting())
-        auto_check_interval.currentIndexChanged.connect(lambda _index=0: apply_auto_check_setting())
+        def on_auto_check_changed(*_args) -> None:
+            apply_auto_check_setting()
+            self._persist_settings()
+
+        auto_check_checkbox.toggled.connect(on_auto_check_changed)
+        auto_check_interval.currentIndexChanged.connect(on_auto_check_changed)
 
         def on_quiet_mode_changed() -> None:
             # The timer itself follows _apply_polling_state, which the
@@ -2946,7 +2963,7 @@ class MainWindow(QMainWindow):
             tile_top.addWidget(count_pill)
             tile_layout.addLayout(tile_top)
             count = self._category_module_action_counts.get(category, 0)
-            sub_label = QLabel(self._t("dashboard_actions_count").format(count=count) if count else "")
+            sub_label = QLabel(self._tn("dashboard_actions_count", count, "action") if count else "")
             sub_label.setObjectName("selectionScope")
             tile_layout.addWidget(sub_label)
             self._dashboard_tile_count_labels[category] = count_pill
@@ -2987,10 +3004,10 @@ class MainWindow(QMainWindow):
         name = self._t(self._category_i18n_keys.get(category, ""))
         pill = self._dashboard_tile_count_labels.get(category)
         findings = pill.text() if pill is not None else "0"
-        parts = [name, self._t("a11y_dashboard_tile_findings").format(count=findings)]
+        parts = [name, self._tn("a11y_dashboard_tile_findings", findings, "fix")]
         action_count = self._category_module_action_counts.get(category, 0)
         if action_count:
-            parts.append(self._t("dashboard_actions_count").format(count=action_count))
+            parts.append(self._tn("dashboard_actions_count", action_count, "action"))
         tile.setAccessibleName(", ".join(parts))
 
     def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
@@ -3029,9 +3046,7 @@ class MainWindow(QMainWindow):
             row_layout.setContentsMargins(10, 4, 6, 4)
             row_layout.setSpacing(8)
             text = QLabel(
-                self._t("history_row").format(
-                    date=run.display_date(), count=run.action_count, failed=run.failed_count
-                )
+                self._tn("history_row", run.action_count, "action", date=run.display_date(), failed=run.failed_count)
             )
             text.setObjectName("historyText")
             row_layout.addWidget(text, 1)

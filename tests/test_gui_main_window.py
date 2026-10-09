@@ -3254,7 +3254,7 @@ def test_dashboard_tiles_are_keyboard_reachable_and_named(qtbot, tmp_path):
     tile = window._dashboard_tiles[ModuleCategory.CLEANUP]
     assert tile.focusPolicy() & Qt.FocusPolicy.TabFocus
     assert "Cleanup" in tile.accessibleName()
-    assert "1 actions" in tile.accessibleName()
+    assert "1 action" in tile.accessibleName()
     assert tile.accessibleDescription()
 
     qtbot.keyClick(tile, Qt.Key.Key_Space)
@@ -3275,7 +3275,7 @@ def test_dashboard_tile_accessible_name_follows_recommended_count(qtbot, tmp_pat
 
     window._refresh_dashboard()
 
-    assert "1 recommended fixes" in window._dashboard_tiles[ModuleCategory.CLEANUP].accessibleName()
+    assert "1 recommended fix" in window._dashboard_tiles[ModuleCategory.CLEANUP].accessibleName()
 
 
 def test_batch_summary_dialog_focuses_open_report_button(qtbot, tmp_path):
@@ -4905,6 +4905,35 @@ def test_language_toggle_during_staging_keeps_the_progress_bar_and_step_text(qtb
     assert window.progress_bar.isVisibleTo(window) is False
     assert window.update_button.isEnabled() is True
     assert window._update_download_dir is None
+
+
+def test_winget_auto_check_interval_is_saved_at_once(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox, QComboBox
+
+    from portablefix.settings import load_settings
+
+    window, card, _row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_persist", True, _fake_outdated_package())
+    checkbox = next(cb for cb in card.findChildren(QCheckBox) if cb.text() == window._t("winget_auto_check_label"))
+    combo = next(c for c in card.findChildren(QComboBox) if c.itemData(0) == 15)
+
+    checkbox.setChecked(True)
+    combo.setCurrentIndex(2)
+
+    assert load_settings(window.state_dir).winget_auto_check_minutes == 60
+
+
+def test_job_and_summary_dialogs_delete_themselves_on_close(qtbot, tmp_path):
+    from PySide6.QtCore import Qt
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_dialog_delete")
+    qtbot.addWidget(window)
+    window._open_job_dialog()
+    window._open_forms_dialog()
+    window._open_branding_dialog()
+    for dialog in (window._job_dialog, window._forms_dialog, window._branding_dialog):
+        assert dialog.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.close()
 
 
 def test_winget_auto_check_skips_while_the_app_updates(qtbot, tmp_path, monkeypatch):

@@ -40,8 +40,8 @@ _STRINGS = {
         "winget_auto_check_off": "Vypnutá",
         "winget_export_button": "Exportovať zoznam",
         "winget_import_button": "Importovať zoznam",
-        "winget_export_success": "Zoznam uložený ({count} balíčkov).",
-        "winget_import_success": "Označených {count} balíčkov zo zoznamu.",
+        "winget_export_success": "Zoznam uložený ({count} {noun}).",
+        "winget_import_success": "Zo zoznamu označené: {count} {noun}.",
         "winget_import_failed": "Nepodarilo sa načítať zoznam.",
         "winget_export_failed": "Zoznam sa nepodarilo uložiť (priečinok je len na čítanie alebo médium je plné).",
         "winget_exit_code_suffix": " (kód {code})",
@@ -55,7 +55,7 @@ _STRINGS = {
         "winget_scan_unparsed_rows": "Niektoré riadky výstupu winget sa nepodarilo prečítať, takže tieto programy v zozname chýbajú. Podrobnosti sa zobrazia po podržaní kurzora nad touto správou.",
         "winget_scan_partial": "Zoznam nižšie nemusí byť úplný.",
         "dashboard_analyze_button": "Analyzovať (plná diagnostika)",
-        "dashboard_actions_count": "{count} akcií",
+        "dashboard_actions_count": "{count} {noun}",
         "health_heading": "Stav počítača",
         "health_area_disk": "Disk",
         "health_area_crashes": "Pády",
@@ -302,12 +302,12 @@ _STRINGS = {
         "preset_save_prompt": "Názov predvoľby (aktuálne vybrané akcie):",
         "preset_overwrite_confirm": "Predvoľba „{name}“ už existuje. Prepísať ju aktuálnym výberom?",
         "preset_limit_reached": "Dosiahnutý limit {max} vlastných predvolieb. Najprv niektorú odstráňte (pravé tlačidlo myši).",
-        "preset_saved": "Predvoľba „{name}“ uložená ({count} akcií).",
+        "preset_saved": "Predvoľba „{name}“ uložená ({count} {noun}).",
         "preset_delete": "Odstrániť predvoľbu „{name}“",
-        "preset_custom_tooltip": "Vlastná predvoľba · {count} akcií · pravým tlačidlom odstrániť",
+        "preset_custom_tooltip": "Vlastná predvoľba · {count} {noun} · pravým tlačidlom odstrániť",
         "history_heading": "Posledné behy na tomto PC",
         "history_empty": "Zatiaľ žiadne uložené reporty z tohto PC.",
-        "history_row": "{date}  ·  {count} akcií  ·  {failed} zlyhaných",
+        "history_row": "{date}  ·  {count} {noun}  ·  zlyhané: {failed}",
         "history_open": "Otvoriť report",
         "history_dry_run_tag": "DRY-RUN",
         "report_job_technician": "Technik",
@@ -482,7 +482,7 @@ _STRINGS = {
         "report_warned_tag": "Potvrdené po varovaní",
         "report_storage_fallback": "Pozor: USB nebol zapisovateľný - tento report, audit log a undo skript sú uložené v %TEMP% na tomto počítači, nie na USB. Pred odchodom ich skopírujte.",
         "a11y_risk": "riziko",
-        "a11y_dashboard_tile_findings": "{count} odporúčaných opráv",
+        "a11y_dashboard_tile_findings": "{count} {noun}",
         "a11y_dashboard_tile_hint": "Enter alebo medzerník otvorí túto kategóriu.",
         "fallback_banner_path": "USB nedostupný na zápis – logy a reporty sa ukladajú sem:\n{path}",
         "integrity_more": "… (ďalšie súbory: {count})",
@@ -574,6 +574,15 @@ _STRINGS = {
         "sysinfo_collapse": "Skryť panel systému",
         "sysinfo_expand": "Zobraziť panel systému",
         "closing_waiting_winget": "Čakám na dokončenie prebiehajúcej aktualizácie winget, potom sa aplikácia zavrie…",
+        "noun_action_one": "akcia",
+        "noun_action_few": "akcie",
+        "noun_action_many": "akcií",
+        "noun_package_one": "balíček",
+        "noun_package_few": "balíčky",
+        "noun_package_many": "balíčkov",
+        "noun_fix_one": "odporúčaná oprava",
+        "noun_fix_few": "odporúčané opravy",
+        "noun_fix_many": "odporúčaných opráv",
         "restart_admin_busy": "Reštart ako administrátor počká, kým skončí prebiehajúca úloha.",
         "closing_waiting_uninstall": "Čakám na dokončenie prebiehajúceho odinštalovania, potom sa aplikácia zavrie…",
     },
@@ -618,8 +627,8 @@ _STRINGS = {
         "winget_auto_check_off": "Off",
         "winget_export_button": "Export list",
         "winget_import_button": "Import list",
-        "winget_export_success": "List saved ({count} packages).",
-        "winget_import_success": "Checked {count} packages from the list.",
+        "winget_export_success": "List saved ({count} {noun}).",
+        "winget_import_success": "Checked {count} {noun} from the list.",
         "winget_import_failed": "Could not read the list.",
         "winget_export_failed": "Could not save the list (the folder is read-only or the drive is full).",
         "winget_exit_code_suffix": " (code {code})",
@@ -633,7 +642,7 @@ _STRINGS = {
         "winget_scan_unparsed_rows": "Some lines of the winget output could not be read, so those programs are missing from the list. Hover over this message for details.",
         "winget_scan_partial": "The list below may be incomplete.",
         "dashboard_analyze_button": "Analyze (full diagnostic)",
-        "dashboard_actions_count": "{count} actions",
+        "dashboard_actions_count": "{count} {noun}",
         "health_heading": "PC health",
         "health_area_disk": "Disk",
         "health_area_crashes": "Crashes",
@@ -880,12 +889,12 @@ _STRINGS = {
         "preset_save_prompt": "Preset name (currently selected actions):",
         "preset_overwrite_confirm": "Preset \"{name}\" already exists. Overwrite it with the current selection?",
         "preset_limit_reached": "Limit of {max} custom presets reached. Delete one first (right-click it).",
-        "preset_saved": "Preset \"{name}\" saved ({count} actions).",
+        "preset_saved": "Preset \"{name}\" saved ({count} {noun}).",
         "preset_delete": "Delete preset \"{name}\"",
-        "preset_custom_tooltip": "Custom preset · {count} actions · right-click to delete",
+        "preset_custom_tooltip": "Custom preset · {count} {noun} · right-click to delete",
         "history_heading": "Recent runs on this PC",
         "history_empty": "No saved reports from this PC yet.",
-        "history_row": "{date}  ·  {count} actions  ·  {failed} failed",
+        "history_row": "{date}  ·  {count} {noun}  ·  {failed} failed",
         "history_open": "Open report",
         "history_dry_run_tag": "DRY-RUN",
         "report_job_technician": "Technician",
@@ -1060,7 +1069,7 @@ _STRINGS = {
         "report_warned_tag": "Confirmed after warning",
         "report_storage_fallback": "Warning: the USB drive was not writable - this report, the audit log and the undo script are stored in %TEMP% on this computer, not on the USB. Copy them before leaving.",
         "a11y_risk": "risk",
-        "a11y_dashboard_tile_findings": "{count} recommended fixes",
+        "a11y_dashboard_tile_findings": "{count} {noun}",
         "a11y_dashboard_tile_hint": "Press Enter or Space to open this category.",
         "fallback_banner_path": "USB not writable - logs and reports are saved here instead:\n{path}",
         "integrity_more": "… and {count} more files",
@@ -1152,10 +1161,32 @@ _STRINGS = {
         "sysinfo_collapse": "Hide the system panel",
         "sysinfo_expand": "Show the system panel",
         "closing_waiting_winget": "Waiting for the running winget update to finish, then the app closes…",
+        "noun_action_one": "action",
+        "noun_action_few": "actions",
+        "noun_action_many": "actions",
+        "noun_package_one": "package",
+        "noun_package_few": "packages",
+        "noun_package_many": "packages",
+        "noun_fix_one": "recommended fix",
+        "noun_fix_few": "recommended fixes",
+        "noun_fix_many": "recommended fixes",
         "restart_admin_busy": "Restart as administrator waits until the running task has finished.",
         "closing_waiting_uninstall": "Waiting for the running uninstall to finish, then the app closes…",
     },
 }
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Slovak noun form for a count: 1 akcia, 2-4 akcie, 0 and 5+ akcií.
+    English passes the same word for few and many."""
+    n = abs(n)
+    if n == 1:
+        return one
+    return few if 2 <= n <= 4 else many
+
+
+def count_noun(noun: str, n: int, language: str) -> str:
+    return plural(n, *(translate(f"noun_{noun}_{form}", language) for form in ("one", "few", "many")))
 
 
 def translate(key: str, language: str) -> str:
