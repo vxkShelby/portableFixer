@@ -121,6 +121,9 @@ CASES = [
     ("m12_online", "online_proxy_check", ("command",), None),
     ("m12_online", "online_proxy_reset", ("command", "undo_command"), PROXY_BACKUP),
     ("m16_office_repair", "office_com_addin_disable_all_thirdparty", ("command", "undo_command"), ADDINS_BACKUP),
+    # The clear action's undo is reg import of .reg files - no registry cmdlet.
+    ("m17_browser_deep", "browser_policy_report", ("command",), None),
+    ("m17_browser_deep", "browser_clear_policy_keys", ("command",), None),
 ]
 
 

@@ -94,13 +94,14 @@ def test_m17_catalog_profile_resets_fail_the_action_if_rename_fails():
 
 def test_m17_clear_policy_keys_verifies_the_keys_are_actually_gone():
     # Remove-Item on an HKLM key with -EA SilentlyContinue silently no-ops
-    # without administrator - the command must Test-Path both keys
-    # afterward and only claim success if they're actually gone.
+    # without administrator - the command must Test-Path each key
+    # afterward and only claim success if it is actually gone.
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "browser_clear_policy_keys")
-    assert "chromeGone" in action.command
-    assert "edgeGone" in action.command
-    assert action.command.count("exit 1") == 2
+    assert "if (Test-Path -Path $e.P) { $failed += $e.R }" in action.command
+    # Domain refusal, failed backup, failed removal.
+    assert action.command.count("exit 1") == 3
+    assert action.command.index("reg export") < action.command.index("Remove-Item")
 
 
 def test_m17_clear_policy_keys_refuses_on_domain_joined_or_mdm_enrolled_machine():
@@ -304,6 +305,87 @@ def test_m17_extensions_report_finds_firefox_profiles_under_a_path_with_brackets
     assert result.returncode == 0, result.stdout + result.stderr
     assert "--- Firefox / a1.default-release (1 extensions) ---" in result.stdout, result.stdout
     assert "  enabled   uBlock" in result.stdout.splitlines(), result.stdout
+
+
+# --- browser_clear_policy_keys: export verified per key, every policy hive --
+
+POLICY_KEYS = {
+    "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+    "HKLM:\\SOFTWARE\\WOW6432Node\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\WOW6432Node\\Policies\\Microsoft\\Edge",
+    "HKCU:\\SOFTWARE\\Policies\\Google\\Chrome", "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+}
+POLICY_STUBS = r"""
+function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $p = $(if ($LiteralPath) { $LiteralPath } else { $Path }); if ($p -like 'HK*:*') { return $global:__pfKeys.Contains($p) }; Microsoft.PowerShell.Management\Test-Path -LiteralPath $p }
+function Remove-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, [switch] $Recurse, [switch] $Force) [Console]::Out.WriteLine('STUB Remove-Item ' + $Path); $global:__pfKeys.Remove($Path) | Out-Null }
+function reg { $a = @($args); [Console]::Out.WriteLine('STUB reg ' + ($a -join ' ')); if ($a[0] -eq 'export') { if ($env:PF_EXPORT_FAIL) { $global:LASTEXITCODE = 1; return }; [IO.File]::WriteAllText($a[2], 'Windows Registry Editor Version 5.00') }; $global:LASTEXITCODE = 0 }
+function dsregcmd { 'AzureAdJoined : NO'; $global:LASTEXITCODE = 0 }
+function Get-CimInstance { [CmdletBinding()] param($ClassName) [pscustomobject]@{ PartOfDomain = $false } }
+foreach ($n in 'Test-Path', 'Remove-Item', 'reg', 'dsregcmd', 'Get-CimInstance') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
+"""
+
+
+def _run_policy_clear(tmp_path, field="command", keys=POLICY_KEYS, export_fail=False):
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir(exist_ok=True)
+    script = "\n".join([
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8",
+        f"$env:ProgramData = '{program_data}'", f"$env:PF_EXPORT_FAIL = '{'1' if export_fail else ''}'",
+        "$global:__pfKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
+        *[f"[void]$global:__pfKeys.Add('{k}')" for k in sorted(keys)],
+        POLICY_STUBS, getattr(_m17("browser_clear_policy_keys"), field),
+    ])
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != 97, "a system tool was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")], program_data / "PortableFix" / "browser_policy"
+
+
+def test_m17_clear_policy_keys_does_not_remove_a_key_whose_backup_failed(tmp_path):
+    # reg export of a key used to be fire-and-forget (2>$null | Out-Null):
+    # with no .reg file the key was deleted anyway and undo imported nothing.
+    result, ran, _ = _run_policy_clear(tmp_path, export_fail=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "failed - not removing it. Nothing was changed." in result.stdout
+    assert [line for line in ran if line.startswith("STUB Remove-Item")] == []
+
+
+def test_m17_clear_policy_keys_backs_up_and_removes_every_policy_hive(tmp_path):
+    result, ran, folder = _run_policy_clear(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    removed = {line.split(" ", 2)[2] for line in ran if line.startswith("STUB Remove-Item")}
+    assert removed == POLICY_KEYS
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "chrome_hklm.reg", "chrome_user.reg", "chrome_wow.reg", "edge_hklm.reg", "edge_user.reg", "edge_wow.reg",
+    ]
+    assert "STUB reg export HKCU\\SOFTWARE\\Policies\\Google\\Chrome" in "\n".join(ran)
+    assert "HKLM\\SOFTWARE\\WOW6432Node\\Policies\\Microsoft\\Edge" in result.stdout
+    # Undo imports only the files that exist.
+    (folder / "edge_wow.reg").unlink()
+    result, ran, _ = _run_policy_clear(tmp_path, field="undo_command")
+    assert result.returncode == 0, result.stdout + result.stderr
+    imported = [line.rsplit("\\", 1)[1] for line in ran if line.startswith("STUB reg import")]
+    assert sorted(imported) == ["chrome_hklm.reg", "chrome_user.reg", "chrome_wow.reg", "edge_hklm.reg", "edge_user.reg"]
+
+
+def test_m17_clear_policy_keys_with_no_policy_present_removes_nothing(tmp_path):
+    result, ran, _ = _run_policy_clear(tmp_path, keys=set())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "nothing to remove" in result.stdout and ran == []
+    result, ran, _ = _run_policy_clear(tmp_path, field="undo_command")
+    assert "No browser policy backup found" in result.stdout and ran == []
+
+
+def test_m17_policy_report_lists_the_same_keys_the_clear_action_removes():
+    report = _m17("browser_policy_report").command
+    clear = _m17("browser_clear_policy_keys").command
+    for key in POLICY_KEYS:
+        text = key.replace("HKCU:", "' + $uh + '")
+        assert text in clear.replace("($uh + '", "' + $uh + '"), key
+        assert text in report.replace("($uh + '", "' + $uh + '"), key
+    assert "HKCU:\\" not in report and "HKCU:\\" not in clear
 
 
 def _reset_tree(local: Path, rel: str) -> Path:
