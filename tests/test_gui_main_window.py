@@ -262,6 +262,22 @@ def test_risk_levels_read_in_plain_words_with_a_shape_and_keep_the_enum_in_the_t
     assert i18n.risk_text("SAFE", "en", glyph=False) == "Safe"
 
 
+def test_glyph_only_controls_have_accessible_names_and_the_language_button_says_what_it_does(qtbot, tmp_path):
+    from PySide6.QtGui import QKeySequence
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_a11y_glyphs")
+    qtbot.addWidget(window)
+
+    assert window.search_box.accessibleName() == window._t("search_placeholder")
+    assert window.console_popout_button.accessibleName() == window._t("console_popout")
+    assert window.console_fullscreen_button.accessibleName() == window._t("console_fullscreen_toggle")
+    assert window._action_detail_toggles["hello"].accessibleName() == "Show details: Greeting"
+    assert window.language_button.text() == "EN"
+    assert "Slovenčina" in window.language_button.toolTip() and "Ctrl+L" in window.language_button.toolTip()
+    assert QKeySequence("Ctrl+L") in [s.key() for s in window._extra_shortcuts]
+
+
 def test_select_all_recounts_the_status_bar_once(qtbot, tmp_path, monkeypatch):
     from portablefix.models import RiskLevel
 

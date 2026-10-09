@@ -518,6 +518,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+F", self._on_search_shortcut),
             ("Ctrl+S", self._on_save_preset_clicked),
             ("Ctrl+J", self._open_job_dialog),
+            ("Ctrl+L", self._on_toggle_language),
             ("F1", self._show_shortcuts_help),
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
@@ -827,6 +828,10 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.dry_run_checkbox)
         self.language_button = QPushButton(self.settings.language.upper())
         self.language_button.clicked.connect(self._on_toggle_language)
+        # The button shows the current language; say what a click does.
+        target_language = "English" if self.settings.language == "sk" else "Slovenčina"
+        self.language_button.setToolTip(self._t("language_switch_tooltip").format(language=target_language))
+        self.language_button.setAccessibleName(self._t("language_switch_tooltip").format(language=target_language))
         top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
 
@@ -958,6 +963,7 @@ class MainWindow(QMainWindow):
         self.search_box = QLineEdit()
         self.search_box.setObjectName("searchBox")
         self.search_box.setPlaceholderText(self._t("search_placeholder"))
+        self.search_box.setAccessibleName(self._t("search_placeholder"))
         self.search_box.setMaximumWidth(220)
         self.search_box.textChanged.connect(self._on_search_changed)
         # Esc clears the search - handled on the box itself (eventFilter)
@@ -1244,11 +1250,13 @@ class MainWindow(QMainWindow):
             "⤢", lambda: self._on_console_fullscreen_toggled()
         )
         self.console_fullscreen_button.setToolTip(self._t("console_fullscreen_toggle"))
+        self.console_fullscreen_button.setAccessibleName(self._t("console_fullscreen_toggle"))
         console_toolbar.addWidget(self.console_fullscreen_button)
         self.console_popout_button = self._make_selection_button(
             "⧉", lambda: self._on_console_popout_clicked()
         )
         self.console_popout_button.setToolTip(self._t("console_popout"))
+        self.console_popout_button.setAccessibleName(self._t("console_popout"))
         console_toolbar.addWidget(self.console_popout_button)
 
         self._console_container_layout = QVBoxLayout()
@@ -2012,6 +2020,8 @@ class MainWindow(QMainWindow):
         toggle.setCheckable(True)
         toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         toggle.setToolTip(self._t("show_action_details"))
+        # Narrator would read "black down-pointing triangle" for every row.
+        toggle.setAccessibleName(f"{self._t('show_action_details')}: {action.label(self.settings.language)}")
         toggle.setText("▼")
 
         # An empty placeholder until the first expand: ~540 of these panels,
