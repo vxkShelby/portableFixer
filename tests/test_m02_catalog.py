@@ -499,6 +499,32 @@ def test_thumbnail_cache_runs_for_the_process_own_account(tmp_path):
     assert "Explorer restart: OK" in result.stdout
 
 
+# --- hibernation_off / component_store_cleanup: the two untested MODERATE ids -
+
+def test_hibernation_off_has_an_undo_and_a_locale_free_check(tmp_path):
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "hibernation_off")
+    assert action.risk == RiskLevel.MODERATE
+    assert action.undo_command == "powercfg /h on"
+    # powercfg /a prints localized text - the check reads the registry flag.
+    assert "powercfg" not in action.check_command
+    assert "HibernateEnabled" in action.check_command
+    for value, expected in ((0, "APPLIED"), (1, "NOT_APPLIED"), (None, "NOT_APPLIED")):
+        body = "" if value is None else f"[pscustomobject]@{{ HibernateEnabled = {value} }}"
+        stub = f"function Get-ItemProperty {{ [CmdletBinding()] param([string] $Path, [string[]] $Name) {body} }}"
+        result, _ = _run_m02(tmp_path, [stub], ["Get-ItemProperty"], action.check_command)
+        assert result.stdout.strip() == expected, (value, result.stdout + result.stderr)
+
+
+def test_component_store_cleanup_never_resets_the_base_and_declares_long_timeouts():
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "component_store_cleanup")
+    assert action.risk == RiskLevel.MODERATE
+    assert "/StartComponentCleanup" in action.command
+    assert "/ResetBase" not in action.command
+    assert action.inactivity_timeout_sec >= 900
+    assert action.hard_cap_sec >= 3600
+    assert is_long_action(action)
+
+
 def _run_browser_ps(tmp_path: Path, script: str, local, roaming, running=()):
     """Runs a catalog command with LOCALAPPDATA/APPDATA redirected inside the
     script (never in the child environment), Get-Process stubbed to report

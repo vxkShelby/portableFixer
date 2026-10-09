@@ -102,6 +102,9 @@ actions:
     label_en: "Component store cleanup"
     risk: MODERATE
     changes_system: false  # superseded WinSxS versions - a restore point cannot bring them back
+    # DISM can work for an hour on a long-unserviced image with sparse output.
+    inactivity_timeout_sec: 1800
+    hard_cap_sec: 10800
     command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup; if ($LASTEXITCODE -eq 3010) { Write-Output 'Component store cleaned - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     preview_command: "Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"
     description_sk: "Vyčistí úložisko komponentov (bez ResetBase)."
@@ -144,15 +147,18 @@ actions:
     label_en: "Disable hibernation"
     risk: MODERATE
     command: "powercfg /h off"
+    undo_command: "powercfg /h on"
     preview_command: "if (Test-Path \"$env:SystemDrive\\hiberfil.sys\") { $mb = [math]::Round((Get-Item \"$env:SystemDrive\\hiberfil.sys\" -Force).Length/1MB,2); Write-Output \"Would free approximately $mb MB by disabling hibernation\" } else { Write-Output \"Hibernation already disabled\" }"
-    description_sk: "Vypne hibernáciu a uvoľní miesto, ktoré zaberá hiberfil.sys. Vypne aj rýchle spustenie (Fast Startup), keďže od hibernácie závisí."
-    description_en: "Disables hibernation and frees the space used by hiberfil.sys. Also disables Fast Startup, since it depends on hibernation."
+    # powercfg /a prints localized text; the registry flag is not.
+    check_command: "if ((Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power' -Name HibernateEnabled -EA SilentlyContinue).HibernateEnabled -eq 0) { 'APPLIED' } else { 'NOT_APPLIED' }"
+    description_sk: "Vypne hibernáciu a uvoľní miesto, ktoré zaberá hiberfil.sys. Vypne aj rýchle spustenie (Fast Startup), keďže od hibernácie závisí. Undo hibernáciu znova zapne (powercfg /h on)."
+    description_en: "Disables hibernation and frees the space used by hiberfil.sys. Also disables Fast Startup, since it depends on hibernation. Undo re-enables hibernation (powercfg /h on)."
 
   - id: stale_user_profiles
     label_sk: "Staré používateľské profily"
     label_en: "Stale user profiles"
     risk: DESTRUCTIVE
-    command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + $stale.Count + \", errors: \" + $errs.Count)"
+    command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + ($stale.Count - @($errs).Count) + \", errors: \" + @($errs).Count)"
     preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
     description_sk: "Odstráni neaktívne používateľské profily staršie ako 180 dní. Nevratné. Poznámka: pri roamingových profiloch alebo rýchlom prepínaní používateľov nemusí byť hodnota LastUseTime vždy presná."
     description_en: "Removes inactive user profiles older than 180 days. Irreversible. Note: LastUseTime may not always be accurate for roaming profiles/fast user switching."
