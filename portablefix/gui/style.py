@@ -386,6 +386,7 @@ QLabel#summaryDryRunNote {
 }
 QLabel#summaryRow[ok="true"] { color: #39ff88; }
 QLabel#summaryRow[ok="false"] { color: #ff2d6f; }
+QLabel#summaryHint { color: #7c8799; font-size: 9pt; padding-left: 14px; }
 QLabel#summaryMetricName { color: #d6e2f0; font-size: 9pt; }
 QLabel#summaryMetricDelta {
     font-family: 'Consolas', 'Cascadia Mono';

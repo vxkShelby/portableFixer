@@ -2696,6 +2696,44 @@ def test_batch_summary_shows_before_after_metrics(qtbot, tmp_path):
     assert window._t("snapshot_lower_bound_note") in texts
 
 
+def test_batch_summary_lists_failed_first_with_a_hint_and_can_rerun_them(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    from portablefix.executor import TIMEOUT_EXIT_CODE
+
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_summary_failed")
+    qtbot.addWidget(window)
+    window._batch_results = [("temp_cleanup", 0), ("firewall_check", TIMEOUT_EXIT_CODE)]
+    window._failure_hints = {"firewall_check": "failure_hint_timeout"}
+
+    window._show_batch_summary(tmp_path / "report.html")
+
+    dialog = window._summary_dialog
+    rows = [w.text() for w in dialog.findChildren(QLabel) if w.objectName() in ("summaryRow", "summaryHint")]
+    assert rows == [
+        "[FAILED] Firewall status", window._t("failure_hint_timeout"), "[OK] Temp cleanup",
+    ]
+    buttons = {b.text(): b for b in dialog.findChildren(QPushButton)}
+    assert window._t("open_report_folder") in buttons
+
+    buttons[window._t("rerun_failed")].click()
+
+    assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["firewall_check"]
+    assert not dialog.isVisible()
+
+
+def test_failure_hint_maps_exit_codes_and_access_denied():
+    from portablefix import executor
+    from portablefix.gui.main_window import _failure_hint
+
+    assert _failure_hint(executor.TIMEOUT_EXIT_CODE, []) == "failure_hint_timeout"
+    assert _failure_hint(executor.CANCELLED_EXIT_CODE, []) == "failure_hint_cancelled"
+    assert _failure_hint(executor.POWERSHELL_NOT_FOUND_EXIT_CODE, []) == "failure_hint_powershell"
+    assert _failure_hint(1, ["Set-Item : Access is denied."]) == "failure_hint_denied"
+    assert _failure_hint(1, ["boom"]) == "failure_hint_generic"
+
+
 def test_batch_summary_without_comparable_metrics_shows_no_metrics(qtbot, tmp_path):
     from PySide6.QtWidgets import QLabel
 

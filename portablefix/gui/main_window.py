@@ -49,7 +49,7 @@ from .items_dialog import ItemsDialog
 from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, health, hive_backup, history, i18n, intake, ops, panel_safety, paths, pfjson, preflight, report, restore_point, snapshot, symptoms, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
-from ..executor import ActionRunner
+from ..executor import CANCELLED_EXIT_CODE, POWERSHELL_NOT_FOUND_EXIT_CODE, TIMEOUT_EXIT_CODE, ActionRunner
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..integrity import format_mismatches
 from ..module_engine import load_catalog
@@ -84,6 +84,19 @@ _CONSOLE_ERROR_RE = re.compile(
 _CONSOLE_NO_ERROR_RE = re.compile(r"\b(no|0|zero|without|not any)\s+(errors?|failures?|exceptions?)\b", re.IGNORECASE)
 _CONSOLE_WARNING_RE = re.compile(r"\b(warning|cancell?ed|upozornenie|varovanie)\b", re.IGNORECASE)
 _CONSOLE_SUCCESS_RE = re.compile(r"\b(success|successfully|succeeded|úspešne)\b", re.IGNORECASE)
+
+
+def _failure_hint(exit_code: int, output_lines: list[str]) -> str:
+    """i18n key of the next step for a failed action (batch summary)."""
+    if exit_code == TIMEOUT_EXIT_CODE:
+        return "failure_hint_timeout"
+    if exit_code == CANCELLED_EXIT_CODE:
+        return "failure_hint_cancelled"
+    if exit_code == POWERSHELL_NOT_FOUND_EXIT_CODE:
+        return "failure_hint_powershell"
+    if any("access is denied" in line.lower() for line in output_lines):
+        return "failure_hint_denied"
+    return "failure_hint_generic"
 
 
 def _console_severity(line: str) -> str | None:
@@ -371,6 +384,7 @@ class MainWindow(QMainWindow):
         # listed in undo.ps1 so it never implies everything was reversible.
         self._irreversible_actions: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
+        self._failure_hints: dict[str, str] = {}
         # action_id -> the warning text the technician accepted for it on
         # the batch review screen (research G12); _dispatch_action asks
         # nothing more for these and quotes the text in the audit entry.
@@ -2173,7 +2187,9 @@ class MainWindow(QMainWindow):
         copy_lines = [header.text()]
         if self._batch_dry_run:
             copy_lines.append(self._t("dry_run_batch_note"))
-        for action_id, exit_code in self._batch_results:
+        # Failed first: that is what the technician has to act on (stable
+        # sort keeps the run order inside each group).
+        for action_id, exit_code in sorted(self._batch_results, key=lambda result: result[1] == 0):
             _, action = self._find_action(action_id)
             status = self._t("status_ok") if exit_code == 0 else self._t("status_failed")
             row_text = f"[{status}] {action.label(self.settings.language)}"
@@ -2184,6 +2200,13 @@ class MainWindow(QMainWindow):
             row_label.setObjectName("summaryRow")
             row_label.setProperty("ok", "true" if exit_code == 0 else "false")
             rows_layout.addWidget(row_label)
+            if exit_code != 0:
+                hint = self._t(self._failure_hints.get(action_id, "failure_hint_generic"))
+                copy_lines.append("    " + hint)
+                hint_label = QLabel(hint)
+                hint_label.setObjectName("summaryHint")
+                hint_label.setWordWrap(True)
+                rows_layout.addWidget(hint_label)
         rows_layout.addStretch(1)
 
         rows_scroll = QScrollArea()
@@ -2239,6 +2262,16 @@ class MainWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path)))
         )
         button_row.addWidget(open_button)
+        folder_button = self._make_selection_button(
+            self._t("open_report_folder"),
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path.parent))),
+        )
+        button_row.addWidget(folder_button)
+        failed_ids = [aid for aid, code in self._batch_results if code != 0]
+        if failed_ids:
+            button_row.addWidget(self._make_selection_button(
+                self._t("rerun_failed"), lambda: self._select_failed_again(failed_ids, dialog)
+            ))
         if self._undo_steps and self._undo_script_path is not None:
             # Mirrors the "Open report" button above exactly - the undo
             # script already exists on disk whenever there are reversible
@@ -2276,6 +2309,16 @@ class MainWindow(QMainWindow):
         dialog.activateWindow()
         open_button.setFocus()
         self._summary_dialog = dialog
+
+    def _select_failed_again(self, action_ids: list[str], dialog: QDialog) -> None:
+        # Ticked directly, not through "select all": that sweep skips
+        # actions that opt out of it, and a failed one must stay re-runnable.
+        self._apply_selection(list(self._action_checkboxes), "none")
+        for action_id in action_ids:
+            checkbox = self._action_checkboxes.get(action_id)
+            if checkbox is not None:
+                checkbox.setChecked(True)
+        dialog.close()
 
     def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog | None) -> None:
         if not action_ids:
@@ -4408,6 +4451,7 @@ class MainWindow(QMainWindow):
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
+        self._failure_hints = {}
         self._action_durations = {}
         self._summary_dialog = None
         self._cancel_requested = False
@@ -5337,6 +5381,8 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self._append_console(self._t("disk_write_failed"))
         self._batch_results.append((action_id, exit_code))
+        if exit_code != 0:
+            self._failure_hints[action_id] = _failure_hint(exit_code, list(runner.captured_output))
         for finding in entry.findings:
             # Newest last, so health.latest_findings-style order holds.
             self._findings.pop(finding["id"], None)
