@@ -437,6 +437,68 @@ def _browser_tree(tmp_path: Path) -> dict:
     return t
 
 
+def _run_m02(tmp_path: Path, stubs: list, names: list, command: str, env: dict | None = None):
+    """Runs a catalog command with the given stub functions in place (exit 97
+    unless each name resolves to its stub) and env variables set inside the
+    script; returns (result, logged calls)."""
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    guard = (
+        "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    )
+    prelude = ["[Console]::OutputEncoding=[Text.Encoding]::UTF8", f"$global:PfLog = {_ps_quote(str(log))}"]
+    prelude += [f"$env:{k} = {_ps_quote(str(v))}" for k, v in (env or {}).items()]
+    result = _subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(prelude + stubs + [guard, command])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a system tool was not stubbed - refusing to run the real one"
+    return result, log.read_text(encoding="utf-8-sig").splitlines()
+
+
+# --- thumbnail_cache: never restart Explorer as a different account ----------
+
+EXPLORER_STUBS = [
+    "$global:PfExplorer = $true",
+    "function Get-Process { [CmdletBinding()] param([string[]] $Name) "
+    "if ($global:PfExplorer) { [pscustomobject]@{ ProcessName = 'explorer'; Id = 100 } } }",
+    "function Stop-Process { [CmdletBinding()] param([string[]] $Name, [switch] $Force) "
+    "Add-Content -Path $global:PfLog -Value 'Stop-Process'; $global:PfExplorer = $false }",
+    "function Start-Process { Add-Content -Path $global:PfLog -Value 'Start-Process'; $global:PfExplorer = $true }",
+]
+EXPLORER_NAMES = ["Get-Process", "Stop-Process", "Start-Process"]
+
+
+def test_thumbnail_cache_refuses_when_the_signed_in_user_is_another_account(tmp_path):
+    # Over-the-shoulder elevation: Stop-Process would kill the client's
+    # Explorer and Start-Process relaunch it under the technician's profile,
+    # while $env:LOCALAPPDATA is the technician's cache.
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "thumbnail_cache").command
+    stubs = ["function Stop-Process { exit 96 }", "function Start-Process { exit 96 }", "function Get-Process { exit 96 }"]
+    script = "$__pfUserHive = 'Registry::HKEY_USERS\\S-1-5-21-1-1-1-1001'; $__pfUserSid = 'S-1-5-21-1-1-1-1001'; " + command
+    result, _ = _run_m02(tmp_path, stubs, EXPLORER_NAMES, script)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+
+
+def test_thumbnail_cache_runs_for_the_process_own_account(tmp_path):
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "thumbnail_cache").command
+    local = tmp_path / "Local"
+    cache = local / "Microsoft" / "Windows" / "Explorer"
+    cache.mkdir(parents=True)
+    (cache / "thumbcache_256.db").write_bytes(b"\0" * 10)
+    script = ("$__pfUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; " + command)
+    result, calls = _run_m02(tmp_path, EXPLORER_STUBS, EXPLORER_NAMES, script, {"LOCALAPPDATA": local})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["Stop-Process", "Start-Process"]
+    assert not (cache / "thumbcache_256.db").exists()
+    assert "Explorer restart: OK" in result.stdout
+
+
 def _run_browser_ps(tmp_path: Path, script: str, local, roaming, running=()):
     """Runs a catalog command with LOCALAPPDATA/APPDATA redirected inside the
     script (never in the child environment), Get-Process stubbed to report
