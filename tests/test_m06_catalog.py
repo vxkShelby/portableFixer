@@ -339,3 +339,30 @@ def test_dns_client_restart_succeeds_when_the_stop_really_happened(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "DNS Client service restarted." in result.stdout
     assert calls == ["stop Dnscache", "start Dnscache"]
+
+
+# --- net_firewall_reset -------------------------------------------------------
+
+def _netsh_stub(export_exit=0, export_writes=True):
+    write = "Set-Content -LiteralPath $args[2] -Value 'WFW'" if export_writes else ""
+    return (
+        "function netsh { Add-Content -Path $global:PfLog -Value ('netsh ' + ($args -join ' ')); "
+        f"if ($args[1] -eq 'export') {{ {write}; $global:LASTEXITCODE = {export_exit} }} else {{ $global:LASTEXITCODE = 0 }} }}"
+    )
+
+
+@pytest.mark.parametrize("export_exit, export_writes", [(1, False), (0, False)])
+def test_firewall_reset_never_resets_without_a_backup(tmp_path, export_exit, export_writes):
+    # The reset used to run regardless of the export result - custom rules
+    # (VPN, games, RDP) gone with nothing for undo to import.
+    result, calls = _run_ps(tmp_path, [_netsh_stub(export_exit, export_writes)], ["netsh"], _action("net_firewall_reset").command)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "NOT reset" in result.stdout
+    assert [c for c in calls if c.startswith("netsh advfirewall reset")] == []
+
+
+def test_firewall_reset_runs_after_a_successful_export(tmp_path):
+    result, calls = _run_ps(tmp_path, [_netsh_stub()], ["netsh"], _action("net_firewall_reset").command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls[0].startswith("netsh advfirewall export ") and calls[1] == "netsh advfirewall reset"
+    assert (tmp_path / "ProgramData" / "PortableFix" / "firewall_backup.wfw").exists()

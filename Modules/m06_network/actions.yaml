@@ -101,10 +101,10 @@ actions:
     label_sk: "Reset Windows Firewall na predvolené nastavenia"
     label_en: "Reset Windows Firewall to defaults"
     risk: MODERATE
-    command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; netsh advfirewall export $bk | Out-Null; $exportOk = $LASTEXITCODE -eq 0; netsh advfirewall reset | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Firewall reset to defaults (backup exported: ' + $exportOk + ').') } else { Write-Output 'Firewall reset failed (requires administrator privileges).'; exit 1 }"
+    command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; New-Item -ItemType Directory -Force -Path (Split-Path $bk) | Out-Null; netsh advfirewall export $bk | Out-Null; if ($LASTEXITCODE -ne 0 -or -not (Test-Path $bk)) { Write-Output ('Firewall backup export failed (netsh exit ' + $LASTEXITCODE + ') - firewall NOT reset, nothing changed.'); exit 1 }; netsh advfirewall reset | Out-Null; if ($LASTEXITCODE -eq 0) { Write-Output ('Firewall reset to defaults (backup exported to ' + $bk + ').') } else { Write-Output 'Firewall reset failed (requires administrator privileges).'; exit 1 }"
     undo_command: "$bk = \"$env:ProgramData\\PortableFix\\firewall_backup.wfw\"; if (Test-Path $bk) { netsh advfirewall import $bk | Out-Null; Write-Output 'Firewall settings restored from backup.' } else { Write-Output 'No backup found - nothing to restore.' }"
-    description_sk: "Zálohuje aktuálne pravidlá firewallu a resetuje ho na predvolené nastavenia Windows. Undo ich obnoví zo zálohy."
-    description_en: "Backs up current firewall rules and resets it to Windows defaults. Undo restores from the backup."
+    description_sk: "Zálohuje aktuálne pravidlá firewallu a resetuje ho na predvolené nastavenia Windows. Ak sa záloha nepodarí, firewall sa neresetuje (akcia zlyhá). Undo ich obnoví zo zálohy."
+    description_en: "Backs up current firewall rules and resets it to Windows defaults. If the backup export fails, the firewall is left untouched (the action fails). Undo restores from the backup."
   - id: net_print_spooler_reset
     label_sk: "Reset zaraďovača tlače (Spooler)"
     label_en: "Reset print spooler"
