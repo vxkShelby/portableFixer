@@ -198,9 +198,12 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
         "function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $Encoding) process { } }",
     ]
     for name in REGISTRY_STUBS:
+        # Writes also report "VAL <name>=<value>" so a test can check what
+        # was written, not only where.
+        value_line = "; [Console]::Out.WriteLine('VAL ' + $Name + '=' + $Value)" if name.startswith(("Set-", "New-ItemProperty")) else ""
         stubs.append(
             f"function {name} {{ [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name, $Value, $Type, "
-            f"$PropertyType, $ItemType, [switch] $Force) [Console]::Out.WriteLine('REG {name} ' + $Path) }}"
+            f"$PropertyType, $ItemType, [switch] $Force) [Console]::Out.WriteLine('REG {name} ' + $Path){value_line} }}"
         )
     stubbed = ("Test-Path", "Get-Content", "Set-Content") + REGISTRY_STUBS
     guard = (
@@ -319,6 +322,36 @@ def test_m13_undo_for_signed_out_user_skips_without_ending_undo_script(action_id
     assert "Profile hive not loaded, skipped" in result.stdout
     assert "NEXT STEP RAN" in result.stdout
     assert registry == []
+
+
+def _written_values(stdout: str) -> dict:
+    values = {}
+    for line in stdout.splitlines():
+        if line.startswith("VAL "):
+            name, value = line[4:].split("=", 1)
+            values.setdefault(name, set()).add(value)
+    return values
+
+
+def test_m13_recall_policy_forbids_recall_instead_of_allowing_it():
+    # AllowRecallEnablement is an allow-policy: writing 1 (as every other
+    # value in the loop gets) explicitly ALLOWS Recall. It must be 0; the
+    # three disable-policies 1. The HKLM write must fail loudly like the
+    # sibling policy actions, not print success after a silent no-op.
+    action = _m13_action("debloat_disable_recall_clicktodo")
+    for text in (action.command, action.check_command, action.undo_command):
+        assert "AllowRecallEnablement = 0" in text
+        assert "AllowRecallEnablement = 1" not in text
+    assert "-EA Stop" in action.command and "exit 1" in action.command
+    result, registry = _run_user_hive_command(action.command, CLIENT_HIVE, target=_client())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _written_values(result.stdout) == {
+        "AllowRecallEnablement": {"0"},
+        "DisableAIDataAnalysis": {"1"},
+        "TurnOffSavingSnapshots": {"1"},
+        "DisableClickToDo": {"1"},
+    }
+    assert any(p.startswith("HKLM:\\") for p in registry) and any(p.startswith(CLIENT_HIVE + "\\") for p in registry)
 
 
 def test_m13_catalog_parses_in_powershell(tmp_path):
