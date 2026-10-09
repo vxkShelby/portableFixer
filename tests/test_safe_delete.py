@@ -93,7 +93,10 @@ STUB_GUARD_EXIT = 97
 #   counted its failed enumeration;
 # - read-only is cleared only on real entries (Remove-Item -Force did that
 #   too), never on a reparse point, whose attribute calls could reach the
-#   target.
+#   target;
+# - a directory delete is retried (3 x, 200 ms apart) against transient
+#   AV/indexer/just-exited-process locks, and a root that still exists with
+#   nothing counted is counted once, so "skipped: 0" never hides a survivor.
 SAFE_DELETE_HELPER = (
     "function Remove-PfSafe([string]$Path) { $n = 0; "
     "$i = Get-Item -LiteralPath $Path -Force -EA SilentlyContinue; if (-not $i) { return $n }; "
@@ -107,9 +110,11 @@ SAFE_DELETE_HELPER = (
     "try { if ($a -band $rp) { if ($a -band $dir) { [IO.Directory]::Delete($p) } else { [IO.File]::Delete($p) } } "
     "else { if ($a -band $ro) { [IO.File]::SetAttributes($p, ($a -bxor $ro)) }; [IO.File]::Delete($p) } } catch { $n++ } }; "
     "for ($k = $dirs.Count - 1; $k -ge 0; $k--) { $d = $dirs[$k]; "
+    "$ok = $false; for ($t = 0; $t -lt 3 -and -not $ok; $t++) { if ($t -gt 0) { Start-Sleep -Milliseconds 200 }; "
     "try { $a = [IO.File]::GetAttributes($d); if (($a -band $ro) -and -not ($a -band $rp)) { [IO.File]::SetAttributes($d, ($a -bxor $ro)) }; "
-    "[IO.Directory]::Delete($d) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { } "
-    "catch { $left = 1; try { $left = @([IO.Directory]::GetFileSystemEntries($d)).Count } catch { }; if ($left -eq 0) { $n++ } } }; "
+    "[IO.Directory]::Delete($d); $ok = $true } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { $ok = $true } catch { } }; "
+    "if (-not $ok) { $left = 1; try { $left = @([IO.Directory]::GetFileSystemEntries($d)).Count } catch { }; if ($left -eq 0) { $n++ } } }; "
+    "if ($n -eq 0 -and (Get-Item -LiteralPath $i.FullName -Force -EA SilentlyContinue)) { $n++ }; "
     "return $n }"
 )
 
@@ -574,14 +579,17 @@ def test_browser_cache_sweep_keeps_the_victim_behind_a_planted_link(tmp_path, ki
     chrome = local / "Google" / "Chrome" / "User Data" / "Default" / "Cache"
     firefox = local / "Mozilla" / "Firefox" / "Profiles" / "abcd.default" / "cache2"
     planted = _plant(chrome, victim, kind) + _plant(firefox, victim, kind)
-    result, _ = _run(tmp_path, _command("m02_cleanup", "browser_cache_sweep"), {"LOCALAPPDATA": local})
+    # Get-Process is stubbed: a real Firefox/Chrome on the runner would make
+    # the command skip that browser (correctly) instead of sweeping it.
+    result, _ = _run(tmp_path, _command("m02_cleanup", "browser_cache_sweep"), {"LOCALAPPDATA": local}, stubs=("Get-Process",))
     assert result.returncode == 0, result.stdout + result.stderr
-    # Real Get-Process, not a stub - a CI runner that happens to have an
-    # actual Firefox/Chrome process running makes this skip that browser
-    # (correctly), rather than sweep it. The point of this test is the
-    # link-safety guard below, not the exact sweep count.
     assert "skipped/locked: 0" in result.stdout, result.stdout + result.stderr
     _assert_victim_intact(victim)
+    # Short grace for a lock (AV/indexer) that lets go just after the run; a
+    # planted entry that is still there after it is a real survival bug.
+    deadline = time.monotonic() + 3
+    while any(os.path.lexists(p) for p in planted) and time.monotonic() < deadline:
+        time.sleep(0.2)
     for p in planted:
         assert not os.path.lexists(p), p
     assert chrome.is_dir() and firefox.is_dir()
