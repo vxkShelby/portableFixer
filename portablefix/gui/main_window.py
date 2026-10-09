@@ -319,6 +319,9 @@ class MainWindow(QMainWindow):
         # may have read the audit log before it, so one more rewrite follows.
         self._report_refresh_pending = False
         self._batch_active = False
+        # DRY-RUN as it was when the running batch started: the checkbox is
+        # locked for the batch, and every batch-engine decision reads this.
+        self._batch_dry_run = settings.dry_run
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
         self._undo_steps: list[str] = []
@@ -1240,6 +1243,7 @@ class MainWindow(QMainWindow):
             self.run_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
+            self.dry_run_checkbox.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(self._queue_total - len(self._queue))
             self.progress_bar.setVisible(True)
@@ -1799,7 +1803,7 @@ class MainWindow(QMainWindow):
         self._batch_started_at = time.monotonic()
         entry = make_entry(
             "_system", intake.BATCH_DURATION_EVENT, "", 0, intake.batch_duration_output(seconds),
-            self.settings.dry_run, self.run_id, elevated=self.is_admin,
+            self._batch_dry_run, self.run_id, elevated=self.is_admin,
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -2050,12 +2054,12 @@ class MainWindow(QMainWindow):
 
         # Before -> after metrics, same rows (snapshot.compare_snapshots) as
         # the report's "Before / after" table; only metrics known both times.
-        if not self.settings.dry_run:
+        if not self._batch_dry_run:
             metrics = self._build_snapshot_metrics_widget()
             if metrics is not None:
                 layout.addWidget(metrics)
 
-        if self.settings.dry_run:
+        if self._batch_dry_run:
             note = QLabel(self._t("dry_run_batch_note"))
             note.setObjectName("summaryDryRunNote")
             layout.addWidget(note)
@@ -2067,7 +2071,7 @@ class MainWindow(QMainWindow):
         # Plain text of what the dialog shows, for the Copy button (item 15) -
         # pasted into a ticket or a chat with the client.
         copy_lines = [header.text()]
-        if self.settings.dry_run:
+        if self._batch_dry_run:
             copy_lines.append(self._t("dry_run_batch_note"))
         for action_id, exit_code in self._batch_results:
             _, action = self._find_action(action_id)
@@ -4224,6 +4228,7 @@ class MainWindow(QMainWindow):
         if self._batch_start_blocked():
             return
         resuming, self._resuming = self._resuming, None
+        self._batch_dry_run = bool(self.settings.dry_run)
         queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         # Research G03: an action that restarts Windows at once runs last, so
         # it cuts nothing off - and only after the report and undo.ps1 exist.
@@ -4283,6 +4288,7 @@ class MainWindow(QMainWindow):
             self.dashboard_analyze_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
+            self.dry_run_checkbox.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
@@ -4607,6 +4613,7 @@ class MainWindow(QMainWindow):
             self.run_button.setEnabled(True)
             self.dashboard_analyze_button.setEnabled(True)
             self.language_button.setEnabled(True)
+            self.dry_run_checkbox.setEnabled(True)
             if write_failed:
                 self._append_console(self._t("disk_write_failed"))
         self._refresh_dashboard()
@@ -4718,7 +4725,7 @@ class MainWindow(QMainWindow):
                 1,
                 "App base directory or Modules/ folder was missing before dispatching the next "
                 "queued action - batch stopped for safety.",
-                self.settings.dry_run,
+                self._batch_dry_run,
                 self.run_id,
                 **self.target_user.audit_fields(),
             )
@@ -4742,7 +4749,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(position - 1)
 
         needs_restore_point = preflight.needs_restore_point(module, action)
-        if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
+        if needs_restore_point and not self._restore_point_attempted and not self._batch_dry_run:
             panel_runner = self._pending_panel_restore_point_runner
             if _thread_running(panel_runner):
                 # Pre-flight refuses a batch while a panel's restore point
@@ -4773,7 +4780,7 @@ class MainWindow(QMainWindow):
             action.risk == RiskLevel.DESTRUCTIVE
             and self._hive_backup_requested
             and not self._hive_backup_attempted
-            and not self.settings.dry_run
+            and not self._batch_dry_run
             and not self._closed
         ):
             self._hive_backup_attempted = True
@@ -4908,7 +4915,7 @@ class MainWindow(QMainWindow):
         pending = batch_resume.PendingBatch(
             run_id=self.run_id,
             action_ids=list(self._queue),
-            dry_run=self.settings.dry_run,
+            dry_run=self._batch_dry_run,
             restart_after=restart_action_id,
             job=self._job_info(),
             undo_steps=list(self._undo_steps),
@@ -4988,7 +4995,7 @@ class MainWindow(QMainWindow):
             # Never start an action (or pop its confirmation) after the
             # window is gone - it would run unlogged and outlive the app.
             return
-        if action.restarts_pc and not self.settings.dry_run and action.id not in self._pre_restart_prepared:
+        if action.restarts_pc and not self._batch_dry_run and action.id not in self._pre_restart_prepared:
             # A DRY-RUN only previews - nothing restarts, nothing to prepare.
             self._prepare_for_restart(module, action)
             return
@@ -4997,7 +5004,7 @@ class MainWindow(QMainWindow):
         if action.id in self._reviewed_warnings:
             # Confirmed on the batch review screen - quote what was shown there.
             warning_text = self._reviewed_warnings[action.id]
-        elif self.settings.dry_run:
+        elif self._batch_dry_run:
             # A DRY-RUN previews and changes nothing - nothing to confirm.
             pass
         elif action.risk == RiskLevel.DESTRUCTIVE:
@@ -5045,7 +5052,7 @@ class MainWindow(QMainWindow):
             return
         try:
             prepared = action_service.prepare_plan(
-                action, dry_run=self.settings.dry_run, state_dir=self.state_dir, run_id=self.run_id,
+                action, dry_run=self._batch_dry_run, state_dir=self.state_dir, run_id=self.run_id,
                 target_user=self.target_user, temp_protect=action_temp_protect, item_ids=item_ids,
             )
         except (OSError, items_mod.ItemsError):
@@ -5065,7 +5072,7 @@ class MainWindow(QMainWindow):
             hard_cap_sec=action.hard_cap_sec,
             # Research G09: a real run first asks whether the change is
             # already in place and skips it (on record) when it is.
-            check_plan=action_service.check_plan(action, dry_run=self.settings.dry_run, target_user=self.target_user),
+            check_plan=action_service.check_plan(action, dry_run=self._batch_dry_run, target_user=self.target_user),
         )
         self._runner = runner
         runner.output_line.connect(self._append_console)
@@ -5152,11 +5159,11 @@ class MainWindow(QMainWindow):
         # warned/warning_text come from the dialog _dispatch_action actually
         # showed and the technician accepted, not re-derived from the risk.
         entry = action_service.audit_entry(
-            module_id, action, exit_code, list(runner.captured_output), dry_run=self.settings.dry_run,
+            module_id, action, exit_code, list(runner.captured_output), dry_run=self._batch_dry_run,
             run_id=self.run_id, elevated=self.is_admin, warning_text=warning_text, target_user=self.target_user,
             payloads=payloads, item_ids=item_ids, decision=action_service.ALREADY_APPLIED if skipped else "",
         )
-        if action.check_command and not self.settings.dry_run:
+        if action.check_command and not self._batch_dry_run:
             # Research G09: after a success the runner checked again, so this
             # is the state now (kept for the snapshot's drift); after a
             # failure the earlier answer may be stale - the next check looks.
@@ -5187,7 +5194,7 @@ class MainWindow(QMainWindow):
         if skipped:
             status_text = self._t("status_already_applied")
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
-        if not self.settings.dry_run:
+        if not self._batch_dry_run:
             if not skipped:
                 # Shared with the headless CLI (research G21): undo_command,
                 # ops state (G10) and per-item undo (G05) decided in one place.

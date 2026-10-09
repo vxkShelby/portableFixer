@@ -7822,3 +7822,48 @@ def test_language_toggle_is_refused_while_an_uninstall_runs(qtbot, tmp_path, mon
         assert window.statusBar().currentMessage() == window._t("language_busy")
     finally:
         window._uninstall_runner = None
+
+
+# --- DRY-RUN is frozen per batch (GUI review A2) ------------------------------
+
+_SLOW_THEN_MODERATE_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: slow_safe
+    label_sk: "Pomala"
+    label_en: "Slow"
+    risk: SAFE
+    command: "Start-Sleep -Seconds 2; Write-Output 'slow-done'"
+  - id: risky
+    label_sk: "Riskantna akcia"
+    label_en: "Risky action"
+    risk: MODERATE
+    command: "Write-Output 'risky-ran'"
+"""
+
+
+def test_dry_run_checkbox_is_locked_for_the_batch_and_the_mode_cannot_change_mid_batch(qtbot, tmp_path):
+    # Unticking DRY-RUN mid-batch used to run the rest of the batch for real
+    # with no review, no pre-flight and no restore point.
+    base_dir = _make_base_dir(tmp_path, _SLOW_THEN_MODERATE_YAML)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True),
+        is_admin=True, run_id="run_dry_run_lock",
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["slow_safe"].setChecked(True)
+    window._action_checkboxes["risky"].setChecked(True)
+
+    window.run_selected_actions()
+
+    assert window.dry_run_checkbox.isEnabled() is False
+    # Even a programmatic flip (the checkbox refuses clicks) changes nothing
+    # for the running batch.
+    window.dry_run_checkbox.setChecked(False)
+    assert window._batch_dry_run is True
+    _wait_batch_idle(qtbot, window, timeout=20000)
+
+    assert window.dry_run_checkbox.isEnabled() is True
+    entries = [e for e in _audit_entries(audit_log_path(base_dir, "run_dry_run_lock")) if e["module_id"] != "_system"]
+    assert [e["action_id"] for e in entries] == ["slow_safe", "risky"]
+    assert all(e["dry_run"] is True for e in entries)
