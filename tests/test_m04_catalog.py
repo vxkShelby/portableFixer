@@ -244,3 +244,17 @@ def test_search_index_rebuild_names_every_index_file():
         assert f"'{name}'" in command, name
 
 
+def test_store_cache_reset_closes_the_store_window_wsreset_opens():
+    # wsreset.exe launches the Store when it finishes; no lingering windows.
+    command = _action("store_cache_reset").command
+    assert "Start-Process wsreset.exe -Wait" in command
+    assert command.index("-Wait") < command.index("WinStore.App") < command.index("Stop-Process")
+
+
+def test_perf_counters_rebuild_also_runs_the_32_bit_lodctr():
+    command = _action("perf_counters_rebuild").command
+    assert command.startswith("lodctr /R")
+    assert "SysWOW64\\lodctr.exe" in command
+    wow = command.index("$wow /R")
+    assert "Test-Path -LiteralPath $wow" in command[:wow]
+    assert "$wowExit -eq 0" in command

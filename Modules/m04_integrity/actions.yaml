@@ -80,16 +80,20 @@ actions:
     label_sk: "Vyčistenie cache Microsoft Store"
     label_en: "Clear Microsoft Store cache"
     risk: MODERATE
-    command: "if (Get-Command wsreset.exe -EA SilentlyContinue) { & wsreset.exe; Write-Output 'Microsoft Store cache reset triggered (the Store window may briefly appear and close on its own).' } else { Write-Output 'wsreset.exe not found - Microsoft Store is not installed on this system (e.g. LTSC/Server editions).'; exit 1 }"
-    description_sk: "Vyčistí cache Microsoft Store cez zabudovaný nástroj wsreset.exe - šetrnejší a cielenejší prvý krok než úplná opätovná registrácia (appx_reregister). Okno Store sa krátko zobrazí a zatvorí."
-    description_en: "Clears the Microsoft Store cache via the built-in wsreset.exe tool - a lighter, more targeted first step than the full re-registration (appx_reregister). Briefly shows and closes the Store window."
+    # wsreset.exe opens the Store when it is done and leaves it open - no
+    # lingering windows after a run, so the Store is closed again.
+    command: "if (Get-Command wsreset.exe -EA SilentlyContinue) { Start-Process wsreset.exe -Wait; Start-Sleep -Seconds 3; Get-Process -Name WinStore.App -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue; Write-Output 'Microsoft Store cache reset (wsreset.exe finished; the Store window it opens was closed again).' } else { Write-Output 'wsreset.exe not found - Microsoft Store is not installed on this system (e.g. LTSC/Server editions).'; exit 1 }"
+    description_sk: "Vyčistí cache Microsoft Store cez zabudovaný nástroj wsreset.exe - šetrnejší a cielenejší prvý krok než úplná opätovná registrácia (appx_reregister). Okno Store, ktoré wsreset na konci otvorí, akcia znova zatvorí."
+    description_en: "Clears the Microsoft Store cache via the built-in wsreset.exe tool - a lighter, more targeted first step than the full re-registration (appx_reregister). The Store window wsreset opens at the end is closed again."
   - id: perf_counters_rebuild
     label_sk: "Znovuvytvorenie počítadiel výkonu"
     label_en: "Rebuild performance counters"
     risk: MODERATE
-    command: "lodctr /R | Out-Null; $lodctrExit = $LASTEXITCODE; winmgmt /resyncperf | Out-Null; $resyncExit = $LASTEXITCODE; if ($lodctrExit -eq 0 -and $resyncExit -eq 0) { Write-Output 'Performance counters rebuilt (lodctr /R) and WMI perf classes resynced (winmgmt /resyncperf).' } else { Write-Output ('Rebuild completed with issues - lodctr exit: ' + $lodctrExit + ', resyncperf exit: ' + $resyncExit + '. Needs administrator.'); exit 1 }"
-    description_sk: "Znovu vytvorí definície počítadiel výkonu zo zálohy v registri (lodctr /R) a resynchronizuje výkonnostné triedy WMI (winmgmt /resyncperf) - štandardná oprava chýbajúcich/poškodených počítadiel v nástroji Performance Monitor alebo v monitorovacích agentoch. Vyžaduje administrátora. Bez undo (neexistuje lepší 'predchádzajúci' stav, ku ktorému by sa dalo vrátiť)."
-    description_en: "Rebuilds performance counter definitions from the registry backup (lodctr /R) and resyncs WMI's performance classes (winmgmt /resyncperf) - the standard fix for missing/corrupt counters in Performance Monitor or monitoring agents. Needs administrator. No undo (there is no better 'previous' state to roll back to)."
+    # Microsoft's guidance runs lodctr /R from System32 and SysWOW64 on x64 -
+    # otherwise 32-bit monitoring agents keep seeing broken counters.
+    command: "lodctr /R | Out-Null; $lodctrExit = $LASTEXITCODE; $wow = \"$env:WINDIR\\SysWOW64\\lodctr.exe\"; $wowExit = 0; if (Test-Path -LiteralPath $wow) { & $wow /R | Out-Null; $wowExit = $LASTEXITCODE }; winmgmt /resyncperf | Out-Null; $resyncExit = $LASTEXITCODE; if ($lodctrExit -eq 0 -and $wowExit -eq 0 -and $resyncExit -eq 0) { Write-Output 'Performance counters rebuilt (lodctr /R, 64-bit and 32-bit) and WMI perf classes resynced (winmgmt /resyncperf).' } else { Write-Output ('Rebuild completed with issues - lodctr exit: ' + $lodctrExit + ', SysWOW64 lodctr exit: ' + $wowExit + ', resyncperf exit: ' + $resyncExit + '. Needs administrator.'); exit 1 }"
+    description_sk: "Znovu vytvorí definície počítadiel výkonu zo zálohy v registri (lodctr /R, 64-bitové aj 32-bitové zo SysWOW64) a resynchronizuje výkonnostné triedy WMI (winmgmt /resyncperf) - štandardná oprava chýbajúcich/poškodených počítadiel v nástroji Performance Monitor alebo v monitorovacích agentoch. Vyžaduje administrátora. Bez undo (neexistuje lepší 'predchádzajúci' stav, ku ktorému by sa dalo vrátiť)."
+    description_en: "Rebuilds performance counter definitions from the registry backup (lodctr /R, both 64-bit and the 32-bit one in SysWOW64) and resyncs WMI's performance classes (winmgmt /resyncperf) - the standard fix for missing/corrupt counters in Performance Monitor or monitoring agents. Needs administrator. No undo (there is no better 'previous' state to roll back to)."
   - id: profile_list_report
     label_sk: "Kontrola zoznamu profilov (ProfileList)"
     label_en: "User profile list check (ProfileList)"
