@@ -54,12 +54,15 @@ def test_main_calls_archon_and_logs_soul_only_on_signal(
     monkeypatch.setattr(self_improve, "STATE_FILE", tmp_path / "docs" / ".self_improve_state.json")
     monkeypatch.setattr(self_improve, "SOUL_FILE", tmp_path / "docs" / "SOUL.md")
     mock_gather.return_value = (True, "2 failing test(s)", 42)
-    mock_archon.return_value = (True, "PR: https://github.com/x/y/pull/1")
+    # An echoed crash.log line must not reach the tracked docs/SOUL.md.
+    mock_archon.return_value = (True, "PR: https://github.com/x/y/pull/1\nat C:\\Users\\jnovak\\x.py")
 
     self_improve.main()
 
     mock_archon.assert_called_once_with("2 failing test(s)")
     mock_append_soul.assert_called_once()
+    tail = mock_append_soul.call_args[0][2]
+    assert "PR: https://github.com/x/y/pull/1" in tail and "jnovak" not in tail and "<user>" in tail
     mock_save_state.assert_called_once_with(self_improve.STATE_FILE, {"crash_log_offset": 42})
 
 

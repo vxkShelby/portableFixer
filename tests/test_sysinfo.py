@@ -83,6 +83,20 @@ def test_get_ram_speed_and_disk_health_via_mocked_subprocess():
         assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Healthy, Healthy")
 
 
+def test_disk_health_numbers_are_mapped_and_output_is_read_as_utf8():
+    calls = {}
+
+    def fake_run(argv, **kwargs):
+        calls.update(kwargs)
+        calls["script"] = argv[-1]
+        return MagicMock(stdout="3200\n---PF_SEP---\n0, 2\n")
+
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=fake_run):
+        assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Healthy, Unhealthy")
+    assert calls["encoding"] == "utf-8" and calls["errors"] == "replace" and calls["timeout"] == 20
+    assert calls["script"].startswith("[Console]::OutputEncoding=")
+
+
 def test_get_ram_speed_and_disk_health_returns_none_none_on_timeout():
     with patch("portablefix.sysinfo.subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("powershell", 10)):
         assert sysinfo._get_ram_speed_and_disk_health() == (None, None)
@@ -268,6 +282,18 @@ def test_check_vpn_status_returns_empty_string_when_nothing_found():
     fake.stdout = "\n"
     with patch("portablefix.sysinfo.subprocess.run", return_value=fake):
         assert sysinfo.check_vpn_status() == ""
+
+
+def test_check_vpn_status_survives_undecodable_output():
+    # An OEM byte undefined in the ANSI code page killed VpnStatusRunner.
+    def fake_run(argv, **kwargs):
+        assert kwargs["encoding"] == "utf-8" and kwargs["errors"] == "replace"
+        return MagicMock(stdout=b"B\x81ro".decode("utf-8", errors="replace"))
+
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=fake_run):
+        assert isinstance(sysinfo.check_vpn_status(), str)
+    with patch("portablefix.sysinfo.subprocess.run", side_effect=UnicodeDecodeError("cp1250", b"\x81", 0, 1, "undefined")):
+        assert sysinfo.check_vpn_status() is None
 
 
 def test_check_vpn_status_returns_none_on_timeout():
