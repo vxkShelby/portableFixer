@@ -366,3 +366,56 @@ def test_firewall_reset_runs_after_a_successful_export(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls[0].startswith("netsh advfirewall export ") and calls[1] == "netsh advfirewall reset"
     assert (tmp_path / "ProgramData" / "PortableFix" / "firewall_backup.wfw").exists()
+
+
+# --- net_set_public_dns -------------------------------------------------------
+
+ADAPTERS = [
+    {"Name": "Ethernet", "ifIndex": 5, "Status": "Up", "InterfaceGuid": IFACE_GUID},
+    {"Name": "Wi-Fi", "ifIndex": 7, "Status": "Up", "InterfaceGuid": "{a1b2c3d4-0000-4000-8000-000000000002}"},
+    {"Name": "Bluetooth", "ifIndex": 9, "Status": "Disconnected", "InterfaceGuid": "{a1b2c3d4-0000-4000-8000-000000000003}"},
+]
+
+
+def _dns_stubs(servers: dict):
+    """Get-DnsClientServerAddress answers from `servers` (ifIndex -> list);
+    Set-DnsClientServerAddress only logs."""
+    table = "@{ " + "; ".join(f"'{i}' = {_ps_value(list(v))}" for i, v in servers.items()) + " }"
+    return [
+        f"function Get-NetAdapter {{ [CmdletBinding()] param() @({', '.join(_ps_object(a) for a in ADAPTERS)}) }}",
+        f"$global:PfDns = {table}; "
+        "function Get-DnsClientServerAddress { [CmdletBinding()] param([int] $InterfaceIndex, [string] $AddressFamily) "
+        "[pscustomobject]@{ ServerAddresses = @($global:PfDns[[string]$InterfaceIndex]) } }",
+        "function Set-DnsClientServerAddress { [CmdletBinding()] param([int] $InterfaceIndex, [string[]] $ServerAddresses, "
+        "[switch] $ResetServerAddresses) Add-Content -Path $global:PfLog -Value ('dns ' + $InterfaceIndex + ' ' + "
+        "$(if ($ResetServerAddresses) { 'reset' } else { $ServerAddresses -join ',' })) }",
+    ]
+
+
+DNS_NAMES = ["Get-NetAdapter", "Get-DnsClientServerAddress", "Set-DnsClientServerAddress"]
+
+
+def test_set_public_dns_backs_up_each_adapter_once_and_undo_restores_the_static_servers(tmp_path):
+    # Undo used to reset every adapter to DHCP - a static DNS (domain,
+    # Pi-hole, VPN adapter) set before the action was lost, not restored.
+    action = _action("net_set_public_dns")
+    result, calls = _run_ps(tmp_path, _dns_stubs({5: ["192.168.1.1", "9.9.9.9"], 7: []}), DNS_NAMES, action.command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["dns 5 1.1.1.1,1.0.0.1", "dns 7 1.1.1.1,1.0.0.1"]
+    assert _backup(tmp_path, "public_dns_backup.json") == [
+        {"IfIndex": 5, "Servers": ["192.168.1.1", "9.9.9.9"]}, {"IfIndex": 7, "Servers": []},
+    ]
+    # A second run (technicians re-run batches after a reboot) keeps the originals.
+    again, _ = _run_ps(tmp_path, _dns_stubs({5: ["1.1.1.1", "1.0.0.1"], 7: ["1.1.1.1", "1.0.0.1"]}), DNS_NAMES, action.command)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _backup(tmp_path, "public_dns_backup.json")[0]["Servers"] == ["192.168.1.1", "9.9.9.9"]
+    undo, calls = _run_ps(tmp_path, _dns_stubs({}), DNS_NAMES, action.undo_command)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert calls == ["dns 5 192.168.1.1,9.9.9.9", "dns 7 reset"]
+    assert "DNS restored from backup on interface(s): 5, 7" in undo.stdout
+
+
+def test_set_public_dns_undo_without_a_backup_changes_nothing(tmp_path):
+    undo, calls = _run_ps(tmp_path, _dns_stubs({}), DNS_NAMES, _action("net_set_public_dns").undo_command)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert calls == [] and "No backup found" in undo.stdout
