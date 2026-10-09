@@ -15,6 +15,7 @@ Best effort by design: a value printed without anything that identifies it
 (a serial number in a table column) cannot be told apart from any other text.
 """
 
+import bisect
 import ipaddress
 import os
 import re
@@ -195,6 +196,7 @@ def _keep_ipv6(text: str) -> bool:
 
 
 def _kept_spans(text: str, keep: tuple[str, ...]) -> list[tuple[int, int]]:
+    """Sorted, merged (start, end) of every kept term in `text`."""
     spans = []
     lowered = text.lower()
     for term in keep:
@@ -202,11 +204,22 @@ def _kept_spans(text: str, keep: tuple[str, ...]) -> list[tuple[int, int]]:
         while start != -1:
             spans.append((start, start + len(term)))
             start = lowered.find(term, start + 1)
-    return spans
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _inside(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
-    return any(s <= start and end <= e for s, e in spans)
+    # Merged spans never overlap, so only the last one starting at or before
+    # `start` can contain the match - a linear scan was quadratic on a
+    # short kept value ("12") over a large log.
+    index = bisect.bisect_right(spans, (start, float("inf"))) - 1
+    return index >= 0 and end <= spans[index][1]
 
 
 def _sub(pattern: re.Pattern, text: str, keep: tuple[str, ...], replace) -> str:
@@ -224,7 +237,9 @@ def _sub(pattern: re.Pattern, text: str, keep: tuple[str, ...], replace) -> str:
 
 
 def _normalize_keep(keep: Iterable[str]) -> tuple[str, ...]:
-    return tuple(sorted({k.strip().lower() for k in keep if isinstance(k, str) and k.strip()}, key=len, reverse=True))
+    # A term shorter than any collected value cannot contain a match.
+    terms = {k.strip().lower() for k in keep if isinstance(k, str)}
+    return tuple(sorted((k for k in terms if len(k) >= _MIN_COLLECTED_LENGTH), key=len, reverse=True))
 
 
 def redact_text(text: str, keep: Iterable[str] = (), mask: Iterable[str] = ()) -> str:

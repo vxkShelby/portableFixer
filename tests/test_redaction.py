@@ -350,3 +350,11 @@ def test_domain_is_masked_with_its_netbios_prefix_but_workgroup_stays():
     assert "DomainRole          : 1" in out
     assert redact_text("Domain : WORKGROUP\nProfile : Public") == f"Domain : WORKGROUP\nProfile : {SSID}"
     assert redact_text("Domain : WORKGROUP\nC:\\Users\\Public\\x") == "Domain : WORKGROUP\nC:\\Users\\Public\\x"
+
+
+def test_a_short_kept_value_does_not_make_redaction_quadratic():
+    # keep=["1"] (a job number) over a log of addresses took minutes.
+    started = time.monotonic()
+    out = redact_text("1.2.3.4 " * 50000, keep=["1"])
+    assert time.monotonic() - started < 3
+    assert out == f"{IP} " * 50000
