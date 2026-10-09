@@ -87,6 +87,35 @@ def _healthy_preflight_probes(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_sysinfo_probes(request, monkeypatch):
+    """Instant, fixed sysinfo values for every Qt test.
+
+    Each MainWindow starts sysinfo runners (PowerShell, ping.exe, the
+    hardware monitor) parented to the window, and closeEvent waits only 5 s
+    for them. On a loaded CI runner a cold PowerShell outlived that, qtbot
+    then deleted the window with the QThread still running, and Qt's qFatal
+    aborted the whole pytest process with no traceback. tests/test_sysinfo.py
+    has no qtbot and still exercises the real functions.
+    """
+    if "qtbot" not in request.fixturenames:
+        return
+    from portablefix import sysinfo
+
+    monkeypatch.setattr(sysinfo, "get_static_info", lambda: sysinfo.StaticInfo(
+        os_name="Windows 11 Pro", cpu_name="Test CPU", cpu_cores=4,
+        local_ip="192.0.2.10", ram_speed_mhz=3200, disk_health_summary="OK",
+    ))
+    monkeypatch.setattr(sysinfo, "ping_once", lambda *a, **k: 12.0)
+    monkeypatch.setattr(sysinfo, "check_vpn_status", lambda: "")
+    monkeypatch.setattr(sysinfo, "read_hardware_sensors", lambda assets_dir: {
+        key: None for key in (
+            "cpu_clock_mhz", "gpu_name", "gpu_load_percent", "gpu_temp_c",
+            "gpu_clock_mhz", "gpu_vram_used_gb", "gpu_vram_total_gb",
+        )
+    })
+
+
+@pytest.fixture(autouse=True)
 def _join_parentless_threads(monkeypatch):
     """Let every parentless QThread a test started finish before it is freed.
 
