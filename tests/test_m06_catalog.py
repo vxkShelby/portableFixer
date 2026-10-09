@@ -66,6 +66,7 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_disable_multimedia_throttling",
         "net_tcp_latency_tuning",
         "net_dns_reset_automatic",
+        "net_time_sync_repair",
     ):
         assert by_id[undoable].undo_command is not None, undoable
     for action_id in (
@@ -78,10 +79,19 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_winsock_reset",
         "net_tcpip_reset",
         "net_print_spooler_reset",
-        "net_time_sync_repair",
         "net_dns_client_restart",
     ):
         assert by_id[action_id].undo_command is None, action_id
+
+
+def test_m06_catalog_every_start_type_change_has_an_undo():
+    # Set-Service -StartupType survives reboots; a MODERATE action that flips
+    # it (W32Time is Manual/trigger-start by design on workgroup PCs) must be
+    # able to put it back.
+    module = load_module(CATALOG_PATH)
+    for action in module.actions:
+        if "Set-Service" in action.command and "-StartupType" in action.command:
+            assert action.undo_command and "-StartupType" in action.undo_command, action.id
 
 
 def test_m06_catalog_new_service_repair_actions_verify_the_restart_worked():
@@ -419,3 +429,32 @@ def test_set_public_dns_undo_without_a_backup_changes_nothing(tmp_path):
     undo, calls = _run_ps(tmp_path, _dns_stubs({}), DNS_NAMES, _action("net_set_public_dns").undo_command)
     assert undo.returncode == 0, undo.stdout + undo.stderr
     assert calls == [] and "No backup found" in undo.stdout
+
+
+# --- net_time_sync_repair -----------------------------------------------------
+
+W32TM_STUB = "function w32tm { Add-Content -Path $global:PfLog -Value ('w32tm ' + ($args -join ' ')); $global:LASTEXITCODE = 0 }"
+TIME_NAMES = SERVICE_NAMES + ["w32tm"]
+
+
+def test_time_sync_repair_keeps_the_start_type_when_the_service_starts(tmp_path):
+    # A Manual (trigger-start) W32Time was flipped to Automatic forever, with
+    # no undo; starting it on demand is enough for the resync.
+    action = _action("net_time_sync_repair")
+    stubs = _service_stubs(status="Stopped", start_type="Manual") + [W32TM_STUB]
+    result, calls = _run_ps(tmp_path, stubs, TIME_NAMES, action.command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["start W32Time", "w32tm /resync /force"]
+    assert _backup(tmp_path, "time_sync_backup.json") == {"StartType": "Manual"}
+    undo, calls = _run_ps(tmp_path, stubs, TIME_NAMES, action.undo_command)
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert calls == ["set-service W32Time Manual"]
+
+
+def test_time_sync_repair_switches_to_automatic_only_when_the_start_fails(tmp_path):
+    action = _action("net_time_sync_repair")
+    stubs = _service_stubs(status="Stopped", start_type="Disabled", start_fails_times=1) + [W32TM_STUB]
+    result, calls = _run_ps(tmp_path, stubs, TIME_NAMES, action.command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["start W32Time", "set-service W32Time Automatic", "start W32Time", "w32tm /resync /force"]
+    assert _backup(tmp_path, "time_sync_backup.json") == {"StartType": "Disabled"}
