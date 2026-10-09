@@ -1,9 +1,53 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from portablefix.models import ModuleCategory, RiskLevel
 from portablefix.module_engine import load_module
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m04_integrity" / "actions.yaml"
+STUB_GUARD_EXIT = 97
+
+
+def _action(action_id):
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == action_id)
+
+
+def _powershell_or_skip() -> str:
+    exe = os.environ.get("PORTABLEFIX_TEST_PWSH") or shutil.which("powershell") or shutil.which("pwsh")
+    if not exe:
+        pytest.skip("no PowerShell available")
+    return exe
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _run_ps(tmp_path: Path, stubs: list, names: list, command: str, env: dict | None = None):
+    """Runs `command` with every listed cmdlet shadowed by a stub (exit 97
+    unless each name resolves to a function) and env variables set inside
+    the script; returns (result, logged calls)."""
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    guard = (
+        "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    )
+    prelude = ["[Console]::OutputEncoding=[Text.Encoding]::UTF8", f"$global:PfLog = {_ps_quote(str(log))}"]
+    prelude += [f"$env:{k} = {_ps_quote(str(v))}" for k, v in (env or {}).items()]
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(prelude + stubs + [guard, command])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a system tool was not stubbed - refusing to run the real one"
+    return result, log.read_text(encoding="utf-8-sig").splitlines()
 
 
 def test_m04_catalog_loads_14_actions_in_repair_category():
@@ -111,3 +155,106 @@ def test_m04_catalog_secpol_export_snapshot_only_writes_a_new_backup_file():
     # No file written = failure, not a silent "success".
     missing = command.index("if (-not (Test-Path -LiteralPath $bk))")
     assert "exit 1" in command[missing : command.index("}", missing)]
+
+
+def test_appx_reregister_targets_the_signed_in_user_and_never_registers_other_users_packages():
+    # Get-AppxPackage -AllUsers + Add-AppxPackage -Register put every user's
+    # packages into the running account (the technician's, over the
+    # shoulder). PS 5.1's Add-AppxPackage has no -User, so the listing is
+    # the target user's and a different signed-in user is refused.
+    action = _action("appx_reregister")
+    command = action.command
+    assert "-AllUsers" not in command
+    assert "Get-AppxPackage -User $sid" in command
+    assert "$__pfUserSid" in command
+    assert "-not $_.IsFramework -and -not $_.IsResourcePackage" in command
+    refusal = command.index("$__pfUserSid -ne $me")
+    assert "exit 1" in command[refusal : command.index("}", refusal)]
+    assert command.index("exit 1") < command.index("Add-AppxPackage -DisableDevelopmentMode")
+    assert "signed-in user" in action.description_en and "prihláseného používateľa" in action.description_sk
+    assert "all users" not in action.description_en
+
+
+SEARCH_FILES = ("Windows.edb", "Windows.db", "Windows-gather.db", "Windows-usn.db")
+
+
+def _search_stubs(set_fails=False):
+    fail = "throw [System.UnauthorizedAccessException]::new('Prístup odmietnutý.')" if set_fails else ""
+    return [
+        "$global:PfSvc = 'Running'",
+        "function Get-Service { [CmdletBinding()] param([string] $Name) "
+        "$o = [pscustomobject]@{ Name = $Name; Status = $global:PfSvc }; "
+        "$o | Add-Member -MemberType ScriptMethod -Name Refresh -Value { $this.Status = $global:PfSvc } -PassThru }",
+        "function Stop-Service { [CmdletBinding()] param([string] $Name, [switch] $Force) "
+        "Add-Content -Path $global:PfLog -Value ('stop ' + $Name); $global:PfSvc = 'Stopped' }",
+        "function Start-Service { [CmdletBinding()] param([string] $Name) "
+        "Add-Content -Path $global:PfLog -Value ('start ' + $Name); $global:PfSvc = 'Running' }",
+        "function Set-ItemProperty { [CmdletBinding()] param([string] $Path, [string] $Name, $Value, [string] $Type) "
+        f"Add-Content -Path $global:PfLog -Value ('set ' + $Path + ' ' + $Name + ' ' + $Value); {fail} }}",
+    ]
+
+
+SEARCH_NAMES = ["Get-Service", "Stop-Service", "Start-Service", "Set-ItemProperty"]
+
+
+def _search_tree(tmp_path, *files):
+    program_data = tmp_path / "ProgramData"
+    folder = program_data / "Microsoft" / "Search" / "Data" / "Applications" / "Windows"
+    folder.mkdir(parents=True)
+    for name in files:
+        (folder / name).write_bytes(b"\0" * 16)
+    (folder / "GatherLogs").mkdir()  # not an index file - stays
+    return program_data, folder
+
+
+def test_search_index_rebuild_removes_the_windows_11_index_and_marks_the_rebuild(tmp_path):
+    # Windows 11 keeps the index in Windows.db; deleting only the legacy
+    # Windows.edb removed nothing while printing success.
+    program_data, folder = _search_tree(tmp_path, "Windows.db", "Windows-gather.db")
+    result, calls = _run_ps(tmp_path, _search_stubs(), SEARCH_NAMES, _action("search_index_rebuild").command,
+                            {"ProgramData": program_data})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed 2 index file(s): Windows.db, Windows-gather.db" in result.stdout
+    assert sorted(p.name for p in folder.iterdir()) == ["GatherLogs"]
+    assert calls == ["stop WSearch", "set HKLM:\\SOFTWARE\\Microsoft\\Windows Search SetupCompletedSuccessfully 0",
+                     "start WSearch"]
+
+
+def test_search_index_rebuild_fails_when_no_index_file_exists(tmp_path):
+    program_data, _ = _search_tree(tmp_path)
+    result, calls = _run_ps(tmp_path, _search_stubs(), SEARCH_NAMES, _action("search_index_rebuild").command,
+                            {"ProgramData": program_data})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "No index database found" in result.stdout
+    assert calls[-1] == "start WSearch"  # the service is never left stopped
+
+
+def test_search_index_rebuild_restarts_the_service_when_the_registry_write_fails(tmp_path):
+    program_data, _ = _search_tree(tmp_path, "Windows.edb")
+    result, calls = _run_ps(tmp_path, _search_stubs(set_fails=True), SEARCH_NAMES,
+                            _action("search_index_rebuild").command, {"ProgramData": program_data})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "needs administrator" in result.stdout
+    assert calls[-1] == "start WSearch"
+
+
+def test_search_index_rebuild_names_every_index_file():
+    command = _action("search_index_rebuild").command
+    for name in SEARCH_FILES:
+        assert f"'{name}'" in command, name
+
+
+def test_store_cache_reset_closes_the_store_window_wsreset_opens():
+    # wsreset.exe launches the Store when it finishes; no lingering windows.
+    command = _action("store_cache_reset").command
+    assert "Start-Process wsreset.exe -Wait" in command
+    assert command.index("-Wait") < command.index("WinStore.App") < command.index("Stop-Process")
+
+
+def test_perf_counters_rebuild_also_runs_the_32_bit_lodctr():
+    command = _action("perf_counters_rebuild").command
+    assert command.startswith("lodctr /R")
+    assert "SysWOW64\\lodctr.exe" in command
+    wow = command.index("$wow /R")
+    assert "Test-Path -LiteralPath $wow" in command[:wow]
+    assert "$wowExit -eq 0" in command

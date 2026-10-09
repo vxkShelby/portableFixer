@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -790,6 +791,85 @@ def test_smb_compat_guest_allowed_on_24h2_without_a_value_is_relaxed(tmp_path):
     assert not _lines(result.stdout, "WEAK DEFAULT: ")
     assert _verdict(result.stdout).startswith("VERDICT: WEAKENED - 1 setting(s)")
 
+
+# --- print_remove_offline_printers --------------------------------------------
+
+OFFLINE_ID = "print_remove_offline_printers"
+OFFLINE_PRINTERS = [
+    {"Name": "Kancelaria HP", "DriverName": "HP Universal Printing PCL 6", "PortName": "IP_192.168.1.20",
+     "PrinterStatus": "Normal"},
+    {"Name": "Stara Kyocera", "DriverName": "Kyocera TASKalfa 2553ci KX", "PortName": "WSD-1234",
+     "PrinterStatus": "Offline"},
+    {"Name": "Zaseknuta", "DriverName": "Microsoft IPP Class Driver", "PortName": "IP_192.168.1.30",
+     "PrinterStatus": "Error"},
+]
+
+
+def _offline_stubs(printers=OFFLINE_PRINTERS, remove_fails=("Zaseknuta",), add_fails=()):
+    def fails(names):
+        return "@(" + ", ".join(_ps_quote(n) for n in names) + ")"
+
+    return [
+        f"function Get-Printer {{ [CmdletBinding()] param() {_ps_objects(printers)} }}",
+        "function Remove-Printer { [CmdletBinding()] param([string] $Name) "
+        "Add-Content -Path $global:PfLog -Value ('remove ' + $Name); "
+        f"if ({fails(remove_fails)} -contains $Name) {{ Write-Error ('Tlačiareň sa používa: ' + $Name) }} }}",
+        "function Add-Printer { [CmdletBinding()] param([string] $Name, [string] $DriverName, [string] $PortName) "
+        "Add-Content -Path $global:PfLog -Value ('add ' + $Name + ' | ' + $DriverName + ' | ' + $PortName); "
+        f"if ({fails(add_fails)} -contains $Name) {{ throw [System.InvalidOperationException]::new('Ovládač chýba.') }} }}",
+    ]
+
+
+OFFLINE_NAMES = ["Get-Printer", "Remove-Printer", "Add-Printer"]
+
+
+def test_remove_offline_printers_is_opt_in_and_counts_real_removals(tmp_path):
+    # "Offline" is also every network printer switched off at the moment the
+    # batch runs, so the action must never be part of "select all"; and a
+    # Remove-Printer that failed used to be counted as removed.
+    action = _action(OFFLINE_ID)
+    assert action.exclude_from_select_all is True
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir()
+    result, calls = _run_ps(tmp_path, _offline_stubs(), OFFLINE_NAMES, action.command,
+                            extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["remove Stara Kyocera", "remove Zaseknuta"]
+    assert "Removed 1 of 2 offline/error printer(s), failed: Zaseknuta; backup saved to" in result.stdout
+    backup = json.loads((program_data / "PortableFix" / "printers_removed_backup.json").read_text(encoding="utf-8-sig"))
+    assert backup == [
+        {"Name": "Stara Kyocera", "DriverName": "Kyocera TASKalfa 2553ci KX", "PortName": "WSD-1234"},
+        {"Name": "Zaseknuta", "DriverName": "Microsoft IPP Class Driver", "PortName": "IP_192.168.1.30"},
+    ]
+    undo, calls = _run_ps(tmp_path, _offline_stubs(add_fails=("Zaseknuta",)), OFFLINE_NAMES, action.undo_command,
+                          extra_env={"ProgramData": str(program_data)})
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert calls == ["add Stara Kyocera | Kyocera TASKalfa 2553ci KX | WSD-1234",
+                     "add Zaseknuta | Microsoft IPP Class Driver | IP_192.168.1.30"]
+    assert "Recreated 1 printer(s) from backup, failed: Zaseknuta" in undo.stdout
+
+
+def test_remove_offline_printers_with_none_offline_writes_no_backup(tmp_path):
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir()
+    result, calls = _run_ps(tmp_path, _offline_stubs(printers=OFFLINE_PRINTERS[:1]), OFFLINE_NAMES,
+                            _action(OFFLINE_ID).command, extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == []
+    assert "nothing removed" in result.stdout
+    assert not (program_data / "PortableFix" / "printers_removed_backup.json").exists()
+
+
+def test_remove_offline_printers_exits_non_zero_when_every_removal_failed(tmp_path):
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir()
+    result, _ = _run_ps(tmp_path, _offline_stubs(remove_fails=("Stara Kyocera", "Zaseknuta")), OFFLINE_NAMES,
+                        _action(OFFLINE_ID).command, extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Removed 0 of 2" in result.stdout
+
+
+# --- print_smb_compat_report (continued) ---------------------------------------
 
 @pytest.mark.parametrize("spooler", ["Stopped", None])
 def test_smb_compat_still_reports_when_the_spooler_is_not_running(tmp_path, spooler):

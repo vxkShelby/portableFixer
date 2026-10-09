@@ -437,6 +437,178 @@ def _browser_tree(tmp_path: Path) -> dict:
     return t
 
 
+def _run_m02(tmp_path: Path, stubs: list, names: list, command: str, env: dict | None = None):
+    """Runs a catalog command with the given stub functions in place (exit 97
+    unless each name resolves to its stub) and env variables set inside the
+    script; returns (result, logged calls)."""
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    guard = [
+        "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    ] if names else []
+    prelude = ["[Console]::OutputEncoding=[Text.Encoding]::UTF8", f"$global:PfLog = {_ps_quote(str(log))}"]
+    prelude += [f"$env:{k} = {_ps_quote(str(v))}" for k, v in (env or {}).items()]
+    result = _subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(prelude + stubs + guard + [command])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a system tool was not stubbed - refusing to run the real one"
+    return result, log.read_text(encoding="utf-8-sig").splitlines()
+
+
+# --- thumbnail_cache: never restart Explorer as a different account ----------
+
+EXPLORER_STUBS = [
+    "$global:PfExplorer = $true",
+    "function Get-Process { [CmdletBinding()] param([string[]] $Name) "
+    "if ($global:PfExplorer) { [pscustomobject]@{ ProcessName = 'explorer'; Id = 100 } } }",
+    "function Stop-Process { [CmdletBinding()] param([string[]] $Name, [switch] $Force) "
+    "Add-Content -Path $global:PfLog -Value 'Stop-Process'; $global:PfExplorer = $false }",
+    "function Start-Process { Add-Content -Path $global:PfLog -Value 'Start-Process'; $global:PfExplorer = $true }",
+]
+EXPLORER_NAMES = ["Get-Process", "Stop-Process", "Start-Process"]
+
+
+def test_thumbnail_cache_refuses_when_the_signed_in_user_is_another_account(tmp_path):
+    # Over-the-shoulder elevation: Stop-Process would kill the client's
+    # Explorer and Start-Process relaunch it under the technician's profile,
+    # while $env:LOCALAPPDATA is the technician's cache.
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "thumbnail_cache").command
+    stubs = ["function Stop-Process { exit 96 }", "function Start-Process { exit 96 }", "function Get-Process { exit 96 }"]
+    script = "$__pfUserHive = 'Registry::HKEY_USERS\\S-1-5-21-1-1-1-1001'; $__pfUserSid = 'S-1-5-21-1-1-1-1001'; " + command
+    result, _ = _run_m02(tmp_path, stubs, EXPLORER_NAMES, script)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+
+
+def test_thumbnail_cache_runs_for_the_process_own_account(tmp_path):
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "thumbnail_cache").command
+    local = tmp_path / "Local"
+    cache = local / "Microsoft" / "Windows" / "Explorer"
+    cache.mkdir(parents=True)
+    (cache / "thumbcache_256.db").write_bytes(b"\0" * 10)
+    script = ("$__pfUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; " + command)
+    result, calls = _run_m02(tmp_path, EXPLORER_STUBS, EXPLORER_NAMES, script, {"LOCALAPPDATA": local})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["Stop-Process", "Start-Process"]
+    assert not (cache / "thumbcache_256.db").exists()
+    assert "Explorer restart: OK" in result.stdout
+
+
+# --- hibernation_off / component_store_cleanup: the two untested MODERATE ids -
+
+def test_hibernation_off_has_an_undo_and_a_locale_free_check(tmp_path):
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "hibernation_off")
+    assert action.risk == RiskLevel.MODERATE
+    assert action.undo_command == "powercfg /h on"
+    # powercfg /a prints localized text - the check reads the registry flag.
+    assert "powercfg" not in action.check_command
+    assert "HibernateEnabled" in action.check_command
+    for value, expected in ((0, "APPLIED"), (1, "NOT_APPLIED"), (None, "NOT_APPLIED")):
+        body = "" if value is None else f"[pscustomobject]@{{ HibernateEnabled = {value} }}"
+        stub = f"function Get-ItemProperty {{ [CmdletBinding()] param([string] $Path, [string[]] $Name) {body} }}"
+        result, _ = _run_m02(tmp_path, [stub], ["Get-ItemProperty"], action.check_command)
+        assert result.stdout.strip() == expected, (value, result.stdout + result.stderr)
+
+
+def test_component_store_cleanup_never_resets_the_base_and_declares_long_timeouts():
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "component_store_cleanup")
+    assert action.risk == RiskLevel.MODERATE
+    assert "/StartComponentCleanup" in action.command
+    assert "/ResetBase" not in action.command
+    assert action.inactivity_timeout_sec >= 900
+    assert action.hard_cap_sec >= 3600
+    assert is_long_action(action)
+
+
+# --- "Removed N" must count what actually went, not the targets -------------
+
+# Remove-Item stand-in that refuses anything named *locked* with a
+# non-terminating error (what a file in use produces) and deletes the rest.
+REMOVE_ITEM_LOCKED = (
+    "function Remove-Item { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $InputObject, [switch] $Force) "
+    "process { if (-not $InputObject) { return }; if ($InputObject.Name -like '*locked*') { Write-Error ('locked: ' + $InputObject.Name) } "
+    "else { [IO.File]::Delete($InputObject.FullName) } } }"
+)
+
+
+def test_cbs_logs_reports_only_the_files_that_really_went(tmp_path):
+    import time
+
+    windir = tmp_path / "Windows"
+    cbs = windir / "Logs" / "CBS"
+    cbs.mkdir(parents=True)
+    now = time.time()
+    for name, age in (("CBS.log", 0), ("CBS.old.log", 100), ("CbsPersist_1.cab", 50), ("CbsPersist_locked.cab", 60)):
+        p = cbs / name
+        p.write_text("x", encoding="utf-8")
+        _os.utime(p, (now - age, now - age))
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "cbs_logs").command
+    result, _ = _run_m02(tmp_path, [REMOVE_ITEM_LOCKED], ["Remove-Item"], command, {"WINDIR": windir})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed 2 old CBS file(s), skipped/locked: 1" in result.stdout
+    assert sorted(p.name for p in cbs.iterdir()) == ["CBS.log", "CbsPersist_locked.cab"]
+
+
+def test_cbs_logs_with_only_the_newest_log_removes_and_counts_nothing(tmp_path):
+    # @($logs) of an empty Select -Skip 1 used to pipe $null into Remove-Item
+    # and count that binding error as a locked file.
+    windir = tmp_path / "Windows"
+    cbs = windir / "Logs" / "CBS"
+    cbs.mkdir(parents=True)
+    (cbs / "CBS.log").write_text("x", encoding="utf-8")
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "cbs_logs").command
+    result, _ = _run_m02(tmp_path, [REMOVE_ITEM_LOCKED], ["Remove-Item"], command, {"WINDIR": windir})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed 0 old CBS file(s), skipped/locked: 0" in result.stdout
+
+
+def test_stale_user_profiles_reports_removed_minus_errors(tmp_path):
+    stubs = [
+        "function Get-CimInstance { [CmdletBinding()] param([Parameter(Position=0)] [string] $ClassName) "
+        "@([pscustomobject]@{ LocalPath = 'C:\\Users\\old'; Special = $false; Loaded = $false; LastUseTime = [datetime]::new(2020, 1, 1) }, "
+        "[pscustomobject]@{ LocalPath = 'C:\\Users\\locked'; Special = $false; Loaded = $false; LastUseTime = [datetime]::new(2020, 1, 1) }) }",
+        "function Remove-CimInstance { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $InputObject) "
+        "process { Add-Content -Path $global:PfLog -Value ('remove ' + $InputObject.LocalPath); "
+        "if ($InputObject.LocalPath -like '*locked*') { Write-Error 'in use' } } }",
+    ]
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "stale_user_profiles").command
+    result, calls = _run_m02(tmp_path, stubs, ["Get-CimInstance", "Remove-CimInstance"], command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["remove C:\\Users\\old", "remove C:\\Users\\locked"]
+    assert "Removed profiles: 1, errors: 1" in result.stdout
+
+
+def test_gpu_driver_leftovers_count_a_folder_as_removed_only_when_it_is_gone():
+    command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "gpu_driver_install_leftovers").command
+    body = command[command.index("$paths = "):]
+    assert "if (-not (Test-Path -LiteralPath $p)) { $removed++ }" in body
+
+
+def test_prefetch_deletes_only_pf_files_and_leaves_readyboot_alone(tmp_path):
+    # Remove-Item on Prefetch\* without -Recurse errored on the ReadyBoot
+    # folder every run and reported it as a locked item.
+    windir = tmp_path / "Windows"
+    prefetch = windir / "Prefetch"
+    (prefetch / "ReadyBoot").mkdir(parents=True)
+    (prefetch / "ReadyBoot" / "Trace1.fx").write_text("x", encoding="utf-8")
+    (prefetch / "Layout.ini").write_text("x", encoding="utf-8")
+    for name in ("NOTEPAD.EXE-1234.pf", "CHROME.EXE-5678.pf"):
+        (prefetch / name).write_text("x", encoding="utf-8")
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "prefetch")
+    preview, _ = _run_m02(tmp_path, [], [], action.preview_command, {"WINDIR": windir})
+    assert "Would delete 2 .pf files" in preview.stdout, preview.stdout + preview.stderr
+    result, _ = _run_m02(tmp_path, [], [], action.command, {"WINDIR": windir})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Skipped locked/in-use items: 0" in result.stdout
+    assert sorted(p.name for p in prefetch.iterdir()) == ["Layout.ini", "ReadyBoot"]
+    assert (prefetch / "ReadyBoot" / "Trace1.fx").exists()
+
+
 def _run_browser_ps(tmp_path: Path, script: str, local, roaming, running=()):
     """Runs a catalog command with LOCALAPPDATA/APPDATA redirected inside the
     script (never in the child environment), Get-Process stubbed to report

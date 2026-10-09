@@ -166,6 +166,97 @@ def _verdict(stdout: str) -> str:
     return lines[0]
 
 
+# --- boot_clear_safe_mode_flag / boot_enable_f8_legacy_recovery -------------
+
+def _bcd_stubs(tmp_path, enum_lines=(), set_exit=0):
+    """bcdedit prints `enum_lines` (localized labels on purpose) for /enum
+    and logs /set and /deletevalue; icacls is a logging no-op."""
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    lg = _ps_quote(str(log))
+    lines = "; ".join(_ps_quote(line) for line in enum_lines) or "''"
+    return log, [
+        "function bcdedit.exe { "
+        f"Add-Content -Path {lg} -Value ('bcdedit ' + ($args -join ' ')); "
+        f"if ($args[0] -eq '/enum') {{ 'Identifikátor {{current}}'; {lines}; $global:LASTEXITCODE = 0 }} "
+        f"else {{ $global:LASTEXITCODE = {set_exit} }} }}",
+        f"function icacls {{ Add-Content -Path {lg} -Value ('icacls ' + ($args -join ' ')); $global:LASTEXITCODE = 0 }}",
+    ]
+
+
+BCD_NAMES = ["bcdedit.exe", "icacls"]
+
+
+def _bcd_calls(log):
+    return [c for c in log.read_text(encoding="utf-8-sig").splitlines() if c.startswith("bcdedit ")]
+
+
+def test_clear_safe_mode_flag_with_no_flag_is_nothing_to_clear(tmp_path):
+    # bcdedit /deletevalue of an absent element fails, and the catch-all
+    # message blamed privileges for a flag that was never there.
+    program_data = tmp_path / "ProgramData"
+    log, stubs = _bcd_stubs(tmp_path, enum_lines=("description  Windows 11",), set_exit=1)
+    result = _run_ps(stubs, BCD_NAMES, _action("boot_clear_safe_mode_flag").command,
+                     extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No safeboot flag set - nothing to clear." in result.stdout
+    assert _bcd_calls(log) == ["bcdedit /enum {current}"]
+
+
+def test_clear_safe_mode_flag_still_clears_a_set_flag(tmp_path):
+    program_data = tmp_path / "ProgramData"
+    log, stubs = _bcd_stubs(tmp_path, enum_lines=("safeboot                Minimal",))
+    result = _run_ps(stubs, BCD_NAMES, _action("boot_clear_safe_mode_flag").command,
+                     extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Safe Mode flag cleared" in result.stdout
+    assert _bcd_calls(log) == ["bcdedit /enum {current}", "bcdedit /deletevalue {current} safeboot"]
+    backup = json.loads((program_data / "PortableFix" / "safe_mode_backup.json").read_text(encoding="utf-8-sig"))
+    assert backup == {"SafeBoot": "Minimal"}
+
+
+def test_f8_legacy_recovery_records_the_prior_policy_and_undo_restores_it(tmp_path):
+    # Undo set bootmenupolicy standard unconditionally - a PC that was
+    # already on legacy before the action got changed by the undo.
+    action = _action("boot_enable_f8_legacy_recovery")
+    program_data = tmp_path / "ProgramData"
+    log, stubs = _bcd_stubs(tmp_path, enum_lines=("bootmenupolicy          Legacy",))
+    result = _run_ps(stubs, BCD_NAMES, action.command, extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _bcd_calls(log) == ["bcdedit /enum {current}", "bcdedit /set {current} bootmenupolicy legacy"]
+    backup = json.loads((program_data / "PortableFix" / "bootmenupolicy_backup.json").read_text(encoding="utf-8-sig"))
+    assert backup == {"BootMenuPolicy": "Legacy"}
+    # a second run keeps the first backup
+    log, stubs = _bcd_stubs(tmp_path, enum_lines=("bootmenupolicy          Standard",))
+    _run_ps(stubs, BCD_NAMES, action.command, extra_env={"ProgramData": str(program_data)})
+    assert json.loads((program_data / "PortableFix" / "bootmenupolicy_backup.json").read_text(encoding="utf-8-sig")) == backup
+    log, stubs = _bcd_stubs(tmp_path)
+    undo = _run_ps(stubs, BCD_NAMES, action.undo_command, extra_env={"ProgramData": str(program_data)})
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert _bcd_calls(log) == ["bcdedit /set {current} bootmenupolicy legacy"]
+    assert "restored to Legacy" in undo.stdout
+
+
+def test_f8_legacy_recovery_undo_removes_a_policy_that_was_not_set_before(tmp_path):
+    action = _action("boot_enable_f8_legacy_recovery")
+    program_data = tmp_path / "ProgramData"
+    log, stubs = _bcd_stubs(tmp_path, enum_lines=("description  Windows 11",))
+    result = _run_ps(stubs, BCD_NAMES, action.command, extra_env={"ProgramData": str(program_data)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    log, stubs = _bcd_stubs(tmp_path)
+    undo = _run_ps(stubs, BCD_NAMES, action.undo_command, extra_env={"ProgramData": str(program_data)})
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert _bcd_calls(log) == ["bcdedit /deletevalue {current} bootmenupolicy"]
+
+
+def test_f8_legacy_recovery_undo_without_a_backup_changes_nothing(tmp_path):
+    log, stubs = _bcd_stubs(tmp_path)
+    undo = _run_ps(stubs, BCD_NAMES, _action("boot_enable_f8_legacy_recovery").undo_command,
+                   extra_env={"ProgramData": str(tmp_path / "ProgramData")})
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert _bcd_calls(log) == []
+
+
 # Firmware db/KEK as Get-SecureBootUEFI returns them: EFI signature lists
 # holding DER certificates, where the subject CN is plain ASCII between
 # binary fields. The UTF-16LE variant covers the second encoding searched.

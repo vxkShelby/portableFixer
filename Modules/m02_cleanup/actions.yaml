@@ -33,10 +33,12 @@ actions:
     label_sk: "Cache Prefetch"
     label_en: "Prefetch cache"
     risk: SAFE
-    command: "Remove-Item \"$env:WINDIR\\Prefetch\\*\" -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + $errs.Count)"
-    preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Prefetch\" -File -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from Prefetch\""
-    description_sk: "Vymaže súbory Prefetch (dočasne spomalí nasledujúci štart systému)."
-    description_en: "Removes Prefetch files (temporarily slows next boot)."
+    # Only the *.pf files: Prefetch also holds the ReadyBoot folder and
+    # Layout.ini, which a wildcard delete reported as "locked" every run.
+    command: "Get-ChildItem \"$env:WINDIR\\Prefetch\" -File -Filter *.pf -Force -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Skipped locked/in-use items: \" + @($errs).Count)"
+    preview_command: "$f = Get-ChildItem \"$env:WINDIR\\Prefetch\" -File -Filter *.pf -Force -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c .pf files, $mb MB from Prefetch\""
+    description_sk: "Vymaže súbory Prefetch (*.pf; dočasne spomalí nasledujúci štart systému). Užitočné len pri poškodených .pf súboroch - na SSD prínos nemá."
+    description_en: "Removes Prefetch files (*.pf; temporarily slows next boot). Only useful when the .pf files are corrupt - no benefit on an SSD."
 
   - id: wer_reports
     label_sk: "Hlásenia o chybách (WER)"
@@ -51,7 +53,7 @@ actions:
     label_sk: "Staré CBS logy"
     label_en: "Old CBS logs"
     risk: SAFE
-    command: "$logs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1; $cabs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CbsPersist_*.cab\" -EA SilentlyContinue; $targets = @($logs) + @($cabs); $targets | Remove-Item -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed \" + $targets.Count + \" old CBS file(s), skipped/locked: \" + $errs.Count)"
+    command: "$logs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1; $cabs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CbsPersist_*.cab\" -EA SilentlyContinue; $targets = @(@($logs) + @($cabs) | Where-Object { $_ }); $targets | Remove-Item -Force -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed \" + ($targets.Count - @($errs).Count) + \" old CBS file(s), skipped/locked: \" + @($errs).Count)"
     preview_command: "$logs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CBS*.log\" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1; $cabs = Get-ChildItem \"$env:WINDIR\\Logs\\CBS\\CbsPersist_*.cab\" -EA SilentlyContinue; $f = @($logs) + @($cabs); $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c old CBS file(s), $mb MB (keeping newest .log)\""
     description_sk: "Vymaže staré CBS logy a archívy (CbsPersist_*.cab), ponechá najnovší log."
     description_en: "Removes old CBS logs and archives (CbsPersist_*.cab), keeps the newest log."
@@ -60,10 +62,13 @@ actions:
     label_sk: "Cache náhľadov"
     label_en: "Thumbnail cache"
     risk: SAFE
-    command: "Stop-Process -Name explorer -Force -EA SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (-not (Get-Process -Name explorer -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe; for ($i = 0; $i -lt 20; $i++) { if (Get-Process -Name explorer -EA SilentlyContinue) { break }; Start-Sleep -Milliseconds 200 } }; $restarted = [bool](Get-Process -Name explorer -EA SilentlyContinue); $msg = \"Skipped locked/in-use items: \" + $errs.Count + \"; Explorer restart: \"; if (-not $restarted) { Write-Output ($msg + \"FAILED\"); exit 1 }; Write-Output ($msg + \"OK\")"
+    # Over-the-shoulder elevation (prelude $__pfUserSid is another account):
+    # killing Explorer would replace the client's shell with the technician's
+    # and $env:LOCALAPPDATA is the technician's cache - refuse instead.
+    command: "if ($__pfUserSid -and $__pfUserSid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) { Write-Output 'Signed-in user differs from the elevated account - clearing the thumbnail cache restarts Explorer and would replace the signed-in user''s desktop with the technician''s. Run PortableFix from the user''s own administrator account.'; exit 1 }; Stop-Process -Name explorer -Force -EA SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (-not (Get-Process -Name explorer -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }; try { Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -EA SilentlyContinue -ErrorVariable errs } finally { Start-Process explorer.exe; for ($i = 0; $i -lt 20; $i++) { if (Get-Process -Name explorer -EA SilentlyContinue) { break }; Start-Sleep -Milliseconds 200 } }; $restarted = [bool](Get-Process -Name explorer -EA SilentlyContinue); $msg = \"Skipped locked/in-use items: \" + $errs.Count + \"; Explorer restart: \"; if (-not $restarted) { Write-Output ($msg + \"FAILED\"); exit 1 }; Write-Output ($msg + \"OK\")"
     preview_command: "$f = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -EA SilentlyContinue; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c thumbnail cache file(s), $mb MB, and restart Explorer\""
-    description_sk: "Vymaže cache náhľadov a reštartuje Explorer (najprv počká, kým sa pôvodný proces úplne ukončí, aby reštart nezlyhal)."
-    description_en: "Clears the thumbnail cache and restarts Explorer (waits for the old process to fully exit first, so the restart doesn't crash)."
+    description_sk: "Vymaže cache náhľadov a reštartuje Explorer (najprv počká, kým sa pôvodný proces úplne ukončí, aby reštart nezlyhal). Ak je prihlásený iný používateľ než účet, pod ktorým beží PortableFix (zvýšenie oprávnení 'cez rameno'), akcia odmietne bežať - reštart Explorera by nahradil plochu používateľa plochou technika."
+    description_en: "Clears the thumbnail cache and restarts Explorer (waits for the old process to fully exit first, so the restart doesn't crash). If the signed-in user differs from the account PortableFix runs as (over-the-shoulder elevation), the action refuses - restarting Explorer would replace the user's desktop with the technician's."
 
   - id: font_cache
     label_sk: "Cache písiem"
@@ -99,6 +104,9 @@ actions:
     label_en: "Component store cleanup"
     risk: MODERATE
     changes_system: false  # superseded WinSxS versions - a restore point cannot bring them back
+    # DISM can work for an hour on a long-unserviced image with sparse output.
+    inactivity_timeout_sec: 1800
+    hard_cap_sec: 10800
     command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup; if ($LASTEXITCODE -eq 3010) { Write-Output 'Component store cleaned - restart required.'; exit 0 } else { exit $LASTEXITCODE }"
     preview_command: "Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"
     description_sk: "Vyčistí úložisko komponentov (bez ResetBase)."
@@ -141,15 +149,18 @@ actions:
     label_en: "Disable hibernation"
     risk: MODERATE
     command: "powercfg /h off"
+    undo_command: "powercfg /h on"
     preview_command: "if (Test-Path \"$env:SystemDrive\\hiberfil.sys\") { $mb = [math]::Round((Get-Item \"$env:SystemDrive\\hiberfil.sys\" -Force).Length/1MB,2); Write-Output \"Would free approximately $mb MB by disabling hibernation\" } else { Write-Output \"Hibernation already disabled\" }"
-    description_sk: "Vypne hibernáciu a uvoľní miesto, ktoré zaberá hiberfil.sys. Vypne aj rýchle spustenie (Fast Startup), keďže od hibernácie závisí."
-    description_en: "Disables hibernation and frees the space used by hiberfil.sys. Also disables Fast Startup, since it depends on hibernation."
+    # powercfg /a prints localized text; the registry flag is not.
+    check_command: "if ((Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power' -Name HibernateEnabled -EA SilentlyContinue).HibernateEnabled -eq 0) { 'APPLIED' } else { 'NOT_APPLIED' }"
+    description_sk: "Vypne hibernáciu a uvoľní miesto, ktoré zaberá hiberfil.sys. Vypne aj rýchle spustenie (Fast Startup), keďže od hibernácie závisí. Undo hibernáciu znova zapne (powercfg /h on)."
+    description_en: "Disables hibernation and frees the space used by hiberfil.sys. Also disables Fast Startup, since it depends on hibernation. Undo re-enables hibernation (powercfg /h on)."
 
   - id: stale_user_profiles
     label_sk: "Staré používateľské profily"
     label_en: "Stale user profiles"
     risk: DESTRUCTIVE
-    command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + $stale.Count + \", errors: \" + $errs.Count)"
+    command: "$stale = @(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)}); $stale | Remove-CimInstance -EA SilentlyContinue -ErrorVariable errs; Write-Output (\"Removed profiles: \" + ($stale.Count - @($errs).Count) + \", errors: \" + @($errs).Count)"
     preview_command: "Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special -and -not $_.Loaded -and $_.LastUseTime -ne $null -and $_.LastUseTime -lt (Get-Date).AddDays(-180)} | Select-Object LocalPath,LastUseTime | Format-Table"
     description_sk: "Odstráni neaktívne používateľské profily staršie ako 180 dní. Nevratné. Poznámka: pri roamingových profiloch alebo rýchlom prepínaní používateľov nemusí byť hodnota LastUseTime vždy presná."
     description_en: "Removes inactive user profiles older than 180 days. Irreversible. Note: LastUseTime may not always be accurate for roaming profiles/fast user switching."
@@ -191,7 +202,7 @@ actions:
     label_en: "GPU driver install leftovers"
     risk: MODERATE
     changes_system: false  # extracted installer files, not the installed driver
-    command: "function Remove-PfSafe([string]$Path) { $n = 0; $i = Get-Item -LiteralPath $Path -Force -EA SilentlyContinue; if (-not $i) { return $n }; $ro = [IO.FileAttributes]::ReadOnly; $rp = [IO.FileAttributes]::ReparsePoint; $dir = [IO.FileAttributes]::Directory; $dirs = New-Object System.Collections.Generic.List[string]; $todo = New-Object System.Collections.Generic.Stack[string]; $todo.Push($i.FullName); while ($todo.Count -gt 0) { $p = $todo.Pop(); try { $a = [IO.File]::GetAttributes($p) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { continue } catch { $n++; continue }; if (($a -band $dir) -and -not ($a -band $rp)) { $dirs.Add($p); try { foreach ($c in [IO.Directory]::GetFileSystemEntries($p)) { $todo.Push($c) } } catch { $n++ }; continue }; try { if ($a -band $rp) { if ($a -band $dir) { [IO.Directory]::Delete($p) } else { [IO.File]::Delete($p) } } else { if ($a -band $ro) { [IO.File]::SetAttributes($p, ($a -bxor $ro)) }; [IO.File]::Delete($p) } } catch { $n++ } }; for ($k = $dirs.Count - 1; $k -ge 0; $k--) { $d = $dirs[$k]; try { $a = [IO.File]::GetAttributes($d); if (($a -band $ro) -and -not ($a -band $rp)) { [IO.File]::SetAttributes($d, ($a -bxor $ro)) }; [IO.Directory]::Delete($d) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { } catch { $left = 1; try { $left = @([IO.Directory]::GetFileSystemEntries($d)).Count } catch { }; if ($left -eq 0) { $n++ } } }; return $n }; $paths = @('C:\\NVIDIA','C:\\AMD'); $removed = 0; $skipped = 0; foreach ($p in $paths) { if (Test-Path -LiteralPath $p) { $skipped += Remove-PfSafe $p; $removed++ } }; Write-Output (\"Removed \" + $removed + \" GPU driver install folder(s), skipped/locked: \" + $skipped)"
+    command: "function Remove-PfSafe([string]$Path) { $n = 0; $i = Get-Item -LiteralPath $Path -Force -EA SilentlyContinue; if (-not $i) { return $n }; $ro = [IO.FileAttributes]::ReadOnly; $rp = [IO.FileAttributes]::ReparsePoint; $dir = [IO.FileAttributes]::Directory; $dirs = New-Object System.Collections.Generic.List[string]; $todo = New-Object System.Collections.Generic.Stack[string]; $todo.Push($i.FullName); while ($todo.Count -gt 0) { $p = $todo.Pop(); try { $a = [IO.File]::GetAttributes($p) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { continue } catch { $n++; continue }; if (($a -band $dir) -and -not ($a -band $rp)) { $dirs.Add($p); try { foreach ($c in [IO.Directory]::GetFileSystemEntries($p)) { $todo.Push($c) } } catch { $n++ }; continue }; try { if ($a -band $rp) { if ($a -band $dir) { [IO.Directory]::Delete($p) } else { [IO.File]::Delete($p) } } else { if ($a -band $ro) { [IO.File]::SetAttributes($p, ($a -bxor $ro)) }; [IO.File]::Delete($p) } } catch { $n++ } }; for ($k = $dirs.Count - 1; $k -ge 0; $k--) { $d = $dirs[$k]; try { $a = [IO.File]::GetAttributes($d); if (($a -band $ro) -and -not ($a -band $rp)) { [IO.File]::SetAttributes($d, ($a -bxor $ro)) }; [IO.Directory]::Delete($d) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { } catch { $left = 1; try { $left = @([IO.Directory]::GetFileSystemEntries($d)).Count } catch { }; if ($left -eq 0) { $n++ } } }; return $n }; $paths = @('C:\\NVIDIA','C:\\AMD'); $removed = 0; $skipped = 0; foreach ($p in $paths) { if (Test-Path -LiteralPath $p) { $skipped += Remove-PfSafe $p; if (-not (Test-Path -LiteralPath $p)) { $removed++ } } }; Write-Output (\"Removed \" + $removed + \" GPU driver install folder(s), skipped/locked: \" + $skipped)"
     preview_command: "$paths = @('C:\\NVIDIA','C:\\AMD'); $existing = $paths | Where-Object { Test-Path $_ }; if ($existing) { $f = $existing | ForEach-Object { Get-ChildItem $_ -Recurse -File -Force -EA SilentlyContinue }; $c = $f.Count; $mb = [math]::Round((($f | Measure-Object Length -Sum).Sum)/1MB,2); Write-Output \"Would delete $c files, $mb MB from GPU driver install leftovers (C:\\NVIDIA, C:\\AMD)\" } else { Write-Output \"No GPU driver install leftovers found\" }"
     description_sk: "Odstráni dočasné priečinky inštalátorov ovládačov NVIDIA/AMD (C:\\NVIDIA, C:\\AMD). Nedotýka sa aktívneho ovládača."
     description_en: "Removes temporary NVIDIA/AMD driver installer staging folders (C:\\NVIDIA, C:\\AMD). Does not touch the active driver."

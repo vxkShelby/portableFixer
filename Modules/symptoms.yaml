@@ -226,7 +226,9 @@ symptoms:
       - disk clicking
       - smart error
     diagnostics: [disk_health_verdict, disk_smart_status, disk_reliability_counters, disk_scan_readonly]
-    fixes: [backup_user_data_external, disk_spotfix, disk_full_scan_reboot]
+    # No disk_full_scan_reboot here: chkdsk /r reads every sector of a drive
+    # that may be dying (the action declares stresses_disk) - image it first.
+    fixes: [backup_user_data_external, disk_spotfix]
 
   - id: disk_full
     title_sk: Plný disk, málo miesta
@@ -316,7 +318,7 @@ symptoms:
       - can't print
       - print queue stuck
     diagnostics: [print_installed_printers_report, print_offline_ghost_printers_report, print_driver_class_report]
-    fixes: [net_print_spooler_reset, print_remove_offline_printers]
+    fixes: [print_reset_print_system, print_remove_offline_printers]
 
   - id: no_sound
     title_sk: Nejde zvuk alebo mikrofón
