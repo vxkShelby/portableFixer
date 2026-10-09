@@ -93,8 +93,12 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   ďalšej návšteve uvedie, čo Windows medzitým vrátil, a čo nové pribudlo v
   autoštarte.
 - **Bez okna (CLI):** `PortableFix.exe --preset <názov|súbor.json> [--live]
-  [--out priečinok] [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]`.
-  Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
+  [--out priečinok] [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]
+  [--language sk|en]` (`--help` vypíše použitie). Exe je okenná aplikácia,
+  cmd ani PowerShell naň nečakajú: spúšťaj ho ako
+  `start /wait "" PortableFix.exe --preset ...` (potom `%ERRORLEVEL%`) alebo
+  `(Start-Process .\PortableFix.exe -ArgumentList '--preset','quick_clean' -Wait -PassThru).ExitCode`.
+  Výstup presmerovaný do súboru je v UTF-8. Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
   odmietne sa hneď na začiatku, ak predvoľba obsahuje niečo rizikovejšie
   alebo kontrola pred spustením nájde blokujúci problém. Rovnaký audit,
   bod obnovenia, `undo.ps1` aj report ako z okna; pred prvou DESTRUCTIVE
@@ -104,7 +108,8 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   (ID položiek pre akcie s výberom položiek). Exit kódy podľa Tronu: 0 OK,
   1 chyba, 2 varovanie (niečo sa preskočilo alebo diagnostika našla
   problém), 3 nepodporovaný Windows,
-  4 čaká sa na reštart, 5 spustené z %TEMP%.
+  4 čaká sa na reštart (ostrý beh odmietla kontrola pred spustením, alebo
+  prešla akcia, ktorá ho vyžaduje), 5 spustené z %TEMP%.
 - **Vlastné akcie (`UserModules/`):** katalógy v `UserModules/<id>/actions.yaml`
   (rovnaký formát ako `Modules/`) sa načítajú vedľa vstavaných, v okne aj v
   reporte majú odznak **vlastná** a aktualizácia ich nemení ani nemaže.
@@ -159,9 +164,12 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   tohto PC a meno cieľového používateľa (aj `AzureAD\JanNovak`)
   kdekoľvek inde (napr. `PC\Jan Novák`), IPv4/IPv6 a MAC
   adresy, sériové čísla (BIOS, disky), časti licenčných kľúčov
-  (`XXXXX-XXXXX-…`, `PartialProductKey`) a názvy Wi-Fi sietí (SSID)
-  značkami ako `<ip>` či `<serial>`. Názov počítača a údaje zo Zákazky
-  zostanú. Verzie s číslom nad 255 (`10.0.26100.1`) alebo s označením
+  (`XXXXX-XXXXX-…`, `PartialProductKey`), názvy Wi-Fi sietí (SSID, aj
+  riadok `NetProfile.Name`), AD domény a DNS prípony (`Domain : …`,
+  WORKGROUP ostáva), e-mailové adresy, strojovú časť SID účtov a mená
+  lokálnych účtov značkami ako `<ip>` či `<serial>`. Názov počítača a
+  údaje zo Zákazky zostanú - pozor, názov počítača ako `JANKO-NTB` môže
+  sám prezradiť majiteľa. Verzie s číslom nad 255 (`10.0.26100.1`) alebo s označením
   (`Version : 2.0.0.0`, stĺpec `DriverVersion` v tabuľke), hashe a GUID
   sa nemenia; loopback, masky a verejné DNS (8.8.8.8, 1.1.1.1) tiež nie.
   Neoznačené krátke štvorčíslie (`ovládač 10.1.18.2`) sa zamení za `<ip>`. Report to na začiatku
