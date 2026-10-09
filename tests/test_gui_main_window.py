@@ -79,6 +79,15 @@ def _wait_batch_idle(qtbot, window, timeout=15000):
     qtbot.waitUntil(lambda: not window._batch_active and window._report_runner is None, timeout=timeout)
 
 
+def _toggle_language(qtbot, window):
+    # The winget scan the panel starts with the window locks the language
+    # toggle (GUI review A1); on a PC with winget it takes seconds.
+    from portablefix.gui.main_window import _thread_running
+
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=90_000)
+    window._on_toggle_language()
+
+
 def _make_base_dir(tmp_path: Path, yaml_text: str = ACTIONS_YAML) -> Path:
     module_dir = tmp_path / "Modules" / "m01_diagnostics"
     module_dir.mkdir(parents=True)
@@ -195,7 +204,7 @@ def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path)
     # window keyboard focus, which is asynchronous even after activateWindow().
     qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     assert window.category_list.currentRow() == 2
     qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
@@ -571,7 +580,7 @@ def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
     assert window.settings.language == "sk"
     assert window.run_button.text() == "Spustiť vybrané"
 
-    window.language_button.click()
+    _toggle_language(qtbot, window)
 
     assert window.settings.language == "en"
     assert window.run_button.text() == "Run selected"
@@ -1940,7 +1949,7 @@ def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
     window.update_button.setEnabled(False)
     window.update_dismiss_button.setEnabled(False)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     assert window.update_button.isEnabled() is False
     assert window.update_dismiss_button.isEnabled() is False
@@ -1960,7 +1969,7 @@ def test_language_toggle_mid_batch_restores_run_state_on_the_rebuilt_widgets(qtb
     window.cancel_button.setEnabled(True)
     window.language_button.setEnabled(False)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     assert window.run_button.isEnabled() is False
     assert window.cancel_button.isEnabled() is True
@@ -2775,7 +2784,7 @@ def test_custom_presets_survive_language_toggle(qtbot, tmp_path):
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_preset3")
     qtbot.addWidget(window)
     assert "custom:Moje" in window._preset_buttons
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert "custom:Moje" in window._preset_buttons
 
 
@@ -2820,7 +2829,7 @@ def test_job_details_are_kept_and_technician_persisted(qtbot, tmp_path):
     assert window.job_button.text() == "Zákazka: Firma s.r.o. #1234"
     assert load_settings(base_dir).technician_name == "Ján Technik"
     # Survives the full UI rebuild of a language toggle.
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.job_button.text() == "Job: Firma s.r.o. #1234"
 
 
@@ -4271,18 +4280,18 @@ def test_analyze_button_disabled_after_language_toggle_mid_batch(qtbot, tmp_path
     window._queue = ["hello"]
     window._queue_total = 2
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is False
     assert window.run_button.isEnabled() is False
 
     window._batch_active = False
     window._queue = []
     window._report_runner = object()
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is False
 
     window._report_runner = None
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is True
 
 
@@ -4300,7 +4309,7 @@ def test_analyze_button_unlocks_when_update_download_spanning_a_language_toggle_
     window.update_button.setEnabled(False)
     window.update_dismiss_button.setEnabled(False)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is False
 
     window._on_update_download_finished(None, "network down")
@@ -4738,7 +4747,7 @@ def test_language_toggle_during_staging_keeps_the_progress_bar_and_step_text(qtb
 
     window.update_button.click()
     qtbot.waitUntil(lambda: window._update_phase == "stage" and window.progress_bar.maximum() == 10, timeout=5000)
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     # The shown window shows its rebuilt widgets on the next event loop pass
     # - unless one was hidden explicitly, which is the bug this guards.
@@ -5702,7 +5711,7 @@ def test_quiet_mode_survives_a_language_toggle(qtbot, tmp_path, monkeypatch):
         is_admin=True, run_id="run_quiet_lang",
     )
     qtbot.addWidget(window)
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert log == []
     assert window.quiet_mode_checkbox.isChecked()
     assert window._sysinfo_labels["ping"].text() == translate("quiet_mode_value", "sk")
@@ -7655,7 +7664,7 @@ def test_run_button_is_amber_while_dry_run_is_on(qtbot, tmp_path):
 
     # Survives the language toggle's rebuild.
     window.dry_run_checkbox.setChecked(True)
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.run_button.property("dryrun") == "true"
 
 
@@ -7758,3 +7767,58 @@ def test_preview_is_refused_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
     assert window._preview_runner is None
     assert window.statusBar().currentMessage() == "A preview can't start while a batch or another preview is running."
     window._batch_active = False
+
+
+# --- language toggle vs. panel runners (GUI review A1) -----------------------
+
+
+def test_language_toggle_is_refused_while_the_winget_scan_runs(qtbot, tmp_path, monkeypatch):
+    # The scan runner used to hang off the panel the rebuild deletes: Qt then
+    # destroyed its live QThread and aborted the whole process (qFatal).
+    import threading
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocking_scan():
+        started.set()
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", blocking_scan)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_scan")
+    qtbot.addWidget(window)
+    assert started.wait(5)
+    assert window._winget_scan_runner.parent() is window
+    try:
+        window._on_toggle_language()
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        qtbot.wait(100)
+        assert window.settings.language == "en"
+        assert window.statusBar().currentMessage() == window._t("language_busy")
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10_000)
+    window._on_toggle_language()
+    assert window.settings.language == "sk"
+
+
+def test_language_toggle_is_refused_while_an_uninstall_runs(qtbot, tmp_path, monkeypatch):
+    class _Running:
+        def isRunning(self):
+            return True
+
+    window, _card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_lang_uninstall", [], dry_run=False)
+    window._uninstall_runner = _Running()
+    try:
+        window._on_toggle_language()
+        assert window.settings.language == "en"
+        assert window.statusBar().currentMessage() == window._t("language_busy")
+    finally:
+        window._uninstall_runner = None

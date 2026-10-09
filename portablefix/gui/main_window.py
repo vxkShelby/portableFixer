@@ -152,6 +152,21 @@ _UPDATE_PHASE_KEYS = {
 }
 
 
+def _ignore_deleted(func):
+    """Slot wrapper for a panel's closures: the runner is parented to the
+    window (never to the panel, which a language toggle deletes), so its
+    signals can still arrive after the panel's widgets are gone. The audit
+    entry in each closure is written before any widget is touched."""
+    def wrapper(*args):
+        try:
+            return func(*args)
+        except RuntimeError as exc:
+            if "already deleted" not in str(exc):
+                raise
+            return None
+    return wrapper
+
+
 def _thread_running(runner) -> bool:
     # A finished QThread may already be deleteLater'd - its wrapper then
     # raises RuntimeError, which just means "not running".
@@ -2451,10 +2466,10 @@ class MainWindow(QMainWindow):
             set_status(self._t("winget_scanning"), "ok")
             list_scroll.setVisible(False)
             select_row_widget.setVisible(False)
-            runner = winget_updates.WingetScanRunner(parent=panel)
+            runner = winget_updates.WingetScanRunner(parent=self)
             self._winget_scan_runner = runner
-            runner.scan_finished.connect(populate)
-            runner.scan_failed.connect(on_scan_failed)
+            runner.scan_finished.connect(_ignore_deleted(populate))
+            runner.scan_failed.connect(_ignore_deleted(on_scan_failed))
             runner.start()
 
         def export_list() -> None:
@@ -2656,7 +2671,7 @@ class MainWindow(QMainWindow):
             refresh_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("winget_updating"))
-            runner = winget_updates.WingetUpdateRunner(selected_packages, parent=panel)
+            runner = winget_updates.WingetUpdateRunner(selected_packages, parent=self)
             self._winget_update_runner = runner
 
             # A single winget call can legitimately take minutes with only a
@@ -2746,9 +2761,9 @@ class MainWindow(QMainWindow):
                 refresh_btn.setEnabled(True)
                 start_scan()
 
-            runner.package_started.connect(on_package_started)
-            runner.package_finished.connect(on_package_finished)
-            runner.all_finished.connect(on_all_finished)
+            runner.package_started.connect(_ignore_deleted(on_package_started))
+            runner.package_finished.connect(_ignore_deleted(on_package_finished))
+            runner.all_finished.connect(_ignore_deleted(on_all_finished))
             runner.start()
 
         select_all_btn.clicked.connect(
@@ -3540,7 +3555,7 @@ class MainWindow(QMainWindow):
                 console.appendPlainText(line)
             # On self, not the card: closeEvent and the app update's hand-off
             # guard must both know an uninstall is still running.
-            runner = uninstaller.UninstallRunner(selected, parent=card, plans=plans)
+            runner = uninstaller.UninstallRunner(selected, parent=self, plans=plans)
             self._uninstall_runner = runner
 
             def on_program_finished(name: str, ok: bool, output: str, outcome: str) -> None:
@@ -3587,8 +3602,8 @@ class MainWindow(QMainWindow):
                         row_widget.deleteLater()
                 show_orphan_cleanup()
 
-            runner.program_finished.connect(on_program_finished)
-            runner.all_finished.connect(on_all_finished)
+            runner.program_finished.connect(_ignore_deleted(on_program_finished))
+            runner.all_finished.connect(_ignore_deleted(on_all_finished))
             runner.start()
 
         uninstall_button.clicked.connect(lambda _checked=False: start_uninstall())
@@ -3790,11 +3805,19 @@ class MainWindow(QMainWindow):
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
 
+    def _language_toggle_busy(self) -> bool:
+        # A panel's restore point, winget scan/update or uninstall (G01)
+        # finishes into that panel's widgets - a rebuild now would delete
+        # them under it (and, when the runner was parented to the panel,
+        # destroy its live QThread: qFatal).
+        return any(_thread_running(r) for r in (
+            self._pending_panel_restore_point_runner, self._winget_scan_runner,
+            self._winget_update_runner, self._uninstall_runner,
+        ))
+
     def _on_toggle_language(self) -> None:
-        if _thread_running(self._pending_panel_restore_point_runner):
-            # A panel's restore point (G01) finishes into that panel's
-            # widgets - a rebuild now would delete them under it.
-            self.statusBar().showMessage(self._t("panel_restore_point_busy"))
+        if self._language_toggle_busy():
+            self.statusBar().showMessage(self._t("language_busy"))
             return
         # ponytail: keyboard-only/screen-reader users lose their place if a
         # full UI rebuild silently resets category and focus - remember and
