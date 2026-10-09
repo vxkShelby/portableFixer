@@ -573,6 +573,7 @@ _STRINGS = {
         "sysinfo_collapse": "Skryť panel systému",
         "sysinfo_expand": "Zobraziť panel systému",
         "closing_waiting_winget": "Čakám na dokončenie prebiehajúcej aktualizácie winget, potom sa aplikácia zavrie…",
+        "restart_admin_busy": "Reštart ako administrátor počká, kým skončí prebiehajúca úloha.",
         "closing_waiting_uninstall": "Čakám na dokončenie prebiehajúceho odinštalovania, potom sa aplikácia zavrie…",
     },
     "en": {
@@ -1149,6 +1150,7 @@ _STRINGS = {
         "sysinfo_collapse": "Hide the system panel",
         "sysinfo_expand": "Show the system panel",
         "closing_waiting_winget": "Waiting for the running winget update to finish, then the app closes…",
+        "restart_admin_busy": "Restart as administrator waits until the running task has finished.",
         "closing_waiting_uninstall": "Waiting for the running uninstall to finish, then the app closes…",
     },
 }

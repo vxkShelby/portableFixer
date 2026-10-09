@@ -1247,6 +1247,7 @@ class MainWindow(QMainWindow):
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
             self.dry_run_checkbox.setEnabled(False)
+            self.restart_admin_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(self._queue_total - len(self._queue))
             self.progress_bar.setVisible(True)
@@ -4183,6 +4184,10 @@ class MainWindow(QMainWindow):
         )
 
     def _on_restart_as_admin(self) -> None:
+        # UAC would fire first and the close confirmation only afterwards.
+        if self._long_running_tasks():
+            self.statusBar().showMessage(self._t("restart_admin_busy"))
+            return
         # In a frozen build sys.executable IS the app - no args needed. In
         # dev mode it's python.exe, which needs the script path re-passed or
         # elevating just opens a bare interpreter instead of restarting the app.
@@ -4350,6 +4355,7 @@ class MainWindow(QMainWindow):
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
             self.dry_run_checkbox.setEnabled(False)
+            self.restart_admin_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
@@ -4675,6 +4681,7 @@ class MainWindow(QMainWindow):
             self.dashboard_analyze_button.setEnabled(True)
             self.language_button.setEnabled(True)
             self.dry_run_checkbox.setEnabled(True)
+            self.restart_admin_button.setEnabled(True)
             if write_failed:
                 self._append_console(self._t("disk_write_failed"))
         self._refresh_dashboard()

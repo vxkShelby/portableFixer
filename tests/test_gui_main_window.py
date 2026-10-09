@@ -528,6 +528,26 @@ def test_restart_as_admin_closes_window_on_success(qtbot, tmp_path, monkeypatch)
     assert closed == [True]
 
 
+def test_restart_as_admin_is_locked_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=False, run_id="run_admin_batch")
+    qtbot.addWidget(window)
+    calls = []
+    monkeypatch.setattr(elevation, "relaunch_as_admin", lambda *a, **k: calls.append(a) or 42)
+    window._batch_active = True
+    window._queue = ["hello"]
+    window._queue_total = 2
+
+    _toggle_language(qtbot, window)  # the rebuilt button must come back locked
+
+    assert window.restart_admin_button.isEnabled() is False
+    window._on_restart_as_admin()  # a stray call (keyboard/test) must not raise UAC either
+    assert calls == []
+    assert window.statusBar().currentMessage() == window._t("restart_admin_busy")
+    window._batch_active = False
+    window._queue = []
+
+
 def test_restart_as_admin_passes_sys_argv_when_not_frozen(qtbot, tmp_path, monkeypatch):
     import sys as sys_module
 
