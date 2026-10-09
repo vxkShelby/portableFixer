@@ -195,7 +195,8 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
         "if ($Path -eq $global:__pfTestHive) { return $global:__pfTestLoaded }; $global:__pfTestKeysExist }",
         "function Get-Content { [CmdletBinding()] param([Parameter(Position=0)] $Path, [switch] $Raw) "
         f"'{BACKUP_JSON}' }}",
-        "function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $Encoding) process { } }",
+        "function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $Encoding) "
+        "begin { [Console]::Out.WriteLine('FILE ' + $Path) } process { } }",
     ]
     for name in REGISTRY_STUBS:
         # Writes also report "VAL <name>=<value>" so a test can check what
@@ -239,7 +240,6 @@ def test_m13_key_creating_actions_are_the_known_ones():
         "debloat_disable_copilot",
         "debloat_disable_widgets",
         "debloat_disable_advertising_id",
-        "debloat_disable_explorer_ads",
         "debloat_disable_recall_clicktodo",
         *HKLM_POLICY_ACTIONS,
     }
@@ -249,8 +249,7 @@ def test_m13_key_creating_actions_are_the_known_ones():
 @pytest.mark.parametrize("keys_exist", [True, False])
 def test_m13_new_item_only_creates_a_missing_key(action_id, keys_exist):
     # New-Item -Force on an existing registry key deletes all its values and
-    # subkeys - e.g. telemetry would wipe feedback's DataCollection policy,
-    # web search would wipe explorer ads' HideRecommendedSection.
+    # subkeys - e.g. telemetry would wipe feedback's DataCollection policy.
     result, _ = _run_user_hive_command(_m13_action(action_id).command, "HKCU:", keys_exist=keys_exist)
     assert result.returncode == 0, result.stdout + result.stderr
     created = [line for line in result.stdout.splitlines() if line.startswith("REG New-Item ") and "HK" in line]
@@ -352,6 +351,50 @@ def test_m13_recall_policy_forbids_recall_instead_of_allowing_it():
         "DisableClickToDo": {"1"},
     }
     assert any(p.startswith("HKLM:\\") for p in registry) and any(p.startswith(CLIENT_HIVE + "\\") for p in registry)
+
+
+# --- per-user backups are keyed by the target user's SID -------------------
+
+BACKED_UP_USER_ACTIONS = (
+    "debloat_disable_suggestions",
+    "debloat_disable_web_search",
+    "debloat_disable_advertising_id",
+    "debloat_disable_explorer_ads",
+)
+
+
+def _backup_files(stdout: str) -> list[str]:
+    return [line[5:] for line in stdout.splitlines() if line.startswith("FILE ")]
+
+
+@pytest.mark.parametrize("action_id", BACKED_UP_USER_ACTIONS)
+def test_m13_user_backups_are_named_by_the_target_sid(action_id):
+    # One fixed backup path meant: run for user A, later for user B, and
+    # B's undo restored A's values into B's hive.
+    paths = []
+    for sid in ("S-1-5-21-1111-2222-3333-1002", "S-1-5-21-1111-2222-3333-1003"):
+        target = target_user.TargetUser(
+            status=target_user.DIFFERENT, process_sid="S-1-5-21-1111-2222-3333-1001", process_user="PC\\technik",
+            target_sid=sid, target_user="PC\\klient", session_id=1,
+        )
+        result, _ = _run_user_hive_command(
+            _m13_action(action_id).command, target.hive, target=target, keys_exist=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        files = _backup_files(result.stdout)
+        assert len(files) == 1 and sid in files[0], files
+        paths.append(files[0])
+    assert len(set(paths)) == 2
+    # The undo reads the same SID-keyed file.
+    undo = _m13_action(action_id).undo_command
+    assert "_backup_' + $sid + '.json'" in undo and "$__pfUserSid" in undo
+
+
+def test_m13_explorer_ads_no_longer_writes_the_11_se_only_policy():
+    action = _m13_action("debloat_disable_explorer_ads")
+    for text in (action.command, action.undo_command):
+        assert "HideRecommendedSection" not in text
+        assert "HKLM" not in text
 
 
 # --- debloat_remove_onedrive: refuses over-the-shoulder, checks the exit code -
