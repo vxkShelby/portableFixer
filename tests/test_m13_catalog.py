@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -402,6 +403,76 @@ def test_m13_explorer_ads_no_longer_writes_the_11_se_only_policy():
     for text in (action.command, action.undo_command):
         assert "HideRecommendedSection" not in text
         assert "HKLM" not in text
+
+
+# --- DiagTrack / CEIP: null-safe captures, tasks addressed by folder --------
+
+
+def _run_with_stubs(tmp_path, command: str, stubs: list[str], stubbed: tuple):
+    """Runs `command` with %ProgramData% redirected into tmp_path and the
+    given stub functions in front; refuses (exit 97) when a stub did not take."""
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir(exist_ok=True)
+    guard = (
+        "foreach ($n in " + ", ".join(f"'{n}'" for n in stubbed) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    )
+    script = "; ".join([f"$env:ProgramData = '{program_data}'", *stubs, guard, command])
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, program_data / "PortableFix"
+
+
+def test_m13_diagtrack_survives_a_missing_service_and_records_delayed_start(tmp_path):
+    # $null.StartType.ToString() aborted the whole command on 24H2, where
+    # dmwappushservice no longer exists - before the backup, before anything.
+    stubs = [
+        "function Get-Service { [CmdletBinding()] param($Name) if ($Name -eq 'DiagTrack') { [pscustomobject]@{ Name = $Name; StartType = 'Automatic' } } }",
+        "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) [pscustomobject]@{ DelayedAutostart = 1 } }",
+        "function Stop-Service { [CmdletBinding()] param($Name, [switch] $Force) [Console]::Out.WriteLine('STUB Stop-Service ' + $Name) }",
+        "function Set-Service { [CmdletBinding()] param($Name, $StartupType) [Console]::Out.WriteLine('STUB Set-Service ' + $Name + ' ' + $StartupType) }",
+    ]
+    result, folder = _run_with_stubs(
+        tmp_path, _m13_action("debloat_disable_diagtrack").command, stubs,
+        ("Get-Service", "Get-ItemProperty", "Stop-Service", "Set-Service"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STUB Set-Service DiagTrack Disabled" in result.stdout
+    assert "STUB Set-Service dmwappushservice" not in result.stdout
+    assert "dmwappushservice: not installed" in result.stdout
+    backup = json.loads((folder / "diagtrack_backup.json").read_text(encoding="utf-8-sig"))
+    assert backup == {"DiagTrack": "AutomaticDelayedStart", "dmwappushservice": None}
+    undo = _m13_action("debloat_disable_diagtrack").undo_command
+    assert "sc.exe config $n start= delayed-auto" in undo
+
+
+def test_m13_ceip_tasks_are_addressed_by_folder(tmp_path):
+    # Get-ScheduledTask -TaskName alone returns every task of that name in
+    # any folder (an array whose .State.ToString() fails).
+    stubs = [
+        "$global:__pfTasks = @{}",
+        "function Get-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) if (-not $TaskPath) { throw 'TaskPath missing' }; "
+        "$s = $global:__pfTasks[$TaskPath + $TaskName]; if (-not $s) { $s = 'Ready' }; [pscustomobject]@{ TaskPath = $TaskPath; TaskName = $TaskName; State = $s } }",
+        "function Disable-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) $global:__pfTasks[$TaskPath + $TaskName] = 'Disabled' }",
+        "function Enable-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) [Console]::Out.WriteLine('STUB Enable ' + $TaskPath + $TaskName) }",
+    ]
+    action = _m13_action("debloat_disable_ceip_tasks")
+    stubbed = ("Get-ScheduledTask", "Disable-ScheduledTask", "Enable-ScheduledTask")
+    result, folder = _run_with_stubs(tmp_path, action.command, stubs, stubbed)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Found 7 task(s), disabled 7." in result.stdout
+    backup = json.loads((folder / "ceip_tasks_backup.json").read_text(encoding="utf-8-sig"))
+    assert "\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator" in backup
+    assert all(key.startswith("\\Microsoft\\Windows\\") and value == "Ready" for key, value in backup.items())
+    result, _ = _run_with_stubs(tmp_path, action.undo_command, stubs, stubbed)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STUB Enable \\Microsoft\\Windows\\Feedback\\Siuf\\DmClient" in result.stdout
+    assert "Restored 7 task(s)" in result.stdout
 
 
 # --- debloat_remove_onedrive: refuses over-the-shoulder, checks the exit code -
