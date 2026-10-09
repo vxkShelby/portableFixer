@@ -391,6 +391,12 @@ def _without(prefix: str) -> dict[str, bytes]:
         (release_files(), {"sums": sums_for({**release_files(), "Modules/m01_diagnostics/actions.yaml": b"x"})},
          "does not match"),
         (release_files(), {"sums": sums_for({**release_files(), "Modules/gone.yaml": b"x"})}, "missing"),
+        # Unlisted files under the program folders: App\ is first in the exe's
+        # DLL search order, and the manifest is the only signed thing here.
+        ({**release_files(), "App/evil.dll": b"x"}, {"sums": sums_for(release_files())}, "App/evil.dll is in the package but not"),
+        ({**release_files(), "Modules/m99/actions.yaml": b"x"}, {"sums": sums_for(release_files())}, "not in SHA256SUMS"),
+        # The launcher is installed too, so it is covered too.
+        ({**release_files(), "PortableFix.cmd": b"@echo off\r\nevil\r\n"}, {"sums": sums_for(release_files())}, "does not match"),
         (release_files(), {"extra_names": {"Other\\x.txt": b"x"}}, "more than one top-level folder"),
         (release_files(), {"extra_names": {"loose.txt": b"x"}}, "more than one top-level folder"),
         (release_files(), {"extra_names": {"PortableFix\\modules\\M01_DIAGNOSTICS\\actions.yaml": b"x"}}, "duplicate"),
@@ -399,7 +405,8 @@ def _without(prefix: str) -> dict[str, bytes]:
         (release_files(), {"sums": signing.sign(sums_for(release_files()), b"\x07" * 32)}, "not signed"),
     ],
     ids=["no-vendor", "no-modules", "no-exe", "no-sums", "no-launcher", "exe-not-in-manifest", "hash-mismatch",
-         "listed-file-missing", "two-top-folders", "loose-file", "case-duplicate", "unsigned-sums", "foreign-key-sums"],
+         "listed-file-missing", "unlisted-dll", "unlisted-module", "launcher-mismatch", "two-top-folders", "loose-file",
+         "case-duplicate", "unsigned-sums", "foreign-key-sums"],
 )
 def test_stage_update_rejects_broken_packages(tmp_path, files, kwargs, message):
     install_dir = tmp_path / "install"

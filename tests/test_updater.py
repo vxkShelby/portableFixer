@@ -41,6 +41,16 @@ def test_is_newer_false_when_equal():
     assert is_newer("1.0.0", "1.0.0") is False
 
 
+def test_parse_version_pads_to_three_components():
+    # (1, 16) < (1, 16, 0) as tuples: a v1.16 tag would have been offered to
+    # a 1.16.0 install, and the other way round.
+    assert parse_version("1.16") == (1, 16, 0)
+    assert parse_version("2") == (2, 0, 0)
+    assert parse_version("1.2.3.4") == (1, 2, 3, 4)
+    assert is_newer("1.16", "1.16.0") is False
+    assert is_newer("1.16.0", "1.16") is False
+
+
 def test_parse_version_takes_leading_digits_only_on_hyphenated_prerelease_tag():
     assert parse_version("1.2.3-rc10") == (1, 2, 3)
 
@@ -232,6 +242,27 @@ def test_download_update_cleans_up_partial_file_on_read_failure(tmp_path):
         with pytest.raises(ConnectionError):
             download_update(info, dest)
 
+    assert not (dest / "PortableFix-update.zip").exists()
+
+
+def test_download_update_cleans_up_the_zip_when_the_sha256_fetch_fails(tmp_path):
+    # Otherwise the 55-130 MB zip sat in %TEMP% until the daily cleanup.
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(b"fake-zip-content")
+        raise urllib.error.URLError("timed out")
+
+    dest = tmp_path / "dest"
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(urllib.error.URLError):
+            download_update(info, dest)
     assert not (dest / "PortableFix-update.zip").exists()
 
 

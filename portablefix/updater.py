@@ -147,8 +147,12 @@ def download_update(
     except Exception:
         zip_path.unlink(missing_ok=True)
         raise
-    with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
-        raw_manifest = resp.read()
+    try:
+        with urllib.request.urlopen(info.sha256_url, timeout=10) as resp:
+            raw_manifest = resp.read()
+    except Exception:
+        zip_path.unlink(missing_ok=True)
+        raise
     # Research G32: the .sha256 sits in the same release as the zip, so
     # whoever can replace one can replace both - only the release key's
     # signature ties the hash to PortableFix. Fail closed like a missing asset.

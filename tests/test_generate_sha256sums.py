@@ -19,6 +19,27 @@ def test_collect_files_finds_app_and_modules(tmp_path):
     assert rel_paths == {"App/PortableFix.exe", "Modules/m01_diagnostics/actions.yaml"}
 
 
+def test_collect_files_covers_the_root_files_the_update_installs(tmp_path):
+    # PortableFix.cmd and the icon are swapped in with the package; listed
+    # here, stage_update checks them, and check_integrity (every version)
+    # ignores root entries, so older clients are not bothered by them.
+    from portablefix.integrity import check_integrity
+
+    (tmp_path / "App").mkdir()
+    (tmp_path / "App" / "PortableFix.exe").write_bytes(b"x")
+    (tmp_path / "PortableFix.cmd").write_bytes(b"launcher")
+    (tmp_path / "portablefix.ico").write_bytes(b"icon")
+    (tmp_path / "README.md").write_bytes(b"not shipped by the update")
+
+    files = collect_files(tmp_path)
+
+    assert {p.relative_to(tmp_path).as_posix() for p in files} == {"App/PortableFix.exe", "PortableFix.cmd", "portablefix.ico"}
+    (tmp_path / "Data").mkdir()
+    (tmp_path / "Data" / "SHA256SUMS").write_text(build_sums_content(tmp_path, files), encoding="utf-8")
+    (tmp_path / "PortableFix.cmd").write_bytes(b"edited by the user")
+    assert check_integrity(tmp_path, required=False) == []
+
+
 def test_build_sums_content_round_trips_with_parser(tmp_path):
     (tmp_path / "App").mkdir()
     file_a = tmp_path / "App" / "a.txt"

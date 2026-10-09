@@ -95,8 +95,9 @@ def test_nothing_to_check_is_a_usage_error():
         # Signed (or rebuilt) after the manifest was generated.
         (_good_files(), sums_for({**_good_files(), "App/PortableFix.exe": b"unsigned"}), "refuse"),
         (_good_files(), sums_for(_good_files(), skip=("App/PortableFix.exe",)), "App/PortableFix.exe"),
+        # Refused by the clients themselves since 1.17 (stage_update).
         (_good_files(), sums_for(_good_files(), skip=("Modules/m01_diagnostics/actions.yaml",)),
-         "Modules/m01_diagnostics/actions.yaml is not in Data/SHA256SUMS"),
+         "refuse this package: Modules/m01_diagnostics/actions.yaml is in the package but not in SHA256SUMS"),
     ],
     ids=["settings", "update-status", "no-vendor", "no-icon", "stale-sums", "no-exe-in-sums", "unlisted-file"],
 )

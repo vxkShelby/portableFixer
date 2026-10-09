@@ -59,6 +59,7 @@ def _manifest_problems(root: Path) -> list[str]:
         for path in (root / target).rglob("*")
         if path.is_file()
     }
+    present.update({name: root / name for name in ROOT_ALLOWLIST if (root / name).is_file()})
     for rel in sorted(set(manifest) - set(present)):
         problems.append(f"{rel} is listed in Data/SHA256SUMS but missing")
     for rel in sorted(set(present) - set(manifest)):

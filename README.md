@@ -639,8 +639,9 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   vtedy, keď aktualizačný skript potvrdí, že naozaj beží. Ak sa to
   nepodarí, appka zostane otvorená a ukáže dôvod (napr. kód ukončenia
   PowerShellu a koniec jeho výstupu), priečinok s logmi a odkaz na ručné
-  stiahnutie; pripravená aktualizácia zostane, takže ďalší pokus už nič
-  nesťahuje. Kým beží dávka, zápis reportu, test rýchlosti, winget,
+  stiahnutie; pripravená aktualizácia zostane až do zatvorenia appky,
+  takže ďalší pokus v tom istom spustení už nič nesťahuje. Kým beží
+  dávka, zápis reportu, test rýchlosti, winget,
   odinštalovanie programov alebo vytváranie bodu obnovenia, appka
   odovzdanie aktualizácie odmietne a povie prečo. Zatvorenie appky počas sťahovania ho čisto preruší. Po
   aktualizácii sa appka spustí sama; kým aktualizácia beží, ručne

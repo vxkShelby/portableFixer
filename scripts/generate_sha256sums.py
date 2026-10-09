@@ -12,15 +12,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from portablefix.integrity import TARGET_DIRS, compute_sha256
 from portablefix.sha256sums import manifest_version_line
+from portablefix.update_swap import ROOT_ALLOWLIST
 from portablefix.version import APP_VERSION
 
 
 def collect_files(base_dir: Path) -> list[Path]:
+    """The program folders plus the root files the update installs. The
+    integrity check at runtime only looks at the folders (a root entry is
+    ignored by every client's check_integrity), so the root files are
+    covered where it matters: when a package is staged."""
     files: list[Path] = []
     for target in TARGET_DIRS:
         target_dir = base_dir / target
         if target_dir.exists():
             files.extend(p for p in target_dir.rglob("*") if p.is_file())
+    files += [base_dir / name for name in ROOT_ALLOWLIST if (base_dir / name).is_file()]
     return files
 
 

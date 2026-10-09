@@ -708,6 +708,14 @@ def _verify_manifest(root: Path, should_stop, current_version: str | None) -> st
             raise UpdateStageCancelled("staging the update was cancelled")
         if actual != expected:
             raise UpdateStageError(f"{rel_path} does not match SHA256SUMS - damaged or tampered package")
+    # The other direction: a file the manifest does not list has no business
+    # under the program folders (App\ is first in the exe's DLL search order).
+    # The zip hash covers it in production, but that was checked on a file in
+    # %TEMP% seconds ago; this makes the signed manifest the whole trust anchor.
+    for top in SWAP_FOLDERS:
+        for path in (root / top).rglob("*"):
+            if path.is_file() and path.relative_to(root).as_posix() not in manifest:
+                raise UpdateStageError(f"{path.relative_to(root).as_posix()} is in the package but not in SHA256SUMS")
     return manifest_version
 
 

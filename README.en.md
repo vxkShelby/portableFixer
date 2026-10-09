@@ -648,7 +648,8 @@ PowerShell.
   confirms it is really running. If it does not, the app stays open and
   shows the reason (e.g. PowerShell's exit code and the end of its
   output), the log folder and the manual download link; the prepared
-  update is kept, so the next attempt downloads nothing. While a batch,
+  update is kept until the app is closed, so another attempt in the same
+  session downloads nothing. While a batch,
   report, speed test, winget task, program uninstall or restore point is
   running, the app refuses to hand the update off and says why. Closing the app during a
   download stops it cleanly. After the update the app restarts by
