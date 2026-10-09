@@ -462,3 +462,71 @@ def test_m17_report_descriptions_name_all_profiles_and_browsers():
         for browser in ("Brave", "Vivaldi", "Opera"):
             assert browser in action.description_sk and browser in action.description_en, (action_id, browser)
         assert "všetk" in action.description_sk and "every profile" in action.description_en
+
+
+# --- the profile folder is the signed-in user's, not the technician's -------
+
+PROFILE_ROOT_SNIPPET = (
+    "$pfUserLocal = $env:LOCALAPPDATA; $pfUserRoaming = $env:APPDATA; $pfProfile = ''; if ($__pfUserSid) { "
+    "$pfProfile = [string](Get-ItemProperty -Path ('Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\' + $__pfUserSid) "
+    "-Name ProfileImagePath -EA SilentlyContinue).ProfileImagePath; if ($pfProfile) { $pfUserLocal = $pfProfile + '\\AppData\\Local'; "
+    "$pfUserRoaming = $pfProfile + '\\AppData\\Roaming' } }; "
+)
+PROFILE_ACTIONS = ("browser_reset_chrome_profile", "browser_reset_edge_profile", "browser_extensions_report", "browser_homepage_search_report")
+
+
+def test_m17_profile_actions_share_the_profile_root_snippet():
+    # Over the shoulder $env:LOCALAPPDATA is the technician's; the signed-in
+    # user's profile comes from ProfileList\<sid>\ProfileImagePath.
+    for action_id in PROFILE_ACTIONS:
+        command = _m17(action_id).command
+        assert PROFILE_ROOT_SNIPPET in command, action_id
+        assert "$env:LOCALAPPDATA\\" not in command and "$env:APPDATA\\" not in command, action_id
+
+
+def _client_profile_script(action_id: str, profile: Path) -> str:
+    # The executor's prelude names the client's SID; ProfileList answers
+    # with the client's profile folder.
+    return (
+        "$__pfUserSid = 'S-1-5-21-7777-8888-9999-1002'; "
+        "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) "
+        "if ($Path -like '*ProfileList\\S-1-5-21-7777-8888-9999-1002') { [pscustomobject]@{ ProfileImagePath = "
+        + "'" + str(profile).replace("'", "''") + "' } } }; "
+        + _m17(action_id).command
+    )
+
+
+@pytest.mark.parametrize("action_id, proc, label, rel", RESETS)
+def test_m17_profile_reset_targets_the_signed_in_users_profile_folder(tmp_path, action_id, proc, label, rel):
+    technician = tmp_path / "Local-technician"
+    technician_root = _reset_tree(technician, rel)
+    client = tmp_path / "Users" / "klient"
+    client_root = _reset_tree(client / "AppData" / "Local", rel)
+    result, _ = _run_browser_ps(tmp_path, _client_profile_script(action_id, client), technician, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (client_root / "Default").exists()
+    assert (technician_root / "Default" / "Preferences").exists()
+    assert str(client_root) in result.stdout
+
+
+def test_m17_reports_read_the_signed_in_users_browsers(tmp_path):
+    technician = tmp_path / "Local-technician"
+    _prefs(technician / "Google" / "Chrome" / "User Data" / "Default",
+           {"extensions": {"settings": {"ttt": _ext("Technician Ext", 1)}}, "homepage": "https://technician.example"})
+    client = tmp_path / "Users" / "klient"
+    _prefs(client / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default",
+           {"extensions": {"settings": {"ccc": _ext("Client Ext", 1)}}, "homepage": "http://hijack.example"})
+    _prefs(client / "AppData" / "Roaming" / "Opera Software" / "Opera Stable",
+           {"extensions": {"settings": {"ooo": _ext("Client Opera Ext", 1)}}})
+    ff = client / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles" / "c1.default"
+    ff.mkdir(parents=True)
+    (ff / "extensions.json").write_text(json.dumps({"addons": [{"defaultLocale": {"name": "Client FF Ext"}, "active": True}]}),
+                                        encoding="utf-8")
+    result, _ = _run_browser_ps(tmp_path, _client_profile_script("browser_extensions_report", client), technician, tmp_path / "Roaming-technician")
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ("Client Ext", "Client Opera Ext", "Client FF Ext"):
+        assert name in result.stdout, name + "\n" + result.stdout
+    assert "Technician Ext" not in result.stdout
+    result, _ = _run_browser_ps(tmp_path, _client_profile_script("browser_homepage_search_report", client), technician, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Homepage: http://hijack.example" in result.stdout and "technician.example" not in result.stdout
