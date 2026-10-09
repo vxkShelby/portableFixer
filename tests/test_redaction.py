@@ -281,6 +281,24 @@ def test_versions_in_a_driver_version_table_column_stay():
     assert out.endswith(f"Gateway {IP}")
 
 
+@pytest.mark.parametrize("header", [
+    "Name     Id       Version  Available  Source",
+    "Názov    Id       Verzia   K dispozícii  Zdroj",
+    "Name     Id       Spalte3  Spalte4    Quelle",  # unknown header words: by the cells
+])
+def test_winget_version_and_available_columns_are_not_addresses(header):
+    # m20 winget list / upgrade: every 4-part version <= 255 became <ip>
+    # under the "Available" column and under localized headers.
+    text = (f"{header}\n"
+            "-----------------------------------------------\n"
+            "Foo      Foo.Bar  1.2.3.4  1.2.3.5    winget\n"
+            "Baz      Baz.Qux  10.0.1.2 10.0.2.0   winget\n"
+            "\nGateway 10.0.1.2")
+    out = redact_text(text)
+    assert IP not in out.split("\n\n")[0]
+    assert out.endswith(f"Gateway {IP}")
+
+
 def test_a_common_word_as_ssid_or_serial_is_masked_only_on_its_own_line():
     text = ("SSID : Home\nOS : Windows 11 Home\n"
             "SerialNumber : Default string\nBaseBoard : Default string")

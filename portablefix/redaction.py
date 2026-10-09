@@ -160,31 +160,51 @@ def _after_version_label(match: re.Match) -> bool:
     return _VERSION_LABEL.search(before) is not None
 
 
+# Header words of a version column, as PowerShell / winget print them in
+# English, Slovak and German ("Verzia", "K dispozícii", "Verfügbar").
+_VERSION_HEADER = re.compile(r"vers|verzi|verfüg|available|k dispoz", re.IGNORECASE)
+_DOTTED = re.compile(r"\d+(?:\.\d+){1,3}(?![\w.])")
+
+
+def _table_version_columns(header: str, body: list[str]) -> set[int]:
+    columns = set()
+    for match in re.finditer(r"\S+", header):
+        start = match.start()
+        if _VERSION_HEADER.match(header[start:]):
+            columns.add(start)
+        # winget localizes its headers: a column that is mostly dotted
+        # numbers is a version column whatever it is called.
+        elif body and sum(1 for line in body if _DOTTED.match(line[start:])) * 2 >= len(body):
+            columns.add(start)
+    return columns
+
+
 def _version_columns(text: str) -> list[tuple[int, int, set[int]]]:
-    """(start, end, columns) of each Format-Table body whose header names a
-    *Version column: the column offsets where those headers start. Computed
-    once per text; PowerShell aligns a string column to its header."""
-    if "vers" not in text.lower():
+    """(start, end, columns) of each table body (a header line, its dashes,
+    rows up to a blank line) and the offsets of its version columns.
+    Computed once per text; PowerShell aligns a string column to its header."""
+    if "-" not in text:
         return []
     tables: list[tuple[int, int, set[int]]] = []
     lines = text.splitlines(keepends=True)
     offset = 0
     previous = ""
-    current: tuple[int, set[int]] | None = None
+    current: tuple[int, str, list[str]] | None = None
     for line in lines:
         bare = line.rstrip("\r\n")
-        if current is not None and not bare.strip():
-            tables.append((current[0], offset, current[1]))
-            current = None
+        if current is not None:
+            if bare.strip():
+                current[2].append(bare)
+            else:
+                tables.append((current[0], offset, _table_version_columns(current[1], current[2])))
+                current = None
         if current is None and previous.strip() and _TABLE_RULE.fullmatch(bare):
-            columns = {m.start() for m in re.finditer(r"\S+", previous) if "vers" in m.group(0).lower()}
-            if columns:
-                current = (offset + len(line), columns)
+            current = (offset + len(line), previous, [])
         previous = bare
         offset += len(line)
     if current is not None:
-        tables.append((current[0], offset, current[1]))
-    return tables
+        tables.append((current[0], offset, _table_version_columns(current[1], current[2])))
+    return [table for table in tables if table[2]]
 
 
 def _in_version_column(match: re.Match, tables: list[tuple[int, int, set[int]]]) -> bool:
