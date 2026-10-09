@@ -84,12 +84,16 @@ Type: filesandordirs; Name: "{app}\Modules.failed"
 Type: filesandordirs; Name: "{app}\Vendor.failed"
 
 [Icons]
-; WorkingDir is the install root, never App\: a process whose current
-; directory is App\ (the app, or anything it starts) blocks the update from
-; renaming that folder.
-Name: "{group}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"
+; Through PortableFix.cmd, not App\PortableFix.exe: only the launcher puts
+; an App.old stranded by an interrupted update back (the exe cannot restore
+; its own folder), and a shortcut straight to the exe would be dead after
+; such an update. The cmd starts the exe and exits; runminimized keeps its
+; console from flashing. WorkingDir is the install root, never App\: a
+; process whose current directory is App\ (the app, or anything it starts)
+; blocks the update from renaming that folder.
+Name: "{group}\{#MyAppName}"; Filename: "{app}\PortableFix.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"; Flags: runminimized
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\PortableFix.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\portablefix.ico"; Tasks: desktopicon; Flags: runminimized
 
 [Run]
 ; No runasoriginaluser: Inno's de-elevation trick for that flag (used to
@@ -101,5 +105,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\App\PortableFix.exe"; Worki
 ; launch coming up elevated after an admin install. Every later launch
 ; (Start Menu/Desktop shortcut, or a per-user install) is unaffected -
 ; the app's own manifest is asInvoker, so those always start non-elevated.
-; WorkingDir as on the shortcuts; left out, it would default to App\.
-Filename: "{app}\App\PortableFix.exe"; WorkingDir: "{app}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+; The launcher and WorkingDir as on the shortcuts; left out, the working
+; directory would default to App\.
+Filename: "{app}\PortableFix.cmd"; WorkingDir: "{app}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent runminimized

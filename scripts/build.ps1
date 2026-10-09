@@ -142,8 +142,8 @@ if ((-not $isccPath) -and $Tag) {
 # _cffi_backend: PyNaCl (portablefix/signing.py, research G32) loads it only
 # through its cffi bindings; without it the frozen app dies on import. Today
 # pyinstaller-hooks-contrib's nacl/cffi hooks pull it in (hooks-contrib
-# 2026.7: a build without this flag ran fine), but hooks-contrib is not
-# pinned - naming it keeps the release from depending on that hook.
+# 2026.7: a build without this flag ran fine) - naming it keeps the release
+# from depending on that hook even across a hooks-contrib bump.
 Invoke-Step "PyInstaller" {
     & $Python -m PyInstaller --onefile --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
       --add-data "$root\portablefix.ico;." `

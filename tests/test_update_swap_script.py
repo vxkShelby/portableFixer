@@ -93,7 +93,9 @@ def _stand_in_app(log_dir: Path) -> int:
     return proc.pid
 
 
-def _prepare(tmp_path: Path, *, install_parent: str = "", log_name: str = "temp", files=None, pids=None, **job_options):
+def _prepare(
+    tmp_path: Path, *, install_parent: str = "", log_name: str = "temp", files=None, pids=None, in_stage=False, **job_options
+):
     install_dir = tmp_path / install_parent / "PF" if install_parent else tmp_path / "install"
     make_install(install_dir)
     if files is None:
@@ -105,6 +107,10 @@ def _prepare(tmp_path: Path, *, install_parent: str = "", log_name: str = "temp"
     log_dir = tmp_path / log_name / "PortableFixUpdate"
     if pids is None:
         pids = [_stand_in_app(log_dir)]
+    if in_stage:
+        # Where the elevated app puts them (launch_swap): on the install's
+        # volume, out of the user-writable %TEMP%.
+        job_options["script_dir"] = staged.stage_dir
     job = write_swap_job(staged, install_dir, list(pids), log_dir, **{**_FAST_JOB, **job_options})
     return install_dir, staged, job
 
@@ -282,8 +288,9 @@ def test_swap_replaces_the_program_folders_and_keeps_user_data(tmp_path):
     _assert_relaunch_attempted(install_dir, job)
 
 
-def test_swap_on_hostile_install_and_temp_paths_runs_no_injected_code(tmp_path):
-    install_dir, _, job = _prepare(tmp_path, install_parent=_HOSTILE_INSTALL, log_name=_HOSTILE_TEMP)
+@pytest.mark.parametrize("in_stage", [False, True], ids=["script-in-temp", "script-in-stage"])
+def test_swap_on_hostile_install_and_temp_paths_runs_no_injected_code(tmp_path, in_stage):
+    install_dir, _, job = _prepare(tmp_path, install_parent=_HOSTILE_INSTALL, log_name=_HOSTILE_TEMP, in_stage=in_stage)
 
     result = _run(job, tmp_path)
 
@@ -293,6 +300,23 @@ def test_swap_on_hostile_install_and_temp_paths_runs_no_injected_code(tmp_path):
     assert (install_dir / "Data" / "settings.json").read_bytes() == b'{"k": "v"}'
     assert not [p for p in tmp_path.rglob("INJ.txt")]
     assert not (Path.cwd() / "INJ.txt").exists()
+    _assert_relaunch_attempted(install_dir, job)
+
+
+def test_swap_runs_to_the_end_from_a_script_inside_the_stage_it_deletes(tmp_path):
+    # The elevated app's layout: PowerShell has the whole script parsed
+    # before line 1 runs, so deleting the stage (script and job included)
+    # at the end must not cut the swap short.
+    install_dir, staged, job = _prepare(tmp_path, in_stage=True)
+    assert job.script_path.parent == staged.stage_dir
+
+    result = _run(job, tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _status(install_dir, job) == update_swap.UPDATE_STATUS_OK
+    assert _marker(job).startswith("ready ")
+    assert not staged.stage_dir.exists()
+    assert _log(job).rstrip().endswith("update swap finished")
     _assert_relaunch_attempted(install_dir, job)
 
 
@@ -380,6 +404,25 @@ def test_swap_refuses_when_a_process_to_wait_for_is_not_visible(tmp_path):
     assert result.returncode == 5
     assert _marker(job).startswith("error pid ")
     _assert_untouched(install_dir)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="kernel object names are a Windows notion")
+def test_swap_refuses_to_run_without_the_update_mutex(tmp_path):
+    # The mutex is the only thing holding off a PortableFix started by hand
+    # mid-swap (it would restore X.old under the renames). A name with a
+    # backslash past the Global\ prefix cannot be created.
+    install_dir, _, job = _prepare(tmp_path)
+    data = json.loads(job.job_path.read_text(encoding="ascii"))
+    data["MutexName"] = "Global\\PortableFix\\no_such_namespace"
+    job.job_path.write_text(json.dumps(data), encoding="ascii")
+
+    result = _run(job, tmp_path)
+
+    assert result.returncode == 6
+    assert _marker(job).startswith("error could not create the update mutex")
+    _assert_untouched(install_dir)
+    assert not (install_dir / "Data" / "update_status.txt").exists()
+    assert (install_dir / "_update_stage").exists()
 
 
 def test_swap_recovers_leftovers_of_an_interrupted_swap_before_swapping(tmp_path):

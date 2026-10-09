@@ -16,7 +16,7 @@ cmdlets and parameters. Kept as a Python constant so PyInstaller needs no
 
 Exit codes: 0 finished (the outcome is in Data\\update_status.txt), 2 job file
 unreadable, 3 blocked by the language mode, 4 the app never exited, 5 a
-process to wait for was not visible.
+process to wait for was not visible, 6 the update mutex could not be created.
 """
 
 SWAP_SCRIPT = r"""# PortableFix update swap - static text; every path comes from the JSON job
@@ -71,12 +71,16 @@ if ($mode -ne 'FullLanguage') {
 }
 
 # Lets a PortableFix started by hand during the swap tell the user to wait
-# instead of locking the files that are being replaced.
+# instead of locking the files that are being replaced. Without it that
+# launch would put X.old back mid-swap and the swap would roll back - so
+# no mutex, no swap: refused before 'ready', while the app can report it.
 $updateMutex = $null
 try {
     $updateMutex = New-Object System.Threading.Mutex -ArgumentList $false, ([string]$Cfg.MutexName)
 } catch {
-    Log ('could not create the update mutex: ' + $_.Exception.Message)
+    Log ('ABORT: could not create the update mutex: ' + $_.Exception.Message + ' - nothing was changed')
+    Write-Marker ('error could not create the update mutex: ' + $_.Exception.Message)
+    exit 6
 }
 
 # Both onefile processes are pinned while provably alive (the app is blocked

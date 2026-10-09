@@ -95,8 +95,9 @@ def test_nothing_to_check_is_a_usage_error():
         # Signed (or rebuilt) after the manifest was generated.
         (_good_files(), sums_for({**_good_files(), "App/PortableFix.exe": b"unsigned"}), "refuse"),
         (_good_files(), sums_for(_good_files(), skip=("App/PortableFix.exe",)), "App/PortableFix.exe"),
+        # Refused by the clients themselves since 1.17 (stage_update).
         (_good_files(), sums_for(_good_files(), skip=("Modules/m01_diagnostics/actions.yaml",)),
-         "Modules/m01_diagnostics/actions.yaml is not in Data/SHA256SUMS"),
+         "refuse this package: Modules/m01_diagnostics/actions.yaml is in the package but not in SHA256SUMS"),
     ],
     ids=["settings", "update-status", "no-vendor", "no-icon", "stale-sums", "no-exe-in-sums", "unlisted-file"],
 )
@@ -143,8 +144,11 @@ def test_an_unsigned_sha256_file_fails(tmp_path, capsys):
         (_without("Vendor/"), None, "Vendor/ is missing or empty"),
         (_good_files(), sums_for({**_good_files(), "App/gone.dll": b"x"}),
          "App/gone.dll is listed in Data/SHA256SUMS but missing"),
+        # The shipped app refuses a package whose signed manifest names no
+        # version (it could be any older release under a newer tag).
+        (_good_files(), sums_for(_good_files(), version=None), "Data/SHA256SUMS names no version"),
     ],
-    ids=["stale-sums", "no-exe-in-sums", "no-vendor", "listed-but-missing"],
+    ids=["stale-sums", "no-exe-in-sums", "no-vendor", "listed-but-missing", "no-version"],
 )
 def test_a_broken_tree_fails(tmp_path, capsys, files, sums, expected):
     tree = _tree(tmp_path, files, sums=sums)
@@ -249,6 +253,22 @@ def test_the_build_pins_the_pyinstaller_it_checks():
     lines = (ROOT / "requirements-build.txt").read_text(encoding="utf-8").splitlines()
     assert "-r requirements.txt" in lines
     assert "pyinstaller==6.22.3" in lines
+    # Its hooks run in the release job next to the signing key.
+    assert any(re.fullmatch(r"pyinstaller-hooks-contrib==\d{4}\.\d+", line) for line in lines)
+
+
+@pytest.mark.parametrize("workflow", ["release.yml", "tests.yml"])
+def test_workflows_pin_third_party_code_the_signing_job_runs(workflow):
+    # A tag like @v4 can be moved to any commit; the release job holds the
+    # key every client trusts, so what runs there is pinned by SHA.
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    uses = re.findall(r"^\s*-\s*uses:\s*(\S+)", text, re.MULTILINE)
+    assert uses
+    for ref in uses:
+        assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), ref
+    for line in text.splitlines():
+        if "choco install" in line:
+            assert re.search(r"--version=\d+\.\d+\.\d+", line), line
 
 
 def test_a_release_build_refuses_to_start_without_the_signing_key():

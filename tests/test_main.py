@@ -154,6 +154,22 @@ def test_update_status_message_restores_stranded_modules_and_says_so(tmp_path):
     assert message == i18n.translate("update_status_interrupted", "en")
 
 
+def test_update_status_message_finishes_a_swap_killed_before_the_data_copies(tmp_path):
+    # Status 'in_progress' with every new folder already in place: the only
+    # thing missing is the package's Data files, which startup installs
+    # before cleanup_update_leftovers drops the stage - and says nothing.
+    import main as main_module
+    from portablefix import updater
+    from test_updater import _swap_killed_after_the_renames
+
+    install_dir, staged = _swap_killed_after_the_renames(tmp_path)
+
+    assert main_module._update_status_message(install_dir, "en") is None
+
+    assert (install_dir / "Data" / "SHA256SUMS").read_bytes() == (staged.stage_root / "Data" / "SHA256SUMS").read_bytes()
+    assert not updater.update_status_path(install_dir).exists()
+
+
 def test_update_status_message_is_silent_after_a_clean_update(tmp_path):
     import main as main_module
     from portablefix import updater

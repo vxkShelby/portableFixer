@@ -11,6 +11,7 @@ build import this module without PySide6.
 import ctypes
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -25,11 +26,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import signing
+from . import elevation, signing
 from .paths import powershell_executable
-from .sha256sums import _sha256_unless_stopped, parse_sha256sums_text
+from .sha256sums import _sha256_unless_stopped, parse_manifest_version, parse_sha256sums_text
 from .update_swap_script import SWAP_SCRIPT
-from .version import APP_VERSION
+from .version import APP_VERSION, is_newer, parse_version
 
 # Same values as the subprocess constants, spelled out so the flags can be
 # built (and tested) on any platform.
@@ -543,12 +544,21 @@ def stage_update(
     should_stop: Callable[[], bool] | None = None,
     progress: Callable[[int, int], None] | None = None,
     version: str | None = None,
+    *,
+    current_version: str | None = APP_VERSION,
 ) -> StagedUpdate:
     """Extracts and verifies the downloaded release zip into
     <install>\\_update_stage - the same volume as the install, so the swap is
     renames only (a cross-volume move onto a USB stick takes minutes, while
     no App\\ exists). Deletes the zip on success; leaves no partial stage on
-    failure or interruption."""
+    failure or interruption.
+
+    version is what the caller calls the package (the GitHub tag, or the
+    developer switch's zip name) and is handed back as staged.version; a
+    tag that names a different version than the signed manifest is refused.
+    version.txt - what cleanup_update_leftovers trusts - carries the
+    manifest's own version. current_version=None skips the newer-than check
+    (the release build verifies its own package)."""
     zip_path = Path(zip_path)
     install_dir = Path(install_dir)
     stage_dir = install_dir / STAGE_DIR_NAME
@@ -557,10 +567,13 @@ def stage_update(
     except OSError as exc:
         raise UpdateStageError(f"could not remove the previous staged update {stage_dir}: {exc}") from exc
     try:
-        staged = _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress)
-        if version:
-            (stage_dir / "version.txt").write_text(version, encoding="utf-8")
-        staged.version = version
+        staged = _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress, current_version)
+        tagged = version if version and _VERSION_RE.fullmatch(version) else None
+        if tagged and staged.version and parse_version(tagged) != parse_version(staged.version):
+            raise UpdateStageError(f"the release is tagged {version} but its SHA256SUMS says version {staged.version}")
+        if staged.version or version:
+            (stage_dir / "version.txt").write_text(staged.version or version, encoding="utf-8")
+        staged.version = version or staged.version
     except UpdateStageError:
         _discard(stage_dir)
         raise
@@ -577,7 +590,10 @@ def stage_update(
     return staged
 
 
-def _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress) -> StagedUpdate:
+_VERSION_RE = re.compile(r"[vV]?\d+(\.\d+)*")
+
+
+def _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress, current_version) -> StagedUpdate:
     with zipfile.ZipFile(zip_path) as zf:
         entries = []
         seen: set[str] = set()
@@ -631,8 +647,10 @@ def _extract_and_verify(zip_path, install_dir, stage_dir, should_stop, progress)
 
     root = stage_dir / top
     _verify_layout(root)
-    _verify_manifest(root, should_stop)
-    return StagedUpdate(stage_dir=stage_dir, stage_root=root, file_count=len(entries), byte_count=done)
+    manifest_version = _verify_manifest(root, should_stop, current_version)
+    return StagedUpdate(
+        stage_dir=stage_dir, stage_root=root, file_count=len(entries), byte_count=done, version=manifest_version,
+    )
 
 
 def _verify_layout(root: Path) -> None:
@@ -651,7 +669,14 @@ def _verify_layout(root: Path) -> None:
         raise UpdateStageError("the update package has no PortableFix.cmd")
 
 
-def _verify_manifest(root: Path, should_stop) -> None:
+def _verify_manifest(root: Path, should_stop, current_version: str | None) -> str | None:
+    """Checks every file against the signed manifest and returns the version
+    the manifest names. The GitHub tag is not signed: without the version
+    inside the signed body, whoever can edit the release page could offer
+    any older signed release as 'newer' - a permanent downgrade. So the
+    shipped app refuses a manifest without a version, and any one that is
+    not newer than the running APP_VERSION. Run from source (tests, the
+    release build) an unversioned manifest is still accepted."""
     try:
         raw = (root / "Data" / "SHA256SUMS").read_bytes()
         # Research G32: the manifest is what every file is checked against,
@@ -660,9 +685,18 @@ def _verify_manifest(root: Path, should_stop) -> None:
         signed = signing.verified_body(raw)
         if signed is None:
             raise UpdateStageError("the update's SHA256SUMS is not signed with the PortableFix release key")
-        manifest = parse_sha256sums_text(signed.decode("utf-8"))
+        text = signed.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise UpdateStageError(f"the update's SHA256SUMS is unreadable: {exc}") from exc
+    manifest = parse_sha256sums_text(text)
+    manifest_version = parse_manifest_version(text)
+    if manifest_version is None:
+        if getattr(sys, "frozen", False):
+            raise UpdateStageError("the update's SHA256SUMS names no version - it could be an older release")
+    elif current_version is not None and not is_newer(manifest_version, current_version):
+        raise UpdateStageError(
+            f"the update's SHA256SUMS says version {manifest_version}, not newer than the running {current_version}"
+        )
     if MANIFEST_EXE not in manifest:
         raise UpdateStageError("the update's SHA256SUMS does not cover App/PortableFix.exe")
     for rel_path, expected in manifest.items():
@@ -674,6 +708,15 @@ def _verify_manifest(root: Path, should_stop) -> None:
             raise UpdateStageCancelled("staging the update was cancelled")
         if actual != expected:
             raise UpdateStageError(f"{rel_path} does not match SHA256SUMS - damaged or tampered package")
+    # The other direction: a file the manifest does not list has no business
+    # under the program folders (App\ is first in the exe's DLL search order).
+    # The zip hash covers it in production, but that was checked on a file in
+    # %TEMP% seconds ago; this makes the signed manifest the whole trust anchor.
+    for top in SWAP_FOLDERS:
+        for path in (root / top).rglob("*"):
+            if path.is_file() and path.relative_to(root).as_posix() not in manifest:
+                raise UpdateStageError(f"{path.relative_to(root).as_posix()} is in the package but not in SHA256SUMS")
+    return manifest_version
 
 
 # --- The job and the handshake --------------------------------------------
@@ -691,8 +734,10 @@ def write_swap_job(
     poll_ms: int = 250,
     sums_tries: int = 5,
     sums_delay_ms: int = 1000,
+    script_dir: Path | None = None,
 ) -> SwapJob:
-    """Writes the static script and its JSON job into log_dir. The JSON is
+    """Writes the static script and its JSON job into script_dir (default
+    log_dir); the marker and the logs always go to log_dir. The JSON is
     pure ASCII (non-ASCII path characters become \\u escapes), so how
     PowerShell 5.1 guesses a file's encoding cannot matter. Pairs are
     objects, not nested arrays, and every list is wrapped in @() by the
@@ -703,6 +748,7 @@ def write_swap_job(
         raise ValueError("the swap needs at least one process to wait for")
     install_dir = Path(os.path.abspath(install_dir))
     log_dir = Path(os.path.abspath(log_dir))
+    script_dir = log_dir if script_dir is None else Path(os.path.abspath(script_dir))
     stage_root = Path(os.path.abspath(staged.stage_root))
     # Created here, not by the script: the script does no path arithmetic
     # and must be able to write its log and status from the first line.
@@ -710,8 +756,8 @@ def write_swap_job(
     (install_dir / "Data").mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
     base = f"swap_{pid}_{secrets.token_hex(4)}"
-    script_path = log_dir / f"{base}.ps1"
-    job_path = log_dir / f"{base}.json"
+    script_path = script_dir / f"{base}.ps1"
+    job_path = script_dir / f"{base}.json"
     marker_path = log_dir / f"{base}.marker"
     marker_path.unlink(missing_ok=True)
 
@@ -882,8 +928,17 @@ def launch_swap(
 
     if log_dir is None:
         return finish(LaunchResult(ok=False, reason=REASON_SPAWN_ERROR, detail="no usable temp folder for the updater"))
+    # Elevated (a Program Files install), the script and its job must not sit
+    # in %TEMP%, which every non-elevated process of the same user can write:
+    # swapping either there would have the elevated PowerShell run anything.
+    # The stage was created by this process on the install's own volume.
+    # Non-elevated nothing is gained, and the ASCII %TEMP% path stays the
+    # safer -File argument for PowerShell 5.1 (see short_path).
+    options = dict(job_options or {})
+    if sys.platform == "win32" and elevation.is_admin():
+        options.setdefault("script_dir", staged.stage_dir)
     try:
-        job = write_swap_job(staged, install_dir, pids, log_dir, **(job_options or {}))
+        job = write_swap_job(staged, install_dir, pids, log_dir, **options)
     except OSError as exc:
         return finish(LaunchResult(ok=False, reason=REASON_SPAWN_ERROR, detail=f"could not write the updater files: {exc}"))
 

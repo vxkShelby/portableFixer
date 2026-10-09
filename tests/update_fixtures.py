@@ -9,7 +9,12 @@ from pathlib import Path
 
 from signing_keys import sign_for_tests
 
+from portablefix.sha256sums import manifest_version_line
+
 NEW_EXE = b"new-exe"
+# Newer than any APP_VERSION, so a stage_update in the tests passes the
+# version check without pinning the tests to the current release number.
+NEW_VERSION = "99.0.0"
 
 
 def release_files(exe: bytes = NEW_EXE) -> dict[str, bytes]:
@@ -26,14 +31,18 @@ def release_files(exe: bytes = NEW_EXE) -> dict[str, bytes]:
     }
 
 
-def sums_for(files: dict[str, bytes], skip: tuple[str, ...] = ()) -> bytes:
-    # Same coverage as scripts/generate_sha256sums.py: App/, Modules/, Vendor/.
+def sums_for(files: dict[str, bytes], skip: tuple[str, ...] = (), version: str | None = NEW_VERSION) -> bytes:
+    # Same coverage as scripts/generate_sha256sums.py: App/, Modules/, Vendor/
+    # and the root files; version=None leaves the version line out (a
+    # manifest of <= 1.16).
     from portablefix.integrity import TARGET_DIRS
+    from portablefix.update_swap import ROOT_ALLOWLIST
 
-    lines = [
+    lines = [manifest_version_line(version)] if version else []
+    lines += [
         f"{hashlib.sha256(data).hexdigest()}  {rel}\n"
         for rel, data in sorted(files.items())
-        if rel.split("/")[0] in TARGET_DIRS and rel not in skip
+        if (rel.split("/")[0] in TARGET_DIRS or rel in ROOT_ALLOWLIST) and rel not in skip
     ]
     # Signed like a real release (research G32), with the test key.
     return sign_for_tests("".join(lines).encode("ascii"))

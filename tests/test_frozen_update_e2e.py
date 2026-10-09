@@ -65,7 +65,9 @@ def _release_zip(work: Path) -> Path:
     shutil.copyfile(V2, tree / "App" / "PortableFix.exe")
     shutil.copyfile(REPO_ROOT / "PortableFix.cmd", tree / "PortableFix.cmd")
     shutil.copyfile(REPO_ROOT / "portablefix.ico", tree / "portablefix.ico")
-    subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "generate_sha256sums.py"), str(tree)],
+    # The probe is built from this checkout, so its APP_VERSION is the
+    # repo's; the package must claim a newer one to be installable.
+    subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "generate_sha256sums.py"), str(tree), "99.0.0"],
                    check=True, timeout=120)
     sums = tree / "Data" / "SHA256SUMS"
     sums.write_bytes(sign_for_tests(sums.read_bytes()))

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -38,6 +39,16 @@ def test_is_newer_compares_numerically_not_as_strings():
 
 def test_is_newer_false_when_equal():
     assert is_newer("1.0.0", "1.0.0") is False
+
+
+def test_parse_version_pads_to_three_components():
+    # (1, 16) < (1, 16, 0) as tuples: a v1.16 tag would have been offered to
+    # a 1.16.0 install, and the other way round.
+    assert parse_version("1.16") == (1, 16, 0)
+    assert parse_version("2") == (2, 0, 0)
+    assert parse_version("1.2.3.4") == (1, 2, 3, 4)
+    assert is_newer("1.16", "1.16.0") is False
+    assert is_newer("1.16.0", "1.16") is False
 
 
 def test_parse_version_takes_leading_digits_only_on_hyphenated_prerelease_tag():
@@ -231,6 +242,27 @@ def test_download_update_cleans_up_partial_file_on_read_failure(tmp_path):
         with pytest.raises(ConnectionError):
             download_update(info, dest)
 
+    assert not (dest / "PortableFix-update.zip").exists()
+
+
+def test_download_update_cleans_up_the_zip_when_the_sha256_fetch_fails(tmp_path):
+    # Otherwise the 55-130 MB zip sat in %TEMP% until the daily cleanup.
+    info = UpdateInfo(
+        version="1.1.0",
+        package_url="https://example.com/PortableFix-Portable.zip",
+        sha256_url="https://example.com/PortableFix-Portable.zip.sha256",
+        notes="",
+    )
+
+    def fake_urlopen(url, timeout=None):
+        if url == info.package_url:
+            return _mock_download_response(b"fake-zip-content")
+        raise urllib.error.URLError("timed out")
+
+    dest = tmp_path / "dest"
+    with patch("portablefix.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(urllib.error.URLError):
+            download_update(info, dest)
     assert not (dest / "PortableFix-update.zip").exists()
 
 
@@ -523,6 +555,53 @@ def test_recover_interrupted_swap_restores_only_missing_live_folders(tmp_path):
     assert (tmp_path / "Vendor.old").exists()  # live Vendor present - left alone
 
 
+def _swap_killed_after_the_renames(tmp_path):
+    """The install after a swap died between its three renames and the Data
+    copies: the new folders are live, the stage holds only Data/ and the
+    root files, Data/SHA256SUMS is still the old one."""
+    from update_fixtures import make_install, write_release_zip
+
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    staged = update_swap.stage_update(write_release_zip(tmp_path / "u.zip"), install_dir)
+    for name in update_swap.SWAP_FOLDERS:
+        shutil.rmtree(install_dir / name)
+        (staged.stage_root / name).rename(install_dir / name)
+    updater_module.update_status_path(install_dir).write_text("in_progress\n", encoding="ascii")
+    return install_dir, staged
+
+
+def test_finish_interrupted_swap_installs_the_data_files_the_dead_swap_did_not(tmp_path):
+    from portablefix.integrity import blocked_module_dirs
+
+    install_dir, staged = _swap_killed_after_the_renames(tmp_path)
+    assert blocked_module_dirs(install_dir) == {"*"}  # the old manifest next to the new files
+
+    assert updater_module.finish_interrupted_swap(install_dir) is True
+
+    assert (install_dir / "Data" / "SHA256SUMS").read_bytes() == (staged.stage_root / "Data" / "SHA256SUMS").read_bytes()
+    assert (install_dir / "Data" / "PortableFix-SelfSigned.cer").read_bytes() == b"new-cer"
+    assert (install_dir / "Data" / "settings.json").read_bytes() == b'{"k": "v"}'  # never the package's
+    assert blocked_module_dirs(install_dir) == set()
+
+
+@pytest.mark.parametrize("damage", ["exe_differs", "modules_not_renamed", "unsigned_manifest", "no_stage"])
+def test_finish_interrupted_swap_leaves_an_install_it_cannot_vouch_for_alone(tmp_path, damage):
+    install_dir, staged = _swap_killed_after_the_renames(tmp_path)
+    sums = staged.stage_root / "Data" / "SHA256SUMS"
+    if damage == "exe_differs":
+        (install_dir / "App" / "PortableFix.exe").write_bytes(b"old-exe")
+    elif damage == "modules_not_renamed":
+        (install_dir / "Modules").rename(staged.stage_root / "Modules")
+    elif damage == "unsigned_manifest":
+        sums.write_bytes(sums.read_bytes().split(b"ed25519:")[0])
+    else:
+        shutil.rmtree(staged.stage_dir)
+
+    assert updater_module.finish_interrupted_swap(install_dir) is False
+    assert (install_dir / "Data" / "SHA256SUMS").read_bytes() == b"old-sums"
+
+
 def test_consume_update_status_reads_once_then_deletes(tmp_path):
     (tmp_path / "Data").mkdir()
     updater_module.update_status_path(tmp_path).write_text("rolled_back\r\n", encoding="ascii")
@@ -559,13 +638,15 @@ def test_launcher_cmd_restores_app_folder_stranded_as_app_old():
     assert cmd.index(restore) < cmd.rindex('"%~dp0App\\PortableFix.exe"')
 
 
-def test_launcher_cmd_never_rereads_itself_after_the_app_exits():
-    # cmd.exe waits on the app, then reads its next command from the batch
-    # file by byte offset - from the NEW launcher once an update replaced it.
-    # Starting the app and leaving on one line means nothing is read again.
+def test_launcher_cmd_starts_the_app_and_leaves_without_keeping_a_console_open():
+    # `start` and leave on one line: the console closes at once instead of
+    # staying open behind the app for the whole session (the installer's
+    # shortcuts run this minimized), and cmd.exe never reads the batch file
+    # again - by byte offset, from the NEW launcher once an update replaced
+    # it. /D keeps the working directory off App\ (renamed by the update).
     root = Path(__file__).resolve().parent.parent
     lines = [line for line in (root / "PortableFix.cmd").read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert lines[-1] == '"%~dp0App\\PortableFix.exe" %* & exit /b'
+    assert lines[-1] == 'start "" /D "%~dp0" "%~dp0App\\PortableFix.exe" %* & exit /b'
     assert "*.cmd text eol=crlf" in (root / ".gitattributes").read_text(encoding="utf-8").splitlines()
 
 
@@ -574,6 +655,13 @@ def test_installer_starts_the_app_in_the_install_root_and_ships_data_by_allowlis
     # A current directory of App\ blocks the update's App -> App.old rename.
     assert 'WorkingDir: "{app}\\App"' not in iss
     assert iss.count('WorkingDir: "{app}";') == 3  # both shortcuts and the post-install launch
+    # Through the launcher, which is the only thing that restores an App.old
+    # stranded by an interrupted update; minimized, so its console does not
+    # flash. A shortcut straight to App\PortableFix.exe is dead after that.
+    assert 'Filename: "{app}\\App\\PortableFix.exe"' not in iss
+    assert iss.count('Filename: "{app}\\PortableFix.cmd"; WorkingDir: "{app}";') == 3
+    code = "\n".join(line for line in iss.splitlines() if not line.startswith(";"))
+    assert code.count("runminimized") == 3
     # The build machine's settings.json must never reach a user's install.
     assert "Data\\*" not in iss
     for name in update_swap.DATA_ALLOWLIST:
