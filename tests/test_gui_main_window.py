@@ -79,6 +79,21 @@ def _wait_batch_idle(qtbot, window, timeout=15000):
     qtbot.waitUntil(lambda: not window._batch_active and window._report_runner is None, timeout=timeout)
 
 
+def _toggle_language(qtbot, window):
+    # The winget scan the panel starts with the window locks the language
+    # toggle (GUI review A1); on a PC with winget it takes seconds.
+    from portablefix.gui.main_window import _thread_running
+
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=90_000)
+    window._on_toggle_language()
+
+
+def _build_risk_cards(window):
+    # Risk cards fill their rows on the first visit (GUI review A4).
+    for risk in window._risk_tabs_order:
+        window._ensure_risk_card(risk)
+
+
 def _make_base_dir(tmp_path: Path, yaml_text: str = ACTIONS_YAML) -> Path:
     module_dir = tmp_path / "Modules" / "m01_diagnostics"
     module_dir.mkdir(parents=True)
@@ -163,7 +178,7 @@ def test_action_checkbox_accessible_name_includes_risk_level(qtbot, tmp_path):
 
     name = window._action_checkboxes["first_action"].accessibleName()
     assert "First action" in name
-    assert "SAFE" in name
+    assert "Safe" in name
 
 
 def test_action_status_update_appends_status_to_accessible_name(qtbot, tmp_path):
@@ -174,7 +189,7 @@ def test_action_status_update_appends_status_to_accessible_name(qtbot, tmp_path)
     window._set_action_status("first_action", "ok", "OK (1.2s)")
 
     name = window._action_checkboxes["first_action"].accessibleName()
-    assert "SAFE" in name
+    assert "Safe" in name
     assert "OK (1.2s)" in name
 
 
@@ -195,10 +210,109 @@ def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path)
     # window keyboard focus, which is asynchronous even after activateWindow().
     qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     assert window.category_list.currentRow() == 2
     qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
+
+
+def test_language_toggle_keeps_selection_console_search_and_size(qtbot, tmp_path):
+    base_dir = tmp_path
+    _write_module(base_dir, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(base_dir, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_state")
+    qtbot.addWidget(window)
+    window._action_checkboxes["clean_action"].setChecked(True)
+    window._append_console("kept console line")
+    window.search_box.setText("clean")
+    window.symptom_box.setText("slow")
+    window.resize(1111, 700)
+    old_console = window.console
+
+    _toggle_language(qtbot, window)
+
+    assert window.console is not old_console
+    assert window._action_checkboxes["clean_action"].isChecked()
+    assert not window._action_checkboxes["diag_action"].isChecked()
+    assert "kept console line" in window.console.toPlainText()
+    assert window.search_box.text() == "clean"
+    assert window.symptom_box.text() == "slow"
+    assert (window.width(), window.height()) == (1111, 700)
+
+
+def test_risk_levels_read_in_plain_words_with_a_shape_and_keep_the_enum_in_the_tooltip(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    from portablefix import i18n
+    from portablefix.models import RiskLevel
+
+    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="sk"), is_admin=True, run_id="run_risk_text")
+    qtbot.addWidget(window)
+
+    badge = next(
+        lb for lb in window._action_checkboxes["destructive_one"].parentWidget().findChildren(QLabel)
+        if lb.objectName() == "riskBadge"
+    )
+
+    assert badge.text() == "■ Nevratné" and badge.toolTip() == "DESTRUCTIVE"
+    assert window._risk_text(RiskLevel.REQUIRES_REBOOT) == "↻ Vyžaduje reštart"
+    assert window.global_select_destructive_button.text() == "Len ■ Nevratné"
+    assert i18n.risk_text("MODERATE", "en") == "▲ Changes settings"
+    assert i18n.risk_text("SAFE", "en", glyph=False) == "Safe"
+
+
+def test_glyph_only_controls_have_accessible_names_and_the_language_button_says_what_it_does(qtbot, tmp_path):
+    from PySide6.QtGui import QKeySequence
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_a11y_glyphs")
+    qtbot.addWidget(window)
+
+    assert window.search_box.accessibleName() == window._t("search_placeholder")
+    assert window.console_popout_button.accessibleName() == window._t("console_popout")
+    assert window.console_fullscreen_button.accessibleName() == window._t("console_fullscreen_toggle")
+    assert window._action_detail_toggles["hello"].accessibleName() == "Show details: Greeting"
+    assert window.language_button.text() == "EN"
+    assert "Slovenčina" in window.language_button.toolTip() and "Ctrl+L" in window.language_button.toolTip()
+    assert QKeySequence("Ctrl+L") in [s.key() for s in window._extra_shortcuts]
+
+
+def test_select_all_recounts_the_status_bar_once(qtbot, tmp_path, monkeypatch):
+    from portablefix.models import RiskLevel
+
+    base_dir = tmp_path
+    _write_module(base_dir, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(base_dir, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_bulk_once")
+    qtbot.addWidget(window)
+    calls = []
+    original = window._update_status_bar
+    monkeypatch.setattr(window, "_update_status_bar", lambda: calls.append(1) or original())
+
+    window._apply_selection(list(window._action_checkboxes), "all")
+
+    assert len(calls) == 1
+    assert all(cb.isChecked() for cb in window._action_checkboxes.values())
+    assert window.statusBar().currentMessage() == window._t("status_bar_selected").format(count=2, risk=window._risk_text(RiskLevel.SAFE))
+    window._action_checkboxes["clean_action"].setChecked(False)  # a single click still updates
+    assert len(calls) == 2
+
+
+def test_language_toggle_closes_a_popped_out_console_first(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_popout")
+    qtbot.addWidget(window)
+    window._on_console_popout_clicked()
+    popped = window._console_window
+    assert popped is not None
+    window._append_console("popped line")
+
+    _toggle_language(qtbot, window)
+
+    assert not popped.isVisible()
+    assert "popped line" in window.console.toPlainText()
+    assert window._console_window is None
 
 
 def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
@@ -513,6 +627,26 @@ def test_restart_as_admin_closes_window_on_success(qtbot, tmp_path, monkeypatch)
     assert closed == [True]
 
 
+def test_restart_as_admin_is_locked_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=False, run_id="run_admin_batch")
+    qtbot.addWidget(window)
+    calls = []
+    monkeypatch.setattr(elevation, "relaunch_as_admin", lambda *a, **k: calls.append(a) or 42)
+    window._batch_active = True
+    window._queue = ["hello"]
+    window._queue_total = 2
+
+    _toggle_language(qtbot, window)  # the rebuilt button must come back locked
+
+    assert window.restart_admin_button.isEnabled() is False
+    window._on_restart_as_admin()  # a stray call (keyboard/test) must not raise UAC either
+    assert calls == []
+    assert window.statusBar().currentMessage() == window._t("restart_admin_busy")
+    window._batch_active = False
+    window._queue = []
+
+
 def test_restart_as_admin_passes_sys_argv_when_not_frozen(qtbot, tmp_path, monkeypatch):
     import sys as sys_module
 
@@ -571,7 +705,7 @@ def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
     assert window.settings.language == "sk"
     assert window.run_button.text() == "Spustiť vybrané"
 
-    window.language_button.click()
+    _toggle_language(qtbot, window)
 
     assert window.settings.language == "en"
     assert window.run_button.text() == "Run selected"
@@ -867,6 +1001,34 @@ def test_cancel_during_restore_point_creation_prevents_the_pending_action_from_r
     assert "destructive-ran" not in window.console.toPlainText()
 
 
+def test_batch_restore_point_says_what_it_is_doing_and_shows_a_busy_bar(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point
+
+    release = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: release.wait(10) and (True, ""))
+    _answer_review(monkeypatch)
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False),
+        is_admin=True, run_id="run_rp_progress",
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+
+    window.run_selected_actions()
+    qtbot.waitUntil(lambda: window._pending_restore_point_runner is not None, timeout=5000)
+
+    assert window._t("panel_restore_point_running") in window.console.toPlainText()
+    assert window.statusBar().currentMessage() == window._t("panel_restore_point_running")
+    assert (window.progress_bar.minimum(), window.progress_bar.maximum()) == (0, 0)
+
+    release.set()
+    qtbot.waitUntil(lambda: window.progress_bar.maximum() != 0, timeout=10000)
+    _wait_batch_idle(qtbot, window)
+
+
 def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_safe(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
@@ -919,7 +1081,7 @@ def test_category_list_shows_distinct_entries_for_different_categories(qtbot, tm
     # Uninstaller, +1 for the "Risk: SAFE" tab (both test actions are SAFE).
     assert window.category_list.count() == 5
     labels = {window.category_list.item(i).text() for i in range(window.category_list.count())}
-    assert labels == {"Dashboard", "Diagnostics", "System repair", "Uninstall programs", "Risk: SAFE"}
+    assert labels == {"Dashboard", "Diagnostics", "System repair", "Uninstall programs", "Risk: ● Safe"}
 
 
 def test_category_click_shows_only_selected_category_group(qtbot, tmp_path):
@@ -1016,13 +1178,13 @@ def test_global_select_buttons_cover_all_categories(qtbot, tmp_path):
     window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id="run_selall")
     qtbot.addWidget(window)
 
-    window.global_select_all_button.click()
+    window.global_select_all_button.trigger()
     assert all(cb.isChecked() for cb in window._action_checkboxes.values())
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
     assert not any(cb.isChecked() for cb in window._action_checkboxes.values())
 
-    window.global_select_safe_button.click()
+    window.global_select_safe_button.trigger()
     assert window._action_checkboxes["d_safe"].isChecked()
     assert window._action_checkboxes["r_safe"].isChecked()
     assert not window._action_checkboxes["d_mod"].isChecked()
@@ -1511,6 +1673,7 @@ def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_risk")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     window.search_box.setText("moderate")
 
@@ -1524,38 +1687,55 @@ def test_search_box_also_filters_the_risk_tab_view(qtbot, tmp_path):
     assert window._risk_view_rows["safe_one"].isHidden() is False
 
 
-def test_search_box_searches_globally_not_just_the_open_category(qtbot, tmp_path):
-    # Searching used to only unhide matching rows inside whichever
-    # category/risk card the sidebar currently had open - a match sitting in
-    # any other card stayed invisible because _on_category_changed had
-    # hidden that whole card. Search must now show every matching card at
-    # once regardless of which sidebar row is selected.
-    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
-    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_hint")
+def _two_category_window(qtbot, tmp_path, run_id):
+    _write_module(tmp_path, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(tmp_path, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en"), is_admin=True, run_id=run_id)
     qtbot.addWidget(window)
-    window.category_list.setCurrentRow(1)  # SAFE risk tab - only safe_one lives here
-
-    window.search_box.setText("moderate")
-
-    assert "1" in window.statusBar().currentMessage()
-    # The card containing the match (a different risk tab than the one
-    # selected) must actually be visible, not just counted in the message.
-    moderate_card = window._risk_view_rows["moderate_one"]
-    while moderate_card.parentWidget() is not None and moderate_card not in window._nav_row_order:
-        moderate_card = moderate_card.parentWidget()
-    assert moderate_card.isHidden() is False
+    return window
 
 
-def test_selecting_a_category_while_searching_keeps_all_cards_visible(qtbot, tmp_path):
-    base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
-    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_search_switch")
-    qtbot.addWidget(window)
+def test_search_shows_only_the_categories_with_a_hit(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
 
-    window.search_box.setText("moderate")
+    window = _two_category_window(qtbot, tmp_path, "run_search_cards")
+    window.category_list.setCurrentRow(1)  # the other category is open
+
+    window.search_box.setText("clean_action")
+
+    groups = window._category_groups
+    assert groups[ModuleCategory.CLEANUP].isHidden() is False
+    assert groups[ModuleCategory.DIAGNOSTICS].isHidden() is True
+    assert groups[ModuleCategory.DASHBOARD].isHidden() is True
+    assert all(card.isHidden() for card in window._nav_row_order[len(window._categories_order):])
+    assert window._search_empty_label.isHidden() is True
+
+    window.search_box.setText("")
+
+    assert groups[ModuleCategory.DIAGNOSTICS].isHidden() is False  # the open sidebar row again
+    assert groups[ModuleCategory.CLEANUP].isHidden() is True
+
+
+def test_selecting_a_category_while_searching_keeps_the_hit_cards_only(qtbot, tmp_path):
+    from portablefix.models import ModuleCategory
+
+    window = _two_category_window(qtbot, tmp_path, "run_search_switch")
+
+    window.search_box.setText("clean_action")
     window.category_list.setCurrentRow(1)
 
-    for card in window._nav_row_order:
-        assert card.isHidden() is False
+    assert window._category_groups[ModuleCategory.CLEANUP].isHidden() is False
+    assert window._category_groups[ModuleCategory.DIAGNOSTICS].isHidden() is True
+
+
+def test_search_with_no_hit_shows_an_empty_state(qtbot, tmp_path):
+    window = _two_category_window(qtbot, tmp_path, "run_search_empty")
+
+    window.search_box.setText("zzz")
+
+    assert window._search_empty_label.isHidden() is False
+    assert "zzz" in window._search_empty_label.text()
+    assert all(card.isHidden() for card in window._nav_row_order)
 
 
 def test_search_box_shows_no_matches_message(qtbot, tmp_path):
@@ -1653,7 +1833,7 @@ def test_clearing_selection_unchecks_the_lit_preset_button(qtbot, tmp_path):
     # button (now disabled with nothing selected) is actually clickable.
     window._action_checkboxes["temp_cleanup"].setChecked(True)
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
 
     assert window._preset_buttons["quick_clean"].isChecked() is False
     assert all(not cb.isChecked() for cb in window._action_checkboxes.values())
@@ -1667,10 +1847,10 @@ def test_status_bar_shows_selection_count_and_highest_risk(qtbot, tmp_path):
     assert window.statusBar().currentMessage() == "Nothing selected"
 
     window._action_checkboxes["temp_cleanup"].setChecked(True)
-    assert window.statusBar().currentMessage() == "Selected: 1  |  Highest risk: SAFE"
+    assert window.statusBar().currentMessage() == "Selected: 1  |  Highest risk: ● Safe"
 
     window._action_checkboxes["firewall_check"].setChecked(True)
-    assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: MODERATE"
+    assert window.statusBar().currentMessage() == "Selected: 2  |  Highest risk: ▲ Changes settings"
 
 
 def test_global_clear_selection_button_only_enabled_when_something_is_selected(qtbot, tmp_path):
@@ -1683,7 +1863,7 @@ def test_global_clear_selection_button_only_enabled_when_something_is_selected(q
     window._action_checkboxes["temp_cleanup"].setChecked(True)
     assert window.global_select_none_button.isEnabled() is True
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
     assert window.global_select_none_button.isEnabled() is False
 
 
@@ -1940,7 +2120,7 @@ def test_language_toggle_mid_download_keeps_buttons_disabled(qtbot, tmp_path):
     window.update_button.setEnabled(False)
     window.update_dismiss_button.setEnabled(False)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     assert window.update_button.isEnabled() is False
     assert window.update_dismiss_button.isEnabled() is False
@@ -1960,7 +2140,7 @@ def test_language_toggle_mid_batch_restores_run_state_on_the_rebuilt_widgets(qtb
     window.cancel_button.setEnabled(True)
     window.language_button.setEnabled(False)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     assert window.run_button.isEnabled() is False
     assert window.cancel_button.isEnabled() is True
@@ -2091,13 +2271,13 @@ def test_global_select_moderate_destructive_reboot_buttons_select_only_that_risk
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_select")
     qtbot.addWidget(window)
 
-    window.global_select_moderate_button.click()
+    window.global_select_moderate_button.trigger()
     assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["moderate_one"]
 
-    window.global_select_destructive_button.click()
+    window.global_select_destructive_button.trigger()
     assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["destructive_one"]
 
-    window.global_select_reboot_button.click()
+    window.global_select_reboot_button.trigger()
     assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["reboot_one"]
 
 
@@ -2109,7 +2289,7 @@ def test_risk_tabs_are_appended_after_categories_in_nav_list(qtbot, tmp_path):
     # 1 category (all four test actions default to the same category) + one
     # risk tab per distinct risk level actually present (4 here).
     labels = [window.category_list.item(i).text() for i in range(window.category_list.count())]
-    assert labels[-4:] == ["Risk: SAFE", "Risk: MODERATE", "Risk: DESTRUCTIVE", "Risk: REQUIRES_REBOOT"]
+    assert labels[-4:] == ["Risk: ● Safe", "Risk: ▲ Changes settings", "Risk: ■ Irreversible", "Risk: ↻ Needs restart"]
 
 
 def test_clicking_a_risk_tab_shows_only_that_risk_card(qtbot, tmp_path):
@@ -2129,6 +2309,7 @@ def test_risk_tab_mirror_checkbox_syncs_bidirectionally_with_canonical(qtbot, tm
     base_dir = _make_base_dir(tmp_path, MIXED_RISK_ACTIONS_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_mirror")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     canonical = window._action_checkboxes["moderate_one"]
     mirror = window._risk_view_checkboxes["moderate_one"]
@@ -2328,7 +2509,7 @@ def test_close_event_waits_longer_for_uncancellable_network_runners(qtbot, tmp_p
 
     window.close()
 
-    assert speed_test_runner.wait_calls == [(25_000,)]
+    assert speed_test_runner.wait_calls == [(45_000,)]
     for runner in update_runners:
         assert runner.interrupted is True
         assert runner.wait_calls == [()]
@@ -2379,6 +2560,7 @@ def test_action_detail_panel_starts_hidden_in_both_views(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail1")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     assert window._action_detail_panels["detailed_action"].isHidden() is True
     assert window._risk_view_detail_panels["detailed_action"].isHidden() is True
@@ -2437,6 +2619,7 @@ def test_expand_state_is_independent_between_category_and_risk_tab_views(qtbot, 
     base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_detail5")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
     window._action_detail_toggles["detailed_action"].click()
 
@@ -2527,6 +2710,44 @@ def test_batch_summary_shows_before_after_metrics(qtbot, tmp_path):
     assert "40 GB → 43.5 GB" in texts
     assert "≥ 2.93 GB → 10 MB" in texts
     assert window._t("snapshot_lower_bound_note") in texts
+
+
+def test_batch_summary_lists_failed_first_with_a_hint_and_can_rerun_them(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    from portablefix.executor import TIMEOUT_EXIT_CODE
+
+    base_dir = _make_base_dir(tmp_path, _TWO_ACTIONS_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_summary_failed")
+    qtbot.addWidget(window)
+    window._batch_results = [("temp_cleanup", 0), ("firewall_check", TIMEOUT_EXIT_CODE)]
+    window._failure_hints = {"firewall_check": "failure_hint_timeout"}
+
+    window._show_batch_summary(tmp_path / "report.html")
+
+    dialog = window._summary_dialog
+    rows = [w.text() for w in dialog.findChildren(QLabel) if w.objectName() in ("summaryRow", "summaryHint")]
+    assert rows == [
+        "[FAILED] Firewall status", window._t("failure_hint_timeout"), "[OK] Temp cleanup",
+    ]
+    buttons = {b.text(): b for b in dialog.findChildren(QPushButton)}
+    assert window._t("open_report_folder") in buttons
+
+    buttons[window._t("rerun_failed")].click()
+
+    assert [aid for aid, cb in window._action_checkboxes.items() if cb.isChecked()] == ["firewall_check"]
+    assert not dialog.isVisible()
+
+
+def test_failure_hint_maps_exit_codes_and_access_denied():
+    from portablefix import executor
+    from portablefix.gui.main_window import _failure_hint
+
+    assert _failure_hint(executor.TIMEOUT_EXIT_CODE, []) == "failure_hint_timeout"
+    assert _failure_hint(executor.CANCELLED_EXIT_CODE, []) == "failure_hint_cancelled"
+    assert _failure_hint(executor.POWERSHELL_NOT_FOUND_EXIT_CODE, []) == "failure_hint_powershell"
+    assert _failure_hint(1, ["Set-Item : Access is denied."]) == "failure_hint_denied"
+    assert _failure_hint(1, ["boom"]) == "failure_hint_generic"
 
 
 def test_batch_summary_without_comparable_metrics_shows_no_metrics(qtbot, tmp_path):
@@ -2775,7 +2996,7 @@ def test_custom_presets_survive_language_toggle(qtbot, tmp_path):
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_preset3")
     qtbot.addWidget(window)
     assert "custom:Moje" in window._preset_buttons
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert "custom:Moje" in window._preset_buttons
 
 
@@ -2820,7 +3041,7 @@ def test_job_details_are_kept_and_technician_persisted(qtbot, tmp_path):
     assert window.job_button.text() == "Zákazka: Firma s.r.o. #1234"
     assert load_settings(base_dir).technician_name == "Ján Technik"
     # Survives the full UI rebuild of a language toggle.
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.job_button.text() == "Job: Firma s.r.o. #1234"
 
 
@@ -3138,7 +3359,7 @@ def test_action_accessible_name_is_translated(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     name = window._action_checkboxes["first_action"].accessibleName()
-    assert "riziko: SAFE" in name
+    assert "riziko: Bezpečné" in name
     assert "risk:" not in name
 
 
@@ -3155,7 +3376,7 @@ def test_dashboard_tiles_are_keyboard_reachable_and_named(qtbot, tmp_path):
     tile = window._dashboard_tiles[ModuleCategory.CLEANUP]
     assert tile.focusPolicy() & Qt.FocusPolicy.TabFocus
     assert "Cleanup" in tile.accessibleName()
-    assert "1 actions" in tile.accessibleName()
+    assert "1 action" in tile.accessibleName()
     assert tile.accessibleDescription()
 
     qtbot.keyClick(tile, Qt.Key.Key_Space)
@@ -3176,7 +3397,7 @@ def test_dashboard_tile_accessible_name_follows_recommended_count(qtbot, tmp_pat
 
     window._refresh_dashboard()
 
-    assert "1 recommended fixes" in window._dashboard_tiles[ModuleCategory.CLEANUP].accessibleName()
+    assert "1 recommended fix" in window._dashboard_tiles[ModuleCategory.CLEANUP].accessibleName()
 
 
 def test_batch_summary_dialog_focuses_open_report_button(qtbot, tmp_path):
@@ -4002,6 +4223,19 @@ def _fake_outdated_package():
     )
 
 
+def test_winget_export_to_an_unwritable_path_shows_a_warning_not_a_traceback(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QLabel
+
+    window, card, _row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_export_fail", True, _fake_outdated_package())
+    missing = tmp_path / "no_such_dir" / "list.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(missing), ""))
+
+    _panel_button(card, window._t("winget_export_button")).click()
+
+    label = next(lb for lb in card.findChildren(QLabel) if lb.text() == window._t("winget_export_failed"))
+    assert label.property("state") == "warn" and label.toolTip()
+
+
 def test_winget_update_dry_run_starts_no_runner_and_logs_each_package(qtbot, tmp_path, monkeypatch):
     from portablefix import winget_updates
 
@@ -4271,18 +4505,18 @@ def test_analyze_button_disabled_after_language_toggle_mid_batch(qtbot, tmp_path
     window._queue = ["hello"]
     window._queue_total = 2
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is False
     assert window.run_button.isEnabled() is False
 
     window._batch_active = False
     window._queue = []
     window._report_runner = object()
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is False
 
     window._report_runner = None
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is True
 
 
@@ -4300,7 +4534,7 @@ def test_analyze_button_unlocks_when_update_download_spanning_a_language_toggle_
     window.update_button.setEnabled(False)
     window.update_dismiss_button.setEnabled(False)
 
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.dashboard_analyze_button.isEnabled() is False
 
     window._on_update_download_finished(None, "network down")
@@ -4387,17 +4621,18 @@ def test_global_risk_buttons_skip_excluded_actions(qtbot, tmp_path):
     base_dir = _write_module_with_excluded_risk_actions(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_risk_excl")
     qtbot.addWidget(window)
+    _build_risk_cards(window)
 
-    window.global_select_moderate_button.click()
+    window.global_select_moderate_button.trigger()
     assert _checked_ids(window) == {"mod_normal"}
 
-    window.global_select_reboot_button.click()
+    window.global_select_reboot_button.trigger()
     assert _checked_ids(window) == {"reboot_normal"}
 
-    window.global_select_safe_button.click()
+    window.global_select_safe_button.trigger()
     assert _checked_ids(window) == {"safe_normal"}
 
-    window.global_select_none_button.click()
+    window.global_select_none_button.trigger()
     _all_btn, category_safe_btn, _none_btn = window._category_select_buttons[ModuleCategory.SECURITY]
     category_safe_btn.click()
     assert _checked_ids(window) == {"safe_normal"}
@@ -4649,17 +4884,54 @@ def test_closing_during_an_uninstall_waits_for_the_running_one_and_skips_the_res
     programs = [_fake_installed_program(name, plain=f"{name}.exe") for name in ("One", "Two", "Three")]
     runner = _RecordingRunner(programs, parent=window)
     window._uninstall_runner = runner
+    finished = []
+    runner.finished.connect(lambda: finished.append(True))
     runner.start()
     assert started.wait(5)
     threading.Timer(0.5, release.set).start()
 
     window.close()
 
-    # Uncapped (research G15): an interactive uninstaller has no timeout, so
-    # any cap could run out and destroy the live QThread.
-    assert waits == [()]
-    assert runner.isFinished()
+    # Non-blocking (GUI review A7): an interactive uninstaller has no timeout,
+    # so the window stays up, says why, and closes once the runner is done -
+    # it is never waited for with a cap that could destroy the live QThread.
+    assert window.isVisible()
+    assert window.statusBar().currentMessage() == window._t("closing_waiting_uninstall")
+    assert waits == []
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=10_000)
+    assert finished == [True]
     assert ran == ["One"]
+
+
+def test_closing_during_a_winget_update_waits_without_blocking(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import winget_updates
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake_update(package, *a, **k):
+        started.set()
+        release.wait(10)
+        return True, ""
+
+    monkeypatch.setattr(winget_updates, "update_package", fake_update, raising=False)
+    window = _update_window(qtbot, tmp_path, "run_close_mid_winget")
+    runner = winget_updates.WingetUpdateRunner([_fake_outdated_package()], parent=window)
+    window._winget_update_runner = runner
+    finished = []
+    runner.finished.connect(lambda: finished.append(True))
+    runner.start()
+    qtbot.waitUntil(lambda: runner.isRunning(), timeout=5000)
+    threading.Timer(0.5, release.set).start()
+
+    window.close()
+
+    assert window.isVisible()
+    assert window.statusBar().currentMessage() == window._t("closing_waiting_winget")
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=10_000)
+    assert finished == [True]
 
 
 def test_winget_update_says_why_it_does_nothing_while_the_app_update_starts(qtbot, tmp_path, monkeypatch):
@@ -4738,7 +5010,7 @@ def test_language_toggle_during_staging_keeps_the_progress_bar_and_step_text(qtb
 
     window.update_button.click()
     qtbot.waitUntil(lambda: window._update_phase == "stage" and window.progress_bar.maximum() == 10, timeout=5000)
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
 
     # The shown window shows its rebuilt widgets on the next event loop pass
     # - unless one was hidden explicitly, which is the bug this guards.
@@ -4755,6 +5027,35 @@ def test_language_toggle_during_staging_keeps_the_progress_bar_and_step_text(qtb
     assert window.progress_bar.isVisibleTo(window) is False
     assert window.update_button.isEnabled() is True
     assert window._update_download_dir is None
+
+
+def test_winget_auto_check_interval_is_saved_at_once(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox, QComboBox
+
+    from portablefix.settings import load_settings
+
+    window, card, _row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_persist", True, _fake_outdated_package())
+    checkbox = next(cb for cb in card.findChildren(QCheckBox) if cb.text() == window._t("winget_auto_check_label"))
+    combo = next(c for c in card.findChildren(QComboBox) if c.itemData(0) == 15)
+
+    checkbox.setChecked(True)
+    combo.setCurrentIndex(2)
+
+    assert load_settings(window.state_dir).winget_auto_check_minutes == 60
+
+
+def test_job_and_summary_dialogs_delete_themselves_on_close(qtbot, tmp_path):
+    from PySide6.QtCore import Qt
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_dialog_delete")
+    qtbot.addWidget(window)
+    window._open_job_dialog()
+    window._open_forms_dialog()
+    window._open_branding_dialog()
+    for dialog in (window._job_dialog, window._forms_dialog, window._branding_dialog):
+        assert dialog.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.close()
 
 
 def test_winget_auto_check_skips_while_the_app_updates(qtbot, tmp_path, monkeypatch):
@@ -5573,8 +5874,10 @@ def test_manual_update_click_during_the_start_up_check_reports_its_answer(qtbot,
     from portablefix.i18n import translate
 
     log = _patch_network_runners(monkeypatch)
-    running = _recording_runner(log, "update", "check_finished")
+    # Still running at close: the window orphans it (setParent, finished).
+    running = _recording_runner(log, "update", "check_finished", "finished")
     running.isRunning = lambda self: True
+    running.setParent = lambda self, parent: None
     monkeypatch.setattr(updater, "UpdateCheckRunner", running)
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(
@@ -5702,7 +6005,7 @@ def test_quiet_mode_survives_a_language_toggle(qtbot, tmp_path, monkeypatch):
         is_admin=True, run_id="run_quiet_lang",
     )
     qtbot.addWidget(window)
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert log == []
     assert window.quiet_mode_checkbox.isChecked()
     assert window._sysinfo_labels["ping"].text() == translate("quiet_mode_value", "sk")
@@ -6045,6 +6348,27 @@ def test_uninstall_of_several_programs_logs_every_program_its_restore_point_guar
     assert event["subject"] in ("_uninstaller/Real App", "_uninstaller/Other App")
     assert sorted(event["subjects"]) == ["_uninstaller/Other App", "_uninstaller/Real App"]
     assert event["subject"] == event["subjects"][0]
+
+
+@pytest.mark.parametrize("risk", ["DESTRUCTIVE", "MODERATE"])
+def test_batch_path_confirmations_default_to_no(qtbot, tmp_path, monkeypatch, risk):
+    base_dir = _make_base_dir(tmp_path, MODERATE_ACTIONS_YAML.replace("MODERATE", risk))
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False), is_admin=True, run_id=f"run_default_no_{risk}")
+    qtbot.addWidget(window)
+    module, action = window._find_action("risky")
+    window._run_next = lambda: None
+    window._batch_dry_run = False
+    window._reviewed_warnings = {}
+    seen = []
+    for name in ("warning", "question"):
+        monkeypatch.setattr(QMessageBox, name, lambda *a, **k: seen.append(a) or QMessageBox.No)
+
+    window._dispatch_action(module, action)
+    window._on_restore_point_checked(False, "off", module, action)
+
+    # (parent, title, text, buttons, defaultButton) - Enter must mean "No".
+    assert len(seen) == 2
+    assert all(len(args) == 5 and args[4] == QMessageBox.No for args in seen)
 
 
 def test_uninstall_with_failed_restore_point_declined_uninstalls_nothing(qtbot, tmp_path, monkeypatch):
@@ -7544,8 +7868,8 @@ def test_user_modules_actions_get_a_custom_badge(qtbot, tmp_path):
         row = window._action_checkboxes[action_id].parentWidget()
         return [label.text() for label in row.findChildren(QLabel) if label.objectName() == "riskBadge"]
 
-    assert badges("shop_action") == ["SAFE", "custom"]
-    assert badges("clean_action") == ["SAFE"]
+    assert badges("shop_action") == ["● Safe", "custom"]
+    assert badges("clean_action") == ["● Safe"]
 
 
 # --- research-design-additions items 2, 6, 7, 9, 15 ---------------------------
@@ -7655,7 +7979,7 @@ def test_run_button_is_amber_while_dry_run_is_on(qtbot, tmp_path):
 
     # Survives the language toggle's rebuild.
     window.dry_run_checkbox.setChecked(True)
-    window._on_toggle_language()
+    _toggle_language(qtbot, window)
     assert window.run_button.property("dryrun") == "true"
 
 
@@ -7758,3 +8082,308 @@ def test_preview_is_refused_while_a_batch_runs(qtbot, tmp_path, monkeypatch):
     assert window._preview_runner is None
     assert window.statusBar().currentMessage() == "A preview can't start while a batch or another preview is running."
     window._batch_active = False
+
+
+# --- language toggle vs. panel runners (GUI review A1) -----------------------
+
+
+def test_language_toggle_is_refused_while_the_winget_scan_runs(qtbot, tmp_path, monkeypatch):
+    # The scan runner used to hang off the panel the rebuild deletes: Qt then
+    # destroyed its live QThread and aborted the whole process (qFatal).
+    import threading
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocking_scan():
+        started.set()
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", blocking_scan)
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_scan")
+    qtbot.addWidget(window)
+    assert started.wait(5)
+    assert window._winget_scan_runner.parent() is window
+    try:
+        window._on_toggle_language()
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        qtbot.wait(100)
+        assert window.settings.language == "en"
+        assert window.statusBar().currentMessage() == window._t("language_busy")
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10_000)
+    window._on_toggle_language()
+    assert window.settings.language == "sk"
+
+
+def test_language_toggle_is_refused_while_an_uninstall_runs(qtbot, tmp_path, monkeypatch):
+    class _Running:
+        def isRunning(self):
+            return True
+
+    window, _card = _uninstaller_window(qtbot, tmp_path, monkeypatch, "run_lang_uninstall", [], dry_run=False)
+    window._uninstall_runner = _Running()
+    try:
+        window._on_toggle_language()
+        assert window.settings.language == "en"
+        assert window.statusBar().currentMessage() == window._t("language_busy")
+    finally:
+        window._uninstall_runner = None
+
+
+# --- DRY-RUN is frozen per batch (GUI review A2) ------------------------------
+
+_SLOW_THEN_MODERATE_YAML = """
+module_id: m01_diagnostics
+actions:
+  - id: slow_safe
+    label_sk: "Pomala"
+    label_en: "Slow"
+    risk: SAFE
+    command: "Start-Sleep -Seconds 2; Write-Output 'slow-done'"
+  - id: risky
+    label_sk: "Riskantna akcia"
+    label_en: "Risky action"
+    risk: MODERATE
+    command: "Write-Output 'risky-ran'"
+"""
+
+
+def test_dry_run_checkbox_is_locked_for_the_batch_and_the_mode_cannot_change_mid_batch(qtbot, tmp_path):
+    # Unticking DRY-RUN mid-batch used to run the rest of the batch for real
+    # with no review, no pre-flight and no restore point.
+    base_dir = _make_base_dir(tmp_path, _SLOW_THEN_MODERATE_YAML)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True),
+        is_admin=True, run_id="run_dry_run_lock",
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["slow_safe"].setChecked(True)
+    window._action_checkboxes["risky"].setChecked(True)
+
+    window.run_selected_actions()
+
+    assert window.dry_run_checkbox.isEnabled() is False
+    # Even a programmatic flip (the checkbox refuses clicks) changes nothing
+    # for the running batch.
+    window.dry_run_checkbox.setChecked(False)
+    assert window._batch_dry_run is True
+    _wait_batch_idle(qtbot, window, timeout=20000)
+
+    assert window.dry_run_checkbox.isEnabled() is True
+    entries = [e for e in _audit_entries(audit_log_path(base_dir, "run_dry_run_lock")) if e["module_id"] != "_system"]
+    assert [e["action_id"] for e in entries] == ["slow_safe", "risky"]
+    assert all(e["dry_run"] is True for e in entries)
+
+
+# --- the window fits a 1366 x 768 / 125 % screen (GUI review A3) --------------
+
+
+@pytest.mark.skipif(
+    os.environ.get("QT_QPA_PLATFORM") == "offscreen",
+    reason="the offscreen platform has no system fonts, so its text metrics say nothing about a real screen",
+)
+@pytest.mark.parametrize("language", ["sk", "en"])
+def test_window_minimum_size_fits_a_small_laptop_screen(qtbot, monkeypatch, language):
+    from portablefix import winget_updates
+
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [])
+    # The real catalog: 269 actions, the longest labels and every panel.
+    base_dir = Path(__file__).resolve().parent.parent
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language=language, quiet_mode=True),
+        is_admin=True, run_id="run_min_size",
+    )
+    qtbot.addWidget(window)
+    window.ensurePolished()
+
+    hint = window.minimumSizeHint()
+    assert hint.width() <= 1280, hint
+    assert hint.height() <= 720, hint
+    assert window.width() <= 1200 and window.height() <= 760
+
+
+def test_sysinfo_panel_collapses_to_a_rail_and_remembers_it(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    settings = Settings(language="en", quiet_mode=True)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=settings, is_admin=True, run_id="run_sysinfo_fold")
+    qtbot.addWidget(window)
+    panel = window._sysinfo_labels["os"].parentWidget()
+    while panel.objectName() != "actionCard":
+        panel = panel.parentWidget()
+    assert panel.minimumWidth() == 280
+
+    window.sysinfo_toggle_button.click()
+
+    assert settings.sysinfo_collapsed is True
+    assert panel.maximumWidth() <= 60
+    assert window._sysinfo_labels["os"].isVisibleTo(window) is False
+    assert window.sysinfo_toggle_button.toolTip() == window._t("sysinfo_expand")
+
+    window.sysinfo_toggle_button.click()
+    assert settings.sysinfo_collapsed is False
+    assert panel.minimumWidth() == 280
+
+
+# --- detail panels and risk cards are built on first use (GUI review A4) ------
+
+
+def test_detail_panels_are_built_on_first_expand_only(qtbot, tmp_path):
+    from PySide6.QtWidgets import QPlainTextEdit
+
+    base_dir = _make_base_dir(tmp_path, DETAILED_ACTION_YAML)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lazy_detail")
+    qtbot.addWidget(window)
+
+    # Only the consoles exist - no detail panel was built for any row.
+    assert all(w.objectName() == "console" for w in window.findChildren(QPlainTextEdit))
+    assert window._risk_view_rows == {}
+
+    window._action_detail_toggles["detailed_action"].click()
+
+    panel = window._action_detail_panels["detailed_action"]
+    assert panel.isHidden() is False
+    assert "Write-Output 'run-me'" in [w.toPlainText() for w in panel.findChildren(QPlainTextEdit)]
+
+    # The first visit of a risk card fills its rows, mirrors included.
+    window.category_list.setCurrentRow(len(window._categories_order))
+    assert "detailed_action" in window._risk_view_checkboxes
+    window._action_checkboxes["detailed_action"].setChecked(True)
+    assert window._risk_view_checkboxes["detailed_action"].isChecked() is True
+
+
+# --- closing never destroys a live quick runner (GUI review A5) ---------------
+
+
+def _fatal_qt_messages(qtbot):
+    from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+
+    seen = []
+
+    def handler(kind, _context, text):
+        if kind in (QtMsgType.QtFatalMsg, QtMsgType.QtCriticalMsg) or "Destroyed while thread" in text:
+            seen.append(text)
+
+    previous = qInstallMessageHandler(handler)
+    return seen, previous
+
+
+def test_close_waits_long_enough_for_a_slow_vpn_check(qtbot, tmp_path, monkeypatch):
+    import gc
+    import time as time_module
+
+    from PySide6.QtCore import qInstallMessageHandler
+
+    from portablefix import sysinfo
+    from portablefix.gui import main_window
+
+    # Get-VpnConnection runs with subprocess.run(timeout=10); the old 5 s
+    # wait let closeEvent destroy the still-running QThread.
+    monkeypatch.setattr(sysinfo, "check_vpn_status", lambda: time_module.sleep(7) or None)
+    seen, previous = _fatal_qt_messages(qtbot)
+    try:
+        base_dir = _make_base_dir(tmp_path)
+        window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_vpn")
+        runner = window._vpn_runner
+        assert main_window._thread_running(runner)
+
+        started = time_module.monotonic()
+        window.close()
+
+        assert time_module.monotonic() - started >= 6
+        assert not main_window._thread_running(runner)
+        assert main_window._ORPHANED_RUNNERS == []
+        del window
+        gc.collect()
+        qtbot.wait(50)
+    finally:
+        qInstallMessageHandler(previous)
+    assert seen == []
+
+
+def test_close_orphans_a_runner_that_outlives_its_wait(qtbot, tmp_path, monkeypatch):
+    import gc
+    import threading
+    import time as time_module
+
+    from PySide6.QtCore import qInstallMessageHandler
+
+    from portablefix import sysinfo
+    from portablefix.gui import main_window
+
+    release = threading.Event()
+    monkeypatch.setattr(sysinfo, "check_vpn_status", lambda: release.wait(20) and None)
+    monkeypatch.setattr(main_window, "SUBPROCESS_RUNNER_WAIT_MS", 300)
+    seen, previous = _fatal_qt_messages(qtbot)
+    try:
+        base_dir = _make_base_dir(tmp_path)
+        window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_close_orphan")
+        runner = window._vpn_runner
+        assert main_window._thread_running(runner)
+
+        window.close()
+
+        # Still running after its wait: re-parented away from the window and
+        # kept alive by the module, so freeing the window is safe.
+        assert runner in main_window._ORPHANED_RUNNERS
+        assert runner.parent() is None
+        del window
+        gc.collect()
+        qtbot.wait(50)
+        release.set()
+        qtbot.waitUntil(lambda: runner not in main_window._ORPHANED_RUNNERS, timeout=5000)
+    finally:
+        release.set()
+        qInstallMessageHandler(previous)
+    assert seen == []
+
+
+# --- the winget auto-check survives a finished update (GUI review A6) ---------
+
+
+def test_winget_auto_check_still_scans_after_the_update_runner_deleted_itself(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import QCoreApplication, QEvent, QThread, QTimer
+
+    from portablefix import winget_updates
+
+    window, card, _row = _winget_window(
+        qtbot, tmp_path, monkeypatch, "run_auto_check_dead_runner", False, _fake_outdated_package(),
+        winget_auto_check_minutes=15,
+    )
+    timers = [t for t in card.findChildren(QTimer) if t.isActive() and t.interval() == 15 * 60_000]
+    assert len(timers) == 1
+    # WingetUpdateRunner has finished -> deleteLater: after the first update
+    # the attribute points at a dead wrapper whose isRunning() raises.
+    dead = QThread()
+    dead.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    window._winget_update_runner = dead
+    started = []
+
+    class _RecordingScan:
+        def __init__(self, parent=None):
+            started.append(True)
+            self.scan_finished = self
+            self.scan_failed = self
+
+        def connect(self, slot):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(winget_updates, "WingetScanRunner", _RecordingScan)
+
+    timers[0].timeout.emit()
+
+    assert started == [True]
+    window._winget_scan_runner = None
+    window._winget_update_runner = None

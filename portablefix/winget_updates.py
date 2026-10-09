@@ -270,6 +270,8 @@ def export_package_list(packages: list[OutdatedPackage], path: Path) -> None:
 
 def import_package_ids(path: Path) -> set[str]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError("expected a JSON list of packages")
     return {item["id"] for item in data if isinstance(item, dict) and "id" in item}
 
 

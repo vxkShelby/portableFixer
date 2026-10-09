@@ -49,7 +49,7 @@ from .items_dialog import ItemsDialog
 from .. import action_service, batch_resume, diagnostics, disk_health, elevation, handoff, health, hive_backup, history, i18n, intake, ops, panel_safety, paths, pfjson, preflight, report, restore_point, snapshot, symptoms, sysinfo, target_user, undo, uninstall_plan, uninstaller, update_swap, updater, winget_updates
 from .. import items as items_mod
 from ..audit_log import append_entry, make_entry
-from ..executor import ActionRunner
+from ..executor import CANCELLED_EXIT_CODE, POWERSHELL_NOT_FOUND_EXIT_CODE, TIMEOUT_EXIT_CODE, ActionRunner
 from ..models import ActionDef, ModuleCategory, ModuleDef, RiskLevel
 from ..integrity import format_mismatches
 from ..module_engine import load_catalog
@@ -84,6 +84,19 @@ _CONSOLE_ERROR_RE = re.compile(
 _CONSOLE_NO_ERROR_RE = re.compile(r"\b(no|0|zero|without|not any)\s+(errors?|failures?|exceptions?)\b", re.IGNORECASE)
 _CONSOLE_WARNING_RE = re.compile(r"\b(warning|cancell?ed|upozornenie|varovanie)\b", re.IGNORECASE)
 _CONSOLE_SUCCESS_RE = re.compile(r"\b(success|successfully|succeeded|úspešne)\b", re.IGNORECASE)
+
+
+def _failure_hint(exit_code: int, output_lines: list[str]) -> str:
+    """i18n key of the next step for a failed action (batch summary)."""
+    if exit_code == TIMEOUT_EXIT_CODE:
+        return "failure_hint_timeout"
+    if exit_code == CANCELLED_EXIT_CODE:
+        return "failure_hint_cancelled"
+    if exit_code == POWERSHELL_NOT_FOUND_EXIT_CODE:
+        return "failure_hint_powershell"
+    if any("access is denied" in line.lower() for line in output_lines):
+        return "failure_hint_denied"
+    return "failure_hint_generic"
 
 
 def _console_severity(line: str) -> str | None:
@@ -152,6 +165,21 @@ _UPDATE_PHASE_KEYS = {
 }
 
 
+def _ignore_deleted(func):
+    """Slot wrapper for a panel's closures: the runner is parented to the
+    window (never to the panel, which a language toggle deletes), so its
+    signals can still arrive after the panel's widgets are gone. The audit
+    entry in each closure is written before any widget is touched."""
+    def wrapper(*args):
+        try:
+            return func(*args)
+        except RuntimeError as exc:
+            if "already deleted" not in str(exc):
+                raise
+            return None
+    return wrapper
+
+
 def _thread_running(runner) -> bool:
     # A finished QThread may already be deleteLater'd - its wrapper then
     # raises RuntimeError, which just means "not running".
@@ -159,6 +187,28 @@ def _thread_running(runner) -> bool:
         return bool(runner.isRunning())
     except (RuntimeError, AttributeError):
         return False
+
+
+# Waits closeEvent gives the quick one-shot runners: PowerShell-backed
+# sysinfo checks run subprocess.run(timeout=10) plus process start, the
+# update check's urlopen(timeout=5) does not cover DNS, and the speed test
+# is two 20 s socket timeouts plus a ping.
+QUICK_RUNNER_WAIT_MS = 5_000
+SUBPROCESS_RUNNER_WAIT_MS = 15_000
+SPEED_TEST_WAIT_MS = 45_000
+
+# Runners a closing window could not wait out: re-parented away from it so
+# its destruction cannot take a live QThread down with it (qFatal), and
+# referenced here until they finish.
+_ORPHANED_RUNNERS: list = []
+
+
+def _orphan_if_running(runner) -> None:
+    if not _thread_running(runner):
+        return
+    runner.setParent(None)
+    _ORPHANED_RUNNERS.append(runner)
+    runner.finished.connect(lambda r=runner: r in _ORPHANED_RUNNERS and _ORPHANED_RUNNERS.remove(r))
 
 
 class _DiskHealthProbeRunner(QThread):
@@ -242,6 +292,12 @@ class MainWindow(QMainWindow):
         # then say (research-reporting.md F4).
         self._storage_fallback = Path(state_dir) != Path(assets_dir)
         self.modules, module_load_errors = load_catalog(assets_dir, settings.allow_modified_modules)
+        self._action_index: dict[str, tuple[ModuleDef, ActionDef]] = {}
+        self._bulk_selecting = False
+        # One group for the window's life: a language toggle rebuilds its
+        # buttons (Qt drops the deleted ones), not the group.
+        self._preset_button_group = QButtonGroup(self)
+        self._preset_button_group.setExclusive(True)
         # Research G27: client complaint -> the symptoms to suggest. A broken
         # entry is skipped and reported with the module errors.
         self._symptoms, symptom_errors = symptoms.load(
@@ -304,6 +360,9 @@ class MainWindow(QMainWindow):
         # may have read the audit log before it, so one more rewrite follows.
         self._report_refresh_pending = False
         self._batch_active = False
+        # DRY-RUN as it was when the running batch started: the checkbox is
+        # locked for the batch, and every batch-engine decision reads this.
+        self._batch_dry_run = settings.dry_run
         self._snapshot_before: dict = {}
         self._snapshot_after: dict = {}
         self._undo_steps: list[str] = []
@@ -325,6 +384,7 @@ class MainWindow(QMainWindow):
         # listed in undo.ps1 so it never implies everything was reversible.
         self._irreversible_actions: list[str] = []
         self._batch_results: list[tuple[str, int]] = []
+        self._failure_hints: dict[str, str] = {}
         # action_id -> the warning text the technician accepted for it on
         # the batch review screen (research G12); _dispatch_action asks
         # nothing more for these and quotes the text in the audit entry.
@@ -426,6 +486,18 @@ class MainWindow(QMainWindow):
         # i18n key of the review note when resume_batch switched DRY-RUN.
         self._resume_mode_note = ""
         self._build_ui()
+        # Sized from the screen once, here - not in _build_ui, which a
+        # language toggle reruns (it re-sized a maximised window). On the
+        # 1366 x 768 / 125 %-scaled laptops this tool is run on, main.py
+        # shows the window maximised instead.
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None and available.width() > 0:
+            self.resize(min(1200, int(available.width() * 0.95)), min(760, int(available.height() * 0.92)))
+            self.prefer_maximized = available.width() < 1400 or available.height() < 850
+        else:
+            self.resize(1200, 760)
+            self.prefer_maximized = False
         # Quiet mode: no GitHub request at start; the sysinfo panel has a
         # button for an explicit check instead.
         if self.settings.quiet_mode:
@@ -446,6 +518,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+F", self._on_search_shortcut),
             ("Ctrl+S", self._on_save_preset_clicked),
             ("Ctrl+J", self._open_job_dialog),
+            ("Ctrl+L", self._on_toggle_language),
             ("F1", self._show_shortcuts_help),
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
@@ -501,6 +574,17 @@ class MainWindow(QMainWindow):
             # minutes on a slow stick - same non-blocking close.
             rp_runner = self._pending_hive_backup_runner
             waiting_key = "closing_waiting_hive_backup"
+        if not _thread_running(rp_runner) and _thread_running(self._winget_update_runner):
+            # A winget call can run for minutes (its timeout is 5 min); the
+            # uninstaller waits for the technician's clicks with no timeout
+            # at all - a blocking wait here froze the window for that long.
+            rp_runner = self._winget_update_runner
+            waiting_key = "closing_waiting_winget"
+            rp_runner.request_stop()
+        if not _thread_running(rp_runner) and _thread_running(self._uninstall_runner):
+            rp_runner = self._uninstall_runner
+            waiting_key = "closing_waiting_uninstall"
+            rp_runner.requestInterruption()
         if rp_runner is not None and _thread_running(rp_runner):
             # Checkpoint-Computer can take minutes and can't be interrupted.
             # Blocking in closeEvent froze the window ("Not Responding" -
@@ -609,16 +693,16 @@ class MainWindow(QMainWindow):
         # proceed while that QThread is still alive, which is the exact crash
         # this loop exists to prevent.
         quick_runners = (
-            self._static_info_runner,
-            self._hw_sensor_runner,
-            self._ping_runner,
-            self._vpn_runner,
-            self._runner,
-            self._preview_runner,
-            self._update_check_runner,
+            (self._static_info_runner, SUBPROCESS_RUNNER_WAIT_MS),
+            (self._hw_sensor_runner, QUICK_RUNNER_WAIT_MS),
+            (self._ping_runner, QUICK_RUNNER_WAIT_MS),
+            (self._vpn_runner, SUBPROCESS_RUNNER_WAIT_MS),
+            (self._runner, QUICK_RUNNER_WAIT_MS),
+            (self._preview_runner, QUICK_RUNNER_WAIT_MS),
+            (self._update_check_runner, SUBPROCESS_RUNNER_WAIT_MS),
         )
         slow_runners = (
-            (self._speed_test_runner, 25_000),
+            (self._speed_test_runner, SPEED_TEST_WAIT_MS),
             # A state check (G09) was just killed; its pipe drains at once.
             (self._check_runner, 15_000),
             # Checkpoint-Computer can legitimately run for minutes (VSS on a
@@ -646,20 +730,16 @@ class MainWindow(QMainWindow):
             (self._winget_scan_runner, 65_000),
             (self._winget_update_runner, winget_updates._UPDATE_TIMEOUT_SEC * 1000 + 10_000),
         )
-        for runner in quick_runners:
-            if runner is None:
-                continue
-            try:
-                runner.wait(5000)
-            except RuntimeError:
-                pass
-        for runner, timeout_ms in slow_runners:
+        for runner, timeout_ms in quick_runners + slow_runners:
             if runner is None:
                 continue
             try:
                 runner.wait(timeout_ms)
             except RuntimeError:
                 pass
+            # Still running past its wait (a DNS lookup that hangs, a
+            # stalled VSS): it must not be destroyed with this window.
+            _orphan_if_running(runner)
         # No cap: all of them stop within a chunk or a poll once interrupted
         # (the handoff kills the report it is waiting on),
         # and a capped wait that ran out would destroy a live QThread (the
@@ -677,6 +757,14 @@ class MainWindow(QMainWindow):
 
     def _t(self, key: str) -> str:
         return i18n.translate(key, self.settings.language)
+
+    def _risk_text(self, risk: RiskLevel, glyph: bool = True) -> str:
+        return i18n.risk_text(risk.value, self.settings.language, glyph)
+
+    def _tn(self, key: str, count: int, noun: str, **fields) -> str:
+        """A string with a counted noun ("1 akcia", "3 akcie", "5 akcií")."""
+        noun_text = i18n.count_noun(noun, int(count), self.settings.language)
+        return self._t(key).format(count=count, noun=noun_text, **fields)
 
     def _build_target_user_banner(self) -> QLabel:
         """Over-the-shoulder elevation (research G25): say up front that
@@ -702,7 +790,6 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
         self.setStyleSheet(style.stylesheet())
-        self.resize(1200, 760)
         central = QWidget(self)
         central.setObjectName("central")
         self.setCentralWidget(central)
@@ -741,6 +828,10 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.dry_run_checkbox)
         self.language_button = QPushButton(self.settings.language.upper())
         self.language_button.clicked.connect(self._on_toggle_language)
+        # The button shows the current language; say what a click does.
+        target_language = "English" if self.settings.language == "sk" else "Slovenčina"
+        self.language_button.setToolTip(self._t("language_switch_tooltip").format(language=target_language))
+        self.language_button.setAccessibleName(self._t("language_switch_tooltip").format(language=target_language))
         top_bar.addWidget(self.language_button)
         root_layout.addLayout(top_bar)
 
@@ -800,7 +891,7 @@ class MainWindow(QMainWindow):
         self.category_list = QListWidget()
         self.category_list.setObjectName("categoryList")
         category_labels = [self._t(category_i18n_keys[category]) for category in self._categories_order]
-        category_labels += [f"{self._t('risk_tab_prefix')} {risk.value}" for risk in self._risk_tabs_order]
+        category_labels += [f"{self._t('risk_tab_prefix')} {self._risk_text(risk)}" for risk in self._risk_tabs_order]
         for label in category_labels:
             self.category_list.addItem(QListWidgetItem(label))
         # Fixed 190px clipped longer entries (e.g. "Risk: REQUIRES_REBOOT")
@@ -828,36 +919,34 @@ class MainWindow(QMainWindow):
         scope_label = QLabel(self._t("all_categories"))
         scope_label.setObjectName("selectionScope")
         global_select_row.addWidget(scope_label)
-        self.global_select_all_button = self._make_selection_button(
-            self._t("select_all"), lambda: self._apply_selection(list(self._action_checkboxes), "all")
-        )
-        global_select_row.addWidget(self.global_select_all_button)
-        self.global_select_safe_button = self._make_selection_button(
-            self._t("select_safe_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.SAFE.value),
-        )
-        global_select_row.addWidget(self.global_select_safe_button)
-        self.global_select_moderate_button = self._make_selection_button(
-            self._t("select_moderate_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.MODERATE.value),
-        )
-        global_select_row.addWidget(self.global_select_moderate_button)
-        self.global_select_destructive_button = self._make_selection_button(
-            self._t("select_destructive_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.DESTRUCTIVE.value),
-        )
-        global_select_row.addWidget(self.global_select_destructive_button)
-        self.global_select_reboot_button = self._make_selection_button(
-            self._t("select_reboot_only"),
-            lambda: self._apply_selection(list(self._action_checkboxes), RiskLevel.REQUIRES_REBOOT.value),
-        )
-        global_select_row.addWidget(self.global_select_reboot_button)
-        self.global_select_none_button = self._make_selection_button(
-            self._t("select_none"), lambda: self._apply_selection(list(self._action_checkboxes), "none")
-        )
-        self.global_select_none_button.setProperty("danger", True)
+        # One menu instead of six buttons in a row: the row alone needed
+        # ~800 px and kept the window from fitting a 1366 x 768 laptop.
+        self.global_select_button = QToolButton()
+        self.global_select_button.setObjectName("selectionBtn")
+        self.global_select_button.setText(self._t("select_menu"))
+        self.global_select_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.global_select_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        global_select_menu = QMenu(self.global_select_button)
+
+        def _select_action(text: str, mode: str):
+            action = global_select_menu.addAction(text)
+            action.triggered.connect(lambda _checked=False: self._apply_selection(list(self._action_checkboxes), mode))
+            return action
+
+        def _select_only(risk: RiskLevel):
+            text = self._t("select_risk_only").format(risk=self._risk_text(risk))
+            return _select_action(text, risk.value)
+
+        self.global_select_all_button = _select_action(self._t("select_all"), "all")
+        self.global_select_safe_button = _select_only(RiskLevel.SAFE)
+        self.global_select_moderate_button = _select_only(RiskLevel.MODERATE)
+        self.global_select_destructive_button = _select_only(RiskLevel.DESTRUCTIVE)
+        self.global_select_reboot_button = _select_only(RiskLevel.REQUIRES_REBOOT)
+        global_select_menu.addSeparator()
+        self.global_select_none_button = _select_action(self._t("select_none"), "none")
         self.global_select_none_button.setEnabled(False)
-        global_select_row.addWidget(self.global_select_none_button)
+        self.global_select_button.setMenu(global_select_menu)
+        global_select_row.addWidget(self.global_select_button)
         global_select_row.addStretch(1)
         center_layout.addLayout(global_select_row)
 
@@ -867,8 +956,6 @@ class MainWindow(QMainWindow):
         preset_label.setObjectName("selectionScope")
         preset_row.addWidget(preset_label)
         self._preset_buttons: dict[str, QPushButton] = {}
-        self._preset_button_group = QButtonGroup(self)
-        self._preset_button_group.setExclusive(True)
         preset_row.addWidget(self._make_preset_button(self._t("preset_quick_clean"), "quick_clean"))
         preset_row.addWidget(self._make_preset_button(self._t("preset_full_diagnostic"), "full_diagnostic"))
         preset_row.addWidget(self._make_preset_button(self._t("preset_privacy_debloat"), "privacy_debloat"))
@@ -876,6 +963,7 @@ class MainWindow(QMainWindow):
         self.search_box = QLineEdit()
         self.search_box.setObjectName("searchBox")
         self.search_box.setPlaceholderText(self._t("search_placeholder"))
+        self.search_box.setAccessibleName(self._t("search_placeholder"))
         self.search_box.setMaximumWidth(220)
         self.search_box.textChanged.connect(self._on_search_changed)
         # Esc clears the search - handled on the box itself (eventFilter)
@@ -937,6 +1025,11 @@ class MainWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 6, 0)
         scroll_layout.setSpacing(8)
+        self._search_empty_label = QLabel()
+        self._search_empty_label.setObjectName("emptyState")
+        self._search_empty_label.setWordWrap(True)
+        self._search_empty_label.setHidden(True)
+        scroll_layout.addWidget(self._search_empty_label)
 
         self._category_groups: dict[ModuleCategory, QWidget] = {}
         self._category_action_ids: dict[ModuleCategory, list[str]] = {}
@@ -1017,11 +1110,12 @@ class MainWindow(QMainWindow):
                     checkbox.setToolTip(action.description(self.settings.language))
                     checkbox.setAccessibleDescription(action.description(self.settings.language))
                     checkbox.setAccessibleName(self._action_accessible_name(action))
-                    checkbox.stateChanged.connect(lambda _state=0: self._update_status_bar())
+                    checkbox.stateChanged.connect(self._on_checkbox_state_changed)
                     self._action_checkboxes[action.id] = checkbox
                     row.addWidget(checkbox)
-                    badge = QLabel(action.risk.value)
+                    badge = QLabel(self._risk_text(action.risk))
                     badge.setObjectName("riskBadge")
+                    badge.setToolTip(action.risk.value)
                     badge.setProperty("risk", action.risk.value)
                     row.addWidget(badge)
                     if module.custom:
@@ -1075,6 +1169,10 @@ class MainWindow(QMainWindow):
         self._risk_view_rows: dict[str, QWidget] = {}
         self._risk_view_detail_toggles: dict[str, QToolButton] = {}
         self._risk_view_detail_panels: dict[str, QWidget] = {}
+        # The four risk cards repeat every row of the catalog - their rows
+        # are built on the first visit (_ensure_risk_card), which took the
+        # start-up build from ~10 s to a few.
+        self._risk_card_layouts: dict[RiskLevel, QVBoxLayout] = {}
         for risk in self._risk_tabs_order:
             card = QFrame()
             card.setObjectName("actionCard")
@@ -1083,7 +1181,7 @@ class MainWindow(QMainWindow):
             card_layout.setSpacing(2)
             heading_row = QHBoxLayout()
             heading_row.setSpacing(6)
-            heading = QLabel(f"{self._t('risk_tab_prefix')} {risk.value}")
+            heading = QLabel(f"{self._t('risk_tab_prefix')} {self._risk_text(risk)}")
             heading.setObjectName("cardHeading")
             heading_row.addWidget(heading)
             heading_row.addStretch(1)
@@ -1094,42 +1192,7 @@ class MainWindow(QMainWindow):
                 self._t("select_none"), lambda r=risk: self._apply_selection(self._risk_action_ids[r], "none")
             ))
             card_layout.addLayout(heading_row)
-            for action_id in self._risk_action_ids[risk]:
-                module, action = self._find_action(action_id)
-                row_widget = QWidget()
-                row = QHBoxLayout(row_widget)
-                row.setContentsMargins(0, 0, 0, 0)
-                row.setSpacing(8)
-                mirror_checkbox = QCheckBox(action.label(self.settings.language))
-                mirror_checkbox.setToolTip(action.description(self.settings.language))
-                mirror_checkbox.setAccessibleDescription(action.description(self.settings.language))
-                canonical_checkbox = self._action_checkboxes[action_id]
-                mirror_checkbox.setChecked(canonical_checkbox.isChecked())
-                # Two views, one source of truth: setChecked() only emits
-                # stateChanged on an actual value change, so this pair never
-                # loops - whichever view the user clicks, the other follows.
-                mirror_checkbox.stateChanged.connect(
-                    lambda state, c=canonical_checkbox: c.setChecked(state != 0)
-                )
-                canonical_checkbox.stateChanged.connect(
-                    lambda state, m=mirror_checkbox: m.setChecked(state != 0)
-                )
-                self._risk_view_checkboxes[action_id] = mirror_checkbox
-                row.addWidget(mirror_checkbox)
-                category_label = QLabel(self._t(category_i18n_keys[module.category]))
-                category_label.setObjectName("actionStatus")
-                row.addWidget(category_label)
-                row.addStretch(1)
-                # Independent from the category view's toggle on purpose:
-                # expand/collapse is display-only, not selection state, so
-                # unlike the checkboxes above it has no two-way sync to break.
-                detail_toggle, detail_panel = self._make_action_detail_toggle(action)
-                self._risk_view_detail_toggles[action_id] = detail_toggle
-                self._risk_view_detail_panels[action_id] = detail_panel
-                row.addWidget(detail_toggle)
-                row_container = self._wrap_row_with_detail_panel(row_widget, detail_panel)
-                self._risk_view_rows[action_id] = row_container
-                card_layout.addWidget(row_container)
+            self._risk_card_layouts[risk] = card_layout
             scroll_layout.addWidget(card)
             card.setHidden(True)
             self._nav_row_order.append(card)
@@ -1187,11 +1250,13 @@ class MainWindow(QMainWindow):
             "⤢", lambda: self._on_console_fullscreen_toggled()
         )
         self.console_fullscreen_button.setToolTip(self._t("console_fullscreen_toggle"))
+        self.console_fullscreen_button.setAccessibleName(self._t("console_fullscreen_toggle"))
         console_toolbar.addWidget(self.console_fullscreen_button)
         self.console_popout_button = self._make_selection_button(
             "⧉", lambda: self._on_console_popout_clicked()
         )
         self.console_popout_button.setToolTip(self._t("console_popout"))
+        self.console_popout_button.setAccessibleName(self._t("console_popout"))
         console_toolbar.addWidget(self.console_popout_button)
 
         self._console_container_layout = QVBoxLayout()
@@ -1225,6 +1290,8 @@ class MainWindow(QMainWindow):
             self.run_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
+            self.dry_run_checkbox.setEnabled(False)
+            self.restart_admin_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(self._queue_total - len(self._queue))
             self.progress_bar.setVisible(True)
@@ -1247,17 +1314,63 @@ class MainWindow(QMainWindow):
 
     def _on_category_changed(self, row: int) -> None:
         if self.search_box.text().strip():
-            # A search is active - every card stays visible (with only the
-            # matching rows shown, per _on_search_changed) so results from
-            # every category are reachable, not just whichever one the
-            # sidebar happens to be on.
-            for widget in self._nav_row_order:
-                widget.setHidden(False)
+            # A search is active - it decides which cards show, whatever
+            # the sidebar is on (see _on_search_changed).
+            self._on_search_changed(self.search_box.text())
             return
         for index, widget in enumerate(self._nav_row_order):
             widget.setHidden(index != row)
         if 0 <= row < len(self._categories_order):
             self._start_checks(self._category_action_ids.get(self._categories_order[row], []))
+        elif 0 <= row - len(self._categories_order) < len(self._risk_tabs_order):
+            self._ensure_risk_card(self._risk_tabs_order[row - len(self._categories_order)])
+
+    def _ensure_risk_card(self, risk: RiskLevel) -> None:
+        """Fills a risk card's rows on its first visit (see _build_ui)."""
+        card_layout = self._risk_card_layouts.pop(risk, None)
+        if card_layout is None:
+            return
+        for action_id in self._risk_action_ids[risk]:
+            module, action = self._find_action(action_id)
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            mirror_checkbox = QCheckBox(action.label(self.settings.language))
+            mirror_checkbox.setToolTip(action.description(self.settings.language))
+            mirror_checkbox.setAccessibleDescription(action.description(self.settings.language))
+            canonical_checkbox = self._action_checkboxes[action_id]
+            mirror_checkbox.setChecked(canonical_checkbox.isChecked())
+            # Two views, one source of truth: setChecked() only emits
+            # stateChanged on an actual value change, so this pair never
+            # loops - whichever view the user clicks, the other follows.
+            mirror_checkbox.stateChanged.connect(
+                lambda state, c=canonical_checkbox: c.setChecked(state != 0)
+            )
+            canonical_checkbox.stateChanged.connect(
+                lambda state, m=mirror_checkbox: m.setChecked(state != 0)
+            )
+            self._risk_view_checkboxes[action_id] = mirror_checkbox
+            row.addWidget(mirror_checkbox)
+            category_label = QLabel(self._t(self._category_i18n_keys[module.category]))
+            category_label.setObjectName("actionStatus")
+            row.addWidget(category_label)
+            row.addStretch(1)
+            # Independent from the category view's toggle on purpose:
+            # expand/collapse is display-only, not selection state, so
+            # unlike the checkboxes above it has no two-way sync to break.
+            detail_toggle, detail_panel = self._make_action_detail_toggle(action)
+            self._risk_view_detail_toggles[action_id] = detail_toggle
+            self._risk_view_detail_panels[action_id] = detail_panel
+            row.addWidget(detail_toggle)
+            row_container = self._wrap_row_with_detail_panel(row_widget, detail_panel)
+            self._risk_view_rows[action_id] = row_container
+            card_layout.addWidget(row_container)
+        needle = self.search_box.text().strip().lower()
+        if needle:
+            for action_id in self._risk_action_ids[risk]:
+                _, action = self._find_action(action_id)
+                self._risk_view_rows[action_id].setHidden(needle not in self._action_search_haystack(action))
 
     # --- "already applied?" status chips (research G09) ----------------------
 
@@ -1327,13 +1440,8 @@ class MainWindow(QMainWindow):
 
     def _on_search_changed(self, text: str) -> None:
         needle = text.strip().lower()
-        if needle:
-            # Search every category/risk card at once instead of just the
-            # one the sidebar currently has open - a match hidden inside an
-            # unopened card looked identical to "no such action".
-            for widget in self._nav_row_order:
-                widget.setHidden(False)
-        else:
+        if not needle:
+            self._search_empty_label.setHidden(True)
             self._on_category_changed(self.category_list.currentRow())
         matched_ids: set[str] = set()
         for action_id, row_widget in self._action_rows.items():
@@ -1358,9 +1466,18 @@ class MainWindow(QMainWindow):
             self._update_status_bar()
             return
 
-        # Search now shows every matching card at once (see above), so
-        # there's no more "hidden in a tab you're not looking at" case -
-        # just report whether anything matched at all.
+        # Search every category at once instead of just the one the sidebar
+        # has open - a match hidden inside an unopened card looked identical
+        # to "no such action". Only cards with a hit are shown: the
+        # Dashboard, the Uninstaller and the risk views (which repeat every
+        # row) would only bury the results.
+        for category in self._categories_order:
+            ids = self._category_action_ids.get(category, ())
+            self._category_groups[category].setHidden(not any(aid in matched_ids for aid in ids))
+        for card in self._nav_row_order[len(self._categories_order):]:
+            card.setHidden(True)
+        self._search_empty_label.setText(self._t("search_empty_state").format(query=text.strip()))
+        self._search_empty_label.setHidden(bool(matched_ids))
         if not matched_ids:
             self.statusBar().showMessage(self._t("search_no_matches").format(query=text.strip()))
         else:
@@ -1486,7 +1603,7 @@ class MainWindow(QMainWindow):
             if risk_order.index(action.risk) < risk_order.index(highest):
                 highest = action.risk
         self.statusBar().showMessage(
-            self._t("status_bar_selected").format(count=len(selected), risk=highest.value)
+            self._t("status_bar_selected").format(count=len(selected), risk=self._risk_text(highest))
         )
 
     def _append_console(self, line: str) -> None:
@@ -1614,6 +1731,7 @@ class MainWindow(QMainWindow):
 
     def _open_job_dialog(self) -> None:
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.setWindowTitle(self._t("job_dialog_title"))
         dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
@@ -1732,6 +1850,7 @@ class MainWindow(QMainWindow):
             saved_outtake[0] if saved_outtake else None,
             parent=parent or self,
         )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._forms_dialog = dialog
         dialog.accepted.connect(lambda: self._save_forms(dialog.intake_form(), dialog.outtake_form()))
         dialog.open()
@@ -1764,6 +1883,7 @@ class MainWindow(QMainWindow):
             "logo": self.settings.branding_logo,
         }
         dialog = job_forms.BrandingDialog(self.settings.language, values, parent=parent or self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._branding_dialog = dialog
         dialog.accepted.connect(lambda: self._set_branding(dialog.values()))
         dialog.open()
@@ -1784,7 +1904,7 @@ class MainWindow(QMainWindow):
         self._batch_started_at = time.monotonic()
         entry = make_entry(
             "_system", intake.BATCH_DURATION_EVENT, "", 0, intake.batch_duration_output(seconds),
-            self.settings.dry_run, self.run_id, elevated=self.is_admin,
+            self._batch_dry_run, self.run_id, elevated=self.is_admin,
         )
         try:
             append_entry(self.state_dir, self.run_id, entry)
@@ -1829,7 +1949,7 @@ class MainWindow(QMainWindow):
         for name, action_ids in self.settings.custom_presets.items():
             button = self._make_preset_button(name, CUSTOM_PRESET_PREFIX + name)
             button.setProperty("custom", True)
-            button.setToolTip(self._t("preset_custom_tooltip").format(count=len(action_ids)))
+            button.setToolTip(self._tn("preset_custom_tooltip", len(action_ids), "action"))
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda pos, b=button, n=name: self._show_custom_preset_menu(b, n, pos)
@@ -1873,7 +1993,7 @@ class MainWindow(QMainWindow):
         button = self._preset_buttons.get(CUSTOM_PRESET_PREFIX + name)
         if button is not None:
             button.setChecked(True)
-        self.statusBar().showMessage(self._t("preset_saved").format(name=name, count=len(action_ids)), 5000)
+        self.statusBar().showMessage(self._tn("preset_saved", len(action_ids), "action", name=name), 5000)
         return True
 
     def _show_custom_preset_menu(self, button: QPushButton, name: str, pos) -> None:
@@ -1900,11 +2020,28 @@ class MainWindow(QMainWindow):
         toggle.setCheckable(True)
         toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         toggle.setToolTip(self._t("show_action_details"))
+        # Narrator would read "black down-pointing triangle" for every row.
+        toggle.setAccessibleName(f"{self._t('show_action_details')}: {action.label(self.settings.language)}")
         toggle.setText("▼")
 
+        # An empty placeholder until the first expand: ~540 of these panels,
+        # each with 1-2 QPlainTextEdits polished against the stylesheet,
+        # were ~60 % of the 10 s start-up build.
         panel = QWidget()
         panel.setObjectName("actionDetailPanel")
         panel.setHidden(True)
+
+        def _on_toggled(checked: bool) -> None:
+            if checked and panel.layout() is None:
+                self._fill_action_detail_panel(panel, action)
+            panel.setHidden(not checked)
+            toggle.setText("▲" if checked else "▼")
+            toggle.setToolTip(self._t("hide_action_details") if checked else self._t("show_action_details"))
+
+        toggle.toggled.connect(_on_toggled)
+        return toggle, panel
+
+    def _fill_action_detail_panel(self, panel: QWidget, action: ActionDef) -> None:
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(10, 8, 10, 8)
         panel_layout.setSpacing(4)
@@ -1932,14 +2069,6 @@ class MainWindow(QMainWindow):
             undo_box.setFixedHeight(48)
             panel_layout.addWidget(undo_box)
 
-        def _on_toggled(checked: bool) -> None:
-            panel.setHidden(not checked)
-            toggle.setText("▲" if checked else "▼")
-            toggle.setToolTip(self._t("hide_action_details") if checked else self._t("show_action_details"))
-
-        toggle.toggled.connect(_on_toggled)
-        return toggle, panel
-
     @staticmethod
     def _wrap_row_with_detail_panel(row_widget: QWidget, detail_panel: QWidget) -> QWidget:
         container = QWidget()
@@ -1949,6 +2078,10 @@ class MainWindow(QMainWindow):
         container_layout.addWidget(row_widget)
         container_layout.addWidget(detail_panel)
         return container
+
+    def _on_checkbox_state_changed(self, _state: int = 0) -> None:
+        if not self._bulk_selecting:
+            self._update_status_bar()
 
     def _apply_selection(self, action_ids: list[str], mode: str) -> None:
         # mode is "all", "none", or a RiskLevel value (e.g. "SAFE") meaning
@@ -1968,6 +2101,15 @@ class MainWindow(QMainWindow):
             self._preset_button_group.setExclusive(False)
             checked_preset.setChecked(False)
             self._preset_button_group.setExclusive(True)
+        # One status-bar recount for the whole sweep, not one per checkbox.
+        self._bulk_selecting = True
+        try:
+            self._set_checks(action_ids, mode)
+        finally:
+            self._bulk_selecting = False
+        self._update_status_bar()
+
+    def _set_checks(self, action_ids: list[str], mode: str) -> None:
         for action_id in action_ids:
             if mode == "none":
                 checked = False
@@ -2018,6 +2160,7 @@ class MainWindow(QMainWindow):
 
     def _show_batch_summary(self, html_path: Path) -> None:
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.setWindowTitle(self._t("batch_results_title"))
         dialog.setStyleSheet(style.stylesheet())
         dialog.setMinimumWidth(420)
@@ -2035,12 +2178,12 @@ class MainWindow(QMainWindow):
 
         # Before -> after metrics, same rows (snapshot.compare_snapshots) as
         # the report's "Before / after" table; only metrics known both times.
-        if not self.settings.dry_run:
+        if not self._batch_dry_run:
             metrics = self._build_snapshot_metrics_widget()
             if metrics is not None:
                 layout.addWidget(metrics)
 
-        if self.settings.dry_run:
+        if self._batch_dry_run:
             note = QLabel(self._t("dry_run_batch_note"))
             note.setObjectName("summaryDryRunNote")
             layout.addWidget(note)
@@ -2052,9 +2195,11 @@ class MainWindow(QMainWindow):
         # Plain text of what the dialog shows, for the Copy button (item 15) -
         # pasted into a ticket or a chat with the client.
         copy_lines = [header.text()]
-        if self.settings.dry_run:
+        if self._batch_dry_run:
             copy_lines.append(self._t("dry_run_batch_note"))
-        for action_id, exit_code in self._batch_results:
+        # Failed first: that is what the technician has to act on (stable
+        # sort keeps the run order inside each group).
+        for action_id, exit_code in sorted(self._batch_results, key=lambda result: result[1] == 0):
             _, action = self._find_action(action_id)
             status = self._t("status_ok") if exit_code == 0 else self._t("status_failed")
             row_text = f"[{status}] {action.label(self.settings.language)}"
@@ -2065,6 +2210,13 @@ class MainWindow(QMainWindow):
             row_label.setObjectName("summaryRow")
             row_label.setProperty("ok", "true" if exit_code == 0 else "false")
             rows_layout.addWidget(row_label)
+            if exit_code != 0:
+                hint = self._t(self._failure_hints.get(action_id, "failure_hint_generic"))
+                copy_lines.append("    " + hint)
+                hint_label = QLabel(hint)
+                hint_label.setObjectName("summaryHint")
+                hint_label.setWordWrap(True)
+                rows_layout.addWidget(hint_label)
         rows_layout.addStretch(1)
 
         rows_scroll = QScrollArea()
@@ -2120,6 +2272,16 @@ class MainWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path)))
         )
         button_row.addWidget(open_button)
+        folder_button = self._make_selection_button(
+            self._t("open_report_folder"),
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path.parent))),
+        )
+        button_row.addWidget(folder_button)
+        failed_ids = [aid for aid, code in self._batch_results if code != 0]
+        if failed_ids:
+            button_row.addWidget(self._make_selection_button(
+                self._t("rerun_failed"), lambda: self._select_failed_again(failed_ids, dialog)
+            ))
         if self._undo_steps and self._undo_script_path is not None:
             # Mirrors the "Open report" button above exactly - the undo
             # script already exists on disk whenever there are reversible
@@ -2157,6 +2319,16 @@ class MainWindow(QMainWindow):
         dialog.activateWindow()
         open_button.setFocus()
         self._summary_dialog = dialog
+
+    def _select_failed_again(self, action_ids: list[str], dialog: QDialog) -> None:
+        # Ticked directly, not through "select all": that sweep skips
+        # actions that opt out of it, and a failed one must stay re-runnable.
+        self._apply_selection(list(self._action_checkboxes), "none")
+        for action_id in action_ids:
+            checkbox = self._action_checkboxes.get(action_id)
+            if checkbox is not None:
+                checkbox.setChecked(True)
+        dialog.close()
 
     def _apply_recommended_selection(self, action_ids: list[str], dialog: QDialog | None) -> None:
         if not action_ids:
@@ -2327,12 +2499,14 @@ class MainWindow(QMainWindow):
         def ignore_package(package_id: str) -> None:
             if package_id not in self.settings.winget_ignored_ids:
                 self.settings.winget_ignored_ids.append(package_id)
+                self._persist_settings()
             remove_row(package_id)
             refresh_ignored_panel()
 
         def unignore_package(package_id: str) -> None:
             if package_id in self.settings.winget_ignored_ids:
                 self.settings.winget_ignored_ids.remove(package_id)
+                self._persist_settings()
             refresh_ignored_panel()
             start_scan()
 
@@ -2451,10 +2625,10 @@ class MainWindow(QMainWindow):
             set_status(self._t("winget_scanning"), "ok")
             list_scroll.setVisible(False)
             select_row_widget.setVisible(False)
-            runner = winget_updates.WingetScanRunner(parent=panel)
+            runner = winget_updates.WingetScanRunner(parent=self)
             self._winget_scan_runner = runner
-            runner.scan_finished.connect(populate)
-            runner.scan_failed.connect(on_scan_failed)
+            runner.scan_finished.connect(_ignore_deleted(populate))
+            runner.scan_failed.connect(_ignore_deleted(on_scan_failed))
             runner.start()
 
         def export_list() -> None:
@@ -2466,8 +2640,12 @@ class MainWindow(QMainWindow):
             )
             if not path_str:
                 return
-            winget_updates.export_package_list(packages, Path(path_str))
-            set_status(self._t("winget_export_success").format(count=len(packages)), "ok")
+            try:
+                winget_updates.export_package_list(packages, Path(path_str))
+            except OSError as exc:
+                set_status(self._t("winget_export_failed"), "warn", str(exc))
+                return
+            set_status(self._tn("winget_export_success", len(packages), "package"), "ok")
 
         def import_list() -> None:
             path_str, _ = QFileDialog.getOpenFileName(
@@ -2485,7 +2663,7 @@ class MainWindow(QMainWindow):
                 if pid in imported_ids:
                     checkbox.setChecked(True)
                     checked += 1
-            set_status(self._t("winget_import_success").format(count=checked), "ok")
+            set_status(self._tn("winget_import_success", checked, "package"), "ok")
 
         def apply_auto_check_setting() -> None:
             minutes = auto_check_interval.currentData() if auto_check_checkbox.isChecked() else 0
@@ -2518,8 +2696,10 @@ class MainWindow(QMainWindow):
             # has to refuse, or one the closing app has to wait for.
             if self._update_in_progress or self._closing_for_update:
                 return
-            runner = self._winget_update_runner
-            if runner is None or not runner.isRunning():
+            # _thread_running, not isRunning(): the update runner deletes
+            # itself when done, and the dead wrapper raised on every tick -
+            # the periodic scan silently never ran again.
+            if not _thread_running(self._winget_update_runner):
                 start_scan()
 
         auto_check_timer = QTimer(panel)
@@ -2531,8 +2711,12 @@ class MainWindow(QMainWindow):
         else:
             auto_check_interval.setEnabled(False)
         apply_auto_check_setting()
-        auto_check_checkbox.toggled.connect(lambda _checked=False: apply_auto_check_setting())
-        auto_check_interval.currentIndexChanged.connect(lambda _index=0: apply_auto_check_setting())
+        def on_auto_check_changed(*_args) -> None:
+            apply_auto_check_setting()
+            self._persist_settings()
+
+        auto_check_checkbox.toggled.connect(on_auto_check_changed)
+        auto_check_interval.currentIndexChanged.connect(on_auto_check_changed)
 
         def on_quiet_mode_changed() -> None:
             # The timer itself follows _apply_polling_state, which the
@@ -2656,7 +2840,7 @@ class MainWindow(QMainWindow):
             refresh_btn.setEnabled(False)
             console.setVisible(True)
             console.appendPlainText(self._t("winget_updating"))
-            runner = winget_updates.WingetUpdateRunner(selected_packages, parent=panel)
+            runner = winget_updates.WingetUpdateRunner(selected_packages, parent=self)
             self._winget_update_runner = runner
 
             # A single winget call can legitimately take minutes with only a
@@ -2746,9 +2930,9 @@ class MainWindow(QMainWindow):
                 refresh_btn.setEnabled(True)
                 start_scan()
 
-            runner.package_started.connect(on_package_started)
-            runner.package_finished.connect(on_package_finished)
-            runner.all_finished.connect(on_all_finished)
+            runner.package_started.connect(_ignore_deleted(on_package_started))
+            runner.package_finished.connect(_ignore_deleted(on_package_finished))
+            runner.all_finished.connect(_ignore_deleted(on_all_finished))
             runner.start()
 
         select_all_btn.clicked.connect(
@@ -2846,7 +3030,7 @@ class MainWindow(QMainWindow):
             tile_top.addWidget(count_pill)
             tile_layout.addLayout(tile_top)
             count = self._category_module_action_counts.get(category, 0)
-            sub_label = QLabel(self._t("dashboard_actions_count").format(count=count) if count else "")
+            sub_label = QLabel(self._tn("dashboard_actions_count", count, "action") if count else "")
             sub_label.setObjectName("selectionScope")
             tile_layout.addWidget(sub_label)
             self._dashboard_tile_count_labels[category] = count_pill
@@ -2887,10 +3071,10 @@ class MainWindow(QMainWindow):
         name = self._t(self._category_i18n_keys.get(category, ""))
         pill = self._dashboard_tile_count_labels.get(category)
         findings = pill.text() if pill is not None else "0"
-        parts = [name, self._t("a11y_dashboard_tile_findings").format(count=findings)]
+        parts = [name, self._tn("a11y_dashboard_tile_findings", findings, "fix")]
         action_count = self._category_module_action_counts.get(category, 0)
         if action_count:
-            parts.append(self._t("dashboard_actions_count").format(count=action_count))
+            parts.append(self._tn("dashboard_actions_count", action_count, "action"))
         tile.setAccessibleName(", ".join(parts))
 
     def _dashboard_tile_clicked(self, category: ModuleCategory) -> None:
@@ -2929,9 +3113,7 @@ class MainWindow(QMainWindow):
             row_layout.setContentsMargins(10, 4, 6, 4)
             row_layout.setSpacing(8)
             text = QLabel(
-                self._t("history_row").format(
-                    date=run.display_date(), count=run.action_count, failed=run.failed_count
-                )
+                self._tn("history_row", run.action_count, "action", date=run.display_date(), failed=run.failed_count)
             )
             text.setObjectName("historyText")
             row_layout.addWidget(text, 1)
@@ -3540,7 +3722,7 @@ class MainWindow(QMainWindow):
                 console.appendPlainText(line)
             # On self, not the card: closeEvent and the app update's hand-off
             # guard must both know an uninstall is still running.
-            runner = uninstaller.UninstallRunner(selected, parent=card, plans=plans)
+            runner = uninstaller.UninstallRunner(selected, parent=self, plans=plans)
             self._uninstall_runner = runner
 
             def on_program_finished(name: str, ok: bool, output: str, outcome: str) -> None:
@@ -3587,8 +3769,8 @@ class MainWindow(QMainWindow):
                         row_widget.deleteLater()
                 show_orphan_cleanup()
 
-            runner.program_finished.connect(on_program_finished)
-            runner.all_finished.connect(on_all_finished)
+            runner.program_finished.connect(_ignore_deleted(on_program_finished))
+            runner.all_finished.connect(_ignore_deleted(on_all_finished))
             runner.start()
 
         uninstall_button.clicked.connect(lambda _checked=False: start_uninstall())
@@ -3790,11 +3972,19 @@ class MainWindow(QMainWindow):
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
 
+    def _language_toggle_busy(self) -> bool:
+        # A panel's restore point, winget scan/update or uninstall (G01)
+        # finishes into that panel's widgets - a rebuild now would delete
+        # them under it (and, when the runner was parented to the panel,
+        # destroy its live QThread: qFatal).
+        return any(_thread_running(r) for r in (
+            self._pending_panel_restore_point_runner, self._winget_scan_runner,
+            self._winget_update_runner, self._uninstall_runner,
+        ))
+
     def _on_toggle_language(self) -> None:
-        if _thread_running(self._pending_panel_restore_point_runner):
-            # A panel's restore point (G01) finishes into that panel's
-            # widgets - a rebuild now would delete them under it.
-            self.statusBar().showMessage(self._t("panel_restore_point_busy"))
+        if self._language_toggle_busy():
+            self.statusBar().showMessage(self._t("language_busy"))
             return
         # ponytail: keyboard-only/screen-reader users lose their place if a
         # full UI rebuild silently resets category and focus - remember and
@@ -3803,10 +3993,28 @@ class MainWindow(QMainWindow):
         saved_focused_action_id = next(
             (aid for aid, cb in self._action_checkboxes.items() if cb.hasFocus()), None
         )
+        # The rebuild makes every widget fresh: carry the technician's work over.
+        saved_checked = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        saved_console = self.console.toPlainText()
+        saved_search = self.search_box.text()
+        saved_symptom = self.symptom_box.text()
+        if self._console_window is not None:
+            self._console_window.close()  # hands the console back before the old UI goes
         self.settings.language = "en" if self.settings.language == "sk" else "sk"
         old_central = self.centralWidget()
         self._action_checkboxes = {}
         self._build_ui()
+        for action_id in saved_checked:
+            checkbox = self._action_checkboxes.get(action_id)
+            if checkbox is not None:
+                checkbox.setChecked(True)
+        if saved_console:
+            self.console.setPlainText(saved_console)
+            bar = self.console.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        self.search_box.setText(saved_search)
+        self.symptom_box.setText(saved_symptom)
+        self._refresh_dashboard()
         if old_central is not None:
             old_central.deleteLater()
         if 0 <= saved_category_row < self.category_list.count():
@@ -4095,6 +4303,10 @@ class MainWindow(QMainWindow):
         )
 
     def _on_restart_as_admin(self) -> None:
+        # UAC would fire first and the close confirmation only afterwards.
+        if self._long_running_tasks():
+            self.statusBar().showMessage(self._t("restart_admin_busy"))
+            return
         # In a frozen build sys.executable IS the app - no args needed. In
         # dev mode it's python.exe, which needs the script path re-passed or
         # elevating just opens a bare interpreter instead of restarting the app.
@@ -4117,11 +4329,18 @@ class MainWindow(QMainWindow):
             self.close()
 
     def _find_action(self, action_id: str) -> tuple[ModuleDef, ActionDef]:
-        for module in self.modules:
-            for action in module.actions:
-                if action.id == action_id:
-                    return module, action
-        raise KeyError(action_id)
+        hit = self._action_index.get(action_id)
+        if hit is None:
+            # Built on first use and again on a miss: self.modules is public
+            # and can be extended after construction.
+            self._action_index = {}
+            for module in self.modules:
+                for action in module.actions:
+                    self._action_index.setdefault(action.id, (module, action))
+            hit = self._action_index.get(action_id)
+            if hit is None:
+                raise KeyError(action_id)
+        return hit
 
     def _skip_high_risk_actions_in_queue(self) -> None:
         def _is_high_risk(action_id: str) -> bool:
@@ -4146,7 +4365,7 @@ class MainWindow(QMainWindow):
     def _action_accessible_name(self, action: ActionDef, status_text: str = "") -> str:
         # "riziko"/"risk" translated - Narrator reads the whole name in the
         # UI language, and a lone English word mid-sentence is jarring.
-        name = f"{action.label(self.settings.language)} — {self._t('a11y_risk')}: {action.risk.value}"
+        name = f"{action.label(self.settings.language)} — {self._t('a11y_risk')}: {self._risk_text(action.risk, glyph=False)}"
         if status_text:
             name += f", {status_text}"
         return name
@@ -4201,6 +4420,7 @@ class MainWindow(QMainWindow):
         if self._batch_start_blocked():
             return
         resuming, self._resuming = self._resuming, None
+        self._batch_dry_run = bool(self.settings.dry_run)
         queue = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
         # Research G03: an action that restarts Windows at once runs last, so
         # it cuts nothing off - and only after the report and undo.ps1 exist.
@@ -4241,6 +4461,7 @@ class MainWindow(QMainWindow):
         self._queue_total = len(self._queue)
         self._restore_point_attempted = False
         self._batch_results = []
+        self._failure_hints = {}
         self._action_durations = {}
         self._summary_dialog = None
         self._cancel_requested = False
@@ -4260,6 +4481,8 @@ class MainWindow(QMainWindow):
             self.dashboard_analyze_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.language_button.setEnabled(False)
+            self.dry_run_checkbox.setEnabled(False)
+            self.restart_admin_button.setEnabled(False)
             self.progress_bar.setMaximum(self._queue_total)
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
@@ -4584,6 +4807,8 @@ class MainWindow(QMainWindow):
             self.run_button.setEnabled(True)
             self.dashboard_analyze_button.setEnabled(True)
             self.language_button.setEnabled(True)
+            self.dry_run_checkbox.setEnabled(True)
+            self.restart_admin_button.setEnabled(True)
             if write_failed:
                 self._append_console(self._t("disk_write_failed"))
         self._refresh_dashboard()
@@ -4695,7 +4920,7 @@ class MainWindow(QMainWindow):
                 1,
                 "App base directory or Modules/ folder was missing before dispatching the next "
                 "queued action - batch stopped for safety.",
-                self.settings.dry_run,
+                self._batch_dry_run,
                 self.run_id,
                 **self.target_user.audit_fields(),
             )
@@ -4719,7 +4944,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(position - 1)
 
         needs_restore_point = preflight.needs_restore_point(module, action)
-        if needs_restore_point and not self._restore_point_attempted and not self.settings.dry_run:
+        if needs_restore_point and not self._restore_point_attempted and not self._batch_dry_run:
             panel_runner = self._pending_panel_restore_point_runner
             if _thread_running(panel_runner):
                 # Pre-flight refuses a batch while a panel's restore point
@@ -4737,6 +4962,12 @@ class MainWindow(QMainWindow):
                 lambda success, detail, info, m=module, a=action: self._on_restore_point_checked(success, detail, m, a, info)
             )
             self._pending_restore_point_runner = rp_runner
+            if not self._closed:
+                # Checkpoint-Computer can take minutes and prints nothing:
+                # say so, and show a busy bar instead of a frozen one.
+                self._append_console(self._t("panel_restore_point_running"))
+                self.statusBar().showMessage(self._t("panel_restore_point_running"))
+                self.progress_bar.setRange(0, 0)
             rp_runner.start()
             return
 
@@ -4750,7 +4981,7 @@ class MainWindow(QMainWindow):
             action.risk == RiskLevel.DESTRUCTIVE
             and self._hive_backup_requested
             and not self._hive_backup_attempted
-            and not self.settings.dry_run
+            and not self._batch_dry_run
             and not self._closed
         ):
             self._hive_backup_attempted = True
@@ -4815,6 +5046,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         subject = f"{module.module_id}/{action.id}"
         self._log_restore_point_result(success, detail, info, subject)
+        if not self._closed:
+            self.progress_bar.setRange(0, self._queue_total)
+            self.progress_bar.setValue(self._queue_total - len(self._queue) - 1)
         if self._cancel_requested:
             # Cancel was clicked while the restore point was still being
             # created - the action it was guarding must never run, and
@@ -4827,6 +5061,7 @@ class MainWindow(QMainWindow):
                 self._t("app_title"),
                 self._t("restore_point_failed_confirm"),
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
             # "Continue without a safety net" is exactly what a later dispute
             # is about - record the answer explicitly (research-reporting.md F3).
@@ -4885,7 +5120,7 @@ class MainWindow(QMainWindow):
         pending = batch_resume.PendingBatch(
             run_id=self.run_id,
             action_ids=list(self._queue),
-            dry_run=self.settings.dry_run,
+            dry_run=self._batch_dry_run,
             restart_after=restart_action_id,
             job=self._job_info(),
             undo_steps=list(self._undo_steps),
@@ -4965,7 +5200,7 @@ class MainWindow(QMainWindow):
             # Never start an action (or pop its confirmation) after the
             # window is gone - it would run unlogged and outlive the app.
             return
-        if action.restarts_pc and not self.settings.dry_run and action.id not in self._pre_restart_prepared:
+        if action.restarts_pc and not self._batch_dry_run and action.id not in self._pre_restart_prepared:
             # A DRY-RUN only previews - nothing restarts, nothing to prepare.
             self._prepare_for_restart(module, action)
             return
@@ -4974,7 +5209,7 @@ class MainWindow(QMainWindow):
         if action.id in self._reviewed_warnings:
             # Confirmed on the batch review screen - quote what was shown there.
             warning_text = self._reviewed_warnings[action.id]
-        elif self.settings.dry_run:
+        elif self._batch_dry_run:
             # A DRY-RUN previews and changes nothing - nothing to confirm.
             pass
         elif action.risk == RiskLevel.DESTRUCTIVE:
@@ -4984,6 +5219,7 @@ class MainWindow(QMainWindow):
                 self._t("app_title"),
                 warning_text,
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
         elif action.risk != RiskLevel.SAFE:
             warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}"
@@ -4991,6 +5227,8 @@ class MainWindow(QMainWindow):
                 self,
                 self._t("app_title"),
                 warning_text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
         if warning_text and confirmed != QMessageBox.Yes:
             # A "No" is as much a part of the record as a "Yes" - without it
@@ -5022,7 +5260,7 @@ class MainWindow(QMainWindow):
             return
         try:
             prepared = action_service.prepare_plan(
-                action, dry_run=self.settings.dry_run, state_dir=self.state_dir, run_id=self.run_id,
+                action, dry_run=self._batch_dry_run, state_dir=self.state_dir, run_id=self.run_id,
                 target_user=self.target_user, temp_protect=action_temp_protect, item_ids=item_ids,
             )
         except (OSError, items_mod.ItemsError):
@@ -5042,7 +5280,7 @@ class MainWindow(QMainWindow):
             hard_cap_sec=action.hard_cap_sec,
             # Research G09: a real run first asks whether the change is
             # already in place and skips it (on record) when it is.
-            check_plan=action_service.check_plan(action, dry_run=self.settings.dry_run, target_user=self.target_user),
+            check_plan=action_service.check_plan(action, dry_run=self._batch_dry_run, target_user=self.target_user),
         )
         self._runner = runner
         runner.output_line.connect(self._append_console)
@@ -5129,11 +5367,11 @@ class MainWindow(QMainWindow):
         # warned/warning_text come from the dialog _dispatch_action actually
         # showed and the technician accepted, not re-derived from the risk.
         entry = action_service.audit_entry(
-            module_id, action, exit_code, list(runner.captured_output), dry_run=self.settings.dry_run,
+            module_id, action, exit_code, list(runner.captured_output), dry_run=self._batch_dry_run,
             run_id=self.run_id, elevated=self.is_admin, warning_text=warning_text, target_user=self.target_user,
             payloads=payloads, item_ids=item_ids, decision=action_service.ALREADY_APPLIED if skipped else "",
         )
-        if action.check_command and not self.settings.dry_run:
+        if action.check_command and not self._batch_dry_run:
             # Research G09: after a success the runner checked again, so this
             # is the state now (kept for the snapshot's drift); after a
             # failure the earlier answer may be stale - the next check looks.
@@ -5153,6 +5391,8 @@ class MainWindow(QMainWindow):
             if not self._closed:
                 self._append_console(self._t("disk_write_failed"))
         self._batch_results.append((action_id, exit_code))
+        if exit_code != 0:
+            self._failure_hints[action_id] = _failure_hint(exit_code, list(runner.captured_output))
         for finding in entry.findings:
             # Newest last, so health.latest_findings-style order holds.
             self._findings.pop(finding["id"], None)
@@ -5164,7 +5404,7 @@ class MainWindow(QMainWindow):
         if skipped:
             status_text = self._t("status_already_applied")
         self._set_action_status(action_id, "ok" if exit_code == 0 else "fail", status_text)
-        if not self.settings.dry_run:
+        if not self._batch_dry_run:
             if not skipped:
                 # Shared with the headless CLI (research G21): undo_command,
                 # ops state (G10) and per-item undo (G05) decided in one place.
@@ -5240,11 +5480,48 @@ class MainWindow(QMainWindow):
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("actionCard")
-        panel.setMinimumWidth(460)
-        panel.setMaximumWidth(640)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 10, 14, 10)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(14, 10, 14, 10)
+        panel_layout.setSpacing(4)
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        title = QLabel(self._t("sysinfo_title"))
+        title.setObjectName("cardHeading")
+        header.addWidget(title)
+        header.addStretch(1)
+        self.sysinfo_toggle_button = QToolButton()
+        self.sysinfo_toggle_button.setObjectName("actionDetailToggle")
+        self.sysinfo_toggle_button.setCheckable(True)
+        self.sysinfo_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        header.addWidget(self.sysinfo_toggle_button)
+        panel_layout.addLayout(header)
+        # The rows scroll inside the panel so its minimum width is the 280 px
+        # set here, not the longest GPU name or button caption - the old
+        # 460 px floor was a third of the 1501 px minimum window width.
+        body_scroll = QScrollArea()
+        body_scroll.setWidgetResizable(True)
+        body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        body_scroll.setWidget(body)
+        panel_layout.addWidget(body_scroll, 1)
+
+        def apply_collapsed(collapsed: bool) -> None:
+            self.settings.sysinfo_collapsed = collapsed
+            body_scroll.setVisible(not collapsed)
+            title.setVisible(not collapsed)
+            panel.setMinimumWidth(0 if collapsed else 280)
+            panel.setMaximumWidth(60 if collapsed else 640)
+            self.sysinfo_toggle_button.setText("»" if collapsed else "«")
+            tip = self._t("sysinfo_expand") if collapsed else self._t("sysinfo_collapse")
+            self.sysinfo_toggle_button.setToolTip(tip)
+            self.sysinfo_toggle_button.setAccessibleName(tip)
+
+        self.sysinfo_toggle_button.toggled.connect(apply_collapsed)
+        self.sysinfo_toggle_button.setChecked(bool(self.settings.sysinfo_collapsed))
+        apply_collapsed(bool(self.settings.sysinfo_collapsed))
 
         self._sysinfo_labels: dict[str, QLabel] = {}
 

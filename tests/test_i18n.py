@@ -22,3 +22,11 @@ def test_translate_unknown_key_returns_key_itself():
 
 def test_sk_and_en_dicts_have_identical_keys():
     assert _STRINGS["sk"].keys() == _STRINGS["en"].keys()
+
+
+def test_plural_follows_slovak_forms():
+    from portablefix.i18n import count_noun, plural
+
+    assert [plural(n, "a", "b", "c") for n in (0, 1, 2, 4, 5, 21)] == ["c", "a", "b", "b", "c", "c"]
+    assert [count_noun("action", n, "sk") for n in (1, 3, 5)] == ["akcia", "akcie", "akcií"]
+    assert [count_noun("action", n, "en") for n in (1, 3)] == ["action", "actions"]

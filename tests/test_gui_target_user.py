@@ -98,6 +98,10 @@ def test_banner_warns_when_the_signed_in_user_is_uncertain(qtbot, tmp_path):
 
 def test_banner_survives_a_language_toggle(qtbot, tmp_path):
     window = _window(qtbot, tmp_path, DIFFERENT)
+    # The start-up winget scan locks the language toggle while it runs.
+    from portablefix.gui.main_window import _thread_running
+
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=90_000)
     window._on_toggle_language()
     assert not window.target_user_banner.isHidden()
     assert window.target_user_banner.text().startswith("User settings will go to the profile of PC\\klient")

@@ -215,16 +215,20 @@ QPushButton#cancelButton:disabled {
     border: 1px solid #232d3a;
 }
 
-QPushButton#selectionBtn {
+QPushButton#selectionBtn, QToolButton#selectionBtn {
     background-color: #141a24;
     border: 1px dashed #2a3542;
     border-radius: 10px;
     padding: 3px 10px;
-    font-family: 'Consolas', 'Cascadia Mono';
-    font-size: 8.5pt;
+    font-family: 'Segoe UI';
+    font-size: 9pt;
     color: #8a97a8;
 }
-QPushButton#selectionBtn:hover {
+QToolButton#selectionBtn::menu-indicator {
+    image: none;
+    width: 0px;
+}
+QPushButton#selectionBtn:hover, QToolButton#selectionBtn:hover {
     border: 1px solid #2fe6ff;
     color: #2fe6ff;
     background-color: #182028;
@@ -247,8 +251,8 @@ QPushButton#presetBtn {
     border: 1px dashed #2a3542;
     border-radius: 10px;
     padding: 3px 10px;
-    font-family: 'Consolas', 'Cascadia Mono';
-    font-size: 8.5pt;
+    font-family: 'Segoe UI';
+    font-size: 9pt;
     color: #8a97a8;
 }
 QPushButton#presetBtn:hover {
@@ -266,9 +270,15 @@ QPushButton#presetBtn:checked {
 /* Muted text is #7c8799, not the earlier #6b7686 (3.8:1 on #141a24):
    9pt text needs WCAG AA 4.5:1 on every card/button surface it sits on. */
 QLabel#selectionScope {
-    font-family: 'Consolas', 'Cascadia Mono';
+    font-family: 'Segoe UI';
     color: #7c8799;
     font-size: 9pt;
+}
+
+QLabel#emptyState {
+    color: #7c8799;
+    font-size: 11pt;
+    padding: 24px 8px;
 }
 
 QLabel#actionStatus {
@@ -376,6 +386,7 @@ QLabel#summaryDryRunNote {
 }
 QLabel#summaryRow[ok="true"] { color: #39ff88; }
 QLabel#summaryRow[ok="false"] { color: #ff2d6f; }
+QLabel#summaryHint { color: #7c8799; font-size: 9pt; padding-left: 14px; }
 QLabel#summaryMetricName { color: #d6e2f0; font-size: 9pt; }
 QLabel#summaryMetricDelta {
     font-family: 'Consolas', 'Cascadia Mono';

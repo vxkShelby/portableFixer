@@ -71,6 +71,8 @@ class Settings:
     # a catalog on purpose sets this by hand in settings.json - there is no
     # checkbox, so the protection cannot be switched off by a stray click.
     allow_modified_modules: bool = False
+    # The right-hand system panel folded to a slim rail (small screens).
+    sysinfo_collapsed: bool = False
 
     def branding_info(self) -> dict:
         """The branding as report.py takes it (see branding.clean_branding)."""
@@ -124,6 +126,7 @@ def load_settings(base_dir: Path) -> Settings:
         redact_for_client=redact if isinstance(redact, bool) else False,
         # Strictly True: a hand-edited "false" string must not lift the block.
         allow_modified_modules=allow_modified is True,
+        sysinfo_collapsed=data.get("sysinfo_collapsed") is True,
         branding_company=branding.clean_text(data.get("branding_company"), branding.MAX_COMPANY_LENGTH),
         branding_company_id=branding.clean_text(data.get("branding_company_id"), branding.MAX_COMPANY_ID_LENGTH),
         branding_contact=branding.clean_text(data.get("branding_contact"), branding.MAX_CONTACT_LENGTH),

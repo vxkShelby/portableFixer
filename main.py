@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from PySide6.QtCore import QThread
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -352,7 +353,10 @@ def main() -> int:
             is_admin=is_admin(),
             run_id=run_id,
         )
-        window.show()
+        if window.prefer_maximized:
+            window.showMaximized()
+        else:
+            window.show()
 
         def _on_integrity_checked(mismatches: list) -> None:
             if mismatches:
@@ -380,6 +384,13 @@ def main() -> int:
 
         exit_code = app.exec()
         integrity_runner.stop()
+        # Last resort: a QThread child still running when `window` goes out
+        # of scope aborts the process (qFatal) - wait for every one of them.
+        for thread in window.findChildren(QThread):
+            try:
+                thread.wait()
+            except RuntimeError:
+                pass
         try:
             save_settings(base_dir, settings)
         except OSError:
