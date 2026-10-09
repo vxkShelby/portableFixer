@@ -1,20 +1,39 @@
+import os
+import shutil
+
+# Before any Qt import: test windows and dialogs that show() must not pop up
+# on the developer's desktop and steal focus.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
 
 from portablefix import disk_health, preflight, signing
 from signing_keys import TEST_PUBLIC_KEY
 
 try:
-    from PySide6.QtCore import QThread
-    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+    from PySide6.QtCore import QEventLoop, QThread, QTimer
+    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMenu, QMessageBox
 
     from portablefix.gui.batch_review import BatchReviewDialog
     from portablefix.gui.items_dialog import ItemsDialog
 except ImportError:  # pragma: no cover - non-GUI environments
     QThread = QMessageBox = QInputDialog = QFileDialog = BatchReviewDialog = ItemsDialog = None
+    QEventLoop = QTimer = QMenu = None
+
+# A nested event loop no test should need for longer than this; past it the
+# loop is quit and the test failed instead of hanging the run.
+_EVENT_LOOP_LIMIT_MS = 30_000
 
 # Threads that outlived even the teardown wait: kept referenced for the rest
 # of the session, because dropping them would abort the whole process.
 _LEAKED_THREADS = []
+
+
+def pytest_sessionstart(session):
+    # ~20 test files skip themselves without PowerShell; on CI that would be
+    # a silently green run of a fraction of the suite.
+    if os.environ.get("CI") and not (shutil.which("powershell") or shutil.which("pwsh")):
+        pytest.exit("PowerShell missing on CI", returncode=1)
 
 
 class UnexpectedDialogError(AssertionError):
@@ -60,6 +79,40 @@ def _no_blocking_modal_dialogs(monkeypatch):
     monkeypatch.setattr(BatchReviewDialog, "exec", _refuse("BatchReviewDialog.exec"))
     # So is the per-item checklist (G05).
     monkeypatch.setattr(ItemsDialog, "exec", _refuse("ItemsDialog.exec"))
+    # And a context menu: QMenu.exec blocks until someone picks an entry.
+    monkeypatch.setattr(QMenu, "exec", _refuse("QMenu.exec"))
+
+
+@pytest.fixture(autouse=True)
+def _bounded_event_loops(monkeypatch):
+    """QEventLoop.exec (MainWindow._run_in_background, pytest-qt's
+    waitSignal) returns only when something quits it; a lost quit hung the
+    run with no output. Each loop gets a safety quit, and a test whose loop
+    needed it fails."""
+    if QEventLoop is None:
+        yield
+        return
+    expired = []
+    original_exec = QEventLoop.exec
+
+    def exec_(self, *args, **kwargs):
+        def give_up():
+            expired.append(self)
+            self.quit()
+
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(give_up)
+        timer.start(_EVENT_LOOP_LIMIT_MS)
+        try:
+            return original_exec(self, *args, **kwargs)
+        finally:
+            timer.stop()
+
+    monkeypatch.setattr(QEventLoop, "exec", exec_)
+    yield
+    if expired:
+        pytest.fail(f"a QEventLoop.exec ran {_EVENT_LOOP_LIMIT_MS // 1000} s and was quit")
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +137,35 @@ def _healthy_preflight_probes(request, monkeypatch):
         preflight, "_windows_disk_health",
         lambda: [disk_health.DiskVerdict(disk="0", status=disk_health.OK, system=True)],
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sysinfo_probes(request, monkeypatch):
+    """Instant, fixed sysinfo values for every Qt test.
+
+    Each MainWindow starts sysinfo runners (PowerShell, ping.exe, the
+    hardware monitor) parented to the window, and closeEvent waits only 5 s
+    for them. On a loaded CI runner a cold PowerShell outlived that, qtbot
+    then deleted the window with the QThread still running, and Qt's qFatal
+    aborted the whole pytest process with no traceback. tests/test_sysinfo.py
+    has no qtbot and still exercises the real functions.
+    """
+    if "qtbot" not in request.fixturenames:
+        return
+    from portablefix import sysinfo
+
+    monkeypatch.setattr(sysinfo, "get_static_info", lambda: sysinfo.StaticInfo(
+        os_name="Windows 11 Pro", cpu_name="Test CPU", cpu_cores=4,
+        local_ip="192.0.2.10", ram_speed_mhz=3200, disk_health_summary="OK",
+    ))
+    monkeypatch.setattr(sysinfo, "ping_once", lambda *a, **k: 12.0)
+    monkeypatch.setattr(sysinfo, "check_vpn_status", lambda: "")
+    monkeypatch.setattr(sysinfo, "read_hardware_sensors", lambda assets_dir: {
+        key: None for key in (
+            "cpu_clock_mhz", "gpu_name", "gpu_load_percent", "gpu_temp_c",
+            "gpu_clock_mhz", "gpu_vram_used_gb", "gpu_vram_total_gb",
+        )
+    })
 
 
 @pytest.fixture(autouse=True)

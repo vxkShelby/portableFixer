@@ -103,7 +103,9 @@ LAUNCHER = TESTS_DIR / "update_spawn_launcher.py"
 HOSTILE_INSTALL = "Jano\u2019s $(Set-Content INJ.txt x) \u201eq\u201d [2024] \u013e\u0161\u010d\u0165"
 HOSTILE_TEMP = "temp \u2019 [x]"
 LAUNCH_TIMEOUT_SEC = 90  # staging a tiny zip + the 45 s handshake at most
-SWAP_TIMEOUT_SEC = 45
+# Cold PowerShell 5.1 starts plus RenameDelayMs retries while Defender scans
+# the fresh copies can pass 45 s on a loaded CI runner.
+SWAP_TIMEOUT_SEC = 90
 
 
 def _system_exe(name: str) -> Path:

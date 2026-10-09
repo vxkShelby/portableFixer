@@ -381,7 +381,7 @@ def test_is_writable_false_under_protected_path_even_though_probe_write_would_su
 def test_update_check_runner_emits_none_when_no_update(qtbot):
     with patch("portablefix.updater.check_for_update", return_value=None):
         runner = UpdateCheckRunner("1.0.0")
-        with qtbot.waitSignal(runner.check_finished, timeout=2000) as blocker:
+        with qtbot.waitSignal(runner.check_finished, timeout=10000) as blocker:
             runner.start()
     assert blocker.args == [None]
 
@@ -390,7 +390,7 @@ def test_update_check_runner_emits_update_info(qtbot):
     info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
     with patch("portablefix.updater.check_for_update", return_value=info):
         runner = UpdateCheckRunner("1.0.0")
-        with qtbot.waitSignal(runner.check_finished, timeout=2000) as blocker:
+        with qtbot.waitSignal(runner.check_finished, timeout=10000) as blocker:
             runner.start()
     assert blocker.args == [info]
 
@@ -401,7 +401,7 @@ def test_update_download_runner_emits_path_on_success(qtbot, tmp_path):
     fake_path.write_bytes(b"x")
     with patch("portablefix.updater.download_update", return_value=fake_path):
         runner = UpdateDownloadRunner(info, tmp_path)
-        with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
+        with qtbot.waitSignal(runner.download_finished, timeout=10000) as blocker:
             runner.start()
     assert blocker.args == [fake_path, ""]
 
@@ -418,7 +418,7 @@ def test_update_download_runner_forwards_progress_signal(qtbot, tmp_path):
         runner = UpdateDownloadRunner(info, tmp_path)
         progress_calls = []
         runner.progress.connect(lambda d, t: progress_calls.append((d, t)))
-        with qtbot.waitSignal(runner.download_finished, timeout=2000):
+        with qtbot.waitSignal(runner.download_finished, timeout=10000):
             runner.start()
     assert progress_calls == [(50, 100), (100, 100)]
 
@@ -491,7 +491,7 @@ def test_update_download_runner_emits_error_on_failure(qtbot, tmp_path):
     info = UpdateInfo(version="1.1.0", package_url="https://x", sha256_url=None, notes="")
     with patch("portablefix.updater.download_update", side_effect=UpdateVerificationError("bad hash")):
         runner = UpdateDownloadRunner(info, tmp_path)
-        with qtbot.waitSignal(runner.download_finished, timeout=2000) as blocker:
+        with qtbot.waitSignal(runner.download_finished, timeout=10000) as blocker:
             runner.start()
     assert blocker.args == [None, "bad hash"]
 

@@ -877,10 +877,10 @@ app refuses to run it from a folder that contains `.git`. Without
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py
-python -m pytest tests/test_gui_main_window.py
-python -m pytest tests/test_executor.py
-python -m pytest tests/test_updater.py tests/test_update_swap.py tests/test_update_swap_script.py
+# the same three steps CI runs (.github/workflows/tests.yml)
+python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_gui_target_user.py --deselect tests/test_executor.py --deselect tests/test_update_spawn_windows.py --deselect tests/test_frozen_update_e2e.py -q --timeout=300
+python -m pytest tests/test_update_spawn_windows.py -s -q --timeout=240
+python -m pytest tests/test_gui_main_window.py::test_name -q --timeout=90   # CI: every GUI/executor test in its own process
 ```
 
 `tests/test_update_spawn_windows.py` (Windows only) starts the real
@@ -897,15 +897,20 @@ be given in `PORTABLEFIX_TEST_PWSH`); without PowerShell these tests are
 skipped. `PORTABLEFIX_TEST_RELEASE_ZIP=<path to PortableFix-Portable.zip>`
 checks a real release zip against the same rules the app applies.
 
-`tests/test_gui_main_window.py`, `tests/test_executor.py` and
-`tests/test_updater.py` (its `UpdateCheckRunner`/`UpdateDownloadRunner`
-tests) spawn real PowerShell processes through the same `QThread`
-mechanism (`portablefix/executor.py`); running several such files at
-once in one pytest session can occasionally trigger a transient native
-environment crash (STATUS_STACK_BUFFER_OVERRUN) - not a code bug. If
-this happens, run the affected tests individually
-(`python -m pytest tests/test_gui_main_window.py::test_name`) with one
-retry on failure, instead of the whole file at once.
+`pyproject.toml` sets a 120 s per-test timeout (`pytest-timeout`, from
+`requirements-dev.txt`) and dumps every thread's stack after 100 s, so a
+hung test names itself instead of stalling the run. CI runs every test of
+`tests/test_gui_main_window.py`, `tests/test_gui_target_user.py` and
+`tests/test_executor.py` in its own process and retries a test once only
+if its process crashed (an exit code outside pytest's 0-5); a test that
+passes only on the retry leaves a warning with the first attempt's
+output. These files start real PowerShell processes through `QThread`
+runners (`portablefix/executor.py`), and a runner destroyed while still
+running aborts the whole process (STATUS_STACK_BUFFER_OVERRUN, no
+traceback). The known cause - the real sysinfo probes outliving
+`MainWindow.closeEvent`'s 5 s wait - is stubbed for every Qt test in
+`tests/conftest.py`; if a crash still shows up, run the affected test
+alone (`python -m pytest tests/test_gui_main_window.py::test_name`).
 
 ## Known limitations
 
