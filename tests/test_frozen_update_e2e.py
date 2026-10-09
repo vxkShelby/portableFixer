@@ -44,8 +44,19 @@ def work_dir(tmp_path):
     root.mkdir(parents=True, exist_ok=True)
     yield root
     # Whatever is left of the probes (a relaunched v2 that hung, a swap that
-    # never finished) must not outlive the test. CI only - see the skip.
-    subprocess.run(["taskkill", "/IM", "PortableFix.exe", "/F", "/T"], capture_output=True, timeout=60)
+    # never finished) must not outlive the test. Only copies under this
+    # test's folder: a technician's real PortableFix keeps running.
+    from portablefix.paths import powershell_executable
+
+    pids = subprocess.run(
+        [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name='PortableFix.exe'\" | "
+         "Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:PF_E2E_ROOT, 'OrdinalIgnoreCase') } | "
+         "ForEach-Object { $_.ProcessId }"],
+        env=dict(os.environ, PF_E2E_ROOT=str(root)), capture_output=True, text=True, timeout=60,
+    ).stdout.split()
+    for pid in pids:
+        subprocess.run(["taskkill", "/PID", pid, "/F", "/T"], capture_output=True, timeout=60)
 
 
 def _release_zip(work: Path) -> Path:

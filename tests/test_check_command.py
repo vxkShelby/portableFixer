@@ -70,7 +70,7 @@ def test_check_plan_only_for_a_real_run_of_an_action_with_a_check():
 
 
 @pytest.fixture
-def test_key():
+def registry_key():
     rel = f"Software\\PortableFixTest\\{uuid.uuid4().hex}"
     yield rel
     try:
@@ -79,16 +79,16 @@ def test_key():
         pass
 
 
-def test_generated_ops_check_follows_the_live_state(test_key, tmp_path):
-    op_list = ops.parse_ops([{"reg_set": {"path": "HKCU\\" + test_key, "name": "Level", "type": "DWord", "value": 3}}])
+def test_generated_ops_check_follows_the_live_state(registry_key, tmp_path):
+    op_list = ops.parse_ops([{"reg_set": {"path": "HKCU\\" + registry_key, "name": "Level", "type": "DWord", "value": 3}}])
     check = ops.check_script(op_list)
     action = ActionDef(id="t", label_sk="t", label_en="t", risk=RiskLevel.MODERATE, command="x", check_command=check)
     assert action_service.check_state(action, None) == "NOT_APPLIED"
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, test_key)
+    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, registry_key)
     winreg.SetValueEx(key, "Level", 0, winreg.REG_DWORD, 3)
     winreg.CloseKey(key)
     assert action_service.check_state(action, None) == "APPLIED"
-    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, test_key, 0, winreg.KEY_SET_VALUE)
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_key, 0, winreg.KEY_SET_VALUE)
     winreg.SetValueEx(key, "Level", 0, winreg.REG_DWORD, 1)
     winreg.CloseKey(key)
     assert action_service.check_state(action, None) == "NOT_APPLIED"

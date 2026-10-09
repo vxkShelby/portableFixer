@@ -894,10 +894,10 @@ tieto parametre ignoruje.
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_executor.py
-python -m pytest tests/test_gui_main_window.py
-python -m pytest tests/test_executor.py
-python -m pytest tests/test_updater.py tests/test_update_swap.py tests/test_update_swap_script.py
+# rovnaké tri kroky ako v CI (.github/workflows/tests.yml)
+python -m pytest tests/ --deselect tests/test_gui_main_window.py --deselect tests/test_gui_target_user.py --deselect tests/test_executor.py --deselect tests/test_update_spawn_windows.py --deselect tests/test_frozen_update_e2e.py -q --timeout=300
+python -m pytest tests/test_update_spawn_windows.py -s -q --timeout=240
+python -m pytest tests/test_gui_main_window.py::test_name -q --timeout=90   # CI: každý GUI/executor test v samostatnom procese
 ```
 
 `tests/test_update_spawn_windows.py` (len na Windows) spúšťa skutočný
@@ -914,15 +914,20 @@ možno zadať v `PORTABLEFIX_TEST_PWSH`); bez PowerShellu sa tieto testy
 preskočia. `PORTABLEFIX_TEST_RELEASE_ZIP=<cesta k PortableFix-Portable.zip>`
 overí skutočný release zip rovnakými pravidlami, aké používa appka.
 
-`tests/test_gui_main_window.py`, `tests/test_executor.py` a
-`tests/test_updater.py` (jeho `UpdateCheckRunner`/`UpdateDownloadRunner`
-testy) spúšťajú reálne PowerShell procesy cez rovnaký `QThread`
-mechanizmus (`portablefix/executor.py`); pri behu viacerých takýchto
-súborov naraz v jednej pytest session sa môže objaviť prechodný
-natívny crash prostredia (STATUS_STACK_BUFFER_OVERRUN) — nie je to
-chyba kódu. Ak sa to stane, spusti postihnuté testy jednotlivo
-(`python -m pytest tests/test_gui_main_window.py::test_name`) s jedným
-opakovaním pri zlyhaní, namiesto celého súboru naraz.
+`pyproject.toml` nastavuje limit 120 s na test (`pytest-timeout` z
+`requirements-dev.txt`) a po 100 s vypíše zásobníky všetkých vlákien, takže
+zaseknutý test sa prezradí namiesto toho, aby zastavil celý beh. CI spúšťa
+každý test z `tests/test_gui_main_window.py`, `tests/test_gui_target_user.py`
+a `tests/test_executor.py` v samostatnom procese a zopakuje ho raz, len keď
+jeho proces spadol (návratový kód mimo pytestových 0-5); test, ktorý prejde
+až na druhý pokus, zanechá varovanie s výstupom prvého pokusu. Tieto súbory
+spúšťajú reálne PowerShell procesy cez `QThread` runnery
+(`portablefix/executor.py`) a runner zničený počas behu zhodí celý proces
+(STATUS_STACK_BUFFER_OVERRUN, bez tracebacku). Známu príčinu - skutočné
+sysinfo sondy, ktoré prežili 5 s čakanie v `MainWindow.closeEvent` -
+`tests/conftest.py` pre každý Qt test nahrádza pevnými hodnotami; ak sa
+crash aj tak objaví, spusti postihnutý test samostatne
+(`python -m pytest tests/test_gui_main_window.py::test_name`).
 
 ## Dev tooling: self-improve loop
 
