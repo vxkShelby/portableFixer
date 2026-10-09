@@ -216,6 +216,46 @@ def test_language_toggle_preserves_category_selection_and_focus(qtbot, tmp_path)
     qtbot.waitUntil(lambda: window._action_checkboxes["clean_action"].hasFocus(), timeout=5000)
 
 
+def test_language_toggle_keeps_selection_console_search_and_size(qtbot, tmp_path):
+    base_dir = tmp_path
+    _write_module(base_dir, "m01_diagnostics", "DIAGNOSTICS", "diag_action")
+    _write_module(base_dir, "m02_cleanup", "CLEANUP", "clean_action")
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_state")
+    qtbot.addWidget(window)
+    window._action_checkboxes["clean_action"].setChecked(True)
+    window._append_console("kept console line")
+    window.search_box.setText("clean")
+    window.symptom_box.setText("slow")
+    window.resize(1111, 700)
+    old_console = window.console
+
+    _toggle_language(qtbot, window)
+
+    assert window.console is not old_console
+    assert window._action_checkboxes["clean_action"].isChecked()
+    assert not window._action_checkboxes["diag_action"].isChecked()
+    assert "kept console line" in window.console.toPlainText()
+    assert window.search_box.text() == "clean"
+    assert window.symptom_box.text() == "slow"
+    assert (window.width(), window.height()) == (1111, 700)
+
+
+def test_language_toggle_closes_a_popped_out_console_first(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_lang_popout")
+    qtbot.addWidget(window)
+    window._on_console_popout_clicked()
+    popped = window._console_window
+    assert popped is not None
+    window._append_console("popped line")
+
+    _toggle_language(qtbot, window)
+
+    assert not popped.isVisible()
+    assert "popped line" in window.console.toPlainText()
+    assert window._console_window is None
+
+
 def test_run_selected_action_writes_console_and_audit_log(qtbot, tmp_path):
     base_dir = _make_base_dir(tmp_path)
     settings = Settings(language="sk", dry_run=False)

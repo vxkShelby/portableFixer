@@ -3892,10 +3892,28 @@ class MainWindow(QMainWindow):
         saved_focused_action_id = next(
             (aid for aid, cb in self._action_checkboxes.items() if cb.hasFocus()), None
         )
+        # The rebuild makes every widget fresh: carry the technician's work over.
+        saved_checked = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        saved_console = self.console.toPlainText()
+        saved_search = self.search_box.text()
+        saved_symptom = self.symptom_box.text()
+        if self._console_window is not None:
+            self._console_window.close()  # hands the console back before the old UI goes
         self.settings.language = "en" if self.settings.language == "sk" else "sk"
         old_central = self.centralWidget()
         self._action_checkboxes = {}
         self._build_ui()
+        for action_id in saved_checked:
+            checkbox = self._action_checkboxes.get(action_id)
+            if checkbox is not None:
+                checkbox.setChecked(True)
+        if saved_console:
+            self.console.setPlainText(saved_console)
+            bar = self.console.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        self.search_box.setText(saved_search)
+        self.symptom_box.setText(saved_symptom)
+        self._refresh_dashboard()
         if old_central is not None:
             old_central.deleteLater()
         if 0 <= saved_category_row < self.category_list.count():
