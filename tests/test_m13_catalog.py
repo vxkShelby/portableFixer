@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -69,7 +70,9 @@ def test_m13_registry_tweaks_have_undo_commands_removals_do_not():
         "debloat_disable_recall_clicktodo",
         *HKLM_POLICY_ACTIONS,
     ):
-        assert by_id[undoable].undo_command is not None, undoable
+        # has_undo: an ops action (debloat_disable_fast_startup) generates
+        # its undo from the captured state instead of an undo_command.
+        assert by_id[undoable].has_undo, undoable
     for not_undoable in (
         "debloat_list_installed",
         "debloat_remove_promo_apps",
@@ -142,7 +145,12 @@ def test_m13_hklm_policy_actions_touch_only_their_policy_key(action_id, field):
     result, registry = _run_user_hive_command(getattr(_m13_action(action_id), field), "HKCU:")
     assert result.returncode == 0, result.stdout + result.stderr
     assert registry, result.stdout
-    assert set(registry) == {HKLM_POLICY_ACTIONS[action_id]}, registry
+    expected = {HKLM_POLICY_ACTIONS[action_id]}
+    if action_id in USER_HIVE_ACTIONS:
+        # The CloudContent values are user policies: the same key in the
+        # user's hive, the HKLM copy kept as belt and braces.
+        expected.add(HKLM_POLICY_ACTIONS[action_id].replace("HKLM:\\SOFTWARE", "HKCU:\\Software"))
+    assert set(registry) == expected, registry
 
 
 # --- research G25: per-user settings go to the signed-in user's hive --------
@@ -159,6 +167,8 @@ USER_HIVE_ACTIONS = (
     "debloat_disable_explorer_ads",
     "debloat_block_app_reinstall",
     "debloat_disable_recall_clicktodo",
+    "debloat_disable_lockscreen_spotlight",
+    "debloat_disable_tailored_experiences",
 )
 REGISTRY_STUBS = ("New-Item", "Set-ItemProperty", "New-ItemProperty", "Remove-ItemProperty", "Get-ItemProperty")
 STUB_GUARD_EXIT = 97
@@ -195,12 +205,16 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
         "if ($Path -eq $global:__pfTestHive) { return $global:__pfTestLoaded }; $global:__pfTestKeysExist }",
         "function Get-Content { [CmdletBinding()] param([Parameter(Position=0)] $Path, [switch] $Raw) "
         f"'{BACKUP_JSON}' }}",
-        "function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $Encoding) process { } }",
+        "function Set-Content { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Value, $Path, $Encoding) "
+        "begin { [Console]::Out.WriteLine('FILE ' + $Path) } process { } }",
     ]
     for name in REGISTRY_STUBS:
+        # Writes also report "VAL <name>=<value>" so a test can check what
+        # was written, not only where.
+        value_line = "; [Console]::Out.WriteLine('VAL ' + $Name + '=' + $Value)" if name.startswith(("Set-", "New-ItemProperty")) else ""
         stubs.append(
             f"function {name} {{ [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name, $Value, $Type, "
-            f"$PropertyType, $ItemType, [switch] $Force) [Console]::Out.WriteLine('REG {name} ' + $Path) }}"
+            f"$PropertyType, $ItemType, [switch] $Force) [Console]::Out.WriteLine('REG {name} ' + $Path){value_line} }}"
         )
     stubbed = ("Test-Path", "Get-Content", "Set-Content") + REGISTRY_STUBS
     guard = (
@@ -225,7 +239,8 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
 
 # Every action that creates a registry key (folders use New-Item -ItemType Directory).
 KEY_CREATING_ACTIONS = tuple(
-    a.id for a in load_module(CATALOG_PATH).actions if "New-Item -Path" in a.command + (a.undo_command or "")
+    a.id for a in load_module(CATALOG_PATH).actions
+    if not a.ops and "New-Item -Path" in a.command + (a.undo_command or "")
 )
 
 
@@ -236,7 +251,6 @@ def test_m13_key_creating_actions_are_the_known_ones():
         "debloat_disable_copilot",
         "debloat_disable_widgets",
         "debloat_disable_advertising_id",
-        "debloat_disable_explorer_ads",
         "debloat_disable_recall_clicktodo",
         *HKLM_POLICY_ACTIONS,
     }
@@ -246,8 +260,7 @@ def test_m13_key_creating_actions_are_the_known_ones():
 @pytest.mark.parametrize("keys_exist", [True, False])
 def test_m13_new_item_only_creates_a_missing_key(action_id, keys_exist):
     # New-Item -Force on an existing registry key deletes all its values and
-    # subkeys - e.g. telemetry would wipe feedback's DataCollection policy,
-    # web search would wipe explorer ads' HideRecommendedSection.
+    # subkeys - e.g. telemetry would wipe feedback's DataCollection policy.
     result, _ = _run_user_hive_command(_m13_action(action_id).command, "HKCU:", keys_exist=keys_exist)
     assert result.returncode == 0, result.stdout + result.stderr
     created = [line for line in result.stdout.splitlines() if line.startswith("REG New-Item ") and "HK" in line]
@@ -319,6 +332,285 @@ def test_m13_undo_for_signed_out_user_skips_without_ending_undo_script(action_id
     assert "Profile hive not loaded, skipped" in result.stdout
     assert "NEXT STEP RAN" in result.stdout
     assert registry == []
+
+
+def _written_values(stdout: str) -> dict:
+    values = {}
+    for line in stdout.splitlines():
+        if line.startswith("VAL "):
+            name, value = line[4:].split("=", 1)
+            values.setdefault(name, set()).add(value)
+    return values
+
+
+def test_m13_recall_policy_forbids_recall_instead_of_allowing_it():
+    # AllowRecallEnablement is an allow-policy: writing 1 (as every other
+    # value in the loop gets) explicitly ALLOWS Recall. It must be 0; the
+    # three disable-policies 1. The HKLM write must fail loudly like the
+    # sibling policy actions, not print success after a silent no-op.
+    action = _m13_action("debloat_disable_recall_clicktodo")
+    for text in (action.command, action.check_command, action.undo_command):
+        assert "AllowRecallEnablement = 0" in text
+        assert "AllowRecallEnablement = 1" not in text
+    assert "-EA Stop" in action.command and "exit 1" in action.command
+    result, registry = _run_user_hive_command(action.command, CLIENT_HIVE, target=_client())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _written_values(result.stdout) == {
+        "AllowRecallEnablement": {"0"},
+        "DisableAIDataAnalysis": {"1"},
+        "TurnOffSavingSnapshots": {"1"},
+        "DisableClickToDo": {"1"},
+    }
+    assert any(p.startswith("HKLM:\\") for p in registry) and any(p.startswith(CLIENT_HIVE + "\\") for p in registry)
+
+
+# --- per-user backups are keyed by the target user's SID -------------------
+
+BACKED_UP_USER_ACTIONS = (
+    "debloat_disable_suggestions",
+    "debloat_disable_web_search",
+    "debloat_disable_advertising_id",
+    "debloat_disable_explorer_ads",
+)
+
+
+def _backup_files(stdout: str) -> list[str]:
+    return [line[5:] for line in stdout.splitlines() if line.startswith("FILE ")]
+
+
+@pytest.mark.parametrize("action_id", BACKED_UP_USER_ACTIONS)
+def test_m13_user_backups_are_named_by_the_target_sid(action_id):
+    # One fixed backup path meant: run for user A, later for user B, and
+    # B's undo restored A's values into B's hive.
+    paths = []
+    for sid in ("S-1-5-21-1111-2222-3333-1002", "S-1-5-21-1111-2222-3333-1003"):
+        target = target_user.TargetUser(
+            status=target_user.DIFFERENT, process_sid="S-1-5-21-1111-2222-3333-1001", process_user="PC\\technik",
+            target_sid=sid, target_user="PC\\klient", session_id=1,
+        )
+        result, _ = _run_user_hive_command(
+            _m13_action(action_id).command, target.hive, target=target, keys_exist=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        files = _backup_files(result.stdout)
+        assert len(files) == 1 and sid in files[0], files
+        paths.append(files[0])
+    assert len(set(paths)) == 2
+    # The undo reads the same SID-keyed file.
+    undo = _m13_action(action_id).undo_command
+    assert "_backup_' + $sid + '.json'" in undo and "$__pfUserSid" in undo
+
+
+def test_m13_explorer_ads_no_longer_writes_the_11_se_only_policy():
+    action = _m13_action("debloat_disable_explorer_ads")
+    for text in (action.command, action.undo_command):
+        assert "HideRecommendedSection" not in text
+        assert "HKLM" not in text
+
+
+# --- DiagTrack / CEIP: null-safe captures, tasks addressed by folder --------
+
+
+def _run_with_stubs(tmp_path, command: str, stubs: list[str], stubbed: tuple):
+    """Runs `command` with %ProgramData% redirected into tmp_path and the
+    given stub functions in front; refuses (exit 97) when a stub did not take."""
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir(exist_ok=True)
+    guard = (
+        "foreach ($n in " + ", ".join(f"'{n}'" for n in stubbed) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    )
+    script = "; ".join([f"$env:ProgramData = '{program_data}'", *stubs, guard, command])
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, program_data / "PortableFix"
+
+
+def test_m13_diagtrack_survives_a_missing_service_and_records_delayed_start(tmp_path):
+    # $null.StartType.ToString() aborted the whole command on 24H2, where
+    # dmwappushservice no longer exists - before the backup, before anything.
+    stubs = [
+        "function Get-Service { [CmdletBinding()] param($Name) if ($Name -eq 'DiagTrack') { [pscustomobject]@{ Name = $Name; StartType = 'Automatic' } } }",
+        "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) [pscustomobject]@{ DelayedAutostart = 1 } }",
+        "function Stop-Service { [CmdletBinding()] param($Name, [switch] $Force) [Console]::Out.WriteLine('STUB Stop-Service ' + $Name) }",
+        "function Set-Service { [CmdletBinding()] param($Name, $StartupType) [Console]::Out.WriteLine('STUB Set-Service ' + $Name + ' ' + $StartupType) }",
+    ]
+    result, folder = _run_with_stubs(
+        tmp_path, _m13_action("debloat_disable_diagtrack").command, stubs,
+        ("Get-Service", "Get-ItemProperty", "Stop-Service", "Set-Service"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STUB Set-Service DiagTrack Disabled" in result.stdout
+    assert "STUB Set-Service dmwappushservice" not in result.stdout
+    assert "dmwappushservice: not installed" in result.stdout
+    backup = json.loads((folder / "diagtrack_backup.json").read_text(encoding="utf-8-sig"))
+    assert backup == {"DiagTrack": "AutomaticDelayedStart", "dmwappushservice": None}
+    undo = _m13_action("debloat_disable_diagtrack").undo_command
+    assert "sc.exe config $n start= delayed-auto" in undo
+
+
+def test_m13_ceip_tasks_are_addressed_by_folder(tmp_path):
+    # Get-ScheduledTask -TaskName alone returns every task of that name in
+    # any folder (an array whose .State.ToString() fails).
+    stubs = [
+        "$global:__pfTasks = @{}",
+        "function Get-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) if (-not $TaskPath) { throw 'TaskPath missing' }; "
+        "$s = $global:__pfTasks[$TaskPath + $TaskName]; if (-not $s) { $s = 'Ready' }; [pscustomobject]@{ TaskPath = $TaskPath; TaskName = $TaskName; State = $s } }",
+        "function Disable-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) $global:__pfTasks[$TaskPath + $TaskName] = 'Disabled' }",
+        "function Enable-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) [Console]::Out.WriteLine('STUB Enable ' + $TaskPath + $TaskName) }",
+    ]
+    action = _m13_action("debloat_disable_ceip_tasks")
+    stubbed = ("Get-ScheduledTask", "Disable-ScheduledTask", "Enable-ScheduledTask")
+    result, folder = _run_with_stubs(tmp_path, action.command, stubs, stubbed)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Found 7 task(s), disabled 7." in result.stdout
+    backup = json.loads((folder / "ceip_tasks_backup.json").read_text(encoding="utf-8-sig"))
+    assert "\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator" in backup
+    assert all(key.startswith("\\Microsoft\\Windows\\") and value == "Ready" for key, value in backup.items())
+    result, _ = _run_with_stubs(tmp_path, action.undo_command, stubs, stubbed)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STUB Enable \\Microsoft\\Windows\\Feedback\\Siuf\\DmClient" in result.stdout
+    assert "Restored 7 task(s)" in result.stdout
+
+
+# --- debloat_disable_fast_startup is an ops action --------------------------
+
+from ops_rig import Machine, command_with_state  # noqa: E402
+
+from portablefix import ops  # noqa: E402
+
+
+def test_m13_fast_startup_undo_restores_the_real_prior_value(tmp_path):
+    # The old undo wrote HiberbootEnabled = 1 unconditionally - also on a PC
+    # where it was 0 before (hibernation_off ran, or the value was absent).
+    action = _m13_action("debloat_disable_fast_startup")
+    assert action.ops and action.undo_command is None and action.has_undo and action.check_command
+    power = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power"
+    machine = Machine(tmp_path, registry={power: {"HiberbootEnabled": ("DWord", 0)}})
+    state_path = ops.state_file_path(tmp_path, "run1", action.id)
+    result = machine.run(command_with_state(action.command, state_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Fast Startup disabled (HiberbootEnabled = 0)." in result.stdout
+    result = machine.run(ops.undo_step(action.id, action.ops, state_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert machine.values(power) == {"HiberbootEnabled": ("DWord", 0)}
+
+
+# --- debloat_remove_onedrive: refuses over-the-shoulder, checks the exit code -
+
+IDENTITY_CALL = "[Security.Principal.WindowsIdentity]::GetCurrent()"
+PROCESS_SID = "S-1-5-21-1111-2222-3333-1001"
+
+
+def _same_user():
+    return target_user.TargetUser(
+        status=target_user.SAME, process_sid=PROCESS_SID, process_user="PC\\technik",
+        target_sid=PROCESS_SID, target_user="PC\\technik", session_id=1,
+    )
+
+
+def _run_onedrive(target, setup_exit: int):
+    """OneDriveSetup, Stop-Process and the identity lookup stubbed; every
+    stub prints "STUB <cmdlet> ..." so the test sees what ran."""
+    command = _m13_action("debloat_remove_onedrive").command.replace(IDENTITY_CALL, "(Pf-WindowsIdentity)")
+    assert "WindowsIdentity]" not in command
+    stubbed = ("Test-Path", "Stop-Process", "Start-Process", "Pf-WindowsIdentity")
+    stubs = [
+        f"function Pf-WindowsIdentity {{ [pscustomobject]@{{ User = [pscustomobject]@{{ Value = '{PROCESS_SID}' }} }} }}",
+        "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $true }",
+        "function Stop-Process { [CmdletBinding()] param($Name, [switch] $Force) [Console]::Out.WriteLine('STUB Stop-Process ' + $Name) }",
+        "function Start-Process { [CmdletBinding()] param([Parameter(Position=0)] $FilePath, $ArgumentList, [switch] $Wait, [switch] $PassThru) "
+        f"[Console]::Out.WriteLine('STUB Start-Process ' + $FilePath + ' ' + $ArgumentList); [pscustomobject]@{{ ExitCode = {setup_exit} }} }}",
+        "foreach ($n in " + ", ".join(f"'{n}'" for n in stubbed) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}",
+    ]
+    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(stubs + [plan.argv[-1]])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")]
+
+
+def test_m13_onedrive_removal_refuses_when_the_signed_in_user_is_someone_else():
+    # OneDriveSetup /uninstall removes the per-user install of the account
+    # running it - over the shoulder that is the technician's, not the client's.
+    result, ran = _run_onedrive(_client(), setup_exit=0)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Nothing was changed." in result.stdout
+    assert ran == []
+
+
+@pytest.mark.parametrize("setup_exit, expected", [(0, 0), (1, 1)])
+def test_m13_onedrive_removal_reports_the_installer_exit_code(setup_exit, expected):
+    result, ran = _run_onedrive(_same_user(), setup_exit=setup_exit)
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert any(line.startswith("STUB Start-Process ") and line.endswith(" /uninstall") for line in ran), ran
+    assert ("failed with exit code 1" in result.stdout) == (setup_exit == 1)
+
+
+# --- Appx removals count successes, not attempts, and target the user ------
+
+
+def _run_appx_removal(action_id: str, target=None, fail_names=("Bad",)):
+    """Get-AppxPackage answers two packages for the first list entry (Good
+    and Bad); Remove-AppxPackage raises an error for `fail_names`. Each stub
+    reports the -User it was given."""
+    command = _m13_action(action_id).command
+    fail = ", ".join(f"'{n}'" for n in fail_names)
+    stubs = [
+        "function Get-AppxPackage { [CmdletBinding()] param($Name, $User) [Console]::Out.WriteLine('STUB Get-AppxPackage user=' + $User); "
+        "if ($Name -eq 'Microsoft.XboxIdentityProvider' -or $Name -eq 'Microsoft.549981C3F5F10') { @([pscustomobject]@{ Name = 'Good' }, [pscustomobject]@{ Name = 'Bad' }) } }",
+        "function Remove-AppxPackage { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Package, $User) "
+        f"process {{ [Console]::Out.WriteLine('STUB Remove-AppxPackage ' + $Package.Name + ' user=' + $User); if (@({fail}) -contains $Package.Name) {{ Write-Error ('locked: ' + $Package.Name) }} }} }}",
+        "foreach ($n in 'Get-AppxPackage', 'Remove-AppxPackage') { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}",
+    ]
+    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    result = subprocess.run(
+        [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(stubs + [plan.argv[-1]])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a cmdlet was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")]
+
+
+@pytest.mark.parametrize("action_id", ["debloat_remove_promo_apps", "debloat_remove_xbox_identity"])
+def test_m13_appx_removal_counts_only_real_successes(action_id):
+    # $removed++ used to run after Remove-AppxPackage -EA SilentlyContinue,
+    # so a package that failed (in use, policy-blocked) counted as removed.
+    result, ran = _run_appx_removal(action_id)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed packages: 1, errors: 1" in result.stdout
+    assert all(line.endswith(" user=") for line in ran), ran
+
+
+@pytest.mark.parametrize("action_id", ["debloat_remove_promo_apps", "debloat_remove_xbox_identity"])
+def test_m13_appx_removal_fails_when_nothing_was_removed_and_errors_occurred(action_id):
+    result, _ = _run_appx_removal(action_id, fail_names=("Good", "Bad"))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Removed packages: 0, errors: 2" in result.stdout
+
+
+@pytest.mark.parametrize("action_id", ["debloat_remove_promo_apps", "debloat_remove_xbox_identity"])
+def test_m13_appx_removal_targets_the_signed_in_user(action_id):
+    # Over the shoulder, Get-AppxPackage without -User lists the technician's
+    # packages - nothing is removed from the client's account.
+    result, ran = _run_appx_removal(action_id, target=_client())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ran and all(line.endswith(" user=" + CLIENT_SID) for line in ran), ran
 
 
 def test_m13_catalog_parses_in_powershell(tmp_path):

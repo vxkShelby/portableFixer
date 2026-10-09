@@ -94,13 +94,14 @@ def test_m17_catalog_profile_resets_fail_the_action_if_rename_fails():
 
 def test_m17_clear_policy_keys_verifies_the_keys_are_actually_gone():
     # Remove-Item on an HKLM key with -EA SilentlyContinue silently no-ops
-    # without administrator - the command must Test-Path both keys
-    # afterward and only claim success if they're actually gone.
+    # without administrator - the command must Test-Path each key
+    # afterward and only claim success if it is actually gone.
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "browser_clear_policy_keys")
-    assert "chromeGone" in action.command
-    assert "edgeGone" in action.command
-    assert action.command.count("exit 1") == 2
+    assert "if (Test-Path -Path $e.P) { $failed += $e.R }" in action.command
+    # Domain refusal, failed backup, failed removal.
+    assert action.command.count("exit 1") == 3
+    assert action.command.index("reg export") < action.command.index("Remove-Item")
 
 
 def test_m17_clear_policy_keys_refuses_on_domain_joined_or_mdm_enrolled_machine():
@@ -306,6 +307,87 @@ def test_m17_extensions_report_finds_firefox_profiles_under_a_path_with_brackets
     assert "  enabled   uBlock" in result.stdout.splitlines(), result.stdout
 
 
+# --- browser_clear_policy_keys: export verified per key, every policy hive --
+
+POLICY_KEYS = {
+    "HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+    "HKLM:\\SOFTWARE\\WOW6432Node\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\WOW6432Node\\Policies\\Microsoft\\Edge",
+    "HKCU:\\SOFTWARE\\Policies\\Google\\Chrome", "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+}
+POLICY_STUBS = r"""
+function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $p = $(if ($LiteralPath) { $LiteralPath } else { $Path }); if ($p -like 'HK*:*') { return $global:__pfKeys.Contains($p) }; Microsoft.PowerShell.Management\Test-Path -LiteralPath $p }
+function Remove-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, [switch] $Recurse, [switch] $Force) [Console]::Out.WriteLine('STUB Remove-Item ' + $Path); $global:__pfKeys.Remove($Path) | Out-Null }
+function reg { $a = @($args); [Console]::Out.WriteLine('STUB reg ' + ($a -join ' ')); if ($a[0] -eq 'export') { if ($env:PF_EXPORT_FAIL) { $global:LASTEXITCODE = 1; return }; [IO.File]::WriteAllText($a[2], 'Windows Registry Editor Version 5.00') }; $global:LASTEXITCODE = 0 }
+function dsregcmd { 'AzureAdJoined : NO'; $global:LASTEXITCODE = 0 }
+function Get-CimInstance { [CmdletBinding()] param($ClassName) [pscustomobject]@{ PartOfDomain = $false } }
+foreach ($n in 'Test-Path', 'Remove-Item', 'reg', 'dsregcmd', 'Get-CimInstance') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
+"""
+
+
+def _run_policy_clear(tmp_path, field="command", keys=POLICY_KEYS, export_fail=False):
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir(exist_ok=True)
+    script = "\n".join([
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8",
+        f"$env:ProgramData = '{program_data}'", f"$env:PF_EXPORT_FAIL = '{'1' if export_fail else ''}'",
+        "$global:__pfKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
+        *[f"[void]$global:__pfKeys.Add('{k}')" for k in sorted(keys)],
+        POLICY_STUBS, getattr(_m17("browser_clear_policy_keys"), field),
+    ])
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != 97, "a system tool was not stubbed - refusing to run the real one"
+    return result, [line for line in result.stdout.splitlines() if line.startswith("STUB ")], program_data / "PortableFix" / "browser_policy"
+
+
+def test_m17_clear_policy_keys_does_not_remove_a_key_whose_backup_failed(tmp_path):
+    # reg export of a key used to be fire-and-forget (2>$null | Out-Null):
+    # with no .reg file the key was deleted anyway and undo imported nothing.
+    result, ran, _ = _run_policy_clear(tmp_path, export_fail=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "failed - not removing it. Nothing was changed." in result.stdout
+    assert [line for line in ran if line.startswith("STUB Remove-Item")] == []
+
+
+def test_m17_clear_policy_keys_backs_up_and_removes_every_policy_hive(tmp_path):
+    result, ran, folder = _run_policy_clear(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    removed = {line.split(" ", 2)[2] for line in ran if line.startswith("STUB Remove-Item")}
+    assert removed == POLICY_KEYS
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "chrome_hklm.reg", "chrome_user.reg", "chrome_wow.reg", "edge_hklm.reg", "edge_user.reg", "edge_wow.reg",
+    ]
+    assert "STUB reg export HKCU\\SOFTWARE\\Policies\\Google\\Chrome" in "\n".join(ran)
+    assert "HKLM\\SOFTWARE\\WOW6432Node\\Policies\\Microsoft\\Edge" in result.stdout
+    # Undo imports only the files that exist.
+    (folder / "edge_wow.reg").unlink()
+    result, ran, _ = _run_policy_clear(tmp_path, field="undo_command")
+    assert result.returncode == 0, result.stdout + result.stderr
+    imported = [line.rsplit("\\", 1)[1] for line in ran if line.startswith("STUB reg import")]
+    assert sorted(imported) == ["chrome_hklm.reg", "chrome_user.reg", "chrome_wow.reg", "edge_hklm.reg", "edge_user.reg"]
+
+
+def test_m17_clear_policy_keys_with_no_policy_present_removes_nothing(tmp_path):
+    result, ran, _ = _run_policy_clear(tmp_path, keys=set())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "nothing to remove" in result.stdout and ran == []
+    result, ran, _ = _run_policy_clear(tmp_path, field="undo_command")
+    assert "No browser policy backup found" in result.stdout and ran == []
+
+
+def test_m17_policy_report_lists_the_same_keys_the_clear_action_removes():
+    report = _m17("browser_policy_report").command
+    clear = _m17("browser_clear_policy_keys").command
+    for key in POLICY_KEYS:
+        text = key.replace("HKCU:", "' + $uh + '")
+        assert text in clear.replace("($uh + '", "' + $uh + '"), key
+        assert text in report.replace("($uh + '", "' + $uh + '"), key
+    assert "HKCU:\\" not in report and "HKCU:\\" not in clear
+
+
 def _reset_tree(local: Path, rel: str) -> Path:
     root = local.joinpath(*rel.split("/"))
     _chromium_profile(root / "Default")
@@ -380,3 +462,71 @@ def test_m17_report_descriptions_name_all_profiles_and_browsers():
         for browser in ("Brave", "Vivaldi", "Opera"):
             assert browser in action.description_sk and browser in action.description_en, (action_id, browser)
         assert "všetk" in action.description_sk and "every profile" in action.description_en
+
+
+# --- the profile folder is the signed-in user's, not the technician's -------
+
+PROFILE_ROOT_SNIPPET = (
+    "$pfUserLocal = $env:LOCALAPPDATA; $pfUserRoaming = $env:APPDATA; $pfProfile = ''; if ($__pfUserSid) { "
+    "$pfProfile = [string](Get-ItemProperty -Path ('Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\' + $__pfUserSid) "
+    "-Name ProfileImagePath -EA SilentlyContinue).ProfileImagePath; if ($pfProfile) { $pfUserLocal = $pfProfile + '\\AppData\\Local'; "
+    "$pfUserRoaming = $pfProfile + '\\AppData\\Roaming' } }; "
+)
+PROFILE_ACTIONS = ("browser_reset_chrome_profile", "browser_reset_edge_profile", "browser_extensions_report", "browser_homepage_search_report")
+
+
+def test_m17_profile_actions_share_the_profile_root_snippet():
+    # Over the shoulder $env:LOCALAPPDATA is the technician's; the signed-in
+    # user's profile comes from ProfileList\<sid>\ProfileImagePath.
+    for action_id in PROFILE_ACTIONS:
+        command = _m17(action_id).command
+        assert PROFILE_ROOT_SNIPPET in command, action_id
+        assert "$env:LOCALAPPDATA\\" not in command and "$env:APPDATA\\" not in command, action_id
+
+
+def _client_profile_script(action_id: str, profile: Path) -> str:
+    # The executor's prelude names the client's SID; ProfileList answers
+    # with the client's profile folder.
+    return (
+        "$__pfUserSid = 'S-1-5-21-7777-8888-9999-1002'; "
+        "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) "
+        "if ($Path -like '*ProfileList\\S-1-5-21-7777-8888-9999-1002') { [pscustomobject]@{ ProfileImagePath = "
+        + "'" + str(profile).replace("'", "''") + "' } } }; "
+        + _m17(action_id).command
+    )
+
+
+@pytest.mark.parametrize("action_id, proc, label, rel", RESETS)
+def test_m17_profile_reset_targets_the_signed_in_users_profile_folder(tmp_path, action_id, proc, label, rel):
+    technician = tmp_path / "Local-technician"
+    technician_root = _reset_tree(technician, rel)
+    client = tmp_path / "Users" / "klient"
+    client_root = _reset_tree(client / "AppData" / "Local", rel)
+    result, _ = _run_browser_ps(tmp_path, _client_profile_script(action_id, client), technician, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (client_root / "Default").exists()
+    assert (technician_root / "Default" / "Preferences").exists()
+    assert str(client_root) in result.stdout
+
+
+def test_m17_reports_read_the_signed_in_users_browsers(tmp_path):
+    technician = tmp_path / "Local-technician"
+    _prefs(technician / "Google" / "Chrome" / "User Data" / "Default",
+           {"extensions": {"settings": {"ttt": _ext("Technician Ext", 1)}}, "homepage": "https://technician.example"})
+    client = tmp_path / "Users" / "klient"
+    _prefs(client / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default",
+           {"extensions": {"settings": {"ccc": _ext("Client Ext", 1)}}, "homepage": "http://hijack.example"})
+    _prefs(client / "AppData" / "Roaming" / "Opera Software" / "Opera Stable",
+           {"extensions": {"settings": {"ooo": _ext("Client Opera Ext", 1)}}})
+    ff = client / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles" / "c1.default"
+    ff.mkdir(parents=True)
+    (ff / "extensions.json").write_text(json.dumps({"addons": [{"defaultLocale": {"name": "Client FF Ext"}, "active": True}]}),
+                                        encoding="utf-8")
+    result, _ = _run_browser_ps(tmp_path, _client_profile_script("browser_extensions_report", client), technician, tmp_path / "Roaming-technician")
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ("Client Ext", "Client Opera Ext", "Client FF Ext"):
+        assert name in result.stdout, name + "\n" + result.stdout
+    assert "Technician Ext" not in result.stdout
+    result, _ = _run_browser_ps(tmp_path, _client_profile_script("browser_homepage_search_report", client), technician, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Homepage: http://hijack.example" in result.stdout and "technician.example" not in result.stdout

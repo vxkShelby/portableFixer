@@ -369,12 +369,28 @@ def test_m08_catalog_lsa_protection_leaves_an_already_enabled_setting_alone():
 
 def test_m08_catalog_autologon_backup_never_stores_the_password():
     # Only AutoAdminLogon is backed up - DefaultPassword appears solely in
-    # the Remove-ItemProperty that deletes it.
+    # the Remove-ItemProperty that deletes it and in the LSA secret clear.
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "hard_disable_autologon")
-    assert action.command.count("DefaultPassword") == 1
+    before_change = action.command.split("Set-Content -Path $bk", 1)[0]
+    assert "DefaultPassword" not in before_change
     assert "Remove-ItemProperty -Path $w -Name DefaultPassword" in action.command
     assert "[PSCustomObject]@{ AutoAdminLogon = $prior }" in action.command
+
+
+def test_m08_catalog_autologon_clears_the_lsa_secret_too():
+    # Sysinternals Autologon keeps the password in the LSA secret
+    # DefaultPassword, not in the registry value - clearing the Winlogon
+    # values alone leaves it readable by SYSTEM/administrators.
+    module = load_module(CATALOG_PATH)
+    action = next(a for a in module.actions if a.id == "hard_disable_autologon")
+    assert "LsaStorePrivateData" in action.command
+    assert "[PfLsa]::Clear('DefaultPassword')" in action.command
+    # STATUS_OBJECT_NAME_NOT_FOUND counts as cleared; other failures warn, never fail.
+    assert "-1073741772" in action.command
+    lsa_part = action.command[action.command.index("Add-Type"):]
+    assert "exit 1" not in lsa_part and "WARNING" in lsa_part
+    assert "LSA" in action.description_en and "LSA" in action.description_sk
 
 
 def test_m08_catalog_undos_never_exit_0_early():
