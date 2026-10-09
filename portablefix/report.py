@@ -15,6 +15,7 @@ from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
 from .snapshot import compare_snapshots, new_autostart_entries
+from .version import APP_VERSION
 
 
 def _find_action(modules: list[ModuleDef], module_id: str, action_id: str) -> ActionDef | None:
@@ -158,6 +159,8 @@ def _build_comparison(previous: dict | None, actions: list[dict], snapshot_after
 
 
 SYSTEM_MODULE_ID = "_system"
+# Bumped when a key changes shape (1: requires_restart holds action ids).
+SCHEMA_VERSION = 1
 
 
 def _frozen_risk(entry: dict, action: ActionDef | None) -> str:
@@ -403,6 +406,9 @@ def build_report_data(
     previous = _find_previous_report(base_dir / "Reports", hostname, run_id)
     generated_at = datetime.now(timezone.utc)
     data = {
+        "schema_version": SCHEMA_VERSION,
+        "generator": "PortableFix",
+        "app_version": APP_VERSION,
         "run_id": run_id,
         "language": language,
         "hostname": hostname,
@@ -413,11 +419,11 @@ def build_report_data(
         "actions": actions,
         # Only a real, successful run left a change that a restart applies -
         # a dry-run or a failed attempt listed here sent the client into a
-        # needless reboot.
-        "requires_restart": [
-            a for a in actions
+        # needless reboot. Ids, not copies of the actions (output included).
+        "requires_restart": list(dict.fromkeys(
+            a["action_id"] for a in actions
             if a["risk"] == "REQUIRES_REBOOT" and a["exit_code"] == 0 and not a["dry_run"]
-        ],
+        )),
         "previous_comparison": _build_comparison(previous, actions, snapshot_after),
         "module_summary": _build_module_summary(actions),
         "job": _clean_job(job),
@@ -901,7 +907,7 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
     output_block = ""
     if a.get("output"):
         output_block = (
-            f"<details><summary>{t('report_output')}</summary><pre>{html.escape(a['output'])}</pre></details>"
+            f"<details><summary>{t('report_output')}</summary><pre>{_output_excerpt(str(a['output']), language)}</pre></details>"
         )
     # a.get(): report JSON written before these fields existed has no key.
     command = str(a.get("command") or "")
@@ -1437,6 +1443,36 @@ def _render_client_summary(summary, language: str) -> str:
     )
 
 
+def _restart_labels(data: dict) -> list[str]:
+    # Action ids since schema 1; a report.json written before holds the
+    # whole action dicts (the handoff re-renders old files).
+    labels = {a.get("action_id"): a.get("label") for a in data.get("actions") or [] if isinstance(a, dict)}
+    result = []
+    for item in data.get("requires_restart") or []:
+        if isinstance(item, dict):
+            result.append(str(item.get("label") or item.get("action_id") or "?"))
+        else:
+            result.append(str(labels.get(item) or item))
+    return result
+
+
+# Lines of an action's output shown on the page: the first and the last
+# ones. Event-log exports run to megabytes, and the page is re-rendered at
+# every batch end; the JSON keeps the whole text.
+_OUTPUT_HEAD_LINES = 200
+_OUTPUT_TAIL_LINES = 50
+
+
+def _output_excerpt(output: str, language: str) -> str:
+    lines = output.splitlines()
+    if len(lines) <= _OUTPUT_HEAD_LINES + _OUTPUT_TAIL_LINES:
+        return html.escape(output)
+    omitted = len(lines) - _OUTPUT_HEAD_LINES - _OUTPUT_TAIL_LINES
+    marker = translate("report_lines_omitted", language).format(count=omitted)
+    return (html.escape("\n".join(lines[:_OUTPUT_HEAD_LINES])) + f"\n<em>{html.escape(marker)}</em>\n"
+            + html.escape("\n".join(lines[-_OUTPUT_TAIL_LINES:])))
+
+
 def _render_html(data: dict) -> str:
     language = data.get("language", "sk")
 
@@ -1470,8 +1506,9 @@ def _render_html(data: dict) -> str:
         delta = f" ({sign}{_gb(diff, language)} GB)"
 
     restart_section = ""
-    if data["requires_restart"]:
-        items = "".join(f"<li>{html.escape(a['label'])}</li>" for a in data["requires_restart"])
+    restart_labels = _restart_labels(data)
+    if restart_labels:
+        items = "".join(f"<li>{html.escape(label)}</li>" for label in restart_labels)
         restart_section = f"<section><h2>{t('report_requires_restart')}</h2><ul>{items}</ul></section>"
 
     extra_meta = ""
@@ -1534,7 +1571,7 @@ def _render_html(data: dict) -> str:
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 {storage_banner}
 {_render_job(data.get('job') or dict(), t, data.get('target_user'))}
-<div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
+<div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])} &middot; PortableFix v{html.escape(str(data.get('app_version') or '?'))}<br>
 {t('report_generated')}: {html.escape(_format_timestamp(data['generated_at'], language))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}{extra_meta}</div>
 {_render_client_summary(data.get('client_summary'), language)}
@@ -1586,7 +1623,7 @@ def generate_report(
     html_path = reports_dir / f"{data['hostname']}_{run_id}.html"
     json_path = reports_dir / f"{data['hostname']}_{run_id}.json"
     html_path.write_text(_render_html(data), encoding="utf-8")
-    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return html_path, json_path
 
 

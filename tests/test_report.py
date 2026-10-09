@@ -967,8 +967,41 @@ def test_requires_restart_lists_only_real_successful_reboot_actions(tmp_path):
 
     append_entry(tmp_path, run_id, make_entry(
         "m02_cleanup", "user_temp", "cmd", 0, "applied", False, run_id, risk="REQUIRES_REBOOT"))
+    append_entry(tmp_path, run_id, make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "again", False, run_id, risk="REQUIRES_REBOOT"))
     data = build_report_data(tmp_path, run_id, _fixture_modules(), "en", {}, {})
-    assert [(a["exit_code"], a["dry_run"], a["output"]) for a in data["requires_restart"]] == [(0, False, "applied")]
+    # Ids, once each - not copies of the actions with their output.
+    assert data["requires_restart"] == ["user_temp"]
+    content = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
+    assert "<h2>Requires restart</h2><ul><li>Temp files</li></ul>" in content
+    # A report.json written before schema 1 holds the action dicts.
+    from portablefix.report import render_report_html
+
+    old = dict(data, requires_restart=[{"action_id": "user_temp", "label": "Old label"}])
+    assert "<li>Old label</li>" in render_report_html(old)
+
+
+def test_report_json_names_its_schema_and_app_version_and_keeps_utf8(tmp_path):
+    from portablefix.version import APP_VERSION
+
+    append_entry(tmp_path, "run_ver", make_entry("m02_cleanup", "user_temp", "cmd", 0, "Hotovo, čistenie", False, "run_ver"))
+    html_path, json_path = generate_report(tmp_path, "run_ver", _fixture_modules(), "sk", {}, {})
+    raw = json_path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert data["schema_version"] == 1 and data["generator"] == "PortableFix" and data["app_version"] == APP_VERSION
+    assert "čistenie" in raw and "\\u010d" not in raw
+    assert f"PortableFix v{APP_VERSION}" in html_path.read_text(encoding="utf-8")
+
+
+def test_long_output_is_cut_on_the_page_but_whole_in_the_json(tmp_path):
+    output = "\n".join(f"line {i}" for i in range(20000))
+    append_entry(tmp_path, "run_long", make_entry("m02_cleanup", "user_temp", "cmd", 0, output, False, "run_long"))
+    html_path, json_path = generate_report(tmp_path, "run_long", _fixture_modules(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "line 199\n<em>… 19750 lines omitted - full text in report.json</em>\nline 19950" in content
+    assert "line 200\n" not in content and "line 19949\n" not in content
+    assert html_path.stat().st_size < 60_000
+    assert json.loads(json_path.read_text(encoding="utf-8"))["actions"][0]["output"] == output
 
 
 def test_report_sentinel_codes_match_the_executor():

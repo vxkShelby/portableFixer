@@ -677,7 +677,7 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     redacted_report = report.redact_report_data(report_data, mask) if report_data is not None else None
     for arcname, source in sources:
         if arcname == ARC_REPORT_JSON and redacted_report is not None:
-            _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2).encode("utf-8"))
+            _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2, ensure_ascii=False).encode("utf-8"))
         elif arcname == ARC_REPORT_JSON:
             text = _unescape_json_text(source.read_text(encoding="utf-8", errors="replace"))
             _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask).encode("utf-8"))
