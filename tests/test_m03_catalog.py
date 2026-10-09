@@ -71,13 +71,16 @@ def test_m03_catalog_disk_health_verdict_is_safe_and_before_the_repairs():
 #
 # Success stops the batch for a restart (restart_before_next), so exit 0
 # must mean the boot check really is queued. The command runs against
-# stubs: chkdsk, Get-CimInstance and Get-ItemProperty are shadowed by
-# functions, and the script exits 97 unless each name resolves to its stub,
-# so a test run never touches the host's disk. chkdsk answers in Slovak on
-# purpose - the verdict must not come from its text.
+# stubs: chkdsk, Get-CimInstance, Get-ItemProperty and Set-ItemProperty are
+# shadowed by functions, and the script exits 97 unless each name resolves
+# to its stub, so a test run never touches the host's disk or registry.
+# chkdsk is the Slovak one: it only schedules when answered 'A' - a command
+# that pipes 'Y' into it schedules nothing. The BootExecute value lives in
+# $global:PfBoot, shared by the registry stubs and the chkdsk stub.
 
 STUB_GUARD_EXIT = 97
 DEFAULT_BOOT = "autocheck autochk *"
+C_ENTRY = "autocheck autochk /r \\??\\C:"
 
 
 def _powershell_or_skip() -> str:
@@ -91,20 +94,39 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _run_full_scan(chkdsk_exit=0, dirty=False, boot=(DEFAULT_BOOT,), volume=True):
+def _run_full_scan(tmp_path, chkdsk_exit=0, dirty=False, boot=(DEFAULT_BOOT,), volume=True, write_fails=False,
+                   write_lands=True):
+    """Returns (result, calls, final BootExecute list). write_fails: the
+    registry write throws (not elevated); write_lands: a successful write
+    really changes the value."""
     command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "disk_full_scan_reboot").command
-    names = ["chkdsk", "Get-CimInstance", "Get-ItemProperty"]
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    lg = _ps_quote(str(log))
+    names = ["chkdsk", "Get-CimInstance", "Get-ItemProperty", "Set-ItemProperty"]
     boot_value = "@(" + ", ".join(_ps_quote(v) for v in boot) + ")"
     volume_body = (
         f"[pscustomobject]@{{ DriveLetter = 'C:'; DirtyBitSet = ${str(dirty).lower()} }}" if volume else "$null"
     )
+    fail = "throw [System.UnauthorizedAccessException]::new('Prístup odmietnutý.')" if write_fails else ""
+    land = "$global:PfBoot = @($Value)" if write_lands else ""
     stubs = [
-        "function chkdsk { $null = @($input); Write-Output 'Chcete naplánovať kontrolu zväzku? (A/N)'; "
+        f"$global:PfBoot = {boot_value}",
+        # Slovak chkdsk: schedules only when answered 'A'.
+        "function chkdsk { $answer = @($input) -join ''; "
+        f"Add-Content -Path {lg} -Value ('chkdsk ' + ($args -join ' ') + ' <- ' + $answer); "
+        "Write-Output 'Chcete naplánovať kontrolu zväzku? (A/N)'; "
+        f"if ($answer -eq 'A') {{ $global:PfBoot = @($global:PfBoot) + {_ps_quote(C_ENTRY)} }}; "
         f"$global:LASTEXITCODE = {chkdsk_exit} }}",
         "function Get-CimInstance { [CmdletBinding()] param([string] $ClassName, [string] $Filter) "
         f"if ($ClassName -ne 'Win32_Volume' -or $Filter -ne \"DriveLetter='C:'\") {{ exit 98 }}; {volume_body} }}",
         "function Get-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [string] $Name) "
-        f"[pscustomobject]@{{ BootExecute = {boot_value} }} }}",
+        "[pscustomobject]@{ BootExecute = $global:PfBoot } }",
+        "function Set-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [string] $Name, $Value, [string] $Type) "
+        f"Add-Content -Path {lg} -Value ('set ' + $LiteralPath + ' ' + $Name + ' ' + $Type + ' = ' + ($Value -join ' | ')); "
+        f"{fail}; {land} }}",
+        f"function Write-PfBoot {{ Set-Content -LiteralPath {_ps_quote(str(tmp_path / 'boot.json'))} "
+        "-Value (ConvertTo-Json -InputObject @($global:PfBoot)) }",
     ]
     guard = (
         "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
@@ -112,47 +134,89 @@ def _run_full_scan(chkdsk_exit=0, dirty=False, boot=(DEFAULT_BOOT,), volume=True
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
     # Set inside the script, not in the child's environment (see
-    # test_m15_catalog._run_ps).
-    script = "; ".join(["[Console]::OutputEncoding=[Text.Encoding]::UTF8", "$env:SystemDrive = 'C:'"] + stubs + [guard, command])
+    # test_m15_catalog._run_ps). The command may exit early, so the final
+    # BootExecute is written by a trap-free wrapper: try/finally runs on exit.
+    script = "; ".join(
+        ["[Console]::OutputEncoding=[Text.Encoding]::UTF8", "$env:SystemDrive = 'C:'"] + stubs
+        + [guard, "try { " + command + " } finally { Write-PfBoot }"]
+    )
     result = subprocess.run(
         [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         env=dict(os.environ), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert result.returncode != STUB_GUARD_EXIT, "a system tool was not stubbed - refusing to run the real one"
-    return result
+    import json
+
+    final = json.loads((tmp_path / "boot.json").read_text(encoding="utf-8-sig"))
+    return result, log.read_text(encoding="utf-8-sig").splitlines(), final
 
 
 def test_full_scan_reboot_is_one_line_and_restart_before_next():
     action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "disk_full_scan_reboot")
     assert action.restart_before_next
     assert "\n" not in action.command
-    # The old "is it dirty" check parsed fsutil's localized sentence.
+    # The old "is it dirty" check parsed fsutil's localized sentence; the
+    # old scheduling answered chkdsk's localized prompt.
     assert "fsutil" not in action.command
+    assert "chkdsk" not in action.command
+    assert "-Type MultiString" in action.command
 
 
-def test_full_scan_reboot_fails_when_nothing_was_scheduled():
-    result = _run_full_scan(chkdsk_exit=3, dirty=False)
+def test_full_scan_reboot_schedules_through_bootexecute_without_the_localized_prompt(tmp_path):
+    # Piping 'Y' into the Slovak chkdsk ("A/N") never scheduled anything; the
+    # BootExecute entry chkdsk would have written is written directly.
+    result, calls, final = _run_full_scan(tmp_path, chkdsk_exit=3, dirty=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "scheduled for the next restart" in result.stdout
+    assert not [c for c in calls if c.startswith("chkdsk")]
+    assert final == [DEFAULT_BOOT, C_ENTRY]
+
+
+def test_full_scan_reboot_fails_when_the_write_is_refused(tmp_path):
+    result, _, final = _run_full_scan(tmp_path, write_fails=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "needs administrator" in result.stdout
+    assert final == [DEFAULT_BOOT]
+
+
+def test_full_scan_reboot_fails_when_nothing_was_scheduled(tmp_path):
+    result, _, _ = _run_full_scan(tmp_path, write_lands=False, dirty=False)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "NOT scheduled" in result.stdout
 
 
-def test_full_scan_reboot_fails_without_the_volume_or_boot_value():
-    result = _run_full_scan(volume=False, boot=())
+def test_full_scan_reboot_fails_without_the_volume_or_boot_value(tmp_path):
+    result, _, _ = _run_full_scan(tmp_path, volume=False, boot=(), write_lands=False)
     assert result.returncode == 1, result.stdout + result.stderr
 
 
-def test_full_scan_reboot_succeeds_on_the_dirty_bit():
-    result = _run_full_scan(chkdsk_exit=3, dirty=True)
+def test_full_scan_reboot_succeeds_on_the_dirty_bit(tmp_path):
+    result, _, _ = _run_full_scan(tmp_path, dirty=True, write_lands=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "scheduled for the next restart" in result.stdout
 
 
-def test_full_scan_reboot_succeeds_on_a_bootexecute_entry():
-    result = _run_full_scan(boot=(DEFAULT_BOOT, "autocheck autochk /r \\??\\c:"))
+def test_full_scan_reboot_does_not_append_an_entry_that_is_already_there(tmp_path):
+    result, calls, final = _run_full_scan(tmp_path, boot=(DEFAULT_BOOT, "autocheck autochk /r \\??\\c:"))
     assert result.returncode == 0, result.stdout + result.stderr
+    assert not [c for c in calls if c.startswith("set ")]
+    assert final == [DEFAULT_BOOT, "autocheck autochk /r \\??\\c:"]
 
 
-def test_full_scan_reboot_ignores_another_drives_bootexecute_entry():
-    result = _run_full_scan(boot=(DEFAULT_BOOT, "autocheck autochk /r \\??\\D:"))
+def test_full_scan_reboot_keeps_another_drives_bootexecute_entry(tmp_path):
+    d_entry = "autocheck autochk /r \\??\\D:"
+    result, _, final = _run_full_scan(tmp_path, boot=(DEFAULT_BOOT, d_entry))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert final == [DEFAULT_BOOT, d_entry, C_ENTRY]
+
+
+def test_full_scan_reboot_ignores_another_drives_bootexecute_entry(tmp_path):
+    result, _, _ = _run_full_scan(tmp_path, boot=(DEFAULT_BOOT, "autocheck autochk /r \\??\\D:"), write_lands=False)
     assert result.returncode == 1, result.stdout + result.stderr
+
+
+def test_full_scan_reboot_writes_an_entry_even_when_bootexecute_is_empty(tmp_path):
+    result, _, final = _run_full_scan(tmp_path, boot=())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert final == [C_ENTRY]
