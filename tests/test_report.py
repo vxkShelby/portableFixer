@@ -61,7 +61,8 @@ def test_generate_report_writes_html_and_json(tmp_path):
     assert html_path.parent == tmp_path / "Reports"
     html_content = html_path.read_text(encoding="utf-8")
     assert "Temp files" in html_content
-    assert "SAFE" in html_content
+    # Risk: translated with a symbol, the raw tier kept in data-risk.
+    assert '<span class="badge risk-safe" data-risk="SAFE"><span aria-hidden="true">✓</span> Safe</span>' in html_content
     assert "Generated:" in html_content
 
     json_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -431,6 +432,12 @@ def test_html_report_lists_failed_actions_with_anchors(tmp_path):
     assert "Failed actions (1)" in content
     assert '<a href="#action-3">System file check</a>' in content
     assert 'id="action-3"' in content
+    # The attention strip under the header links to the failed list, and
+    # the client summary has a Failed column.
+    assert '<section class="attention"' in content
+    assert '<li><a href="#pf-h-failed">Failed: 1</a></li>' in content
+    assert content.index('<section class="attention"') < content.index('<div class="meta">')
+    assert "<div><h3>Failed</h3><ul><li>System file check</li></ul></div>" in content
     # Cards keep chronological DOM order.
     assert content.index('id="action-1"') < content.index('id="action-2"') < content.index('id="action-3"')
     # The failed list sits above the action log.
@@ -443,6 +450,9 @@ def test_html_report_omits_failed_list_without_failures(tmp_path):
     content = html_path.read_text(encoding="utf-8")
     assert "Failed actions" not in content
     assert 'href="#action-' not in content
+    assert '<section class="attention"' not in content
+    assert "<div><h3>Failed</h3><p class=\"empty\">Nothing failed.</p></div>" in content
+    assert "<footer class=\"foot\">Run run_allok &middot; Generated:" in content and "PortableFix v" in content
 
 
 def test_html_report_cards_carry_filter_data_attributes(tmp_path):
@@ -916,9 +926,13 @@ def test_before_after_table_escapes_values(tmp_path, monkeypatch):
 def test_before_after_table_has_print_styles(tmp_path):
     html_path, _ = generate_report(tmp_path, "run_print", [], "en", _SNAP_BEFORE, _SNAP_AFTER)
     content = html_path.read_text(encoding="utf-8")
+    # Colours are :root variables: print forces the light set, screen
+    # picks the dark one through prefers-color-scheme.
     print_css = content[content.index("@media print"):]
-    assert "table.snapshot td.delta.good" in print_css
-    assert "table.snapshot td.delta.bad" in print_css
+    assert ":root { --bg: #fff;" in print_css and "print-color-adjust: exact" in print_css
+    assert "table.snapshot td.delta.good { color: var(--ok); }" in content
+    assert "@media (prefers-color-scheme: dark)" in content
+    assert '<meta name="color-scheme" content="light dark">' in content
 
 
 # --- Robustness: legacy-encoded files, real reboots, sentinel exit codes -----
@@ -1016,6 +1030,7 @@ def test_requires_restart_lists_only_real_successful_reboot_actions(tmp_path):
     assert data["requires_restart"] == ["user_temp"]
     content = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
     assert "<h2>Requires restart</h2><ul><li>Temp files</li></ul>" in content
+    assert "</span> Requires restart: Temp files</li>" in content  # the attention strip up top
     # A report.json written before schema 1 holds the action dicts.
     from portablefix.report import render_report_html
 
@@ -1852,6 +1867,11 @@ def test_report_opens_with_the_client_summary_from_findings(tmp_path):
     content = html_path.read_text(encoding="utf-8")
     assert content.index("Client summary") < content.index('<div class="chips">')
     assert "Disk &lt;failing&gt;" in content and "Restore UAC" in content
+    # The health areas as tiles with a text badge and a symbol.
+    assert ('<div class="tile critical"><span class="area">Disk</span>'
+            '<span class="state"><span aria-hidden="true">✕</span> Critical</span></div>') in content
+    assert '<div class="tile unknown"><span class="area">Battery</span>' in content
+    assert "<li>Recommended fixes: 1</li>" in content
 
 
 def test_dry_run_findings_do_not_count_in_the_summary(tmp_path):
