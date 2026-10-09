@@ -4943,6 +4943,7 @@ class MainWindow(QMainWindow):
                 self._t("app_title"),
                 self._t("restore_point_failed_confirm"),
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
             # "Continue without a safety net" is exactly what a later dispute
             # is about - record the answer explicitly (research-reporting.md F3).
@@ -5100,6 +5101,7 @@ class MainWindow(QMainWindow):
                 self._t("app_title"),
                 warning_text,
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
         elif action.risk != RiskLevel.SAFE:
             warning_text = f"[{action.risk.value}] {action.label(self.settings.language)}\n\n{self._t('confirm_risky_action')}"
@@ -5107,6 +5109,8 @@ class MainWindow(QMainWindow):
                 self,
                 self._t("app_title"),
                 warning_text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
         if warning_text and confirmed != QMessageBox.Yes:
             # A "No" is as much a part of the record as a "Yes" - without it

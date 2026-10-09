@@ -6165,6 +6165,27 @@ def test_uninstall_of_several_programs_logs_every_program_its_restore_point_guar
     assert event["subject"] == event["subjects"][0]
 
 
+@pytest.mark.parametrize("risk", ["DESTRUCTIVE", "MODERATE"])
+def test_batch_path_confirmations_default_to_no(qtbot, tmp_path, monkeypatch, risk):
+    base_dir = _make_base_dir(tmp_path, MODERATE_ACTIONS_YAML.replace("MODERATE", risk))
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False), is_admin=True, run_id=f"run_default_no_{risk}")
+    qtbot.addWidget(window)
+    module, action = window._find_action("risky")
+    window._run_next = lambda: None
+    window._batch_dry_run = False
+    window._reviewed_warnings = {}
+    seen = []
+    for name in ("warning", "question"):
+        monkeypatch.setattr(QMessageBox, name, lambda *a, **k: seen.append(a) or QMessageBox.No)
+
+    window._dispatch_action(module, action)
+    window._on_restore_point_checked(False, "off", module, action)
+
+    # (parent, title, text, buttons, defaultButton) - Enter must mean "No".
+    assert len(seen) == 2
+    assert all(len(args) == 5 and args[4] == QMessageBox.No for args in seen)
+
+
 def test_uninstall_with_failed_restore_point_declined_uninstalls_nothing(qtbot, tmp_path, monkeypatch):
     from portablefix import uninstaller
 
