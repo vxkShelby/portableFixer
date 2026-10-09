@@ -84,6 +84,22 @@ def test_client_complaints_find_their_symptom(table, complaint, expected):
     assert _top(table, complaint) == expected
 
 
+def test_disk_failing_never_suggests_the_full_surface_scan(table, catalog):
+    # chkdsk /r reads every sector of a drive that may be dying - the fixes
+    # of "disk failing" are the backup and the (short, online) spot fix only.
+    symptom = next(s for s in table.symptoms if s.id == "disk_failing")
+    assert symptom.fixes == ("backup_user_data_external", "disk_spotfix")
+    assert catalog["disk_full_scan_reboot"].stresses_disk  # the reason it is not listed
+
+
+def test_printer_not_working_fixes_live_in_the_printing_module(table):
+    # m14's print_reset_print_system carries the tree-safe spool purge and
+    # the post-restart re-check; the m06 spooler reset was the older copy.
+    symptom = next(s for s in table.symptoms if s.id == "printer_not_working")
+    assert "print_reset_print_system" in symptom.fixes
+    assert all(aid.startswith("print_") for aid in symptom.fixes), symptom.fixes
+
+
 def test_shipped_file_covers_the_common_complaints(table):
     # The value of G27 is breadth - a handful of toy entries is not it.
     assert len(table.symptoms) >= 40
