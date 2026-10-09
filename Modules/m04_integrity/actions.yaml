@@ -40,9 +40,13 @@ actions:
     label_sk: "Opätovná registrácia aplikácií Windows Store"
     label_en: "Re-register Windows Store apps"
     risk: MODERATE
-    command: "$pkgs = Get-AppXPackage -AllUsers | Where-Object { $_.InstallLocation }; $ok = 0; $failed = 0; foreach ($p in $pkgs) { try { Add-AppxPackage -DisableDevelopmentMode -Register \"$($p.InstallLocation)\\AppXManifest.xml\" -EA Stop } catch { $failed++; continue }; $ok++ }; Write-Output (\"Re-registered: \" + $ok + \", failed: \" + $failed)"
-    description_sk: "Znovu zaregistruje všetky nainštalované UWP aplikácie pre všetkých používateľov. Preskočí balíky bez inštalačnej cesty."
-    description_en: "Re-registers all installed UWP apps for all users. Skips packages without an install path."
+    # Add-AppxPackage -Register (PS 5.1) registers into the running account
+    # only, so the listing is the target user's and a different signed-in
+    # user (over-the-shoulder elevation) is refused rather than given the
+    # technician's registrations. Frameworks/resource packages are not apps.
+    command: "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($__pfUserSid -and $__pfUserSid -ne $me) { Write-Output 'Signed-in user differs from the elevated account - Add-AppxPackage -Register can only re-register apps for the account PortableFix runs as. Run PortableFix from the user''s own administrator account.'; exit 1 }; $sid = if ($__pfUserSid) { $__pfUserSid } else { $me }; $pkgs = Get-AppxPackage -User $sid | Where-Object { $_.InstallLocation -and -not $_.IsFramework -and -not $_.IsResourcePackage }; $ok = 0; $failed = 0; foreach ($p in $pkgs) { try { Add-AppxPackage -DisableDevelopmentMode -Register \"$($p.InstallLocation)\\AppXManifest.xml\" -EA Stop } catch { $failed++; continue }; $ok++ }; Write-Output (\"Re-registered: \" + $ok + \", failed: \" + $failed)"
+    description_sk: "Znovu zaregistruje nainštalované UWP aplikácie pre prihláseného používateľa (nie frameworky ani jazykové balíky). Preskočí balíky bez inštalačnej cesty. Ak je prihlásený iný používateľ než účet, pod ktorým beží PortableFix, akcia odmietne bežať."
+    description_en: "Re-registers the installed UWP apps for the signed-in user (frameworks and resource packages are skipped). Skips packages without an install path. Refuses to run when the signed-in user differs from the account PortableFix runs as."
   - id: wmi_verify
     label_sk: "Overenie WMI repozitára"
     label_en: "Verify WMI repository"

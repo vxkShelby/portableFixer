@@ -1,9 +1,53 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from portablefix.models import ModuleCategory, RiskLevel
 from portablefix.module_engine import load_module
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m04_integrity" / "actions.yaml"
+STUB_GUARD_EXIT = 97
+
+
+def _action(action_id):
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == action_id)
+
+
+def _powershell_or_skip() -> str:
+    exe = os.environ.get("PORTABLEFIX_TEST_PWSH") or shutil.which("powershell") or shutil.which("pwsh")
+    if not exe:
+        pytest.skip("no PowerShell available")
+    return exe
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _run_ps(tmp_path: Path, stubs: list, names: list, command: str, env: dict | None = None):
+    """Runs `command` with every listed cmdlet shadowed by a stub (exit 97
+    unless each name resolves to a function) and env variables set inside
+    the script; returns (result, logged calls)."""
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    guard = (
+        "foreach ($n in " + ", ".join(_ps_quote(n) for n in names) + ") { "
+        "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
+        f"{{ exit {STUB_GUARD_EXIT} }} }}"
+    )
+    prelude = ["[Console]::OutputEncoding=[Text.Encoding]::UTF8", f"$global:PfLog = {_ps_quote(str(log))}"]
+    prelude += [f"$env:{k} = {_ps_quote(str(v))}" for k, v in (env or {}).items()]
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         "; ".join(prelude + stubs + [guard, command])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "a system tool was not stubbed - refusing to run the real one"
+    return result, log.read_text(encoding="utf-8-sig").splitlines()
 
 
 def test_m04_catalog_loads_14_actions_in_repair_category():
@@ -111,3 +155,23 @@ def test_m04_catalog_secpol_export_snapshot_only_writes_a_new_backup_file():
     # No file written = failure, not a silent "success".
     missing = command.index("if (-not (Test-Path -LiteralPath $bk))")
     assert "exit 1" in command[missing : command.index("}", missing)]
+
+
+def test_appx_reregister_targets_the_signed_in_user_and_never_registers_other_users_packages():
+    # Get-AppxPackage -AllUsers + Add-AppxPackage -Register put every user's
+    # packages into the running account (the technician's, over the
+    # shoulder). PS 5.1's Add-AppxPackage has no -User, so the listing is
+    # the target user's and a different signed-in user is refused.
+    action = _action("appx_reregister")
+    command = action.command
+    assert "-AllUsers" not in command
+    assert "Get-AppxPackage -User $sid" in command
+    assert "$__pfUserSid" in command
+    assert "-not $_.IsFramework -and -not $_.IsResourcePackage" in command
+    refusal = command.index("$__pfUserSid -ne $me")
+    assert "exit 1" in command[refusal : command.index("}", refusal)]
+    assert command.index("exit 1") < command.index("Add-AppxPackage -DisableDevelopmentMode")
+    assert "signed-in user" in action.description_en and "prihláseného používateľa" in action.description_sk
+    assert "all users" not in action.description_en
+
+
