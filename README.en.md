@@ -85,8 +85,12 @@ PowerShell.
   the report; at the next visit the report lists what Windows turned back
   and what is new in autostart.
 - **Headless (CLI):** `PortableFix.exe --preset <name|file.json> [--live]
-  [--out dir] [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]`.
-  DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
+  [--out dir] [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]
+  [--language sk|en]` (`--help` prints the usage). The exe is a windowed
+  app, so cmd and PowerShell do not wait for it: run it as
+  `start /wait "" PortableFix.exe --preset ...` (then `%ERRORLEVEL%`) or
+  `(Start-Process .\PortableFix.exe -ArgumentList '--preset','quick_clean' -Wait -PassThru).ExitCode`.
+  Output is UTF-8 when redirected to a file. DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
   only and refuses up front when the preset holds anything riskier or the
   pre-flight check finds a blocker. Same audit log, restore point,
   `undo.ps1` and report as the window; the registry hive backup is always
@@ -95,8 +99,8 @@ PowerShell.
   saves a preset to a file; the file may also carry `"items"` (item ids for
   per-item actions). Exit codes follow Tron: 0 OK, 1 error, 2 warning
   (something was skipped, or a diagnostic found a problem), 3 unsupported
-  Windows, 4 restart pending,
-  5 running from %TEMP%.
+  Windows, 4 restart pending (a live run refused by the pre-flight check,
+  or an action that needs one succeeded), 5 running from %TEMP%.
 - **Custom actions (`UserModules/`):** catalogs in
   `UserModules/<id>/actions.yaml` (same format as `Modules/`) load next to
   the built-in ones, carry a **custom** badge in the window and the report,
@@ -153,9 +157,13 @@ PowerShell.
   this PC's profile names and the target user's account name (also
   `AzureAD\JanNovak`) anywhere else (e.g. `PC\Jan Novak`),
   IPv4/IPv6 and MAC addresses, serial numbers (BIOS, disks), product-key
-  fragments (`XXXXX-XXXXX-…`, `PartialProductKey`) and Wi-Fi network
-  names (SSID) with markers such as `<ip>` or `<serial>`. The computer
-  name and the Job details stay. Versions with a part above 255
+  fragments (`XXXXX-XXXXX-…`, `PartialProductKey`), Wi-Fi network
+  names (SSID, also the `NetProfile.Name` line), AD domains and DNS
+  suffixes (`Domain : …`, WORKGROUP stays), e-mail addresses, the
+  machine part of account SIDs and the local account names with markers
+  such as `<ip>` or `<serial>`. The computer name and the Job details
+  stay - note that a computer name like `JANKO-NTB` can itself identify
+  the owner. Versions with a part above 255
   (`10.0.26100.1`) or with a label (`Version : 2.0.0.0`, a `DriverVersion`
   table column), hashes and GUIDs are left alone, and so are loopback,
   masks and public DNS (8.8.8.8, 1.1.1.1). An unlabelled short four-part

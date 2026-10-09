@@ -103,6 +103,15 @@ def get_static_info() -> StaticInfo:
     )
 
 
+# PowerShell writes the OEM code page (cp852 on Slovak Windows) by default:
+# decoded as cp1250 a VPN name with diacritics came out as mojibake and an
+# undefined byte raised. Forced to UTF-8 like winget_updates does.
+_UTF8_PREFIX = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+# A cold PowerShell start on an HDD laptop takes longer than 10 s.
+_PS_TIMEOUT_SEC = 20
+_HEALTH_STATUS = {"0": "Healthy", "1": "Warning", "2": "Unhealthy"}
+
+
 def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
     # Both are one-off static facts read once at startup (neither changes
     # mid-session) - combined into one PowerShell launch instead of two,
@@ -111,16 +120,19 @@ def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
     try:
         result = subprocess.run(
             [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command",
+             _UTF8_PREFIX +
              "(Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 -ExpandProperty Speed); "
              "'---PF_SEP---'; "
              "(Get-PhysicalDisk | Select-Object -ExpandProperty HealthStatus) -join ', '"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_PS_TIMEOUT_SEC,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         speed_part, _, health_part = result.stdout.partition("---PF_SEP---")
         speed_part, health_part = speed_part.strip(), health_part.strip()
         speed = int(speed_part) if speed_part else None
-        return speed, (health_part or None)
+        # Some builds print the enum's number.
+        health = ", ".join(_HEALTH_STATUS.get(p.strip(), p.strip()) for p in health_part.split(",") if p.strip())
+        return speed, (health or None)
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None, None
 
@@ -416,12 +428,13 @@ def check_vpn_status() -> str | None:
     )
     try:
         result = subprocess.run(
-            [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=10,
+            [powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", _UTF8_PREFIX + script],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_PS_TIMEOUT_SEC,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return result.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        # ValueError covers UnicodeDecodeError: VpnStatusRunner must emit.
         return None
 
 

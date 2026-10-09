@@ -3,6 +3,7 @@ restore point, the same audit/undo/report files as the window, exit codes.
 The catalog is a tiny fake one; its commands run in the real powershell.exe."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,24 @@ def test_wants_cli_only_for_the_headless_switches():
     assert cli.wants_cli(["x.exe", "--export-preset", "a", "b.json"])
     assert not cli.wants_cli(["x.exe", "--post-update"])
     assert not cli.wants_cli(["x.exe"])
+    # --help used to open the window.
+    assert cli.wants_cli(["x.exe", "--help"]) and cli.wants_cli(["x.exe", "-h"])
+
+
+def test_help_prints_the_usage_and_exits_0(monkeypatch):
+    import io
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1250")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert cli.run(["x.exe", "--help"]) == cli.EXIT_OK
+    stdout.flush()
+    text = stdout.buffer.getvalue().decode("utf-8")
+    assert "--preset" in text and "--language" in text and "start /wait" in text
+    # Redirected output is UTF-8 with replacement, never a dropped line.
+    assert stdout.encoding == "utf-8" and stdout.errors == "replace"
+    cli.say("→ ok")
+    stdout.flush()
+    assert "→ ok" in stdout.buffer.getvalue().decode("utf-8")
 
 
 def test_dry_run_is_the_default_and_writes_audit_and_report(app, tmp_path):
@@ -293,3 +312,18 @@ def test_real_catalog_presets_resolve():
     known = {a.id for m in modules for a in m.actions}
     for name, ids in PRESETS.items():
         assert set(ids) <= known, name
+
+
+def test_an_internal_error_is_exit_1_and_written_to_crash_log(app, tmp_path, monkeypatch):
+    # cli.run caught only CliError/OSError: anything else reached the
+    # windowed bootloader's error box, which an unattended run waits on.
+    from portablefix.diagnostics import crash_log_path
+
+    def broken(*args, **kwargs):
+        raise TypeError("previous report is not a dict")
+
+    monkeypatch.setattr(cli.report, "generate_report", broken)
+    code, lines, _ = _run(app, tmp_path, "--preset", _preset(tmp_path, ["cli_read"]))
+    assert code == cli.EXIT_ERROR
+    assert any("internal error" in line and "TypeError" in line for line in lines), lines
+    assert "TypeError: previous report is not a dict" in crash_log_path(tmp_path / "out").read_text(encoding="utf-8")

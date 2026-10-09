@@ -22,6 +22,8 @@ SELF_IMPROVE_LOG = LOGS_DIR / "self_improve.log"
 FIX_COMMIT_WINDOW = 20
 REPEAT_THRESHOLD = 3
 PYTEST_TIMEOUT_SEC = 300
+GIT_TIMEOUT_SEC = 60
+ARCHON_TIMEOUT_SEC = 3600
 # Mirrors the deselect pattern documented in README.md and
 # .github/workflows/tests.yml: these files spawn real powershell.exe
 # processes and can crash the whole pytest run (STATUS_STACK_BUFFER_OVERRUN),
@@ -32,6 +34,7 @@ PYTEST_DESELECT = [
 ]
 
 sys.path.insert(0, str(REPO_ROOT))
+from portablefix import redaction  # noqa: E402
 from scripts.self_improve_lib import (  # noqa: E402
     append_soul_entry,
     count_pytest_failures,
@@ -61,7 +64,7 @@ def gather_signal() -> tuple[bool, str, int]:
 
     git_result = subprocess.run(
         ["git", "log", "--name-only", "--pretty=format:%s", f"-{FIX_COMMIT_WINDOW}"],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     fix_files = parse_fix_commit_files(git_result.stdout)
@@ -87,11 +90,15 @@ def gather_signal() -> tuple[bool, str, int]:
 
 def run_archon(trigger: str) -> tuple[bool, str]:
     """Returns (succeeded, stdout)."""
-    result = subprocess.run(
-        ["archon", "workflow", "run", "self-improve", trigger],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    try:
+        result = subprocess.run(
+            ["archon", "workflow", "run", "self-improve", trigger],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=ARCHON_TIMEOUT_SEC,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        # In a post-commit hook a hung archon would block the commit forever.
+        return False, f"archon timed out after {ARCHON_TIMEOUT_SEC} s"
     return result.returncode == 0, result.stdout
 
 
@@ -111,7 +118,10 @@ def main() -> None:
         _log("archon run failed, skipping SOUL.md entry and state save")
         return
 
-    append_soul_entry(SOUL_FILE, trigger, archon_stdout.strip()[-500:])
+    # docs/SOUL.md is tracked: an echoed crash.log line would commit local
+    # paths and user names to the public repo.
+    tail = redaction.redact_text(archon_stdout.strip()[-500:], mask=redaction.local_profile_names())
+    append_soul_entry(SOUL_FILE, trigger, tail)
     save_state(STATE_FILE, {"crash_log_offset": new_offset})
     _log("done, archon output tail logged to SOUL.md")
 

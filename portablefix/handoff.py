@@ -577,8 +577,18 @@ def _write_bytes(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
 # The placeholders as they must appear in HTML source.
 _HTML_PLACEHOLDERS = {
     p: p.replace("<", "&lt;").replace(">", "&gt;")
-    for p in (redaction.USER, redaction.IP, redaction.MAC, redaction.SERIAL, redaction.KEY, redaction.SSID)
+    for p in (redaction.USER, redaction.IP, redaction.MAC, redaction.SERIAL, redaction.KEY, redaction.SSID,
+              redaction.DOMAIN, redaction.EMAIL, redaction.SID)
 }
+
+
+_JSON_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _unescape_json_text(text: str) -> str:
+    # A torn audit line or unparsable report.json is redacted as text, where
+    # "Jiří" would leave the \uXXXX tail of a name readable.
+    return _JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
 
 
 def _load_report_json(path: Path | None) -> dict | None:
@@ -629,7 +639,7 @@ def _redacted_audit_log(source: Path, keep: list[str], mask: list[str]) -> bytes
     parsed = iter(redacted)
     for entry in entries:
         if isinstance(entry, str):
-            out.append(redaction.redact_text(entry, keep, mask))
+            out.append(redaction.redact_text(_unescape_json_text(entry), keep, mask))
         else:
             out.append(json.dumps(next(parsed)))
     return ("\n".join(out) + ("\n" if out else "")).encode("utf-8")
@@ -659,7 +669,7 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     keep = [hostname, *(str(value) for value in job.values())]
     # The package is saved on the client PC: its profile folders name the
     # people to hide even where a name is printed without its path.
-    mask = redaction.local_profile_names()
+    mask = redaction.local_profile_names() + redaction.local_account_names()
     # Plus every target user (research G25) the audit log recorded: an
     # AzureAD or renamed account need not match its profile folder name.
     if ARC_AUDIT_LOG in paths:
@@ -667,9 +677,9 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     redacted_report = report.redact_report_data(report_data, mask) if report_data is not None else None
     for arcname, source in sources:
         if arcname == ARC_REPORT_JSON and redacted_report is not None:
-            _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2).encode("utf-8"))
+            _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2, ensure_ascii=False).encode("utf-8"))
         elif arcname == ARC_REPORT_JSON:
-            text = source.read_text(encoding="utf-8", errors="replace")
+            text = _unescape_json_text(source.read_text(encoding="utf-8", errors="replace"))
             _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask).encode("utf-8"))
         elif arcname == ARC_REPORT_HTML:
             _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep, mask))

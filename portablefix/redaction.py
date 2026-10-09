@@ -15,6 +15,7 @@ Best effort by design: a value printed without anything that identifies it
 (a serial number in a table column) cannot be told apart from any other text.
 """
 
+import bisect
 import ipaddress
 import os
 import re
@@ -27,6 +28,9 @@ MAC = "<mac>"
 SERIAL = "<serial>"
 KEY = "<key>"
 SSID = "<ssid>"
+DOMAIN = "<domain>"
+EMAIL = "<email>"
+SID = "<sid>"
 
 # Profile folders every Windows has - naming them says nothing about the client.
 _SHARED_PROFILES = {"public", "default", "default user", "all users", "defaultapppool"}
@@ -45,7 +49,7 @@ _GENERIC_ACCOUNTS = _SHARED_PROFILES | {
 # of two spaces; otherwise it ends at whitespace, because the rest of the
 # line may be ordinary text.
 _USER_PATH = re.compile(
-    r"(?P<prefix>(?<![A-Za-z])[A-Za-z]:(?P<sep>\\\\|\\|/)Users(?P=sep))"
+    r"(?P<prefix>(?<![A-Za-z])(?:[A-Za-z]:|\\{2,4}[^\\/\s]+\\{1,2}[A-Za-z]\$)(?P<sep>\\\\|\\|/)Users(?P=sep))"
     r"(?:(?P<name>[^\\/:*?\"<>|\r\n\t]+?)(?=(?P=sep))"
     r"|(?P<full>[^\\/:*?\"<>|\s'&;,)\]]+(?: [^\\/:*?\"<>|\s'&;,)\]]+){1,2})(?=[ \t]*(?:[\r\n\"']|$)|[ \t]{2})"
     r"|(?P<tail>[^\\/:*?\"<>|\s'&;,)\]]+))",
@@ -96,10 +100,29 @@ _PARTIAL_KEY = re.compile(
 )
 
 # "SSID : name" as netsh wlan prints it (the field names are not localized)
-# and "SSID": "..." in JSON. BSSID is a MAC and handled by _MAC.
+# and "SSID": "..." in JSON. BSSID is a MAC and handled by _MAC. The network
+# profile name Get-NetIPConfiguration (NetProfile.Name) and netsh (Profile,
+# "All User Profile") print is the SSID on Wi-Fi and the AD domain on a LAN.
 _SSID = re.compile(
-    r"(?P<key>(?<![A-Za-z])SSID\"?[ \t]*[:=][ \t]*\"?)(?P<value>[^\s\"](?:[^\r\n\"]*[^\s\"])?)(?=[^\S\r\n]*(?:\"|\r|\n|$))",
+    r"(?P<key>(?<![A-Za-z])(?:SSID|NetProfile\.Name|ProfileName|Profile)\"?[ \t]*[:=][ \t]*\"?)"
+    r"(?![A-Za-z]:[\\/])(?P<value>[^\s\"](?:[^\r\n\"]*[^\s\"])?)(?=[^\S\r\n]*(?:\"|\r|\n|$))",
 )
+
+# "Domain : contoso.local" (Win32_ComputerSystem), the DNS suffixes of
+# Get-DnsClient / ipconfig and the user's domain. WORKGROUP names no one.
+_DOMAIN = re.compile(
+    r"(?P<key>\b(?:Domain|DnsDomain|UserDomain|PrimaryDnsSuffix|ConnectionSpecificSuffix"
+    r"|Connection-specific DNS Suffix|DNS Suffix Search List)\"?[ \t]*[:=][ \t]*\"?)"
+    r"(?P<value>[^\s\",;](?:[^\r\n\",;]*[^\s\",;])?)(?=[^\S\r\n]*(?:[\",;\r\n]|$))",
+    re.IGNORECASE,
+)
+_WORKGROUP = "workgroup"
+
+# Event-log output, Microsoft-account names and the intake free text.
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# The machine-unique part of an account SID (target_user.sid, HKU paths).
+# The RID stays - it tells accounts apart.
+_SID = re.compile(r"\bS-1-5-21(?:-\d+){3}(?P<rid>-\d+)?\b")
 
 # Values collected once (an SSID, a serial number, a profile name) are masked
 # wherever else they appear too - e.g. the Wi-Fi profile line naming the
@@ -114,6 +137,8 @@ _NOT_COLLECTED = {
     "home", "pro", "professional", "enterprise", "education", "core", "windows",
     "default string", "to be filled by o.e.m.", "system serial number", "chassis serial number",
     "not specified", "not applicable", "none", "n/a", "oem", "o.e.m.", "unknown", "invalid",
+    # Firewall / network-category profile names, printed under "Profile :" too.
+    "domain", "private", "public", "any", _WORKGROUP,
 }
 
 
@@ -135,31 +160,51 @@ def _after_version_label(match: re.Match) -> bool:
     return _VERSION_LABEL.search(before) is not None
 
 
+# Header words of a version column, as PowerShell / winget print them in
+# English, Slovak and German ("Verzia", "K dispozícii", "Verfügbar").
+_VERSION_HEADER = re.compile(r"vers|verzi|verfüg|available|k dispoz", re.IGNORECASE)
+_DOTTED = re.compile(r"\d+(?:\.\d+){1,3}(?![\w.])")
+
+
+def _table_version_columns(header: str, body: list[str]) -> set[int]:
+    columns = set()
+    for match in re.finditer(r"\S+", header):
+        start = match.start()
+        if _VERSION_HEADER.match(header[start:]):
+            columns.add(start)
+        # winget localizes its headers: a column that is mostly dotted
+        # numbers is a version column whatever it is called.
+        elif body and sum(1 for line in body if _DOTTED.match(line[start:])) * 2 >= len(body):
+            columns.add(start)
+    return columns
+
+
 def _version_columns(text: str) -> list[tuple[int, int, set[int]]]:
-    """(start, end, columns) of each Format-Table body whose header names a
-    *Version column: the column offsets where those headers start. Computed
-    once per text; PowerShell aligns a string column to its header."""
-    if "vers" not in text.lower():
+    """(start, end, columns) of each table body (a header line, its dashes,
+    rows up to a blank line) and the offsets of its version columns.
+    Computed once per text; PowerShell aligns a string column to its header."""
+    if "-" not in text:
         return []
     tables: list[tuple[int, int, set[int]]] = []
     lines = text.splitlines(keepends=True)
     offset = 0
     previous = ""
-    current: tuple[int, set[int]] | None = None
+    current: tuple[int, str, list[str]] | None = None
     for line in lines:
         bare = line.rstrip("\r\n")
-        if current is not None and not bare.strip():
-            tables.append((current[0], offset, current[1]))
-            current = None
+        if current is not None:
+            if bare.strip():
+                current[2].append(bare)
+            else:
+                tables.append((current[0], offset, _table_version_columns(current[1], current[2])))
+                current = None
         if current is None and previous.strip() and _TABLE_RULE.fullmatch(bare):
-            columns = {m.start() for m in re.finditer(r"\S+", previous) if "vers" in m.group(0).lower()}
-            if columns:
-                current = (offset + len(line), columns)
+            current = (offset + len(line), previous, [])
         previous = bare
         offset += len(line)
     if current is not None:
-        tables.append((current[0], offset, current[1]))
-    return tables
+        tables.append((current[0], offset, _table_version_columns(current[1], current[2])))
+    return [table for table in tables if table[2]]
 
 
 def _in_version_column(match: re.Match, tables: list[tuple[int, int, set[int]]]) -> bool:
@@ -179,6 +224,7 @@ def _keep_ipv6(text: str) -> bool:
 
 
 def _kept_spans(text: str, keep: tuple[str, ...]) -> list[tuple[int, int]]:
+    """Sorted, merged (start, end) of every kept term in `text`."""
     spans = []
     lowered = text.lower()
     for term in keep:
@@ -186,11 +232,22 @@ def _kept_spans(text: str, keep: tuple[str, ...]) -> list[tuple[int, int]]:
         while start != -1:
             spans.append((start, start + len(term)))
             start = lowered.find(term, start + 1)
-    return spans
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _inside(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
-    return any(s <= start and end <= e for s, e in spans)
+    # Merged spans never overlap, so only the last one starting at or before
+    # `start` can contain the match - a linear scan was quadratic on a
+    # short kept value ("12") over a large log.
+    index = bisect.bisect_right(spans, (start, float("inf"))) - 1
+    return index >= 0 and end <= spans[index][1]
 
 
 def _sub(pattern: re.Pattern, text: str, keep: tuple[str, ...], replace) -> str:
@@ -208,12 +265,14 @@ def _sub(pattern: re.Pattern, text: str, keep: tuple[str, ...], replace) -> str:
 
 
 def _normalize_keep(keep: Iterable[str]) -> tuple[str, ...]:
-    return tuple(sorted({k.strip().lower() for k in keep if isinstance(k, str) and k.strip()}, key=len, reverse=True))
+    # A term shorter than any collected value cannot contain a match.
+    terms = {k.strip().lower() for k in keep if isinstance(k, str)}
+    return tuple(sorted((k for k in terms if len(k) >= _MIN_COLLECTED_LENGTH), key=len, reverse=True))
 
 
 def redact_text(text: str, keep: Iterable[str] = (), mask: Iterable[str] = ()) -> str:
     """`text` with personal data replaced by placeholders (<user>, <ip>,
-    <mac>, <serial>, <key>, <ssid>). `keep`: values never masked (the
+    <mac>, <serial>, <key>, <ssid>, <domain>, <email>, <sid>). `keep`: values never masked (the
     computer name, the technician and client). `mask`: user profile names
     masked wherever they appear (see local_profile_names). Idempotent."""
     if not isinstance(text, str) or not text:
@@ -240,8 +299,16 @@ def _redact(text: str, kept: tuple[str, ...], masker: "_Masker") -> str:
             return value
         return IP
 
+    def domain(match: re.Match) -> str:
+        if match.group("value").strip().lower() == _WORKGROUP:
+            return match.group(0)
+        return match.group("key") + DOMAIN
+
     text = _sub(_USER_PATH, text, (), user)
+    text = _sub(_EMAIL, text, kept, lambda m: EMAIL)
+    text = _sub(_SID, text, kept, lambda m: f"S-1-5-21-{SID}{m.group('rid') or ''}")
     text = _sub(_SSID, text, kept, lambda m: m.group("key") + SSID)
+    text = _sub(_DOMAIN, text, kept, domain)
     text = _sub(_SERIAL, text, kept, lambda m: m.group("key") + SERIAL)
     text = _sub(_PARTIAL_KEY, text, kept, lambda m: m.group("key") + KEY)
     text = _sub(_MAC, text, kept, lambda m: MAC)
@@ -264,7 +331,7 @@ def _looks_like_key(value: str) -> bool:
 def _worth_collecting(value: str) -> bool:
     if len(value) < _MIN_COLLECTED_LENGTH or value.lower() in _NOT_COLLECTED:
         return False
-    if value in (USER, SSID, SERIAL):
+    if value in (USER, SSID, SERIAL, DOMAIN):
         return False
     # "Home", "Dell": an all-letter word this short is too likely to be
     # ordinary text somewhere else in the report.
@@ -285,6 +352,7 @@ class _Collected:
     def __init__(self) -> None:
         self.kinds: dict[str, str] = {}
         self.names: set[str] = set()
+        self.domains: set[str] = set()
 
     def add_from(self, text: str) -> None:
         for pattern, placeholder in ((_SSID, SSID), (_SERIAL, SERIAL)):
@@ -292,6 +360,13 @@ class _Collected:
                 value = match.group("value").strip()
                 if _worth_collecting(value):
                     self.kinds.setdefault(value, placeholder)
+        # A domain is also the "CONTOSO\" prefix of account names: its first
+        # label, case-insensitively - DNS and NetBIOS names differ in case.
+        for match in _DOMAIN.finditer(text):
+            value = match.group("value").strip()
+            for part in (value, value.split(".", 1)[0]):
+                if _worth_collecting(part):
+                    self.domains.add(part.lower())
         # Only a name followed by a separator is certain to be the whole
         # folder name; a trailing one may have swallowed or lost a word.
         for match in _USER_PATH.finditer(text):
@@ -304,7 +379,7 @@ class _Collected:
                 self.names.add(name.strip().lower())
 
     def masker(self) -> "_Masker":
-        return _Masker(self.kinds, self.names)
+        return _Masker(self.kinds, self.names, self.domains)
 
 
 _WORD = re.compile(r"\w+")
@@ -352,11 +427,12 @@ class _ValueSet:
 class _Masker:
     """The collected values of one document, prepared once for all its strings."""
 
-    def __init__(self, kinds: dict[str, str], names: set[str]) -> None:
+    def __init__(self, kinds: dict[str, str], names: set[str], domains: set[str] = frozenset()) -> None:
         self._kinds = kinds
         self._values = _ValueSet(kinds, ignore_case=False)
         # Windows compares account and folder names case-insensitively.
         self._users = _ValueSet(names, ignore_case=True)
+        self._domains = _ValueSet(domains, ignore_case=True)
 
     def apply(self, text: str, kept: tuple[str, ...]) -> str:
         pattern = self._values.pattern_for(text)
@@ -366,6 +442,9 @@ class _Masker:
                 return value if value.lower() in kept else self._kinds.get(value, value)
 
             text = _sub(pattern, text, kept, one)
+        pattern = self._domains.pattern_for(text)
+        if pattern is not None:
+            text = _sub(pattern, text, kept, lambda m: DOMAIN)
         pattern = self._users.pattern_for(text)
         if pattern is not None:
             # A profile name is personal whatever else it matches, like the
@@ -395,6 +474,43 @@ def local_profile_names(users_dir: Path | None = None) -> list[str]:
         except OSError:
             continue
     return sorted(names)
+
+
+def local_account_names() -> list[str]:
+    """The local account names (NetUserEnum level 0, no subprocess) apart
+    from the built-in ones - an account that never signed in, or was
+    renamed, has no matching profile folder, yet "Get-LocalUser" prints it.
+    [] off Windows or on any error."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class UserInfo0(ctypes.Structure):
+            _fields_ = [("name", wintypes.LPWSTR)]
+
+        netapi = ctypes.WinDLL("netapi32")
+        netapi.NetUserEnum.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.POINTER(UserInfo0)),
+            wintypes.DWORD, wintypes.LPDWORD, wintypes.LPDWORD, wintypes.LPDWORD,
+        ]
+        netapi.NetUserEnum.restype = wintypes.DWORD
+        netapi.NetApiBufferFree.argtypes = [ctypes.c_void_p]
+        buffer = ctypes.POINTER(UserInfo0)()
+        read, total, resume = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD(0)
+        # FILTER_NORMAL_ACCOUNT, MAX_PREFERRED_LENGTH: every account in one call.
+        status = netapi.NetUserEnum(None, 0, 2, ctypes.byref(buffer), 0xFFFFFFFF,
+                                    ctypes.byref(read), ctypes.byref(total), ctypes.byref(resume))
+        if status not in (0, 234) or not buffer:  # 234 = ERROR_MORE_DATA
+            return []
+        try:
+            names = [buffer[i].name for i in range(read.value)]
+        finally:
+            netapi.NetApiBufferFree(buffer)
+    except (OSError, AttributeError, ValueError):
+        return []
+    return sorted(n for n in names if n and n.lower() not in _GENERIC_ACCOUNTS)
 
 
 def account_names(accounts: Iterable[str]) -> list[str]:

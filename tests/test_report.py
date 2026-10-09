@@ -61,7 +61,8 @@ def test_generate_report_writes_html_and_json(tmp_path):
     assert html_path.parent == tmp_path / "Reports"
     html_content = html_path.read_text(encoding="utf-8")
     assert "Temp files" in html_content
-    assert "SAFE" in html_content
+    # Risk: translated with a symbol, the raw tier kept in data-risk.
+    assert '<span class="badge risk-safe" data-risk="SAFE"><span aria-hidden="true">✓</span> Safe</span>' in html_content
     assert "Generated:" in html_content
 
     json_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -341,16 +342,29 @@ def test_previous_report_with_non_list_actions_does_not_crash(tmp_path):
     assert data["previous_comparison"]["previous_action_count"] == 0
 
 
-def test_html_report_shows_readable_utc_timestamps(tmp_path):
+def test_html_report_shows_local_timestamps_with_offset(tmp_path, monkeypatch):
+    # A Slovak client read "08:15 UTC" for a 10:15 visit, next to the
+    # hand-over line in local time. Local time plus the offset, in the
+    # language's date format; the JSON keeps ISO UTC.
+    from datetime import timedelta, timezone
+
+    from portablefix import report
+
+    monkeypatch.setattr(report, "_local_tz", lambda: timezone(timedelta(hours=2)))
     entry = make_entry("m02_cleanup", "user_temp", "cmd", 0, "", False, "run_ts")
     entry.timestamp = "2026-09-24T12:54:03.410593+00:00"
     append_entry(tmp_path, "run_ts", entry)
     html_path, json_path = generate_report(tmp_path, "run_ts", _fixture_modules(), "en", {}, {})
     content = html_path.read_text(encoding="utf-8")
-    assert "2026-09-24 12:54:03 UTC" in content
-    assert "12:54:03.410593" not in content
-    # The machine-readable JSON keeps the full ISO timestamp.
+    assert "2026-09-24 14:54 UTC+02:00" in content
+    assert "12:54:03.410593" not in content and "12:54" not in content
     assert json.loads(json_path.read_text(encoding="utf-8"))["actions"][0]["timestamp"] == entry.timestamp
+
+    html_path, _ = generate_report(tmp_path, "run_ts", _fixture_modules(), "sk", {"free_gb": 10.5}, {"free_gb": 12.0})
+    content = html_path.read_text(encoding="utf-8")
+    assert "24.09.2026 14:54 UTC+02:00" in content
+    # Decimal comma for the GB figures in Slovak, like the durations.
+    assert "10,5 GB &rarr; 12,0 GB (+1,5 GB)" in content
 
 
 def _two_module_fixture():
@@ -418,6 +432,12 @@ def test_html_report_lists_failed_actions_with_anchors(tmp_path):
     assert "Failed actions (1)" in content
     assert '<a href="#action-3">System file check</a>' in content
     assert 'id="action-3"' in content
+    # The attention strip under the header links to the failed list, and
+    # the client summary has a Failed column.
+    assert '<section class="attention"' in content
+    assert '<li><a href="#pf-h-failed">Failed: 1</a></li>' in content
+    assert content.index('<section class="attention"') < content.index('<div class="meta">')
+    assert "<div><h3>Failed</h3><ul><li>System file check</li></ul></div>" in content
     # Cards keep chronological DOM order.
     assert content.index('id="action-1"') < content.index('id="action-2"') < content.index('id="action-3"')
     # The failed list sits above the action log.
@@ -430,6 +450,9 @@ def test_html_report_omits_failed_list_without_failures(tmp_path):
     content = html_path.read_text(encoding="utf-8")
     assert "Failed actions" not in content
     assert 'href="#action-' not in content
+    assert '<section class="attention"' not in content
+    assert "<div><h3>Failed</h3><p class=\"empty\">Nothing failed.</p></div>" in content
+    assert "<footer class=\"foot\">Run run_allok &middot; Generated:" in content and "PortableFix v" in content
 
 
 def test_html_report_cards_carry_filter_data_attributes(tmp_path):
@@ -437,9 +460,40 @@ def test_html_report_cards_carry_filter_data_attributes(tmp_path):
     html_path, _ = generate_report(tmp_path, "run_attr", _two_module_fixture(), "en", {}, {})
     content = html_path.read_text(encoding="utf-8")
     assert '<div class="card ok" id="action-1" data-status="ok" data-dry="0"' in content
-    assert '<div class="card ok" id="action-2" data-status="ok" data-dry="1"' in content
+    # A dry-run is a grey preview, not a green OK, and not counted as one.
+    assert '<div class="card preview" id="action-2" data-status="preview" data-dry="1"' in content
+    assert '<span class="status preview">PREVIEW</span>' in content
     assert '<div class="card fail" id="action-3" data-status="fail" data-dry="0"' in content
     assert 'data-search="system file check m03_repair sfc"' in content
+    assert '<div class="chip ok"><span class="num">2</span>' in content
+    assert '<div class="chip dry"><span class="num">1</span>' in content
+
+
+def test_html_report_has_a_csp_hash_of_its_script_and_no_referrer(tmp_path):
+    import base64
+    import hashlib
+
+    from portablefix import report
+
+    html_path, _ = generate_report(tmp_path, "run_csp", [], "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    script = content.split("<script>", 1)[1].split("</script>", 1)[0]
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    assert f"script-src 'sha256-{digest}'" in content and digest == report._JS_SHA256
+    assert "default-src 'none'" in content
+    assert '<meta name="referrer" content="no-referrer">' in content
+
+
+def test_autostart_diff_is_skipped_against_a_redacted_previous_report(tmp_path):
+    import socket
+
+    reports_dir = tmp_path / "Reports"
+    reports_dir.mkdir()
+    old = {"run_id": "old_red", "generated_at": "2026-01-01T00:00:00+00:00", "actions": [], "redacted": True,
+           "snapshot_after": {"autostart": ["Startup: <user>.lnk"]}}
+    (reports_dir / f"{socket.gethostname()}_old_red.json").write_text(json.dumps(old), encoding="utf-8")
+    data = build_report_data(tmp_path, "run_red2", _fixture_modules(), "en", {"autostart": ["Startup: Jan Novak.lnk"]}, {})
+    assert "new_autostart" not in data and data["previous_comparison"]["previous_run_id"] == "old_red"
 
 
 def test_html_report_has_filter_bar_print_css_and_is_self_contained(tmp_path):
@@ -473,6 +527,17 @@ def test_html_report_escapes_labels_in_new_sections(tmp_path):
     assert '<a href="#action-1">&lt;img src=x onerror=alert(1)&gt;&quot;</a>' in content
     assert "<td>&lt;img src=x onerror=alert(1)&gt;&quot;</td>" in content
     assert 'data-search="&lt;img src=x onerror=alert(1)&gt;&quot;' in content
+    # The numeric fields too: ints when built, anything when the page is
+    # re-rendered from a report.json edited on a writable stick.
+    from portablefix.report import render_report_html
+
+    data = build_report_data(tmp_path, "run_xss2", [], "en", {}, {})
+    data["module_summary"][0]["total"] = evil
+    data["module_summary"][0]["ok"] = evil
+    data["previous_comparison"] = {"previous_run_id": "p", "previous_generated_at": "x", "free_gb_delta": evil,
+                                   "previous_action_count": evil, "action_count": evil}
+    content = render_report_html(data)
+    assert "<img src=x" not in content and content.count("&lt;img src=x onerror=alert(1)&gt;&quot;") >= 7
 
 
 def test_html_report_new_sections_are_localized_to_slovak(tmp_path):
@@ -861,9 +926,13 @@ def test_before_after_table_escapes_values(tmp_path, monkeypatch):
 def test_before_after_table_has_print_styles(tmp_path):
     html_path, _ = generate_report(tmp_path, "run_print", [], "en", _SNAP_BEFORE, _SNAP_AFTER)
     content = html_path.read_text(encoding="utf-8")
+    # Colours are :root variables: print forces the light set, screen
+    # picks the dark one through prefers-color-scheme.
     print_css = content[content.index("@media print"):]
-    assert "table.snapshot td.delta.good" in print_css
-    assert "table.snapshot td.delta.bad" in print_css
+    assert ":root { --bg: #fff;" in print_css and "print-color-adjust: exact" in print_css
+    assert "table.snapshot td.delta.good { color: var(--ok); }" in content
+    assert "@media (prefers-color-scheme: dark)" in content
+    assert '<meta name="color-scheme" content="light dark">' in content
 
 
 # --- Robustness: legacy-encoded files, real reboots, sentinel exit codes -----
@@ -954,8 +1023,42 @@ def test_requires_restart_lists_only_real_successful_reboot_actions(tmp_path):
 
     append_entry(tmp_path, run_id, make_entry(
         "m02_cleanup", "user_temp", "cmd", 0, "applied", False, run_id, risk="REQUIRES_REBOOT"))
+    append_entry(tmp_path, run_id, make_entry(
+        "m02_cleanup", "user_temp", "cmd", 0, "again", False, run_id, risk="REQUIRES_REBOOT"))
     data = build_report_data(tmp_path, run_id, _fixture_modules(), "en", {}, {})
-    assert [(a["exit_code"], a["dry_run"], a["output"]) for a in data["requires_restart"]] == [(0, False, "applied")]
+    # Ids, once each - not copies of the actions with their output.
+    assert data["requires_restart"] == ["user_temp"]
+    content = generate_report(tmp_path, run_id, _fixture_modules(), "en", {}, {})[0].read_text(encoding="utf-8")
+    assert "<h2>Requires restart</h2><ul><li>Temp files</li></ul>" in content
+    assert "</span> Requires restart: Temp files</li>" in content  # the attention strip up top
+    # A report.json written before schema 1 holds the action dicts.
+    from portablefix.report import render_report_html
+
+    old = dict(data, requires_restart=[{"action_id": "user_temp", "label": "Old label"}])
+    assert "<li>Old label</li>" in render_report_html(old)
+
+
+def test_report_json_names_its_schema_and_app_version_and_keeps_utf8(tmp_path):
+    from portablefix.version import APP_VERSION
+
+    append_entry(tmp_path, "run_ver", make_entry("m02_cleanup", "user_temp", "cmd", 0, "Hotovo, čistenie", False, "run_ver"))
+    html_path, json_path = generate_report(tmp_path, "run_ver", _fixture_modules(), "sk", {}, {})
+    raw = json_path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert data["schema_version"] == 1 and data["generator"] == "PortableFix" and data["app_version"] == APP_VERSION
+    assert "čistenie" in raw and "\\u010d" not in raw
+    assert f"PortableFix v{APP_VERSION}" in html_path.read_text(encoding="utf-8")
+
+
+def test_long_output_is_cut_on_the_page_but_whole_in_the_json(tmp_path):
+    output = "\n".join(f"line {i}" for i in range(20000))
+    append_entry(tmp_path, "run_long", make_entry("m02_cleanup", "user_temp", "cmd", 0, output, False, "run_long"))
+    html_path, json_path = generate_report(tmp_path, "run_long", _fixture_modules(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+    assert "line 199\n<em>… 19750 lines omitted - full text in report.json</em>\nline 19950" in content
+    assert "line 200\n" not in content and "line 19949\n" not in content
+    assert html_path.stat().st_size < 60_000
+    assert json.loads(json_path.read_text(encoding="utf-8"))["actions"][0]["output"] == output
 
 
 def test_report_sentinel_codes_match_the_executor():
@@ -1764,6 +1867,11 @@ def test_report_opens_with_the_client_summary_from_findings(tmp_path):
     content = html_path.read_text(encoding="utf-8")
     assert content.index("Client summary") < content.index('<div class="chips">')
     assert "Disk &lt;failing&gt;" in content and "Restore UAC" in content
+    # The health areas as tiles with a text badge and a symbol.
+    assert ('<div class="tile critical"><span class="area">Disk</span>'
+            '<span class="state"><span aria-hidden="true">✕</span> Critical</span></div>') in content
+    assert '<div class="tile unknown"><span class="area">Battery</span>' in content
+    assert "<li>Recommended fixes: 1</li>" in content
 
 
 def test_dry_run_findings_do_not_count_in_the_summary(tmp_path):

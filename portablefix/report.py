@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import html
 import json
 import platform
@@ -15,6 +17,7 @@ from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
 from .snapshot import compare_snapshots, new_autostart_entries
+from .version import APP_VERSION
 
 
 def _find_action(modules: list[ModuleDef], module_id: str, action_id: str) -> ActionDef | None:
@@ -158,6 +161,8 @@ def _build_comparison(previous: dict | None, actions: list[dict], snapshot_after
 
 
 SYSTEM_MODULE_ID = "_system"
+# Bumped when a key changes shape (1: requires_restart holds action ids).
+SCHEMA_VERSION = 1
 
 
 def _frozen_risk(entry: dict, action: ActionDef | None) -> str:
@@ -403,6 +408,9 @@ def build_report_data(
     previous = _find_previous_report(base_dir / "Reports", hostname, run_id)
     generated_at = datetime.now(timezone.utc)
     data = {
+        "schema_version": SCHEMA_VERSION,
+        "generator": "PortableFix",
+        "app_version": APP_VERSION,
         "run_id": run_id,
         "language": language,
         "hostname": hostname,
@@ -413,11 +421,11 @@ def build_report_data(
         "actions": actions,
         # Only a real, successful run left a change that a restart applies -
         # a dry-run or a failed attempt listed here sent the client into a
-        # needless reboot.
-        "requires_restart": [
-            a for a in actions
+        # needless reboot. Ids, not copies of the actions (output included).
+        "requires_restart": list(dict.fromkeys(
+            a["action_id"] for a in actions
             if a["risk"] == "REQUIRES_REBOOT" and a["exit_code"] == 0 and not a["dry_run"]
-        ],
+        )),
         "previous_comparison": _build_comparison(previous, actions, snapshot_after),
         "module_summary": _build_module_summary(actions),
         "job": _clean_job(job),
@@ -453,7 +461,9 @@ def build_report_data(
     # Research G04: what starts with Windows now that did not at the last
     # visit - measured on arrival (snapshot_before), before this run's work.
     if previous is not None:
-        new_autostart = new_autostart_entries(previous.get("snapshot_after"), snapshot_before)
+        # A redacted previous report holds masked entries ("Startup:
+        # <user>.lnk"), which would read as new at every visit.
+        new_autostart = None if previous.get("redacted") else new_autostart_entries(previous.get("snapshot_after"), snapshot_before)
         if new_autostart is not None:
             data["new_autostart"] = {"previous_run_id": previous.get("run_id"), "entries": new_autostart}
         # Research G09: applied at the last visit, not any more on arrival.
@@ -579,180 +589,193 @@ def _render_target_user(target: dict, t) -> str:
     return text
 
 
-_RISK_COLORS = {
-    "SAFE": "#9ece6a",
-    "MODERATE": "#e0af68",
-    "DESTRUCTIVE": "#f7768e",
-    "REQUIRES_REBOOT": "#bb9af7",
-    "UNKNOWN": "#8b93b8",
+# Risk badge: a symbol next to the translated word, never colour alone.
+_RISK_SYMBOLS = {
+    "SAFE": "✓",
+    "MODERATE": "!",
+    "DESTRUCTIVE": "✕",
+    "REQUIRES_REBOOT": "↻",
+    "UNKNOWN": "?",
 }
+_HEALTH_SYMBOLS = {"ok": "✓", "attention": "!", "critical": "✕", "unknown": "?"}
 
+# Colours live in :root: light by default (the client prints or reads it
+# on a phone), the dark set under prefers-color-scheme, and print forces
+# the light set - no per-selector print overrides.
 _CSS = """
+:root { color-scheme: light dark;
+  --bg: #f4f5f9; --fg: #1f2335; --card: #ffffff; --card2: #eef0f6; --muted: #5a6078; --faint: #8b93a8;
+  --line: #d7dae5; --pre: #f4f5f9; --pre-fg: #1f2335; --on-badge: #ffffff;
+  --ok: #1e7b34; --fail: #c0392b; --warn: #9a6700; --accent: #2f5bd1; --purple: #6b45b8;
+  --banner: #fff6e0; --banner-fg: #5a3e00; --banner-info: #e8eefc; }
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #1a1b26; --fg: #c0caf5; --card: #24283b; --card2: #1f2335; --muted: #9aa5ce; --faint: #6b7394;
+  --line: #3b4261; --pre: #16161e; --pre-fg: #a9b1d6; --on-badge: #1a1b26;
+  --ok: #9ece6a; --fail: #f7768e; --warn: #e0af68; --accent: #7aa2f7; --purple: #bb9af7;
+  --banner: #3b2a1a; --banner-fg: #f5d9a8; --banner-info: #1f2a44; } }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { font-family: 'Segoe UI', sans-serif; background: #1a1b26; color: #c0caf5;
+body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg);
        margin: 0; padding: 32px; font-size: 14px; }
 .wrap { max-width: 900px; margin: 0 auto; }
-h1 { color: #7aa2f7; font-size: 22px; margin: 0 0 4px 0; }
-.meta { color: #9aa5ce; margin-bottom: 20px; line-height: 1.6; }
+h1 { color: var(--accent); font-size: 22px; margin: 0 0 4px 0; }
+h2 { color: var(--purple); font-size: 16px; margin: 28px 0 10px 0; }
+details.sec > summary { list-style: none; cursor: pointer; }
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary h2 { display: inline-block; }
+details.sec > summary h2::before { content: '\\25BE '; color: var(--muted); }
+details.sec:not([open]) > summary h2::before { content: '\\25B8 '; }
+.meta { color: var(--muted); margin-bottom: 20px; line-height: 1.6; }
+.attention { background: var(--banner); color: var(--banner-fg); border-left: 4px solid var(--warn);
+             border-radius: 8px; padding: 10px 16px; margin: 0 0 14px 0; }
+.attention h2 { margin: 0 0 6px 0; color: inherit; font-size: 15px; }
+.attention ul { margin: 0; padding-left: 20px; color: inherit; }
+.attention a { color: inherit; }
 .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
-.chip { background: #24283b; border-radius: 8px; padding: 10px 18px; text-align: center; min-width: 88px; }
+.chip { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 18px;
+        text-align: center; min-width: 88px; }
 .chip .num { font-size: 20px; font-weight: bold; display: block; }
-.chip.ok .num { color: #9ece6a; }
-.chip.fail .num { color: #f7768e; }
-.chip.dry .num { color: #e0af68; }
-.chip .lbl { font-size: 11px; color: #9aa5ce; text-transform: uppercase; }
-.client-summary .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-.client-summary .cols > div { background: #24283b; border-radius: 8px; padding: 8px 14px; }
+.chip.ok .num { color: var(--ok); }
+.chip.fail .num { color: var(--fail); }
+.chip.dry .num { color: var(--warn); }
+.chip .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.client-summary .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.client-summary .cols > div { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; }
 .client-summary h3 { margin: 4px 0; font-size: 14px; }
 .client-summary ul { margin: 4px 0; padding-left: 18px; }
-.sev.critical { color: #f7768e; font-weight: bold; }
-.sev.attention { color: #e0af68; font-weight: bold; }
-.card { background: #24283b; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px;
-        border-left: 3px solid transparent; scroll-margin-top: 16px; }
-.card.fail { border-left: 3px solid #f7768e; }
-.card:target { outline: 2px solid #7aa2f7; outline-offset: 2px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 10px 0 0 0; }
+.tile { background: var(--card); border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px;
+        padding: 6px 10px; font-size: 13px; }
+.tile .area { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.tile .state { font-weight: bold; }
+.tile.ok { border-left-color: var(--ok); } .tile.ok .state { color: var(--ok); }
+.tile.attention { border-left-color: var(--warn); } .tile.attention .state { color: var(--warn); }
+.tile.critical { border-left-color: var(--fail); } .tile.critical .state { color: var(--fail); }
+.tile.unknown { border-left-color: var(--faint); } .tile.unknown .state { color: var(--muted); }
+.sev.critical { color: var(--fail); font-weight: bold; }
+.sev.attention { color: var(--warn); font-weight: bold; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px;
+        margin-bottom: 8px; border-left: 3px solid var(--line); scroll-margin-top: 16px; }
+.card.fail { border-left: 3px solid var(--fail); }
+.card:target { outline: 2px solid var(--accent); outline-offset: 2px; }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.status { font-weight: bold; font-size: 12px; border-radius: 8px; padding: 1px 9px; color: #1a1b26; }
-.status.ok { background: #9ece6a; }
-.status.fail { background: #f7768e; }
+.status { font-weight: bold; font-size: 12px; border-radius: 8px; padding: 1px 9px; color: var(--on-badge); }
+.status.ok { background: var(--ok); }
+.status.fail { background: var(--fail); }
+.status.preview { background: var(--faint); }
 .label { font-weight: 600; flex: 1; min-width: 12em; }
-.badge { font-size: 10px; font-weight: bold; border-radius: 7px; padding: 1px 8px; color: #1a1b26; }
-.mod { color: #9aa5ce; font-size: 12px; }
-.ts { color: #9aa5ce; font-size: 11px; }
-.dry-tag { color: #e0af68; font-size: 11px; font-weight: bold; }
+.badge { font-size: 10px; font-weight: bold; border-radius: 7px; padding: 1px 8px; color: var(--on-badge);
+         background: var(--faint); }
+.badge.risk-safe { background: var(--ok); }
+.badge.risk-moderate { background: var(--warn); }
+.badge.risk-destructive { background: var(--fail); }
+.badge.risk-requires_reboot { background: var(--purple); }
+.mod { color: var(--muted); font-size: 12px; }
+.ts { color: var(--muted); font-size: 11px; }
+.dry-tag { color: var(--warn); font-size: 11px; font-weight: bold; }
 details { margin-top: 8px; }
-summary { color: #7aa2f7; cursor: pointer; font-size: 12px; }
+summary { color: var(--accent); cursor: pointer; font-size: 12px; }
 details.cmd summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 details.cmd[open] summary code { display: none; }
-summary code { font-family: 'Cascadia Mono', Consolas, monospace; color: #9aa5ce; }
-pre { background: #16161e; border-radius: 6px; padding: 10px; overflow-x: auto;
-      font-family: 'Cascadia Mono', Consolas, monospace; font-size: 12px; color: #a9b1d6;
+summary code { font-family: 'Cascadia Mono', Consolas, monospace; color: var(--muted); }
+pre { background: var(--pre); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto;
+      font-family: 'Cascadia Mono', Consolas, monospace; font-size: 12px; color: var(--pre-fg);
       white-space: pre-wrap; word-break: break-word; }
-h2 { color: #bb9af7; font-size: 16px; margin: 28px 0 10px 0; }
-ul { color: #c0caf5; }
-a { color: #7aa2f7; }
+pre em { color: var(--muted); }
+ul { color: var(--fg); }
+a { color: var(--accent); }
 .table-wrap { overflow-x: auto; margin-bottom: 8px; }
-table.summary { border-collapse: collapse; width: 100%; background: #24283b; border-radius: 8px;
+table.summary { border-collapse: collapse; width: 100%; background: var(--card); border-radius: 8px;
                 overflow: hidden; font-size: 13px; }
-table.summary th, table.summary td { padding: 7px 12px; text-align: left; border-bottom: 1px solid #1a1b26; }
-table.summary th { color: #9aa5ce; font-size: 11px; text-transform: uppercase; font-weight: 600;
-                   background: #1f2335; }
+table.summary th, table.summary td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+table.summary th { color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 600;
+                   background: var(--card2); }
 table.summary td.n, table.summary th.n { text-align: right; font-variant-numeric: tabular-nums; }
 table.summary tr:last-child td { border-bottom: none; }
-table.summary td.cat { color: #9aa5ce; font-size: 12px; }
-table.summary td.ok-n { color: #9ece6a; }
-table.summary td.fail-n { color: #f7768e; font-weight: bold; }
-table.summary td.dry-n { color: #e0af68; }
-table.summary td.zero { color: #6b7394; font-weight: normal; }
-.failed-list { background: #24283b; border-left: 3px solid #f7768e; border-radius: 8px;
-               padding: 10px 16px 10px 34px; margin: 0; }
+table.summary td.cat { color: var(--muted); font-size: 12px; }
+table.summary td.ok-n { color: var(--ok); }
+table.summary td.fail-n { color: var(--fail); font-weight: bold; }
+table.summary td.dry-n { color: var(--warn); }
+table.summary td.zero { color: var(--faint); font-weight: normal; }
+.failed-list { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--fail);
+               border-radius: 8px; padding: 10px 16px 10px 34px; margin: 0; }
 .failed-list li { margin: 3px 0; }
 .failed-list .mod { margin-left: 6px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px;
-           position: sticky; top: 0; z-index: 1; background: #1a1b26; padding: 8px 0; }
-.seg { display: inline-flex; border: 1px solid #3b4261; border-radius: 8px; overflow: hidden; }
-.seg button { border: none; border-right: 1px solid #3b4261; }
+           position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 8px 0; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-right: 1px solid var(--line); }
 .seg button:last-child { border-right: none; }
-button { font: inherit; font-size: 13px; background: #24283b; color: #c0caf5; padding: 6px 12px;
-         cursor: pointer; border: 1px solid #3b4261; border-radius: 8px; }
+button { font: inherit; font-size: 13px; background: var(--card); color: var(--fg); padding: 6px 12px;
+         cursor: pointer; border: 1px solid var(--line); border-radius: 8px; }
 .seg button { border-radius: 0; }
-button:hover { background: #2f3549; }
-button[aria-pressed="true"] { background: #7aa2f7; color: #1a1b26; font-weight: 600; }
-button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
-input[type="search"] { font: inherit; font-size: 13px; background: #16161e; color: #c0caf5;
-                       border: 1px solid #3b4261; border-radius: 8px; padding: 6px 10px;
+button:hover { background: var(--card2); }
+button[aria-pressed="true"] { background: var(--accent); color: var(--on-badge); font-weight: 600; }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type="search"] { font: inherit; font-size: 13px; background: var(--pre); color: var(--fg);
+                       border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
                        flex: 1; min-width: 160px; }
-input[type="search"]::placeholder { color: #8b93b8; }
+input[type="search"]::placeholder { color: var(--faint); }
 .print-btn { margin-left: auto; }
-.empty { color: #9aa5ce; font-style: italic; }
+.empty { color: var(--muted); font-style: italic; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
            clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.job { background: #24283b; border-radius: 8px; padding: 10px 14px; margin: 0 0 14px 0; line-height: 1.6; }
-.job strong { color: #c0caf5; }
-.job-note { white-space: pre-wrap; margin-top: 4px; color: #c0caf5; }
-.job-note .lbl { display: block; font-size: 11px; color: #9aa5ce; text-transform: uppercase; }
-.banner { background: #3b2a1a; border-left: 3px solid #e0af68; color: #f5d9a8; border-radius: 8px;
+.job { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px;
+       margin: 0 0 14px 0; line-height: 1.6; }
+.job strong { color: var(--fg); }
+.job-note { white-space: pre-wrap; margin-top: 4px; color: var(--fg); }
+.job-note .lbl { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.banner { background: var(--banner); border-left: 3px solid var(--warn); color: var(--banner-fg); border-radius: 8px;
           padding: 10px 14px; margin: 0 0 14px 0; font-weight: 600; }
-.banner.redacted { background: #1f2a44; border-left-color: #7aa2f7; color: #c0caf5; font-weight: normal; }
-.warned-tag { color: #e0af68; font-size: 11px; font-weight: bold; }
-.warn-text { color: #9aa5ce; font-size: 12px; margin-top: 6px; font-style: italic; white-space: pre-line; }
-.rp-fail { color: #f7768e; font-weight: bold; }
-.events { background: #24283b; border-radius: 8px; padding: 10px 16px 10px 34px; margin: 0; }
+.banner.redacted { background: var(--banner-info); border-left-color: var(--accent); color: var(--fg); font-weight: normal; }
+.warned-tag { color: var(--warn); font-size: 11px; font-weight: bold; }
+.warn-text { color: var(--muted); font-size: 12px; margin-top: 6px; font-style: italic; white-space: pre-line; }
+.rp-fail { color: var(--fail); font-weight: bold; }
+.events { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px 10px 34px; margin: 0; }
 .events li { margin: 4px 0; }
 .events .ts { margin-right: 6px; }
-table.snapshot tbody th { font-weight: 600; color: #c0caf5; text-transform: none; font-size: 13px;
+table.snapshot tbody th { font-weight: 600; color: var(--fg); text-transform: none; font-size: 13px;
                           background: none; }
-table.snapshot td.delta { font-weight: bold; color: #9aa5ce; white-space: nowrap; }
-table.snapshot td.delta.good { color: #9ece6a; }
-table.snapshot td.delta.bad { color: #f7768e; }
-.snap-note { color: #9aa5ce; font-size: 12px; margin: 4px 0 0 0; }
+table.snapshot td.delta { font-weight: bold; color: var(--muted); white-space: nowrap; }
+table.snapshot td.delta.good { color: var(--ok); }
+table.snapshot td.delta.bad { color: var(--fail); }
+.snap-note { color: var(--muted); font-size: 12px; margin: 4px 0 0 0; }
 .brand { display: flex; align-items: center; gap: 14px; margin: 0 0 12px 0; }
 .brand-logo { max-height: 64px; max-width: 220px; object-fit: contain; }
-.brand-text { line-height: 1.5; color: #9aa5ce; }
-.brand-text strong { color: #c0caf5; font-size: 15px; }
+.brand-text { line-height: 1.5; color: var(--muted); }
+.brand-text strong { color: var(--fg); font-size: 15px; }
 .brand-contact { white-space: pre-line; }
-dl.form { background: #24283b; border-radius: 8px; padding: 10px 16px; margin: 0;
+dl.form { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; margin: 0;
           display: grid; grid-template-columns: minmax(9em, max-content) 1fr; gap: 6px 16px; }
-dl.form dt { color: #9aa5ce; font-size: 12px; }
+dl.form dt { color: var(--muted); font-size: 12px; }
 dl.form dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
-.form-note { color: #9aa5ce; font-size: 12px; margin: 6px 0 0 0; }
-table.summary td.check-pass { color: #9ece6a; font-weight: bold; }
-table.summary td.check-fail { color: #f7768e; font-weight: bold; }
-table.summary td.check-na { color: #9aa5ce; }
+.form-note { color: var(--muted); font-size: 12px; margin: 6px 0 0 0; }
+table.summary td.check-pass { color: var(--ok); font-weight: bold; }
+table.summary td.check-fail { color: var(--fail); font-weight: bold; }
+table.summary td.check-na { color: var(--muted); }
+footer.foot { color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); margin-top: 28px; padding-top: 8px; }
 @media print {
-  .brand-text, .brand-text strong { color: #111; }
-  dl.form { background: #fff; border: 1px solid #bbb; }
-  dl.form dt, .form-note { color: #444; }
-  dl.form dd { color: #111; }
-  table.summary td.check-pass { color: #1e7b34; }
-  table.summary td.check-fail { color: #c0392b; }
-  table.summary td.check-na { color: #444; }
-  table.snapshot tbody th { color: #111; }
-  table.snapshot td.delta { color: #444; }
-  table.snapshot td.delta.good { color: #1e7b34; }
-  table.snapshot td.delta.bad { color: #c0392b; }
-  .snap-note { color: #444; }
-  .banner { background: #fff; color: #111; border: 1px solid #9a6700; border-left: 4px solid #9a6700; }
-  .banner.redacted { background: #fff; color: #111; border-color: #555; }
-  .warned-tag { color: #9a6700; }
-  .client-summary .cols > div { background: #fff; border: 1px solid #bbb; }
-  .sev.critical { color: #c0392b; }
-  .sev.attention { color: #9a6700; }
-  .warn-text { color: #444; }
-  .rp-fail { color: #c0392b; }
-  .events { background: #fff; border: 1px solid #bbb; }
-  .events li { color: #111; }
+  :root { --bg: #fff; --fg: #111; --card: #fff; --card2: #eee; --muted: #444; --faint: #888; --line: #bbb;
+          --pre: #f4f4f4; --pre-fg: #111; --on-badge: #fff; --ok: #1e7b34; --fail: #c0392b; --warn: #9a6700;
+          --accent: #111; --purple: #222; --banner: #fff; --banner-fg: #111; --banner-info: #fff; }
   @page { margin: 14mm; }
-  .job { background: #fff; border: 1px solid #bbb; color: #111; }
-  .job strong, .job-note { color: #111; }
-  .job-note .lbl { color: #444; }
-  body { background: #fff; color: #111; padding: 0; font-size: 11pt; }
+  body { padding: 0; font-size: 11pt; }
   .wrap { max-width: none; }
-  h1 { color: #111; }
-  h2 { color: #222; border-bottom: 1px solid #999; padding-bottom: 2px; break-after: avoid; }
-  .meta, .mod, .ts, .chip .lbl, table.summary td.cat, table.summary th { color: #444; }
-  .toolbar, .no-print { display: none !important; }
-  #pf-no-match { display: none !important; }
+  h2 { border-bottom: 1px solid #999; padding-bottom: 2px; break-after: avoid; }
+  details.sec > summary h2::before { content: none !important; }
+  .toolbar, .no-print, #pf-no-match { display: none !important; }
   /* Print the whole log even if a screen filter is active. */
   .card[hidden] { display: block !important; }
-  .chip, .card, table.summary, .failed-list { background: #fff; border: 1px solid #bbb; }
-  .card { break-inside: avoid; page-break-inside: avoid; }
-  .card.fail, .failed-list { border-left: 4px solid #c0392b; }
+  .card, tr { break-inside: avoid; page-break-inside: avoid; }
+  .card.fail, .failed-list { border-left: 4px solid var(--fail); }
   .card:target { outline: none; }
-  .chip.ok .num, table.summary td.ok-n { color: #1e7b34; }
-  .chip.fail .num, table.summary td.fail-n { color: #c0392b; }
-  .chip.dry .num, table.summary td.dry-n, .dry-tag { color: #9a6700; }
-  table.summary td.zero { color: #888; }
-  table.summary th { background: #eee; }
-  table.summary th, table.summary td { border-bottom: 1px solid #ccc; }
-  tr { break-inside: avoid; }
-  ul, .failed-list li { color: #111; }
-  a { color: #111; text-decoration: none; }
-  summary { color: #333; }
+  a { color: var(--fg); text-decoration: none; }
   details::details-content { content-visibility: visible; display: block; }
-  pre { background: #f4f4f4; color: #111; border: 1px solid #ddd; }
-  .status, .badge { border: 1px solid #555; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* PowerShell is noise for the client; outputs only where something failed. */
+  details.cmd, .card:not(.fail) details { display: none; }
+  section.actions { break-before: page; }
+  footer.foot { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; }
+  .status, .badge, .tile { border: 1px solid #555; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 """
 
@@ -814,13 +837,32 @@ _JS = """
 """
 
 
-def _format_timestamp(value) -> str:
+# The page is opened from mail and zips: a strict CSP neutralises any
+# future escaping slip. Hashed once - the script never changes per report.
+_JS_SHA256 = base64.b64encode(hashlib.sha256(_JS.encode("utf-8")).digest()).decode("ascii")
+
+
+def _local_tz():
+    return None  # datetime.astimezone(None) = the system's local zone.
+
+
+def _format_timestamp(value, language: str = "sk") -> str:
     # Audit timestamps are ISO-8601 UTC with microseconds - readable for
-    # machines (the JSON keeps them as-is) but noisy on screen.
+    # machines (the JSON keeps them as-is) but noisy on screen. Shown in
+    # local time with the offset: a Slovak client read "08:15 UTC" for a
+    # 10:15 visit, next to the hand-over line printed in local time.
     try:
-        return datetime.fromisoformat(str(value)).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        local = datetime.fromisoformat(str(value)).astimezone(_local_tz())
     except ValueError:
         return str(value)
+    offset = local.strftime("%z")
+    return local.strftime("%d.%m.%Y %H:%M" if language == "sk" else "%Y-%m-%d %H:%M") + f" UTC{offset[:3]}:{offset[3:]}"
+
+
+def _gb(value, language: str) -> str:
+    """"12.5" / "12,5" - a free-space figure, with the decimal comma in Slovak."""
+    text = str(value)
+    return text.replace(".", ",") if language == "sk" else text
 
 
 # executor.ActionRunner's sentinel exit codes (TIMEOUT / CANCELLED /
@@ -880,14 +922,21 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         return html.escape(translate(key, language))
 
     ok = a["exit_code"] == 0
-    status_cls = "ok" if ok else "fail"
-    status_txt = t("report_status_ok") if ok else t("report_status_failed")
-    badge_color = _RISK_COLORS.get(a["risk"], _RISK_COLORS["UNKNOWN"])
+    # A dry-run's green "OK" read as if something had been repaired.
+    status_cls = "fail" if not ok else ("preview" if a["dry_run"] else "ok")
+    status_txt = t({"ok": "report_status_ok", "fail": "report_status_failed", "preview": "report_status_preview"}[status_cls])
+    risk = str(a["risk"])
+    risk_key = risk if risk in _RISK_SYMBOLS else "UNKNOWN"
+    # Translated with a symbol; the raw tier stays in data-risk.
+    badge = (
+        f'<span class="badge risk-{risk_key.lower()}" data-risk="{html.escape(risk, quote=True)}">'
+        f'<span aria-hidden="true">{_RISK_SYMBOLS[risk_key]}</span> {t("report_risk_" + risk_key.lower())}</span>'
+    )
     dry_tag = '<span class="dry-tag">DRY-RUN</span>' if a["dry_run"] else ""
     output_block = ""
     if a.get("output"):
         output_block = (
-            f"<details><summary>{t('report_output')}</summary><pre>{html.escape(a['output'])}</pre></details>"
+            f"<details><summary>{t('report_output')}</summary><pre>{_output_excerpt(str(a['output']), language)}</pre></details>"
         )
     # a.get(): report JSON written before these fields existed has no key.
     command = str(a.get("command") or "")
@@ -928,9 +977,9 @@ def _render_action_card(a: dict, language: str, index: int) -> str:
         f'<span class="status {status_cls}">{status_txt}</span>'
         f'<span class="label">{html.escape(a["label"])}</span>'
         f"{dry_tag}{warned_tag}{exit_note}"
-        f'<span class="badge" style="background:{badge_color}">{html.escape(a["risk"])}</span>'
+        f"{badge}"
         f'<span class="mod">{html.escape(a["module_id"])}</span>'
-        f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"]))}</span>'
+        f'<span class="ts">{html.escape(_format_timestamp(a["timestamp"], language))}</span>'
         f"{duration_tag}"
         f"</div>{warn_text}{command_block}{output_block}</div>"
     )
@@ -951,20 +1000,22 @@ def _render_module_summary(rows: list[dict], language: str) -> str:
         name = translate(key, language)
         return html.escape(str(raw) if name == key else name)
 
+    # html.escape(str()): ints when freshly built, anything when the page
+    # is re-rendered from a report.json on a writable stick.
     def num(value: int, cls: str) -> str:
-        return f'<td class="n {cls}{" zero" if value == 0 else ""}">{value}</td>'
+        return f'<td class="n {cls}{" zero" if value == 0 else ""}">{html.escape(str(value))}</td>'
 
     body = "".join(
         "<tr>"
         f'<td>{html.escape(str(r["module_id"]))}</td>'
         f'<td class="cat">{category_name(r["category"])}</td>'
-        f'<td class="n">{r["total"]}</td>'
+        f'<td class="n">{html.escape(str(r["total"]))}</td>'
         f'{num(r["ok"], "ok-n")}{num(r["failed"], "fail-n")}{num(r["dry_run"], "dry-n")}'
         "</tr>"
         for r in rows
     )
     return (
-        f'<section aria-labelledby="pf-h-modules"><h2 id="pf-h-modules">{t("report_by_module")}</h2>'
+        f'<section aria-labelledby="pf-h-modules">{_open_details("pf-h-modules", t("report_by_module"))}'
         '<div class="table-wrap"><table class="summary"><thead><tr>'
         f'<th scope="col">{t("report_col_module")}</th>'
         f'<th scope="col">{t("report_col_category")}</th>'
@@ -972,8 +1023,14 @@ def _render_module_summary(rows: list[dict], language: str) -> str:
         f'<th scope="col" class="n">{t("report_chip_ok")}</th>'
         f'<th scope="col" class="n">{t("report_chip_failed")}</th>'
         f'<th scope="col" class="n">{t("report_chip_dry_run")}</th>'
-        f"</tr></thead><tbody>{body}</tbody></table></div></section>"
+        f"</tr></thead><tbody>{body}</tbody></table></div></details></section>"
     )
+
+
+def _open_details(heading_id: str, heading: str) -> str:
+    # A long section the reader can fold away; open by default, and the
+    # print script opens every <details> anyway.
+    return f'<details class="sec" open><summary><h2 id="{heading_id}">{heading}</h2></summary>'
 
 
 def _render_snapshot_table(before, after, language: str) -> str:
@@ -1042,7 +1099,7 @@ def _restore_point_text(point: dict, language: str) -> str:
     def t(key: str) -> str:
         return html.escape(translate(key, language))
 
-    when = html.escape(_format_timestamp(point["timestamp"]))
+    when = html.escape(_format_timestamp(point["timestamp"], language))
     title = t("report_restore_point")
     # point.get(): report JSON written before panels had restore points.
     if point.get("panel"):
@@ -1128,7 +1185,7 @@ def _render_event(event: dict, language: str) -> str:
             body += f'<div class="warn-text">{html.escape(reason)}</div>'
         # The timestamp is already part of _restore_point_text.
         return f"<li>{body}</li>"
-    when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"]))}</span>'
+    when = f'<span class="ts">{html.escape(_format_timestamp(event["timestamp"], language))}</span>'
     if kind == "restore_point_decision":
         if event.get("decision") == "proceed":
             key = "report_rp_proceeded"
@@ -1229,9 +1286,9 @@ def _render_safety_section(events: list[dict], language: str) -> str:
         return ""
     items = "".join(_render_event(e, language) for e in events)
     return (
-        f'<section aria-labelledby="pf-h-safety"><h2 id="pf-h-safety">'
-        f'{html.escape(translate("report_safety_heading", language))}</h2>'
-        f'<ul class="events">{items}</ul></section>'
+        f'<section aria-labelledby="pf-h-safety">'
+        f'{_open_details("pf-h-safety", html.escape(translate("report_safety_heading", language)))}'
+        f'<ul class="events">{items}</ul></details></section>'
     )
 
 
@@ -1264,10 +1321,10 @@ def _render_branding(brand, language: str) -> str:
     return f'<header class="brand">{logo_html}{text_html}</header>'
 
 
-def _recorded_note(timestamp, t) -> str:
+def _recorded_note(timestamp, t, language: str) -> str:
     if not timestamp:
         return ""
-    when = html.escape(_format_timestamp(timestamp))
+    when = html.escape(_format_timestamp(timestamp, language))
     return f'<p class="form-note">{t("report_form_recorded")}: {when}</p>'
 
 
@@ -1302,7 +1359,7 @@ def _render_intake(form, language: str) -> str:
         return ""
     return (
         f'<section aria-labelledby="pf-h-intake"><h2 id="pf-h-intake">{t("report_intake_heading")}</h2>'
-        f'<dl class="form">{"".join(rows)}</dl>{_recorded_note(form.get("timestamp"), t)}</section>'
+        f'<dl class="form">{"".join(rows)}</dl>{_recorded_note(form.get("timestamp"), t, language)}</section>'
     )
 
 
@@ -1344,7 +1401,7 @@ def _render_outtake(form, language: str) -> str:
         return ""
     return (
         f'<section aria-labelledby="pf-h-outtake"><h2 id="pf-h-outtake">{t("report_outtake_heading")}</h2>'
-        f'{table}{handed}{_recorded_note(form.get("timestamp"), t)}</section>'
+        f'{table}{handed}{_recorded_note(form.get("timestamp"), t, language)}</section>'
     )
 
 
@@ -1393,8 +1450,53 @@ def _render_toolbar(language: str) -> str:
     )
 
 
-def _render_client_summary(summary, language: str) -> str:
-    """Research G02: what the client reads first - found, fixed, recommended."""
+def _render_health_tiles(areas, language: str) -> str:
+    """One tile per health area (G02): a text badge with a symbol, never
+    colour alone."""
+    if not isinstance(areas, dict) or not areas:
+        return ""
+
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    tiles = []
+    for area, state in areas.items():
+        state = str(state) if str(state) in _HEALTH_SYMBOLS else "unknown"
+        tiles.append(
+            f'<div class="tile {state}"><span class="area">{t("health_area_" + str(area))}</span>'
+            f'<span class="state"><span aria-hidden="true">{_HEALTH_SYMBOLS[state]}</span> {t("health_state_" + state)}</span></div>'
+        )
+    return f'<div class="tiles">{"".join(tiles)}</div>'
+
+
+def _render_attention(data: dict, restart_labels: list[str], language: str) -> str:
+    """The strip under the header: what the client must do or know first."""
+    def t(key: str) -> str:
+        return html.escape(translate(key, language))
+
+    items = []
+    if restart_labels:
+        items.append(f'<li><span aria-hidden="true">&#9888;</span> {t("report_requires_restart")}: '
+                     f'{html.escape(", ".join(restart_labels))}</li>')
+    failed = sum(1 for a in data.get("actions") or [] if isinstance(a, dict) and a.get("exit_code") != 0)
+    if failed:
+        items.append(f'<li><a href="#pf-h-failed">{t("report_attention_failed").format(count=failed)}</a></li>')
+    summary = data.get("client_summary")
+    recommended = len(summary.get("recommended") or []) if isinstance(summary, dict) else 0
+    if recommended:
+        items.append(f'<li>{t("report_attention_recommended").format(count=recommended)}</li>')
+    if any(isinstance(p, dict) and not p.get("created") for p in data.get("restore_points") or []):
+        items.append(f'<li>{t("report_restore_point")}: <span class="rp-fail">{t("report_rp_failed")}</span></li>')
+    if not items:
+        return ""
+    return (
+        f'<section class="attention" aria-labelledby="pf-h-attention"><h2 id="pf-h-attention">{t("report_attention")}</h2>'
+        f'<ul>{"".join(items)}</ul></section>'
+    )
+
+
+def _render_client_summary(summary, language: str, actions: list | None = None) -> str:
+    """Research G02: what the client reads first - found, fixed, recommended, failed."""
     if not isinstance(summary, dict):
         return ""
 
@@ -1414,13 +1516,45 @@ def _render_client_summary(summary, language: str) -> str:
     def action(row) -> str:
         return html.escape(str(row.get("label") or row.get("action_id") or ""))
 
+    failed = [a for a in actions or [] if isinstance(a, dict) and a.get("exit_code") != 0 and not a.get("dry_run")]
     return (
         f'<section class="client-summary"><h2>{t("report_client_summary")}</h2><div class="cols">'
         + column("report_summary_found", summary.get("found") or [], "report_summary_none_found", found)
         + column("report_summary_fixed", summary.get("fixed") or [], "report_summary_none_fixed", action)
         + column("report_summary_recommended", summary.get("recommended") or [], "report_summary_none_recommended", action)
+        + column("report_summary_failed", failed, "report_summary_none_failed", action)
         + "</div></section>"
     )
+
+
+def _restart_labels(data: dict) -> list[str]:
+    # Action ids since schema 1; a report.json written before holds the
+    # whole action dicts (the handoff re-renders old files).
+    labels = {a.get("action_id"): a.get("label") for a in data.get("actions") or [] if isinstance(a, dict)}
+    result = []
+    for item in data.get("requires_restart") or []:
+        if isinstance(item, dict):
+            result.append(str(item.get("label") or item.get("action_id") or "?"))
+        else:
+            result.append(str(labels.get(item) or item))
+    return result
+
+
+# Lines of an action's output shown on the page: the first and the last
+# ones. Event-log exports run to megabytes, and the page is re-rendered at
+# every batch end; the JSON keeps the whole text.
+_OUTPUT_HEAD_LINES = 200
+_OUTPUT_TAIL_LINES = 50
+
+
+def _output_excerpt(output: str, language: str) -> str:
+    lines = output.splitlines()
+    if len(lines) <= _OUTPUT_HEAD_LINES + _OUTPUT_TAIL_LINES:
+        return html.escape(output)
+    omitted = len(lines) - _OUTPUT_HEAD_LINES - _OUTPUT_TAIL_LINES
+    marker = translate("report_lines_omitted", language).format(count=omitted)
+    return (html.escape("\n".join(lines[:_OUTPUT_HEAD_LINES])) + f"\n<em>{html.escape(marker)}</em>\n"
+            + html.escape("\n".join(lines[-_OUTPUT_TAIL_LINES:])))
 
 
 def _render_html(data: dict) -> str:
@@ -1430,8 +1564,9 @@ def _render_html(data: dict) -> str:
         return html.escape(translate(key, language))
 
     actions = data["actions"]
-    ok_count = sum(1 for a in actions if a["exit_code"] == 0)
-    fail_count = len(actions) - ok_count
+    # A dry-run changed nothing, so it is neither OK nor failed on the chips.
+    ok_count = sum(1 for a in actions if a["exit_code"] == 0 and not a["dry_run"])
+    fail_count = sum(1 for a in actions if a["exit_code"] != 0)
     dry_count = sum(1 for a in actions if a["dry_run"])
     cards = "\n".join(_render_action_card(a, language, i) for i, a in enumerate(actions, start=1))
     if not cards:
@@ -1447,17 +1582,18 @@ def _render_html(data: dict) -> str:
     raw_before = data["snapshot_before"].get("free_gb")
     raw_after = data["snapshot_after"].get("free_gb")
     # None = the snapshot couldn't measure it (snapshot.py never raises).
-    free_before = html.escape(str("?" if raw_before is None else raw_before))
-    free_after = html.escape(str("?" if raw_after is None else raw_after))
+    free_before = html.escape("?" if raw_before is None else _gb(raw_before, language))
+    free_after = html.escape("?" if raw_after is None else _gb(raw_after, language))
     delta = ""
     if isinstance(raw_before, (int, float)) and isinstance(raw_after, (int, float)):
         diff = round(raw_after - raw_before, 2)
         sign = "+" if diff >= 0 else ""
-        delta = f" ({sign}{diff} GB)"
+        delta = f" ({sign}{_gb(diff, language)} GB)"
 
     restart_section = ""
-    if data["requires_restart"]:
-        items = "".join(f"<li>{html.escape(a['label'])}</li>" for a in data["requires_restart"])
+    restart_labels = _restart_labels(data)
+    if restart_labels:
+        items = "".join(f"<li>{html.escape(label)}</li>" for label in restart_labels)
         restart_section = f"<section><h2>{t('report_requires_restart')}</h2><ul>{items}</ul></section>"
 
     extra_meta = ""
@@ -1487,13 +1623,17 @@ def _render_html(data: dict) -> str:
     comparison = data.get("previous_comparison")
     if comparison:
         cmp_delta = comparison["free_gb_delta"]
-        delta_txt = f"{'+' if cmp_delta > 0 else ''}{cmp_delta} GB" if cmp_delta is not None else "?"
+        if isinstance(cmp_delta, (int, float)) and not isinstance(cmp_delta, bool):
+            delta_txt = f"{'+' if cmp_delta > 0 else ''}{html.escape(_gb(cmp_delta, language))} GB"
+        else:
+            delta_txt = "?"
         comparison_section = (
-            f"<section><h2>{t('report_since_last_visit')}</h2>"
+            f"<section>{_open_details('pf-h-previous', t('report_since_last_visit'))}"
             f"<div class=\"meta\">{t('report_previous_run')} {html.escape(str(comparison['previous_run_id']))} "
-            f"({html.escape(_format_timestamp(comparison['previous_generated_at']))})<br>"
+            f"({html.escape(_format_timestamp(comparison['previous_generated_at'], language))})<br>"
             f"{t('report_free_space_change')}: {delta_txt}<br>"
-            f"{t('report_actions_then_now')}: {comparison['previous_action_count']} &rarr; {comparison['action_count']}</div></section>"
+            f"{t('report_actions_then_now')}: {html.escape(str(comparison['previous_action_count']))} &rarr; "
+            f"{html.escape(str(comparison['action_count']))}</div></details></section>"
         )
     new_autostart = data.get("new_autostart")
     if isinstance(new_autostart, dict) and isinstance(new_autostart.get("entries"), list):
@@ -1502,7 +1642,7 @@ def _render_html(data: dict) -> str:
             "<ul>" + "".join(f"<li>{html.escape(e)}</li>" for e in entries) + "</ul>" if entries
             else f"<p class=\"empty\">{t('report_new_autostart_none')}</p>"
         )
-        comparison_section += f"<section><h2>{t('report_new_autostart')}</h2>{body}</section>"
+        comparison_section += f"<section>{_open_details('pf-h-autostart', t('report_new_autostart'))}{body}</details></section>"
     drift = [d for d in data.get("drift") or [] if isinstance(d, dict)]
     if drift:
         comparison_section += (
@@ -1513,6 +1653,9 @@ def _render_html(data: dict) -> str:
     return f"""<!DOCTYPE html>
 <html lang="{html.escape(language)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'sha256-{_JS_SHA256}'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
 <title>PortableFix report {html.escape(data['run_id'])}</title>
 <style>{_CSS}</style></head>
 <body><main class="wrap">
@@ -1520,10 +1663,12 @@ def _render_html(data: dict) -> str:
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 {storage_banner}
 {_render_job(data.get('job') or dict(), t, data.get('target_user'))}
-<div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])}<br>
-{t('report_generated')}: {html.escape(_format_timestamp(data['generated_at']))}<br>
+{_render_attention(data, restart_labels, language)}
+<div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])} &middot; PortableFix v{html.escape(str(data.get('app_version') or '?'))}<br>
+{t('report_generated')}: {html.escape(_format_timestamp(data['generated_at'], language))}<br>
 {t('report_free_space')}: {free_before} GB &rarr; {free_after} GB{delta}{extra_meta}</div>
-{_render_client_summary(data.get('client_summary'), language)}
+{_render_client_summary(data.get('client_summary'), language, actions)}
+{_render_health_tiles(data.get('health_areas'), language)}
 <div class="chips">
 <div class="chip"><span class="num">{len(actions)}</span><span class="lbl">{t('report_chip_actions')}</span></div>
 <div class="chip ok"><span class="num">{ok_count}</span><span class="lbl">{t('report_chip_ok')}</span></div>
@@ -1536,13 +1681,14 @@ def _render_html(data: dict) -> str:
 {safety_section}
 {module_section}
 {comparison_section}
-<section aria-labelledby="pf-h-actions"><h2 id="pf-h-actions">{t('report_actions_heading')}</h2>
+<section class="actions" aria-labelledby="pf-h-actions"><h2 id="pf-h-actions">{t('report_actions_heading')}</h2>
 {toolbar}
 <p class="empty" id="pf-no-match" hidden>{t('report_no_match')}</p>
 {cards}
 </section>
 {restart_section}
 {_render_outtake(data.get('outtake'), language)}
+<footer class="foot">{t('report_run')} {html.escape(data['run_id'])} &middot; {t('report_generated')}: {html.escape(_format_timestamp(data['generated_at'], language))} &middot; PortableFix v{html.escape(str(data.get('app_version') or '?'))}{' &middot; ' + t('report_redacted') if data.get('redacted') else ''}</footer>
 </main>
 <script>{_JS}</script>
 </body></html>
@@ -1572,7 +1718,7 @@ def generate_report(
     html_path = reports_dir / f"{data['hostname']}_{run_id}.html"
     json_path = reports_dir / f"{data['hostname']}_{run_id}.json"
     html_path.write_text(_render_html(data), encoding="utf-8")
-    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return html_path, json_path
 
 
@@ -1590,7 +1736,7 @@ def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
     job = data.get("job") if isinstance(data.get("job"), dict) else {}
     keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
     if mask is None:
-        mask = redaction.local_profile_names()
+        mask = redaction.local_profile_names() + redaction.local_account_names()
     # The target user's account name need not match any profile folder
     # (AzureAD, a renamed account) - masked by name as well.
     target = data.get("target_user") if isinstance(data.get("target_user"), dict) else {}

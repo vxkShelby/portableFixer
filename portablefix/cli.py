@@ -2,7 +2,9 @@
 
     PortableFix.exe --preset <name|file.json> [--live] [--out DIR]
                     [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]
+                    [--language sk|en]
     PortableFix.exe --export-preset <name> <file.json>
+    PortableFix.exe --help
 
 DRY-RUN unless --live. A live run refuses up front when the preset holds an
 action above --accept-risk (none given: SAFE only), or a pre-flight blocker.
@@ -12,7 +14,12 @@ so the audit log, undo.ps1 and the report are the same files.
 Exit codes follow Tron's convention: 0 OK, 1 error (an action failed or the
 run was refused), 2 warning (something was skipped, or a diagnostic found
 a problem - an Attention/Critical finding, research G02), 3 unsupported OS,
-4 a restart is pending (before or after the run), 5 running from %TEMP%.
+4 a restart is pending (a live run refused by the pre-flight check, or a
+successful action that needs one), 5 running from %TEMP%.
+
+The exe is a windowed app: from cmd use `start /wait "" PortableFix.exe ...`
+and from PowerShell `(Start-Process PortableFix.exe -Wait -PassThru).ExitCode`,
+or the prompt returns before the run ends and the exit code is lost.
 
 A live run with a DESTRUCTIVE action saves the registry hives right before
 the first one (research G24) - the backup the window's review screen offers;
@@ -34,7 +41,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import action_service, health, hive_backup, intake, paths, preflight, report, restore_point, snapshot, undo
+from . import (
+    action_service, diagnostics, health, hive_backup, intake, paths, preflight, report, restore_point, snapshot, undo,
+)
 from . import items as items_mod
 from .audit_log import append_entry, make_entry
 from .executor import PlanRun
@@ -49,7 +58,7 @@ EXIT_UNSUPPORTED_OS = 3
 EXIT_REBOOT_PENDING = 4
 EXIT_FROM_TEMP = 5
 
-CLI_SWITCHES = ("--preset", "--export-preset")
+CLI_SWITCHES = ("--preset", "--export-preset", "--help", "-h")
 # What --accept-risk allows; REQUIRES_REBOOT counts as MODERATE.
 _RISK_RANK = {RiskLevel.SAFE: 0, RiskLevel.MODERATE: 1, RiskLevel.REQUIRES_REBOOT: 1, RiskLevel.DESTRUCTIVE: 2}
 _MAX_PRESET_ACTIONS = 500
@@ -463,7 +472,20 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
     """The headless run for sys.argv-style `argv`; returns the exit code."""
     deps = deps or Deps()
     out = deps.out = deps.out or say
+    state_dir = None
+    # Redirected to a file or an RMM agent, stdout is the locale code page
+    # with strict errors: a line with "→" or a Cyrillic program name then
+    # vanished without a trace (say() swallows the UnicodeEncodeError).
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        try:
+            tty = sys.stdout.isatty()
+        except (OSError, ValueError):
+            tty = True
+        sys.stdout.reconfigure(errors="replace", **({} if tty else {"encoding": "utf-8"}))
     try:
+        if any(arg in ("--help", "-h") for arg in argv[1:]):
+            out(__doc__.strip())
+            return EXIT_OK
         args = build_parser().parse_args(argv[1:])
         if deps.unsupported_os():
             out("[PortableFix] Windows 10 or later is required.")
@@ -510,4 +532,12 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
         return EXIT_ERROR
     except OSError as exc:
         out(f"[PortableFix] {exc}")
+        return EXIT_ERROR
+    except Exception as exc:
+        # A bug (a corrupt previous report, a module edge case) escaping here
+        # ends in the windowed bootloader's error box - which an unattended
+        # RMM run waits on forever. crash.log is the only trace otherwise.
+        if state_dir is not None:
+            diagnostics.write_crash_log(state_dir, exc)
+        out(f"[PortableFix] internal error: {exc!r}")
         return EXIT_ERROR

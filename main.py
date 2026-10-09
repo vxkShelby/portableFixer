@@ -253,6 +253,8 @@ def _main_cli() -> int:
     from portablefix import cli
 
     _attach_parent_console()
+    # Same crash.log as the window, for whatever escapes cli.run's own guard.
+    install_excepthook(resolve_writable_base_dir(get_base_dir())[0])
     if update_swap.update_mutex_present():
         cli.say("[PortableFix] An update is being installed - try again in a minute.")
         return cli.EXIT_ERROR

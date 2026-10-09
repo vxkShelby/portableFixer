@@ -6,7 +6,7 @@ import time
 import pytest
 
 from portablefix.redaction import (
-    IP, KEY, MAC, SERIAL, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
+    DOMAIN, EMAIL, IP, KEY, MAC, SERIAL, SID, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
 )
 
 
@@ -281,6 +281,24 @@ def test_versions_in_a_driver_version_table_column_stay():
     assert out.endswith(f"Gateway {IP}")
 
 
+@pytest.mark.parametrize("header", [
+    "Name     Id       Version  Available  Source",
+    "Názov    Id       Verzia   K dispozícii  Zdroj",
+    "Name     Id       Spalte3  Spalte4    Quelle",  # unknown header words: by the cells
+])
+def test_winget_version_and_available_columns_are_not_addresses(header):
+    # m20 winget list / upgrade: every 4-part version <= 255 became <ip>
+    # under the "Available" column and under localized headers.
+    text = (f"{header}\n"
+            "-----------------------------------------------\n"
+            "Foo      Foo.Bar  1.2.3.4  1.2.3.5    winget\n"
+            "Baz      Baz.Qux  10.0.1.2 10.0.2.0   winget\n"
+            "\nGateway 10.0.1.2")
+    out = redact_text(text)
+    assert IP not in out.split("\n\n")[0]
+    assert out.endswith(f"Gateway {IP}")
+
+
 def test_a_common_word_as_ssid_or_serial_is_masked_only_on_its_own_line():
     text = ("SSID : Home\nOS : Windows 11 Home\n"
             "SerialNumber : Default string\nBaseBoard : Default string")
@@ -315,3 +333,90 @@ def test_account_names_takes_the_account_part_of_domain_names():
     assert account_names(["AzureAD\\JanNovak", "PC\\klient", "eva", "", "  ", None]) == [
         "JanNovak", "klient", "eva",
     ]
+
+
+def test_network_profile_name_is_masked_like_the_ssid():
+    # Get-NetIPConfiguration | Format-List (m06 net_ip_config_report).
+    text = ("InterfaceAlias       : Wi-Fi\r\n"
+            "InterfaceIndex       : 12\r\n"
+            "InterfaceDescription : Intel(R) Wi-Fi 6 AX201 160MHz\r\n"
+            "NetProfile.Name      : MojaWifi-5G\r\n"
+            "IPv4Address          : 192.168.1.23\r\n"
+            "IPv4DefaultGateway   : 192.168.1.1\r\n"
+            "DNSServer            : 192.168.1.1\r\n"
+            "\r\nnetsh: Profile : MojaWifi-5G\r\n    All User Profile     : MojaWifi-5G\r\n"
+            "connected to MojaWifi-5G")
+    out = redact_text(text)
+    assert "MojaWifi" not in out
+    assert f"NetProfile.Name      : {SSID}" in out
+    assert out.endswith(f"connected to {SSID}")
+
+
+def test_domain_is_masked_with_its_netbios_prefix_but_workgroup_stays():
+    # Get-CimInstance Win32_ComputerSystem | Format-List (m01 computer_info).
+    text = ("Domain              : contoso.local\r\n"
+            "Manufacturer        : Dell Inc.\r\n"
+            "PartOfDomain        : True\r\n"
+            "DomainRole          : 1\r\n"
+            "UserName            : CONTOSO\\jnovak\r\n"
+            "PrimaryDnsSuffix : contoso.local\r\n"
+            "Connection-specific DNS Suffix  . : contoso.local\r\n")
+    out = redact_text(text)
+    assert "contoso" not in out.lower()
+    assert f"Domain              : {DOMAIN}" in out
+    assert f"UserName            : {DOMAIN}\\jnovak" in out
+    assert "DomainRole          : 1" in out
+    assert redact_text("Domain : WORKGROUP\nProfile : Public") == f"Domain : WORKGROUP\nProfile : {SSID}"
+    assert redact_text("Domain : WORKGROUP\nC:\\Users\\Public\\x") == "Domain : WORKGROUP\nC:\\Users\\Public\\x"
+
+
+def test_a_short_kept_value_does_not_make_redaction_quadratic():
+    # keep=["1"] (a job number) over a log of addresses took minutes.
+    started = time.monotonic()
+    out = redact_text("1.2.3.4 " * 50000, keep=["1"])
+    assert time.monotonic() - started < 3
+    assert out == f"{IP} " * 50000
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("UserEmail : jan.novak@firma.sk", f"UserEmail : {EMAIL}"),
+    ("call jan+pc@firma-x.co.uk today", f"call {EMAIL} today"),
+    ("User SID S-1-5-21-1234567890-987654321-55555-1001 here", f"User SID S-1-5-21-{SID}-1001 here"),
+    (r"HKU\S-1-5-21-1234567890-987654321-55555\Software", rf"HKU\S-1-5-21-{SID}\Software"),
+    # The well-known SIDs name no one.
+    ("S-1-5-18 and S-1-5-32-544", "S-1-5-18 and S-1-5-32-544"),
+    (r"\\PC01\c$\Users\jano\Desktop", rf"\\PC01\c$\Users\{USER}\Desktop"),
+    (r'{"p": "\\\\PC01\\c$\\Users\\jano\\x"}', rf'{{"p": "\\\\PC01\\c$\\Users\\{USER}\\x"}}'),
+])
+def test_emails_sids_and_admin_share_paths_are_masked(text, expected):
+    assert redact_text(text) == expected
+
+
+def test_local_account_names_are_masked_in_the_report_by_default(monkeypatch):
+    # Get-LocalUser lists accounts without a profile folder too.
+    from portablefix import redaction
+    from portablefix.report import redact_report_data
+
+    monkeypatch.setattr(redaction, "local_profile_names", lambda: [])
+    monkeypatch.setattr(redaction, "local_account_names", lambda: ["Marienka"])
+    table = "Name      Enabled\n----      -------\nMarienka  True\nGuest     False"
+    out = redact_report_data({"run_id": "r", "hostname": "PC", "job": {}, "actions": [{"output": table}]})
+    assert out["actions"][0]["output"] == f"Name      Enabled\n----      -------\n{USER}  True\nGuest     False"
+
+
+def test_local_account_names_returns_strings_or_nothing():
+    from portablefix.redaction import local_account_names
+
+    names = local_account_names()
+    assert all(isinstance(n, str) and n for n in names)
+    assert "Administrator" not in names and "Guest" not in names
+
+
+def test_report_target_user_sid_is_masked():
+    from portablefix.report import redact_report_data
+
+    data = {"run_id": "r", "hostname": "PC", "job": {},
+            "target_user": {"status": "same", "user": "CONTOSO\\jnovak", "sid": "S-1-5-21-111-222-333-1001"}}
+    out = redact_report_data(data, mask=[])
+    assert out["target_user"]["sid"] == f"S-1-5-21-{SID}-1001"
+    assert out["target_user"]["user"] == f"CONTOSO\\{USER}"
