@@ -142,7 +142,12 @@ def test_m13_hklm_policy_actions_touch_only_their_policy_key(action_id, field):
     result, registry = _run_user_hive_command(getattr(_m13_action(action_id), field), "HKCU:")
     assert result.returncode == 0, result.stdout + result.stderr
     assert registry, result.stdout
-    assert set(registry) == {HKLM_POLICY_ACTIONS[action_id]}, registry
+    expected = {HKLM_POLICY_ACTIONS[action_id]}
+    if action_id in USER_HIVE_ACTIONS:
+        # The CloudContent values are user policies: the same key in the
+        # user's hive, the HKLM copy kept as belt and braces.
+        expected.add(HKLM_POLICY_ACTIONS[action_id].replace("HKLM:\\SOFTWARE", "HKCU:\\Software"))
+    assert set(registry) == expected, registry
 
 
 # --- research G25: per-user settings go to the signed-in user's hive --------
@@ -159,6 +164,8 @@ USER_HIVE_ACTIONS = (
     "debloat_disable_explorer_ads",
     "debloat_block_app_reinstall",
     "debloat_disable_recall_clicktodo",
+    "debloat_disable_lockscreen_spotlight",
+    "debloat_disable_tailored_experiences",
 )
 REGISTRY_STUBS = ("New-Item", "Set-ItemProperty", "New-ItemProperty", "Remove-ItemProperty", "Get-ItemProperty")
 STUB_GUARD_EXIT = 97
