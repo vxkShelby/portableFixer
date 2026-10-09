@@ -961,6 +961,34 @@ def test_cancel_during_restore_point_creation_prevents_the_pending_action_from_r
     assert "destructive-ran" not in window.console.toPlainText()
 
 
+def test_batch_restore_point_says_what_it_is_doing_and_shows_a_busy_bar(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point
+
+    release = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: release.wait(10) and (True, ""))
+    _answer_review(monkeypatch)
+    base_dir = _make_destructive_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=False),
+        is_admin=True, run_id="run_rp_progress",
+    )
+    qtbot.addWidget(window)
+    window._action_checkboxes["risky_thing"].setChecked(True)
+
+    window.run_selected_actions()
+    qtbot.waitUntil(lambda: window._pending_restore_point_runner is not None, timeout=5000)
+
+    assert window._t("panel_restore_point_running") in window.console.toPlainText()
+    assert window.statusBar().currentMessage() == window._t("panel_restore_point_running")
+    assert (window.progress_bar.minimum(), window.progress_bar.maximum()) == (0, 0)
+
+    release.set()
+    qtbot.waitUntil(lambda: window.progress_bar.maximum() != 0, timeout=10000)
+    _wait_batch_idle(qtbot, window)
+
+
 def test_restore_point_failure_declined_skips_remaining_destructive_but_runs_safe(qtbot, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 

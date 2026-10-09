@@ -4900,6 +4900,12 @@ class MainWindow(QMainWindow):
                 lambda success, detail, info, m=module, a=action: self._on_restore_point_checked(success, detail, m, a, info)
             )
             self._pending_restore_point_runner = rp_runner
+            if not self._closed:
+                # Checkpoint-Computer can take minutes and prints nothing:
+                # say so, and show a busy bar instead of a frozen one.
+                self._append_console(self._t("panel_restore_point_running"))
+                self.statusBar().showMessage(self._t("panel_restore_point_running"))
+                self.progress_bar.setRange(0, 0)
             rp_runner.start()
             return
 
@@ -4978,6 +4984,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         subject = f"{module.module_id}/{action.id}"
         self._log_restore_point_result(success, detail, info, subject)
+        if not self._closed:
+            self.progress_bar.setRange(0, self._queue_total)
+            self.progress_bar.setValue(self._queue_total - len(self._queue) - 1)
         if self._cancel_requested:
             # Cancel was clicked while the restore point was still being
             # created - the action it was guarding must never run, and
