@@ -615,6 +615,17 @@ def test_swap_script_never_uses_remove_item():
     assert "Remove-TreeNoFollow $Target" in code
 
 
+def test_swap_tree_delete_retries_a_transiently_locked_folder_and_counts_a_survivor():
+    # Same bounded retry as Remove-PfSafe: an AV/indexer scan holding a
+    # folder for a moment must not leave a half-deleted App.old, and a root
+    # that survives the walk with nothing counted is still one failure.
+    start = SWAP_SCRIPT.index("function Remove-TreeNoFollow")
+    fn = SWAP_SCRIPT[start : SWAP_SCRIPT.index("function Remove-WithRetry")]
+    assert "$t -lt 3" in fn
+    assert "Start-Sleep -Milliseconds 200" in fn
+    assert "if ($n -eq 0 -and (Test-Entry $Path)) { $n++ }" in fn
+
+
 def test_swap_cleanup_never_follows_a_link_planted_in_the_old_app_folder(tmp_path):
     # The realistic attack: a link inside the live App\ becomes App.old at
     # the swap and is dropped with the backups afterwards.

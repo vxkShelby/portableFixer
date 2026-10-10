@@ -221,20 +221,32 @@ function Remove-TreeNoFollow([string]$Path) {
         }
     }
     # Deepest first: a folder is only empty once its children are gone.
+    # Up to 3 attempts 200 ms apart: an AV/indexer scan holding a folder for a
+    # moment must not leave a half-deleted tree (same as Remove-PfSafe).
     for ($k = $dirs.Count - 1; $k -ge 0; $k--) {
         $d = $dirs[$k]
-        try {
-            $a = [System.IO.File]::GetAttributes($d)
-            if (($a -band $ro) -and -not ($a -band $rp)) { [System.IO.File]::SetAttributes($d, ($a -bxor $ro)) }
-            [System.IO.Directory]::Delete($d)
-        } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
-        } catch {
+        $ok = $false
+        for ($t = 0; $t -lt 3 -and -not $ok; $t++) {
+            if ($t -gt 0) { Start-Sleep -Milliseconds 200 }
+            try {
+                $a = [System.IO.File]::GetAttributes($d)
+                if (($a -band $ro) -and -not ($a -band $rp)) { [System.IO.File]::SetAttributes($d, ($a -bxor $ro)) }
+                [System.IO.Directory]::Delete($d)
+                $ok = $true
+            } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+                $ok = $true
+            } catch {
+            }
+        }
+        if (-not $ok) {
             # Only "not empty because a child failed" - already counted.
             $left = 1
             try { $left = @([System.IO.Directory]::GetFileSystemEntries($d)).Count } catch { }
             if ($left -eq 0) { $n++ }
         }
     }
+    # Honest count: the root still there with nothing counted is one failure.
+    if ($n -eq 0 -and (Test-Entry $Path)) { $n++ }
     return $n
 }
 
