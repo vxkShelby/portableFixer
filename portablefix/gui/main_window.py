@@ -5697,6 +5697,17 @@ class MainWindow(QMainWindow):
             self._winget_apply_auto_check()
 
     def _on_export_diagnostics_clicked(self) -> None:
+        members = [name for name, _ in diagnostics.collect_members(self.state_dir, self.run_id)]
+        listing = "\n".join(f"- {name}" for name in members) or self._t("export_diagnostics_confirm_empty")
+        answer = QMessageBox.question(
+            self,
+            self._t("export_diagnostics_button"),
+            self._t("export_diagnostics_confirm").format(members=listing),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
         default_name = f"PortableFix-diagnostics-{self.run_id}.zip"
         dest, _ = QFileDialog.getSaveFileName(
             self, self._t("export_diagnostics_button"), default_name, "Zip (*.zip)"
@@ -5704,11 +5715,21 @@ class MainWindow(QMainWindow):
         if not dest:
             return
         try:
-            diagnostics.export_diagnostics_zip(self.state_dir, Path(dest))
+            diagnostics.export_diagnostics_zip(self.state_dir, Path(dest), run_id=self.run_id)
         except OSError as exc:
             QMessageBox.critical(self, self._t("app_title"), f"{self._t('export_diagnostics_failed')}\n{exc}")
             return
-        QMessageBox.information(self, self._t("app_title"), self._t("export_diagnostics_done"))
+        # Nothing opens a GitHub issue from here: the user does that with
+        # the Report a Bug button, on purpose (the tracker is public).
+        opened = QMessageBox.question(
+            self,
+            self._t("app_title"),
+            self._t("export_diagnostics_saved").format(path=dest),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if opened == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(dest).parent)))
 
     def _on_report_bug_clicked(self) -> None:
         QDesktopServices.openUrl(QUrl(diagnostics.build_bug_report_url(APP_VERSION)))

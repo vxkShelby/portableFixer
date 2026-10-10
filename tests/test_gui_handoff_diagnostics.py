@@ -242,3 +242,59 @@ def test_closing_window_stops_diagnostics_and_kills_report(qtbot, tmp_path, fake
     assert fake_reports.procs[-1].killed
     # A stopped collection writes no zip at all.
     assert not _package(tmp_path).exists()
+
+
+@pytest.fixture
+def export_stubs(monkeypatch):
+    """Stub the redaction/zip work and every dialog; record the calls."""
+    from PySide6.QtGui import QDesktopServices
+
+    from portablefix import diagnostics
+
+    rec = {"questions": [], "exports": [], "urls": [], "answers": [QMessageBox.Yes, QMessageBox.No], "dest": ""}
+    monkeypatch.setattr(
+        diagnostics, "collect_members", lambda base, run_id=None: [(f"Logs/{run_id}.jsonl", b"x"), ("Reports/r.json", b"y")]
+    )
+    monkeypatch.setattr(diagnostics, "export_diagnostics_zip", lambda base, dest, run_id=None: rec["exports"].append((dest, run_id)))
+
+    def question(parent, title, text, buttons, default):
+        rec["questions"].append((text, buttons, default))
+        return rec["answers"].pop(0)
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (rec["dest"], ""))
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: rec["urls"].append(url.toString()))
+    return rec
+
+
+def test_export_diagnostics_confirms_with_members_and_defaults_to_no(qtbot, tmp_path, export_stubs):
+    window = _window(qtbot, tmp_path)
+    export_stubs["answers"] = [QMessageBox.No]
+    window._on_export_diagnostics_clicked()
+    [(text, buttons, default)] = export_stubs["questions"]
+    assert default == QMessageBox.No
+    assert f"Logs/{RUN_ID}.jsonl" in text and "Reports/r.json" in text
+    assert "review" in text and "masked" in text
+    assert export_stubs["exports"] == []
+
+
+def test_export_diagnostics_is_scoped_to_run_and_offers_folder_without_opening_an_issue(qtbot, tmp_path, export_stubs):
+    window = _window(qtbot, tmp_path)
+    dest = tmp_path / "out" / "d.zip"
+    export_stubs["dest"] = str(dest)
+    window._on_export_diagnostics_clicked()
+    assert export_stubs["exports"] == [(dest, RUN_ID)]
+    saved_text, _, saved_default = export_stubs["questions"][1]
+    assert str(dest) in saved_text and saved_default == QMessageBox.No
+    # The user said No to "Open folder": nothing was opened, in particular no issue URL.
+    assert export_stubs["urls"] == []
+
+
+def test_export_diagnostics_open_folder_opens_only_the_folder(qtbot, tmp_path, export_stubs):
+    window = _window(qtbot, tmp_path)
+    dest = tmp_path / "out" / "d.zip"
+    export_stubs["dest"] = str(dest)
+    export_stubs["answers"] = [QMessageBox.Yes, QMessageBox.Yes]
+    window._on_export_diagnostics_clicked()
+    [url] = export_stubs["urls"]
+    assert url.startswith("file:") and "github" not in url and url.endswith("/out")

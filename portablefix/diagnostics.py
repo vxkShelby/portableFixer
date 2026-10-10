@@ -77,10 +77,10 @@ def _current_run_id(base_dir: Path) -> str:
     return max(logs, key=lambda p: p.stat().st_mtime).stem if logs else ""
 
 
-def export_diagnostics_zip(base_dir: Path, dest_path: Path, run_id: str | None = None) -> None:
-    """crash.log plus the current run's audit log and report, every file
-    redacted (research G20): other clients' runs on the same stick never
-    leave it. `run_id` None = the newest audit log."""
+def collect_members(base_dir: Path, run_id: str | None = None) -> list[tuple[str, bytes]]:
+    """The redacted files an export of this run holds: crash.log plus the
+    run's audit log and report. Other clients' runs on the same stick never
+    appear (research G20). `run_id` None = the newest audit log."""
     from . import handoff, redaction, report
 
     run_id = run_id or _current_run_id(base_dir)
@@ -101,6 +101,12 @@ def export_diagnostics_zip(base_dir: Path, dest_path: Path, run_id: str | None =
         members.append((f"Reports/{json_path.name}", json.dumps(redacted, indent=2, ensure_ascii=False).encode("utf-8")))
         if json_path.with_suffix(".html").is_file():
             members.append((f"Reports/{json_path.stem}.html", report.render_report_html(redacted).encode("utf-8")))
+    return members
+
+
+def export_diagnostics_zip(base_dir: Path, dest_path: Path, run_id: str | None = None) -> None:
+    """Write collect_members() to a zip (every file redacted)."""
+    members = collect_members(base_dir, run_id)
     with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("README_DIAGNOSTICS.txt", _DIAG_README.format(members="\n".join(name for name, _ in members)))
         for name, payload in members:
