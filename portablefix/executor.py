@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from . import pfjson
+from .backup_acl import HARDEN_PS, references_backup_dir
 from .items import ITEMS_VARIABLE
 from .items import prelude as items_prelude
 from .ops import STATE_VARIABLE, ps_str
@@ -40,7 +41,7 @@ class ExecutionPlan:
 def build_execution_plan(
     command: str, dry_run: bool, temp_protect: Path | None = None, ops_state: Path | None = None,
     target_user: TargetUser | None = None, items_file: Path | None = None,
-    variables: dict[str, str] | None = None,
+    variables: dict[str, str] | None = None, harden_backups: bool = True,
 ) -> ExecutionPlan:
     if dry_run:
         display = command
@@ -54,6 +55,12 @@ def build_execution_plan(
             display += f"  # {ITEMS_VARIABLE} = {', '.join(ids) or '-'}"
         return ExecutionPlan(mode="dry_run", display_command=display, argv=None)
     prefix = ""
+    if harden_backups and references_backup_dir(command):
+        # Backups live in %ProgramData%\PortableFix and undo commands import
+        # them elevated: lock the folder to SYSTEM/Administrators first and
+        # fail closed (portablefix/backup_acl.py). Read-only callers (checks,
+        # listings, previews) pass harden_backups=False.
+        prefix += HARDEN_PS
     if items_file is not None:
         # The selected ids, read from their file - never pasted into the
         # command text (research G05, portablefix/items.py).

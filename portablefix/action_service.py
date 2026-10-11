@@ -66,7 +66,7 @@ def list_items(action: ActionDef, target_user: TargetUser | None, holder: list |
     """Runs the action's items_command (research G05) and returns its items,
     or None when the listing failed (non-zero exit). `holder` receives the
     PlanRun, so a caller on another thread can cancel it."""
-    plan = build_execution_plan(action.items_command, dry_run=False, target_user=target_user)
+    plan = build_execution_plan(action.items_command, dry_run=False, target_user=target_user, harden_backups=False)
     run = PlanRun(plan, inactivity_timeout_sec=ITEMS_LIST_INACTIVITY_SEC, hard_cap_sec=ITEMS_LIST_HARD_CAP_SEC)
     if holder is not None:
         holder.append(run)
@@ -83,13 +83,17 @@ def check_plan(action: ActionDef, *, dry_run: bool, target_user: TargetUser | No
     or None: a DRY-RUN previews instead, and most actions have no check."""
     if dry_run or not action.check_command:
         return None
-    return build_execution_plan(action.check_command, dry_run=False, target_user=target_user)
+    return build_execution_plan(
+        action.check_command, dry_run=False, target_user=target_user, harden_backups=False,
+    )
 
 
 def check_state(action: ActionDef, target_user: TargetUser | None, holder: list | None = None) -> str:
     """APPLIED / NOT_APPLIED / UNKNOWN for one action, for the status chip
     and the snapshot. `holder` receives the PlanRun so it can be cancelled."""
-    plan = build_execution_plan(action.check_command, dry_run=False, target_user=target_user)
+    plan = build_execution_plan(
+        action.check_command, dry_run=False, target_user=target_user, harden_backups=False,
+    )
     run = PlanRun(plan, inactivity_timeout_sec=CHECK_INACTIVITY_SEC, hard_cap_sec=CHECK_HARD_CAP_SEC)
     if holder is not None:
         holder.append(run)
@@ -148,7 +152,7 @@ def prepare_plan(
     if dry_run and action.preview_command:
         plan = build_execution_plan(
             action.preview_command, dry_run=False, temp_protect=temp_protect, target_user=target_user,
-            items_file=items_file, variables=variables,
+            items_file=items_file, variables=variables, harden_backups=False,
         )
         return PreparedRun(plan, None, items_file)
     ops_state = None
