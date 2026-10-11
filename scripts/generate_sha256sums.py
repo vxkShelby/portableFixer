@@ -32,8 +32,11 @@ def collect_files(base_dir: Path) -> list[Path]:
 
 def build_sums_content(base_dir: Path, files: list[Path], version: str = APP_VERSION) -> str:
     lines = [manifest_version_line(version).rstrip("\n")]
-    for file_path in sorted(files):
-        rel = file_path.relative_to(base_dir).as_posix()
+    # By the posix path, not Path order: WindowsPath sorts case-insensitively,
+    # PosixPath does not, and the signed manifest must be the same bytes
+    # whichever OS builds it.
+    rels = sorted((f.relative_to(base_dir).as_posix(), f) for f in files)
+    for rel, file_path in rels:
         lines.append(f"{compute_sha256(file_path)}  {rel}")
     return "\n".join(lines) + "\n"
 
@@ -45,7 +48,8 @@ def main() -> None:
     content = build_sums_content(base_dir, files, version)
     sums_dir = base_dir / "Data"
     sums_dir.mkdir(parents=True, exist_ok=True)
-    (sums_dir / "SHA256SUMS").write_text(content, encoding="utf-8")
+    # Bytes, not write_text: on Windows that turns every LF into CRLF.
+    (sums_dir / "SHA256SUMS").write_bytes(content.encode("utf-8"))
     print(f"Wrote {len(files)} entries for version {version} to {sums_dir / 'SHA256SUMS'}")
 
 

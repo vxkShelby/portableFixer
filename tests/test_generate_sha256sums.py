@@ -74,3 +74,21 @@ def test_build_sums_content_names_the_version_in_a_line_older_parsers_skip(tmp_p
 def test_parse_manifest_version_is_none_for_a_manifest_without_one():
     assert parse_manifest_version("abc  App/x\n") is None
     assert parse_manifest_version(f"{MANIFEST_VERSION_PREFIX}\n") is None
+
+
+def test_manifest_bytes_do_not_depend_on_the_os_that_wrote_them(tmp_path, monkeypatch):
+    # LF line ends and a case-sensitive order by posix path: the signature
+    # covers these bytes, so a Windows and a Linux build must agree.
+    from scripts import generate_sha256sums
+
+    (tmp_path / "App").mkdir()
+    for name in ("alpha.txt", "Zed.txt"):
+        (tmp_path / "App" / name).write_bytes(name.encode())
+    monkeypatch.setattr("sys.argv", ["generate_sha256sums.py", str(tmp_path)])
+
+    generate_sha256sums.main()
+
+    raw = (tmp_path / "Data" / "SHA256SUMS").read_bytes()
+    assert b"\r" not in raw
+    names = [line.split(b"  ", 1)[1] for line in raw.splitlines()[1:]]
+    assert names == [b"App/Zed.txt", b"App/alpha.txt"]

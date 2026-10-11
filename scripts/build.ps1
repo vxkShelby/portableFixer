@@ -82,9 +82,36 @@ if ($Tag) {
 }
 Write-Host "Building PortableFix $appVersion"
 
+# build_release_zip.ps1 and the installer copy Modules\ and Vendor\ from the
+# working tree wholesale, so an untracked or ignored file there (a stray
+# __pycache__, a scratch copy) would ship signed. A release is built from a
+# clean checkout; a development build only gets told.
+$strayFiles = @()
+$gitChecked = $false
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $global:LASTEXITCODE = 0
+    try {
+        $listing = @(& git -C $root clean -ndx -- Modules Vendor 2>$null)
+        $gitChecked = ($LASTEXITCODE -eq 0)
+        $strayFiles = @($listing | Where-Object { $_ })
+    } catch {
+        # Windows PowerShell 5.1 turns a native command's stderr into an error.
+        $gitChecked = $false
+    }
+    $global:LASTEXITCODE = 0
+}
+if ($strayFiles.Count -gt 0) {
+    $message = "Modules\ or Vendor\ hold files git does not track - they would ship in the zip and installer:`n  " + ($strayFiles -join "`n  ")
+    if ($Tag) { throw $message }
+    Write-Warning $message
+} elseif ($Tag -and -not $gitChecked) {
+    throw "Could not check Modules\ and Vendor\ for untracked files (git missing or not a checkout) - a release is built from the repository checkout"
+}
+
 # Checked before anything is built: an unsigned release is refused by every
 # client (updater.download_update, update_swap.stage_update).
-$signRelease = [bool]$env:PORTABLEFIX_RELEASE_SIGNING_KEY
+# IsNullOrWhiteSpace: a secret that is only blanks is no key.
+$signRelease = -not [string]::IsNullOrWhiteSpace($env:PORTABLEFIX_RELEASE_SIGNING_KEY)
 if ($Tag -and -not $signRelease) {
     throw "PORTABLEFIX_RELEASE_SIGNING_KEY is not set - a release build must be signed (run it through .github/workflows/release.yml)"
 }
@@ -172,11 +199,19 @@ VSVersionInfo(
 # pyinstaller-hooks-contrib's nacl/cffi hooks pull it in (hooks-contrib
 # 2026.7: a build without this flag ran fine) - naming it keeps the release
 # from depending on that hook even across a hooks-contrib bump.
+# The app imports only QtCore, QtGui and QtWidgets (grep PySide6 in main.py and
+# portablefix\); the Qml/Quick/Pdf/VirtualKeyboard modules would only add
+# megabytes. tests.yml (build-smoke) starts the frozen exe, so a wrongly
+# excluded module shows up on the PR.
 Invoke-Step "PyInstaller" {
     & $Python -m PyInstaller --onefile --noconsole --noconfirm --distpath $distStage --workpath "$root\build" --specpath "$root\build" `
       --add-data "$root\portablefix.ico;." `
       --hidden-import _cffi_backend `
       --noupx `
+      --exclude-module PySide6.QtQml `
+      --exclude-module PySide6.QtQuick `
+      --exclude-module PySide6.QtPdf `
+      --exclude-module PySide6.QtVirtualKeyboard `
       --version-file $versionFile `
       --icon "$root\portablefix.ico" `
       --name PortableFix `

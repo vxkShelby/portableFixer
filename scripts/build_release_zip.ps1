@@ -39,6 +39,21 @@ $zip = "$outDir\PortableFix-Portable.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
 
+# Compress-Archive stamps every entry with the time it was written (and PS 5.1
+# adds a directory entry stamped "now"), so two builds of the same commit gave
+# two different zips - and different signed .sha256 files. Pin them all to one
+# time, so the same inputs give the same bytes. Only the headers change; names
+# and compressed data are kept. Nothing reads these times back: the update
+# extracts with zipfile (which ignores them) and trusts the SHA256SUMS manifest.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$fixedTime = New-Object DateTime 2000, 1, 1, 0, 0, 0
+$archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Update)
+try {
+    foreach ($entry in $archive.Entries) { $entry.LastWriteTime = $fixedTime }
+} finally {
+    $archive.Dispose()
+}
+
 $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
 Set-Content -Path "$zip.sha256" -Value "$hash  PortableFix-Portable.zip" -Encoding ASCII
 
