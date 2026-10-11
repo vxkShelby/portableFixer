@@ -7,8 +7,12 @@ frozen app hands to the swap: its own PID and the bootloader parent's, the
 cleaned environment, the working directory and the relaunch - the parts no
 unfrozen test can reach.
 
-    PortableFix.exe --probe-apply <zip>   stage_update + launch_swap, then
-                                          write Data\\probe_launch.json
+    PortableFix.exe --probe-apply <zip> [--sabotage-vendor]
+                                          stage_update + launch_swap, then
+                                          write Data\\probe_launch.json;
+                                          --sabotage-vendor empties the staged
+                                          Vendor\\ first, so the swap's check of
+                                          the new folders fails and it rolls back
     PortableFix.exe --post-update         (the swap's relaunch) write
                                           Data\\relaunched.json
 
@@ -17,6 +21,7 @@ Built with --noconsole like the app, so it reports only through files.
 """
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -60,12 +65,15 @@ def _write(name: str, data: dict) -> None:
     os.replace(tmp, target)
 
 
-def probe_apply(zip_path: str) -> int:
+def probe_apply(zip_path: str, sabotage_vendor: bool = False) -> int:
     install_dir = _install_dir()
     out = _facts()
     out["parent_pid"] = update_swap.onefile_parent_pid()
     try:
         staged = update_swap.stage_update(Path(zip_path), install_dir)
+        if sabotage_vendor:
+            shutil.rmtree(staged.stage_root / "Vendor")
+            (staged.stage_root / "Vendor").mkdir()
         result = update_swap.launch_swap(staged, install_dir)
         out.update({
             "ok": result.ok, "reason": result.reason, "detail": result.detail, "exit_code": result.exit_code,
@@ -81,7 +89,7 @@ def probe_apply(zip_path: str) -> int:
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 3 and argv[1] == "--probe-apply":
-        return probe_apply(argv[2])
+        return probe_apply(argv[2], "--sabotage-vendor" in argv[3:])
     if "--post-update" in argv[1:]:
         _write("relaunched.json", _facts())
         return 0

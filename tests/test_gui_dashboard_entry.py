@@ -33,8 +33,8 @@ def _menu_action(window, text):
     return next(a for a in window._settings_menu.actions() if a.text() == text)
 
 
-def test_the_dashboard_opens_with_the_symptom_box_and_one_click_complaints(qtbot, tmp_path, monkeypatch):
-    window, _ = _symptom_window(qtbot, tmp_path, monkeypatch)
+def test_the_dashboard_opens_with_the_symptom_box_and_one_click_complaints(make_window, monkeypatch):
+    window, _ = _symptom_window(make_window, monkeypatch)
     window.show()
     assert window.symptom_box.isVisibleTo(window)
     # Only the chips whose symptom exists in the file: no_internet here.

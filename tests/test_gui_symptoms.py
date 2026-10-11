@@ -43,19 +43,13 @@ symptoms:
 """
 
 
-def _window(qtbot, tmp_path, monkeypatch, symptoms_text=SYMPTOMS, language="en"):
-    module_dir = tmp_path / "Modules" / "m06_network"
-    module_dir.mkdir(parents=True)
-    (module_dir / "actions.yaml").write_text(ACTIONS, encoding="utf-8")
-    if symptoms_text is not None:
-        (tmp_path / "Modules" / "symptoms.yaml").write_text(symptoms_text, encoding="utf-8")
+def _window(make_window, monkeypatch, symptoms_text=SYMPTOMS, language="en"):
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: warnings.append(text))
-    window = MainWindow(
-        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language=language),
-        is_admin=True, run_id="run_symptoms",
+    window = make_window(
+        language=language, run_id="run_symptoms", module_id="m06_network", actions_yaml=ACTIONS,
+        files={} if symptoms_text is None else {"Modules/symptoms.yaml": symptoms_text},
     )
-    qtbot.addWidget(window)
     return window, warnings
 
 
@@ -68,8 +62,8 @@ def _checked(window):
     return {aid for aid, box in window._action_checkboxes.items() if box.isChecked()}
 
 
-def test_a_complaint_shows_a_tile_with_title_why_and_matched_words(qtbot, tmp_path, monkeypatch):
-    window, _ = _window(qtbot, tmp_path, monkeypatch)
+def test_a_complaint_shows_a_tile_with_title_why_and_matched_words(make_window, monkeypatch):
+    window, _ = _window(make_window, monkeypatch)
     assert not window._symptom_results.isVisibleTo(window)
     window.symptom_box.setText("internet nejde")
     [tile] = _tiles(window)
@@ -81,8 +75,8 @@ def test_a_complaint_shows_a_tile_with_title_why_and_matched_words(qtbot, tmp_pa
     assert not window._symptom_results.isVisibleTo(window)
 
 
-def test_the_buttons_select_diagnostics_or_diagnostics_and_fixes(qtbot, tmp_path, monkeypatch):
-    window, _ = _window(qtbot, tmp_path, monkeypatch)
+def test_the_buttons_select_diagnostics_or_diagnostics_and_fixes(make_window, monkeypatch):
+    window, _ = _window(make_window, monkeypatch)
     window.symptom_box.setText("no internet")
     diag_button, fix_button = _tiles(window)[0].findChildren(QPushButton)
     assert diag_button.text() == "Select diagnostics"
@@ -99,22 +93,22 @@ def test_the_buttons_select_diagnostics_or_diagnostics_and_fixes(qtbot, tmp_path
     assert not window._batch_active
 
 
-def test_no_match_says_so(qtbot, tmp_path, monkeypatch):
-    window, _ = _window(qtbot, tmp_path, monkeypatch)
+def test_no_match_says_so(make_window, monkeypatch):
+    window, _ = _window(make_window, monkeypatch)
     window.symptom_box.setText("tlaciaren")
     [label] = _tiles(window)
     assert isinstance(label, QLabel) and "No known problem" in label.text()
 
 
-def test_a_non_safe_diagnostic_is_reported_at_startup(qtbot, tmp_path, monkeypatch):
-    window, warnings = _window(qtbot, tmp_path, monkeypatch)
+def test_a_non_safe_diagnostic_is_reported_at_startup(make_window, monkeypatch):
+    window, warnings = _window(make_window, monkeypatch)
     assert any("bad_one" in w and "not SAFE" in w for w in warnings)
     window.symptom_box.setText("zle veci")
     assert isinstance(_tiles(window)[0], QLabel)  # skipped, so no tile
 
 
-def test_without_a_symptoms_file_there_is_no_box(qtbot, tmp_path, monkeypatch):
-    window, warnings = _window(qtbot, tmp_path, monkeypatch, symptoms_text=None)
+def test_without_a_symptoms_file_there_is_no_box(make_window, monkeypatch):
+    window, warnings = _window(make_window, monkeypatch, symptoms_text=None)
     assert warnings == []
     assert not window.symptom_box.isVisibleTo(window)
 

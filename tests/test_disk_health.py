@@ -349,12 +349,12 @@ class _FakePopen:
 
 
 @pytest.fixture
-def fake_popen(monkeypatch):
+def fake_popen(monkeypatch, patch_popen):
     _FakePopen.instances = []
     monkeypatch.setattr("portablefix.paths.powershell_executable", lambda: "powershell.exe")
 
     def install(**behaviour):
-        monkeypatch.setattr(disk_health.subprocess, "Popen", lambda args, **kw: _FakePopen(args, **behaviour, **kw))
+        patch_popen(disk_health, lambda args, **kw: _FakePopen(args, **behaviour, **kw))
         return _FakePopen.instances
 
     return install
@@ -384,9 +384,9 @@ def test_real_powershell_runner_timeout_with_a_quick_drain_is_still_unknown(fake
     assert procs[0].killed and procs[0].timeouts == [3, disk_health.KILL_DRAIN_TIMEOUT_SEC]
 
 
-def test_real_powershell_runner_without_powershell_is_none(monkeypatch):
+def test_real_powershell_runner_without_powershell_is_none(monkeypatch, patch_popen):
     monkeypatch.setattr("portablefix.paths.powershell_executable", lambda: "powershell.exe")
-    monkeypatch.setattr(disk_health.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("missing")))
+    patch_popen(disk_health, lambda *a, **k: (_ for _ in ()).throw(OSError("missing")))
     assert disk_health._run_powershell("x", 1) is None
 
 

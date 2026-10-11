@@ -100,3 +100,42 @@ def test_typical_durations_is_the_median_of_real_runs_only(tmp_path):
 
     assert typical_durations(reports, "PC1") == {"sfc": 200.0}
     assert typical_durations(tmp_path / "missing", "PC1") == {}
+
+
+def test_an_oversized_report_is_skipped(tmp_path, monkeypatch):
+    from portablefix import history
+
+    reports = tmp_path / "Reports"
+    _write_report(reports, "PC1", "big", [{"exit_code": 0}])
+    monkeypatch.setattr(history, "_MAX_REPORT_BYTES", 5)
+    assert recent_runs(reports, "PC1") == []
+
+
+def test_non_dict_actions_are_ignored_and_an_empty_report_counts_as_dry_run(tmp_path):
+    reports = tmp_path / "Reports"
+    _write_report(reports, "PC1", "mixed", ["junk", {"exit_code": 0, "dry_run": True}, {"exit_code": 2, "dry_run": True}])
+    _write_report(reports, "PC1", "mixed2", [{"exit_code": 0, "dry_run": True}, {"exit_code": 0}])
+    by_id = {r.run_id: r for r in recent_runs(reports, "PC1")}
+    assert (by_id["mixed"].action_count, by_id["mixed"].failed_count, by_id["mixed"].dry_run) == (2, 1, True)
+    # One real action makes the batch a real run.
+    assert by_id["mixed2"].dry_run is False
+    _write_report(reports, "PC1", "empty", [])
+    assert {r.run_id: r for r in recent_runs(reports, "PC1")}["empty"].dry_run is True
+
+
+def test_a_report_without_a_run_id_falls_back_to_the_file_stem_and_limit_zero_is_empty(tmp_path):
+    reports = tmp_path / "Reports"
+    reports.mkdir()
+    (reports / "PC1_20260101T000000-q.json").write_text(json.dumps({"actions": []}), encoding="utf-8")
+    assert [r.run_id for r in recent_runs(reports, "PC1")] == ["PC1_20260101T000000-q"]
+    assert recent_runs(reports, "PC1", limit=0) == []
+
+
+def test_typical_durations_ignores_a_corrupt_report(tmp_path):
+    from portablefix.history import typical_durations
+
+    reports = tmp_path / "Reports"
+    _write_report(reports, "PC1", "20260901T100000-aaaa", [{"action_id": "sfc", "duration_sec": 50, "dry_run": False}])
+    run = recent_runs(reports, "PC1")[0]
+    run.json_path.write_bytes(b"\xff\xfe not utf8")
+    assert typical_durations(reports, "PC1") == {}

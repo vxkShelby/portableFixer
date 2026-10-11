@@ -327,3 +327,46 @@ def test_an_internal_error_is_exit_1_and_written_to_crash_log(app, tmp_path, mon
     assert code == cli.EXIT_ERROR
     assert any("internal error" in line and "TypeError" in line for line in lines), lines
     assert "TypeError: previous report is not a dict" in crash_log_path(tmp_path / "out").read_text(encoding="utf-8")
+
+
+def test_load_preset_resolves_a_technician_preset_and_dedupes_ids(tmp_path):
+    settings = cli.Settings(custom_presets={"mine": ["a", "b"]})
+    assert cli.load_preset("mine", settings).action_ids == ["a", "b"]
+    path = tmp_path / "dup.json"
+    path.write_text(json.dumps({"actions": ["x", "y", "x"]}), encoding="utf-8")
+    preset = cli.load_preset(str(path), settings)
+    assert preset.action_ids == ["x", "y"] and preset.name == "dup"
+
+
+@pytest.mark.parametrize("content", [
+    "{not json",
+    "[1, 2]",
+    json.dumps({"actions": "user_temp"}),
+    json.dumps({"actions": [1, 2]}),
+    json.dumps({"actions": ["x"] * 2 + [str(i) for i in range(501)]}),
+    json.dumps({"actions": ["x"], "items": ["a"]}),
+])
+def test_load_preset_refuses_a_malformed_preset_file(tmp_path, content):
+    path = tmp_path / "bad.json"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(cli.CliError):
+        cli.load_preset(str(path), cli.Settings())
+
+
+def test_load_preset_missing_json_file_and_unknown_name_list_the_known_ones(tmp_path):
+    with pytest.raises(cli.CliError, match="cannot read preset file"):
+        cli.load_preset(str(tmp_path / "nope.json"), cli.Settings())
+    with pytest.raises(cli.CliError, match="quick_clean"):
+        cli.load_preset("nope", cli.Settings())
+
+
+def test_wants_cli_ignores_switches_that_do_not_start_a_headless_run():
+    # --live and --out only modify a run; alone they leave the window to open. argv[0] is never a switch.
+    assert not cli.wants_cli(["x.exe", "--live", "--out", "d"])
+    assert not cli.wants_cli(["--preset"])
+    assert not cli.wants_cli(["x.exe", "--presets"])
+
+
+def test_the_parser_refuses_an_unknown_switch_as_a_cli_error():
+    with pytest.raises(cli.CliError):
+        cli.build_parser().parse_args(["--no-such-switch"])

@@ -102,17 +102,17 @@ def test_get_ram_speed_and_disk_health_returns_none_none_on_timeout():
         assert sysinfo._get_ram_speed_and_disk_health() == (None, None)
 
 
-def test_read_hardware_sensors_degrades_gracefully_without_vendored_dll(tmp_path):
-    sysinfo._hw_init_attempted = False
-    sysinfo._hw_computer = None
-    sysinfo._hw_init_error = None
-    try:
-        result = sysinfo.read_hardware_sensors(tmp_path)
-        error = sysinfo.hardware_monitor_error()
-    finally:
-        sysinfo._hw_init_attempted = False
-        sysinfo._hw_computer = None
-        sysinfo._hw_init_error = None
+@pytest.fixture
+def fresh_hardware_monitor(monkeypatch):
+    """Hardware-monitor module state reset for the test; monkeypatch puts the previous values back."""
+    for name, value in (("_hw_init_attempted", False), ("_hw_computer", None), ("_hw_init_error", None),
+                        ("_hw_init_assets_dir", None)):
+        monkeypatch.setattr(sysinfo, name, value)
+
+
+def test_read_hardware_sensors_degrades_gracefully_without_vendored_dll(tmp_path, fresh_hardware_monitor):
+    result = sysinfo.read_hardware_sensors(tmp_path)
+    error = sysinfo.hardware_monitor_error()
     assert result == {
         "cpu_clock_mhz": None,
         "gpu_name": None,
@@ -186,23 +186,13 @@ def test_read_hardware_sensors_prefers_a_genuinely_idle_gpu_over_one_with_no_loa
     assert result["gpu_load_percent"] == 0.0
 
 
-def test_init_hardware_monitor_retries_with_a_different_assets_dir(tmp_path):
-    sysinfo._hw_init_attempted = False
-    sysinfo._hw_computer = None
-    sysinfo._hw_init_error = None
-    sysinfo._hw_init_assets_dir = None
+def test_init_hardware_monitor_retries_with_a_different_assets_dir(tmp_path, fresh_hardware_monitor):
     other_dir = tmp_path / "other"
     other_dir.mkdir()
-    try:
-        sysinfo.init_hardware_monitor(tmp_path)
-        first_error = sysinfo.hardware_monitor_error()
-        sysinfo.init_hardware_monitor(other_dir)
-        second_error = sysinfo.hardware_monitor_error()
-    finally:
-        sysinfo._hw_init_attempted = False
-        sysinfo._hw_computer = None
-        sysinfo._hw_init_error = None
-        sysinfo._hw_init_assets_dir = None
+    sysinfo.init_hardware_monitor(tmp_path)
+    first_error = sysinfo.hardware_monitor_error()
+    sysinfo.init_hardware_monitor(other_dir)
+    second_error = sysinfo.hardware_monitor_error()
     # Both attempts genuinely ran (no vendored DLL in either dir) rather than
     # the second silently reusing the first attempt's cached failure.
     assert "not bundled" in first_error
@@ -378,22 +368,13 @@ def test_sysinfo_powershell_calls_use_the_absolute_powershell_path(monkeypatch):
     assert [argv[0] for argv in calls] == [exe, exe]
 
 
-def test_frozen_app_does_not_load_a_vendor_dll_the_signed_manifest_does_not_back(tmp_path, monkeypatch):
+def test_frozen_app_does_not_load_a_vendor_dll_the_signed_manifest_does_not_back(tmp_path, monkeypatch, fresh_hardware_monitor):
     # Research G32: an unsigned (here: missing) manifest - or a swapped DLL -
     # must never reach pythonnet in the shipped app.
     monkeypatch.setattr(sysinfo.sys, "frozen", True, raising=False)
     dll = tmp_path / "Vendor" / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll"
     dll.parent.mkdir(parents=True)
     dll.write_bytes(b"planted")
-    sysinfo._hw_init_attempted = False
-    sysinfo._hw_computer = None
-    sysinfo._hw_init_error = None
-    try:
-        assert sysinfo.init_hardware_monitor(tmp_path) is None
-        error = sysinfo.hardware_monitor_error()
-    finally:
-        sysinfo._hw_init_attempted = False
-        sysinfo._hw_computer = None
-        sysinfo._hw_init_error = None
-        sysinfo._hw_init_assets_dir = None
+    assert sysinfo.init_hardware_monitor(tmp_path) is None
+    error = sysinfo.hardware_monitor_error()
     assert "SHA256SUMS" in error

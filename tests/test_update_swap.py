@@ -79,10 +79,10 @@ class _FakePopen:
 
 
 @pytest.fixture
-def fake_popen(monkeypatch):
+def fake_popen(monkeypatch, patch_popen):
     _FakePopen.calls = []
     _FakePopen.behaviour = {}
-    monkeypatch.setattr(update_swap.subprocess, "Popen", _FakePopen)
+    patch_popen(update_swap, _FakePopen)
     return _FakePopen
 
 
@@ -487,6 +487,65 @@ def test_stage_update_leaves_no_partial_stage_when_interrupted(tmp_path):
     with pytest.raises(UpdateStageCancelled):
         stage_update(zip_path, install_dir, should_stop=stop_after_a_few)
 
+    assert not (install_dir / "_update_stage").exists()
+    assert zip_path.exists()
+
+
+@pytest.mark.parametrize("keep", [0, 20, "half", "inside the signature"])
+def test_stage_update_refuses_a_half_written_sha256sums(tmp_path, keep):
+    # A download or copy cut off in the manifest (or inside its signature) must never verify.
+    signed = sums_for(release_files())
+    cut = {0: 0, 20: 20, "half": len(signed) // 2, "inside the signature": len(signed) - 10}[keep]
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path, sums=signed[:cut])
+
+    with pytest.raises(UpdateStageError):
+        stage_update(zip_path, install_dir)
+    assert not (install_dir / "_update_stage").exists()
+    assert zip_path.exists()
+
+
+def test_stage_update_refuses_a_case_only_duplicate_of_a_root_file(tmp_path):
+    # NTFS would let the second silently replace the first.
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path, extra_names={"PortableFix\portablefix.CMD": b"@echo off\r\nevil\r\n"})
+
+    with pytest.raises(UpdateStageError, match="duplicate"):
+        stage_update(zip_path, install_dir)
+    assert not (install_dir / "_update_stage").exists()
+
+
+def test_stage_update_survives_a_full_disk_while_writing(tmp_path, monkeypatch):
+    # The free-space check passes, then the volume fills up mid-extract: a clear error, no half stage, zip kept.
+    install_dir = tmp_path / "install"
+    make_install(install_dir)
+    zip_path = _zip(tmp_path)
+    real_open = open
+    written = []
+
+    class _FullDisk:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._handle.close()
+
+        def write(self, data):
+            if written:
+                raise OSError(28, "No space left on device")
+            written.append(len(data))
+            return self._handle.write(data)
+
+    monkeypatch.setattr(update_swap, "open", lambda path, mode="r", *a, **k: _FullDisk(real_open(path, mode, *a, **k)),
+                        raising=False)
+
+    with pytest.raises(UpdateStageError, match="could not unpack"):
+        stage_update(zip_path, install_dir)
     assert not (install_dir / "_update_stage").exists()
     assert zip_path.exists()
 

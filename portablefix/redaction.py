@@ -31,6 +31,7 @@ SSID = "<ssid>"
 DOMAIN = "<domain>"
 EMAIL = "<email>"
 SID = "<sid>"
+KEY_ID = "<key-id>"
 
 # Profile folders every Windows has - naming them says nothing about the client.
 _SHARED_PROFILES = {"public", "default", "default user", "all users", "defaultapppool"}
@@ -123,6 +124,15 @@ _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 # The machine-unique part of an account SID (target_user.sid, HKU paths).
 # The RID stays - it tells accounts apart.
 _SID = re.compile(r"\bS-1-5-21(?:-\d+){3}(?P<rid>-\d+)?\b")
+
+# BitLocker key-protector IDs: the "Recovery key ID: <guid>[, <guid>]" line of
+# m23 and a KeyProtectorId property. Matching the label (not any GUID) keeps
+# ordinary GUIDs - driver, product and package IDs - readable.
+_GUID = r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"
+_KEY_ID = re.compile(
+    rf"(?P<key>\b(?:Recovery key ID|KeyProtectorId)\"?[ \t]*[:=][ \t]*\"?)\{{?{_GUID}\}}?(?:,[ \t]*\{{?{_GUID}\}}?)*",
+    re.IGNORECASE,
+)
 
 # Values collected once (an SSID, a serial number, a profile name) are masked
 # wherever else they appear too - e.g. the Wi-Fi profile line naming the
@@ -307,6 +317,7 @@ def _redact(text: str, kept: tuple[str, ...], masker: "_Masker") -> str:
     text = _sub(_USER_PATH, text, (), user)
     text = _sub(_EMAIL, text, kept, lambda m: EMAIL)
     text = _sub(_SID, text, kept, lambda m: f"S-1-5-21-{SID}{m.group('rid') or ''}")
+    text = _sub(_KEY_ID, text, kept, lambda m: m.group("key") + KEY_ID)
     text = _sub(_SSID, text, kept, lambda m: m.group("key") + SSID)
     text = _sub(_DOMAIN, text, kept, domain)
     text = _sub(_SERIAL, text, kept, lambda m: m.group("key") + SERIAL)

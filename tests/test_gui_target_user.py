@@ -2,14 +2,26 @@
 prelude handed to every action, the audit fields and undo.ps1. A module of
 its own, run one test per process like the other GUI tests."""
 
+import functools
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from portablefix import target_user
 from portablefix.audit_log import audit_log_path
-from portablefix.gui.main_window import MainWindow
-from portablefix.settings import Settings
 from portablefix.target_user import TargetUser
+
+ACTIONS = (
+    "module_id: m13_debloat\n"
+    "category: CLEANUP\n"
+    "actions:\n"
+    "  - {id: user_tweak, label_sk: Tweak, label_en: Tweak, risk: SAFE,"
+    " command: \"Write-Output $__pfUserHive\","
+    " undo_command: \"Remove-ItemProperty -Path ($__pfUserHive + '\\\\X') -Name Y\"}\n"
+    "  - {id: machine_tweak, label_sk: Stroj, label_en: Machine, risk: SAFE,"
+    " command: \"Write-Output 1\", undo_command: \"Write-Output undo-machine\"}\n"
+)
 
 TECH = "S-1-5-21-1111-2222-3333-1001"
 CLIENT = "S-1-5-21-1111-2222-3333-1002"
@@ -30,26 +42,11 @@ AMBIGUOUS = TargetUser(
 )
 
 
-def _window(qtbot, tmp_path, target=None, language="sk", dry_run=False):
-    module_dir = tmp_path / "Modules" / "m13_debloat"
-    module_dir.mkdir(parents=True, exist_ok=True)
-    (module_dir / "actions.yaml").write_text(
-        "module_id: m13_debloat\n"
-        "category: CLEANUP\n"
-        "actions:\n"
-        "  - {id: user_tweak, label_sk: Tweak, label_en: Tweak, risk: SAFE,"
-        " command: \"Write-Output $__pfUserHive\","
-        " undo_command: \"Remove-ItemProperty -Path ($__pfUserHive + '\\\\X') -Name Y\"}\n"
-        "  - {id: machine_tweak, label_sk: Stroj, label_en: Machine, risk: SAFE,"
-        " command: \"Write-Output 1\", undo_command: \"Write-Output undo-machine\"}\n",
-        encoding="utf-8",
+@pytest.fixture
+def make_window(make_window):
+    return functools.partial(
+        make_window, run_id=RUN_ID, language="sk", dry_run=False, module_id="m13_debloat", actions_yaml=ACTIONS,
     )
-    window = MainWindow(
-        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language=language, dry_run=dry_run),
-        is_admin=True, run_id=RUN_ID, target=target,
-    )
-    qtbot.addWidget(window)
-    return window
 
 
 def _entries(tmp_path):
@@ -57,8 +54,8 @@ def _entries(tmp_path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_banner_names_the_signed_in_user_when_elevated_as_someone_else(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, DIFFERENT)
+def test_banner_names_the_signed_in_user_when_elevated_as_someone_else(tmp_path, make_window):
+    window = make_window(target=DIFFERENT)
     banner = window.target_user_banner
     assert not banner.isHidden()
     assert banner.text() == (
@@ -68,36 +65,36 @@ def test_banner_names_the_signed_in_user_when_elevated_as_someone_else(qtbot, tm
     assert banner.accessibleName() == banner.text()
 
 
-def test_banner_is_hidden_when_the_desktop_user_runs_portablefix(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, SAME)
+def test_banner_is_hidden_when_the_desktop_user_runs_portablefix(tmp_path, make_window):
+    window = make_window(target=SAME)
     assert window.target_user_banner.isHidden()
     assert window.target_user_banner.text() == ""
 
 
-def test_banner_is_hidden_when_detection_did_not_run(qtbot, tmp_path):
+def test_banner_is_hidden_when_detection_did_not_run(tmp_path, make_window):
     # An UNKNOWN target (detection failed, or off Windows) must stay silent.
-    window = _window(qtbot, tmp_path, TargetUser())
+    window = make_window(target=TargetUser())
     assert window.target_user_banner.isHidden()
 
 
-def test_window_detects_the_target_itself_when_none_is_handed_over(qtbot, tmp_path, monkeypatch):
+def test_window_detects_the_target_itself_when_none_is_handed_over(tmp_path, monkeypatch, make_window):
     calls = []
     monkeypatch.setattr(target_user, "detect", lambda: calls.append(1) or DIFFERENT)
-    window = _window(qtbot, tmp_path, None)
+    window = make_window(target=None)
     assert calls == [1]
     assert window.target_user is DIFFERENT
     assert not window.target_user_banner.isHidden()
 
 
-def test_banner_warns_when_the_signed_in_user_is_uncertain(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, AMBIGUOUS, language="en")
+def test_banner_warns_when_the_signed_in_user_is_uncertain(tmp_path, make_window):
+    window = make_window(target=AMBIGUOUS, language="en")
     assert not window.target_user_banner.isHidden()
     assert "Could not tell for sure who is signed in" in window.target_user_banner.text()
     assert "PC\\technik" in window.target_user_banner.text()
 
 
-def test_banner_survives_a_language_toggle(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, DIFFERENT)
+def test_banner_survives_a_language_toggle(qtbot, tmp_path, make_window):
+    window = make_window(target=DIFFERENT)
     # The start-up winget scan locks the language toggle while it runs.
     from portablefix.gui.main_window import _thread_running
 
@@ -107,7 +104,7 @@ def test_banner_survives_a_language_toggle(qtbot, tmp_path):
     assert window.target_user_banner.text().startswith("User settings will go to the profile of PC\\klient")
 
 
-def test_action_gets_the_prelude_and_its_audit_entry_the_target(qtbot, tmp_path, monkeypatch):
+def test_action_gets_the_prelude_and_its_audit_entry_the_target(tmp_path, monkeypatch, make_window):
     from portablefix.gui import main_window as mw
 
     plans = []
@@ -131,7 +128,7 @@ def test_action_gets_the_prelude_and_its_audit_entry_the_target(qtbot, tmp_path,
             return True
 
     monkeypatch.setattr(mw, "ActionRunner", FakeRunner)
-    window = _window(qtbot, tmp_path, DIFFERENT)
+    window = make_window(target=DIFFERENT)
     monkeypatch.setattr(window, "_run_next", lambda: None)
     module, action = window._find_action("user_tweak")
 
@@ -145,8 +142,8 @@ def test_action_gets_the_prelude_and_its_audit_entry_the_target(qtbot, tmp_path,
     assert entry["target_user_status"] == "different"
 
 
-def test_undo_script_restores_the_same_profile(qtbot, tmp_path, monkeypatch):
-    window = _window(qtbot, tmp_path, DIFFERENT)
+def test_undo_script_restores_the_same_profile(tmp_path, monkeypatch, make_window):
+    window = make_window(target=DIFFERENT)
     monkeypatch.setattr(window, "_run_next", lambda: None)
     runner = SimpleNamespace(captured_output=["done"])
 
@@ -160,8 +157,8 @@ def test_undo_script_restores_the_same_profile(qtbot, tmp_path, monkeypatch):
     assert "Write-Output undo-machine" in lines
 
 
-def test_system_events_and_panel_actions_record_the_target(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, DIFFERENT)
+def test_system_events_and_panel_actions_record_the_target(tmp_path, make_window):
+    window = make_window(target=DIFFERENT)
 
     window._log_system_event("risk_declined", None, "declined", decision="declined")
     window._log_panel_action("m11_uninstaller", "uninstall", "cmd", 0, "", False, "MODERATE")
@@ -172,11 +169,11 @@ def test_system_events_and_panel_actions_record_the_target(qtbot, tmp_path):
         assert (entry["target_user_sid"], entry["target_user_status"]) == (CLIENT, "different")
 
 
-def test_undo_step_without_a_known_target_clears_an_earlier_steps_hive(qtbot, tmp_path, monkeypatch):
+def test_undo_step_without_a_known_target_clears_an_earlier_steps_hive(tmp_path, monkeypatch, make_window):
     # undo.ps1 runs every step in one scope: a step recorded while the
     # target was UNKNOWN must not inherit the hive an earlier step's prelude
     # set (a batch continued after a restart with a different detection).
-    window = _window(qtbot, tmp_path, DIFFERENT)
+    window = make_window(target=DIFFERENT)
     monkeypatch.setattr(window, "_run_next", lambda: None)
     runner = SimpleNamespace(captured_output=["done"])
     window._on_action_finished("m13_debloat", "user_tweak", "cmd", 0, runner)
@@ -188,10 +185,10 @@ def test_undo_step_without_a_known_target_clears_an_earlier_steps_hive(qtbot, tm
     assert f"$__pfUserHive = '{CLIENT_HIVE}'; $__pfUserSid = '{CLIENT}'; Remove-ItemProperty" in text
 
 
-def test_integrity_guard_entry_records_the_target(qtbot, tmp_path, monkeypatch):
+def test_integrity_guard_entry_records_the_target(tmp_path, monkeypatch, make_window):
     from PySide6.QtWidgets import QMessageBox
 
-    window = _window(qtbot, tmp_path, DIFFERENT)
+    window = make_window(target=DIFFERENT)
     monkeypatch.setattr(window, "_app_dir_intact", lambda: False)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Ok)
     window._queue = ["user_tweak"]

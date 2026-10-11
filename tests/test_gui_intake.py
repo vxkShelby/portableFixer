@@ -3,36 +3,25 @@ timer, the batch duration and the report branding - reached from the Job
 details dialog. CI runs this file in its main pytest process; locally,
 like every GUI test, it can also run one test per process."""
 
+import functools
 import json
 import time
 
+import pytest
 from PySide6.QtCore import QDateTime
 
 from portablefix import branding, intake, report
 from portablefix.audit_log import audit_log_path
 from portablefix.gui import job_forms
-from portablefix.gui.main_window import MainWindow
 from portablefix.settings import Settings, load_settings
 
 RUN_ID = "20260925T120000-g20a"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x01" * 32
 
 
-def _window(qtbot, tmp_path, settings=None, run_id=RUN_ID):
-    module_dir = tmp_path / "Modules" / "m01_diagnostics"
-    module_dir.mkdir(parents=True, exist_ok=True)
-    (module_dir / "actions.yaml").write_text(
-        "module_id: m01_diagnostics\n"
-        "actions:\n"
-        "  - {id: one, label_sk: Jedna, label_en: One, risk: SAFE, command: \"Write-Output 1\"}\n",
-        encoding="utf-8",
-    )
-    window = MainWindow(
-        assets_dir=tmp_path, state_dir=tmp_path, settings=settings or Settings(language="en"),
-        is_admin=True, run_id=run_id,
-    )
-    qtbot.addWidget(window)
-    return window
+@pytest.fixture
+def make_window(make_window):
+    return functools.partial(make_window, run_id=RUN_ID)
 
 
 def _system_events(tmp_path, kind, run_id=RUN_ID):
@@ -57,8 +46,8 @@ def _fill_forms(dialog: job_forms.FormsDialog) -> None:
     dialog.handed_at_edit.setDateTime(QDateTime.fromString("2026-09-25 16:30", job_forms.HANDED_AT_FORMAT))
 
 
-def test_job_dialog_offers_the_forms_branding_and_timer(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, Settings(language="sk"))
+def test_job_dialog_offers_the_forms_branding_and_timer(tmp_path, make_window):
+    window = make_window(Settings(language="sk"))
     window._open_job_dialog()
     texts = {b.text() for b in window._job_dialog.findChildren(job_forms.QPushButton)}
     assert {"Prevzatie / odovzdanie…", "Branding reportu…", "Spustiť"} <= texts
@@ -73,8 +62,8 @@ def test_job_dialog_offers_the_forms_branding_and_timer(qtbot, tmp_path):
     window._branding_dialog.reject()
 
 
-def test_forms_are_saved_as_system_events_and_shown_again(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_forms_are_saved_as_system_events_and_shown_again(tmp_path, make_window):
+    window = make_window()
     window._open_forms_dialog()
     dialog = window._forms_dialog
     assert dialog.tabs.count() == 2
@@ -110,8 +99,8 @@ def test_forms_are_saved_as_system_events_and_shown_again(qtbot, tmp_path):
     assert len(_system_events(tmp_path, intake.OUTTAKE_EVENT)) == 1
 
 
-def test_forms_have_no_password_input(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_forms_have_no_password_input(tmp_path, make_window):
+    window = make_window()
     window._open_forms_dialog()
     dialog = window._forms_dialog
     # The password row is a choice of how it was handled, not a text field.
@@ -125,8 +114,8 @@ def test_forms_have_no_password_input(qtbot, tmp_path):
     assert dialog.accessories_edit in line_edits and dialog.handed_to_edit in line_edits
 
 
-def test_untouched_forms_log_nothing_and_cancel_logs_nothing(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_untouched_forms_log_nothing_and_cancel_logs_nothing(tmp_path, make_window):
+    window = make_window()
     window._open_forms_dialog()
     window._forms_dialog.accept()
     window._open_forms_dialog()
@@ -136,8 +125,8 @@ def test_untouched_forms_log_nothing_and_cancel_logs_nothing(qtbot, tmp_path):
     assert _system_events(tmp_path, intake.OUTTAKE_EVENT) == []
 
 
-def test_clearing_a_saved_form_removes_it_from_the_report(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_clearing_a_saved_form_removes_it_from_the_report(tmp_path, make_window):
+    window = make_window()
     window._open_forms_dialog()
     window._forms_dialog.problem_edit.setPlainText("Nejde Wi-Fi")
     window._forms_dialog.accept()
@@ -149,8 +138,8 @@ def test_clearing_a_saved_form_removes_it_from_the_report(qtbot, tmp_path):
     assert "intake" not in data
 
 
-def test_work_timer_starts_and_stops_and_is_kept_for_the_run(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_work_timer_starts_and_stops_and_is_kept_for_the_run(tmp_path, make_window):
+    window = make_window()
     window._open_job_dialog()
     timer = window._work_timer_widget
     assert timer.toggle_button.text() == "Start"
@@ -160,7 +149,7 @@ def test_work_timer_starts_and_stops_and_is_kept_for_the_run(qtbot, tmp_path):
     window._job_dialog.reject()
 
     # Another window of the same run (PortableFix started again) finds it running.
-    other = _window(qtbot, tmp_path)
+    other = make_window()
     other._open_job_dialog()
     assert other._work_timer_widget.toggle_button.text() == "Stop"
     other._work_timer_widget.toggle()
@@ -169,17 +158,17 @@ def test_work_timer_starts_and_stops_and_is_kept_for_the_run(qtbot, tmp_path):
     assert intake.timer_state(report.read_audit_entries(tmp_path, RUN_ID)).running_since is None
 
 
-def test_work_timer_that_could_not_be_written_does_not_pretend_to_run(qtbot, tmp_path, monkeypatch):
-    window = _window(qtbot, tmp_path)
+def test_work_timer_that_could_not_be_written_does_not_pretend_to_run(tmp_path, monkeypatch, make_window):
+    window = make_window()
     window._open_job_dialog()
     monkeypatch.setattr(window, "_log_system_event", lambda *a, **kw: None)
     window._work_timer_widget.toggle()
     assert window._work_timer_widget.toggle_button.text() == "Start"
 
 
-def test_batch_end_logs_its_duration_and_the_report_gets_the_branding(qtbot, tmp_path, monkeypatch):
+def test_batch_end_logs_its_duration_and_the_report_gets_the_branding(qtbot, tmp_path, monkeypatch, make_window):
     logo = branding.encode_logo(PNG)
-    window = _window(qtbot, tmp_path, Settings(language="en", branding_company="Servis s.r.o.", branding_logo=logo))
+    window = make_window(Settings(language="en", branding_company="Servis s.r.o.", branding_logo=logo))
     captured = {}
 
     def fake_generate_report(*args, **kwargs):
@@ -200,8 +189,8 @@ def test_batch_end_logs_its_duration_and_the_report_gets_the_branding(qtbot, tmp
     assert captured["branding"]["logo"] == logo
 
 
-def test_branding_dialog_saves_to_settings_and_validates_the_logo(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_branding_dialog_saves_to_settings_and_validates_the_logo(tmp_path, make_window):
+    window = make_window()
     window._open_branding_dialog()
     dialog = window._branding_dialog
     assert dialog.logo_label.text() == "no logo"
@@ -243,8 +232,8 @@ def test_branding_dialog_saves_to_settings_and_validates_the_logo(qtbot, tmp_pat
     assert load_settings(tmp_path).branding_company == "Servis s.r.o."
 
 
-def test_forms_dialog_is_slovak(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, Settings(language="sk"))
+def test_forms_dialog_is_slovak(tmp_path, make_window):
+    window = make_window(Settings(language="sk"))
     window._open_forms_dialog()
     dialog = window._forms_dialog
     assert dialog.windowTitle() == "Prevzatie a odovzdanie PC"
@@ -268,9 +257,9 @@ def _report_json(tmp_path, run_id=RUN_ID):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_hand_over_saved_after_the_last_batch_rewrites_the_report(qtbot, tmp_path, monkeypatch):
+def test_hand_over_saved_after_the_last_batch_rewrites_the_report(qtbot, tmp_path, monkeypatch, make_window):
     # Not DRY-RUN: only a real batch's time counts as work time.
-    window = _window(qtbot, tmp_path, Settings(language="en", dry_run=False))
+    window = make_window(Settings(language="en", dry_run=False))
     _end_batch(qtbot, window, monkeypatch)
     assert "outtake" not in _report_json(tmp_path)
 
@@ -287,9 +276,9 @@ def test_hand_over_saved_after_the_last_batch_rewrites_the_report(qtbot, tmp_pat
     assert window.console.toPlainText().splitlines()[-1] == "[PortableFix] The report was updated (intake / hand-over, work time)."
 
 
-def test_timer_stopped_after_the_last_batch_rewrites_the_report(qtbot, tmp_path, monkeypatch):
+def test_timer_stopped_after_the_last_batch_rewrites_the_report(qtbot, tmp_path, monkeypatch, make_window):
     # Not DRY-RUN: only a real batch's time counts as work time.
-    window = _window(qtbot, tmp_path, Settings(language="en", dry_run=False))
+    window = make_window(Settings(language="en", dry_run=False))
     window._open_job_dialog()
     window._work_timer_widget.toggle()
     # No report yet: nothing to rewrite, the batch end writes it.
@@ -302,8 +291,8 @@ def test_timer_stopped_after_the_last_batch_rewrites_the_report(qtbot, tmp_path,
     assert _report_json(tmp_path)["work_time"]["timer_running"] is False
 
 
-def test_forms_saved_before_any_report_do_not_write_one(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_forms_saved_before_any_report_do_not_write_one(tmp_path, make_window):
+    window = make_window()
     window._open_forms_dialog()
     window._forms_dialog.handed_to_edit.setText("Ján")
     window._forms_dialog.accept()
@@ -311,8 +300,8 @@ def test_forms_saved_before_any_report_do_not_write_one(qtbot, tmp_path):
     assert not (tmp_path / "Reports").exists() or not list((tmp_path / "Reports").glob("*.json"))
 
 
-def test_forms_saved_during_a_batch_or_while_a_report_is_written(qtbot, tmp_path, monkeypatch):
-    window = _window(qtbot, tmp_path)
+def test_forms_saved_during_a_batch_or_while_a_report_is_written(tmp_path, monkeypatch, make_window):
+    window = make_window()
     window._report_written = True
     calls = []
 

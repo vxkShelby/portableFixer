@@ -55,3 +55,26 @@ def test_client_summary_found_fixed_recommended():
     assert summary["fixed"] == [{"action_id": "fix_ran", "label": "Fix that ran"}]
     assert summary["recommended"] == [{"action_id": "chk", "label": "Check disk"}]
     assert health.client_summary(actions, "sk")["found"][0]["message"] == "disk.smart sk"
+
+
+def test_client_summary_of_nothing_is_empty():
+    assert health.client_summary([], "en") == {"found": [], "fixed": [], "recommended": []}
+
+
+def test_client_summary_recommends_only_fixes_that_did_not_succeed_and_falls_back_to_the_id():
+    actions = [
+        {"action_id": "diag", "risk": "SAFE", "exit_code": 0, "dry_run": False,
+         "findings": [_f("a", "attention", fix=["done", "todo"])]},
+        {"action_id": "done", "label": "Done", "risk": "MODERATE", "exit_code": 0, "dry_run": False},
+    ]
+    summary = health.client_summary(actions, "en")
+    # "done" ran successfully, "todo" has no label anywhere: its id is shown.
+    assert summary["recommended"] == [{"action_id": "todo", "label": "todo"}]
+
+
+def test_findings_without_a_string_id_and_a_missing_message_are_tolerated():
+    entries = [{"findings": [{"id": 5, "severity": "critical", "area": "disk"}, "junk", {"severity": "ok"}]}]
+    assert health.latest_findings(entries) == {}
+    found = {"x": {"id": "x", "severity": "attention", "area": "disk"}}
+    assert health.problems(found) == list(found.values())
+    assert health.client_summary([{"findings": list(found.values()), "exit_code": 0}], "en")["found"][0]["message"] == ""
