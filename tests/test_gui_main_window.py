@@ -2050,7 +2050,7 @@ def test_update_download_failure_shows_error_and_reenables_button(qtbot, tmp_pat
     window.update_button.click()
 
     qtbot.waitUntil(lambda: window.update_button.isEnabled() is True, timeout=5000)
-    assert window.update_banner_label.text() == "Downloading the update failed. Try again later."
+    assert window.update_banner_label.text() == "Downloading the update failed. Check the internet connection and try again later."
     assert window.update_banner_label.toolTip() == "boom"
     assert window.progress_bar.isVisibleTo(window) is False
 
