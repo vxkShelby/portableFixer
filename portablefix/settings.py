@@ -73,6 +73,8 @@ class Settings:
     allow_modified_modules: bool = False
     # The right-hand system panel folded to a slim rail (small screens).
     sysinfo_collapsed: bool = False
+    # The dashboard's one-time "start here" hint was dismissed.
+    first_run_seen: bool = False
 
     def branding_info(self) -> dict:
         """The branding as report.py takes it (see branding.clean_branding)."""
@@ -127,6 +129,7 @@ def load_settings(base_dir: Path) -> Settings:
         # Strictly True: a hand-edited "false" string must not lift the block.
         allow_modified_modules=allow_modified is True,
         sysinfo_collapsed=data.get("sysinfo_collapsed") is True,
+        first_run_seen=data.get("first_run_seen") is True,
         branding_company=branding.clean_text(data.get("branding_company"), branding.MAX_COMPANY_LENGTH),
         branding_company_id=branding.clean_text(data.get("branding_company_id"), branding.MAX_COMPANY_ID_LENGTH),
         branding_contact=branding.clean_text(data.get("branding_contact"), branding.MAX_CONTACT_LENGTH),

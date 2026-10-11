@@ -68,6 +68,8 @@ from ..version import APP_VERSION
 CUSTOM_PRESET_PREFIX = "custom:"
 CONSOLE_MAX_LINES = 20000
 HISTORY_MAX_ROWS = 5
+# Dashboard one-click complaints (ids in Modules/symptoms.yaml); a missing id is skipped.
+DASHBOARD_SYMPTOM_CHIPS = ("no_internet", "slow_pc", "printer_not_working", "outlook_wont_open")
 # Lines of a card's preview output shown in its result box (the console
 # keeps all of them).
 PREVIEW_MAX_LINES = 30
@@ -787,6 +789,76 @@ class MainWindow(QMainWindow):
         banner.setVisible(bool(banner.text()))
         return banner
 
+    def _build_first_run_banner(self) -> QFrame:
+        """B14: a one-time "start here" hint on the Dashboard; the close
+        button hides it for good (Settings.first_run_seen)."""
+        banner = QFrame()
+        banner.setObjectName("firstRunBanner")
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(12, 8, 8, 8)
+        label = QLabel(self._t("first_run_hint"))
+        label.setWordWrap(True)
+        row.addWidget(label, 1)
+        close = QToolButton()
+        close.setObjectName("selectionBtn")
+        close.setText("✕")
+        close.setToolTip(self._t("first_run_dismiss"))
+        close.setAccessibleName(self._t("first_run_dismiss"))
+        close.clicked.connect(self._dismiss_first_run_hint)
+        row.addWidget(close)
+        banner.setAccessibleName(label.text())
+        banner.setVisible(not self.settings.first_run_seen)
+        return banner
+
+    def _dismiss_first_run_hint(self) -> None:
+        self.first_run_banner.setVisible(False)
+        if not self.settings.first_run_seen:
+            self.settings.first_run_seen = True
+            self._persist_settings()
+
+    def _build_settings_button(self) -> QToolButton:
+        """B13: the one place for the settings that were scattered over the
+        sysinfo panel, the Job dialog and the dashboard. The actions only
+        forward to the existing widgets and handlers; their state is
+        re-read from them each time the menu opens."""
+        button = QToolButton()
+        button.setObjectName("selectionBtn")
+        button.setText("⚙")
+        button.setToolTip(self._t("settings_button_tooltip"))
+        button.setAccessibleName(self._t("settings_button_tooltip"))
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu = QMenu(button)
+        target_language = "English" if self.settings.language == "sk" else "Slovenčina"
+        menu.addAction(self._t("language_switch_tooltip").format(language=target_language)).triggered.connect(
+            lambda _checked=False: self._on_toggle_language())
+        quiet = menu.addAction(self._t("quiet_mode_toggle"))
+        quiet.setCheckable(True)
+        quiet.toggled.connect(lambda checked: self.quiet_mode_checkbox.setChecked(checked))
+        winget_auto = menu.addAction(self._t("settings_menu_winget_auto"))
+        winget_auto.setCheckable(True)
+        winget_auto.toggled.connect(lambda checked: self.winget_auto_check_checkbox.setChecked(checked))
+        menu.addSeparator()
+        redact = menu.addAction(self._t("job_redact_label"))
+        redact.setCheckable(True)
+        redact.toggled.connect(self._set_redact_for_client)
+        menu.addAction(self._t("settings_menu_technician")).triggered.connect(
+            lambda _checked=False: self._open_job_dialog())
+        menu.addAction(self._t("job_branding_button")).triggered.connect(
+            lambda _checked=False: self._open_branding_dialog())
+
+        def sync() -> None:
+            # setChecked on an unchanged value emits nothing, so this
+            # cannot re-trigger the handlers it mirrors.
+            quiet.setChecked(self.quiet_mode_checkbox.isChecked())
+            winget_auto.setChecked(self.winget_auto_check_checkbox.isChecked())
+            redact.setChecked(self.settings.redact_for_client)
+
+        menu.aboutToShow.connect(sync)
+        button.setMenu(menu)
+        self._settings_menu = menu
+        return button
+
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
         self.setStyleSheet(style.stylesheet())
@@ -833,6 +905,7 @@ class MainWindow(QMainWindow):
         self.language_button.setToolTip(self._t("language_switch_tooltip").format(language=target_language))
         self.language_button.setAccessibleName(self._t("language_switch_tooltip").format(language=target_language))
         top_bar.addWidget(self.language_button)
+        top_bar.addWidget(self._build_settings_button())
         root_layout.addLayout(top_bar)
 
         self.target_user_banner = self._build_target_user_banner()
@@ -972,32 +1045,6 @@ class MainWindow(QMainWindow):
         self.search_box.installEventFilter(self)
         preset_row.addWidget(self.search_box)
         center_layout.addLayout(preset_row)
-
-        # Research G27: the client's complaint -> the top 3 symptoms, each a
-        # tile like the dashboard's health tiles (title, why, buttons that
-        # only select - nothing runs until Run selected and its review).
-        symptom_row = QHBoxLayout()
-        symptom_row.setSpacing(6)
-        symptom_label = QLabel(self._t("symptom_label"))
-        symptom_label.setObjectName("selectionScope")
-        symptom_row.addWidget(symptom_label)
-        self.symptom_box = QLineEdit()
-        self.symptom_box.setObjectName("searchBox")
-        self.symptom_box.setPlaceholderText(self._t("symptom_placeholder"))
-        self.symptom_box.setMaxLength(symptoms.MAX_QUERY_CHARS)
-        self.symptom_box.setAccessibleName(self._t("symptom_label"))
-        self.symptom_box.textChanged.connect(self._on_symptom_changed)
-        symptom_row.addWidget(self.symptom_box, 1)
-        # No Modules/symptoms.yaml (or nothing usable in it): no box.
-        symptom_label.setVisible(bool(self._symptoms.symptoms))
-        self.symptom_box.setVisible(bool(self._symptoms.symptoms))
-        center_layout.addLayout(symptom_row)
-        self._symptom_results = QWidget()
-        self._symptom_results_layout = QHBoxLayout(self._symptom_results)
-        self._symptom_results_layout.setContentsMargins(0, 0, 0, 0)
-        self._symptom_results_layout.setSpacing(10)
-        self._symptom_results.setVisible(False)
-        center_layout.addWidget(self._symptom_results)
 
         # User-saved presets get their own row: sharing the built-in preset
         # row squeezed the search box down to nothing once a couple existed.
@@ -2414,6 +2461,7 @@ class MainWindow(QMainWindow):
 
         auto_check_row = QHBoxLayout()
         auto_check_checkbox = QCheckBox(self._t("winget_auto_check_label"))
+        self.winget_auto_check_checkbox = auto_check_checkbox
         auto_check_row.addWidget(auto_check_checkbox)
         auto_check_interval = QComboBox()
         _AUTO_CHECK_MINUTES = [15, 30, 60, 120]
@@ -2963,6 +3011,64 @@ class MainWindow(QMainWindow):
         heading.setObjectName("cardHeading")
         card_layout.addWidget(heading)
 
+        # B14: one-time "start here" hint, dismissed for good.
+        self.first_run_banner = self._build_first_run_banner()
+        card_layout.addWidget(self.first_run_banner)
+
+        # B6 / research G27: the home user's entry point. The client's
+        # complaint -> the top 3 symptoms, each a tile like the health tiles
+        # (title, why, buttons that only select - nothing runs until Run
+        # selected and its review).
+        hero = QWidget()
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(0, 0, 0, 0)
+        hero_layout.setSpacing(6)
+        hero_title = QLabel(self._t("dashboard_symptom_title"))
+        hero_title.setObjectName("cardHeading")
+        hero_layout.addWidget(hero_title)
+        self.symptom_box = QLineEdit()
+        self.symptom_box.setObjectName("searchBox")
+        self.symptom_box.setPlaceholderText(self._t("symptom_placeholder"))
+        self.symptom_box.setMaxLength(symptoms.MAX_QUERY_CHARS)
+        self.symptom_box.setAccessibleName(self._t("dashboard_symptom_title"))
+        self.symptom_box.textChanged.connect(self._on_symptom_changed)
+        hero_layout.addWidget(self.symptom_box)
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(6)
+        known = {symptom.id: symptom for symptom in self._symptoms.symptoms}
+        for symptom_id in DASHBOARD_SYMPTOM_CHIPS:
+            if symptom_id in known:
+                title = known[symptom_id].title(self.settings.language)
+                chip_row.addWidget(self._make_selection_button(title, lambda t=title: self.symptom_box.setText(t)))
+        chip_row.addStretch(1)
+        hero_layout.addLayout(chip_row)
+        self._symptom_results = QWidget()
+        self._symptom_results_layout = QHBoxLayout(self._symptom_results)
+        self._symptom_results_layout.setContentsMargins(0, 0, 0, 0)
+        self._symptom_results_layout.setSpacing(10)
+        self._symptom_results.setVisible(False)
+        hero_layout.addWidget(self._symptom_results)
+        # No Modules/symptoms.yaml (or nothing usable in it): no box.
+        hero.setVisible(bool(self._symptoms.symptoms))
+        card_layout.addWidget(hero)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(16)
+        # Kept on self so batch start/end can lock it together with
+        # run_button - it starts a batch too. Its initial state matters when
+        # a language toggle rebuilds the dashboard while a batch, its report
+        # or an update download is still in flight.
+        self.dashboard_analyze_button = QPushButton(self._t("dashboard_analyze_button"))
+        self.dashboard_analyze_button.setObjectName("runButton")
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
+        self.dashboard_analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
+        top_row.addWidget(self.dashboard_analyze_button)
+        promise_label = QLabel(self._t("dashboard_analyze_promise"))
+        promise_label.setObjectName("selectionScope")
+        top_row.addWidget(promise_label)
+        top_row.addStretch(1)
+        card_layout.addLayout(top_row)
+
         # Research G02: one verdict per health area from the findings the
         # diagnostics reported - no score formula. Unknown until checked.
         health_grid = QGridLayout()
@@ -2992,21 +3098,13 @@ class MainWindow(QMainWindow):
             self._health_tiles[area] = (tile, state_label, reason_label, fix_button)
             health_grid.addWidget(tile, index // 4, index % 4)
         card_layout.addLayout(health_grid)
+        # B14: while nothing has been checked, one line instead of seven
+        # identical reasons.
+        self._health_empty_label = QLabel(self._t("health_unknown_reason"))
+        self._health_empty_label.setObjectName("selectionScope")
+        card_layout.addWidget(self._health_empty_label)
         self._refresh_health_tiles()
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(16)
-        # Kept on self so batch start/end can lock it together with
-        # run_button - it starts a batch too. Its initial state matters when
-        # a language toggle rebuilds the dashboard while a batch, its report
-        # or an update download is still in flight.
-        self.dashboard_analyze_button = QPushButton(self._t("dashboard_analyze_button"))
-        self.dashboard_analyze_button.setObjectName("runButton")
-        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
-        self.dashboard_analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
-        top_row.addWidget(self.dashboard_analyze_button)
-        top_row.addStretch(1)
-        card_layout.addLayout(top_row)
 
         grid = QGridLayout()
         grid.setSpacing(10)
@@ -3257,16 +3355,19 @@ class MainWindow(QMainWindow):
     def _refresh_health_tiles(self) -> None:
         verdicts = health.area_verdicts(self._findings)
         message_key = "msg_en" if self.settings.language == "en" else "msg_sk"
+        unchecked = all(v["state"] == "unknown" for v in verdicts.values())
+        self._health_empty_label.setVisible(unchecked)
         for area, (tile, state_label, reason_label, fix_button) in self._health_tiles.items():
             verdict = verdicts[area]
             state = verdict["state"]
-            state_label.setText(self._t(f"health_state_{state}"))
+            state_label.setText(self._t("health_state_unchecked" if unchecked else f"health_state_{state}"))
             state_label.setProperty("state", state)
             state_label.style().unpolish(state_label)
             state_label.style().polish(state_label)
             # The reasons, worst first - the evidence behind the verdict.
             reasons = [f.get(message_key) or f.get("msg_en", "") for f in verdict["findings"]]
             reason_label.setText("\n".join(reasons) if reasons else self._t("health_unknown_reason"))
+            reason_label.setVisible(not unchecked)
             fix_button.setVisible(state in ("attention", "critical") and bool(self._health_fixes(area)))
             tile.setAccessibleName(
                 f"{self._t(f'health_area_{area}')}: {self._t(f'health_state_{state}')}. {reason_label.text()}"
