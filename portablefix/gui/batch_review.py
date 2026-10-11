@@ -64,6 +64,9 @@ class BatchReview:
     # action: a restart that ends the batch, the actions waiting for it, a
     # batch continued after a restart (research G03).
     notes: tuple[str, ...] = ()
+    # Seconds the batch took on earlier runs of the same actions on this PC
+    # (history.typical_durations); 0 = no history, nothing is shown.
+    estimate_seconds: float = 0.0
 
     @property
     def restore_point_planned(self) -> bool:
@@ -118,7 +121,7 @@ def warning_text_for(action: ActionDef, language: str) -> str:
 
 def build_review(
     items: list[tuple[ModuleDef, ActionDef]], result: preflight.PreflightResult, language: str,
-    hive_backup_bytes: int | None = None, notes: tuple[str, ...] = (),
+    hive_backup_bytes: int | None = None, notes: tuple[str, ...] = (), estimate_seconds: float = 0.0,
 ) -> BatchReview:
     review_items = []
     for module, action in items:
@@ -134,7 +137,7 @@ def build_review(
         ))
     # Stable sort: within a tier the batch's own order is kept.
     review_items.sort(key=lambda item: _RISK_ORDER.get(item.risk, 9))
-    return BatchReview(tuple(review_items), result, language, hive_backup_bytes, tuple(notes))
+    return BatchReview(tuple(review_items), result, language, hive_backup_bytes, tuple(notes), estimate_seconds)
 
 
 class BatchReviewDialog(QDialog):
@@ -160,6 +163,15 @@ class BatchReviewDialog(QDialog):
         header = QLabel(self._t("review_header").format(count=len(review.items)))
         header.setObjectName("summaryHeader")
         layout.addWidget(header)
+        # Same threshold as the progress bar's ETA: under half a minute is
+        # not worth a line. Actions without history add nothing, so it can
+        # only be low - hence "at least".
+        self.estimate_label: QLabel | None = None
+        if review.estimate_seconds >= 30:
+            minutes = max(1, round(review.estimate_seconds / 60))
+            self.estimate_label = QLabel(self._t("review_estimate").format(minutes=minutes))
+            self.estimate_label.setWordWrap(True)
+            layout.addWidget(self.estimate_label)
 
         result = review.preflight
         for issue in result.blockers:

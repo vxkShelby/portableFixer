@@ -323,7 +323,9 @@ def finish_interrupted_swap(install_dir: Path) -> bool:
 
 def consume_update_status(install_dir: Path) -> str | None:
     """Reads and deletes the status the last swap script left behind, so each
-    outcome is reported exactly once."""
+    outcome is reported exactly once. A status that cannot be deleted
+    (write-protected stick) is a leftover that would be reported at every
+    start, so it is not reported at all."""
     path = update_status_path(install_dir)
     try:
         status = path.read_text(encoding="utf-8-sig", errors="replace").strip()
@@ -332,7 +334,7 @@ def consume_update_status(install_dir: Path) -> str | None:
     try:
         path.unlink()
     except OSError:
-        pass
+        return None
     return status or None
 
 

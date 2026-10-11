@@ -49,6 +49,7 @@ def test_write_startup_diagnostics_swallows_write_failure(tmp_path, monkeypatch)
     # Must not raise - a forensic breadcrumb failing to write is not fatal
     # to startup, same as every other best-effort disk write in this app.
     _write_startup_diagnostics(tmp_path, tmp_path, used_fallback=False, run_id="run_startup3", dry_run=False)
+    assert not audit_log_path(tmp_path, "run_startup3").exists()
 
 
 # --- main() wiring for the resilience fixes ---

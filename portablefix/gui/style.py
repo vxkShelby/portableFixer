@@ -50,7 +50,6 @@ QLabel#appTitle {
 QLabel#adminPill {
     border-radius: 10px;
     padding: 3px 12px;
-    font-family: 'Consolas', 'Cascadia Mono';
     font-weight: bold;
     font-size: 9pt;
 }
@@ -150,7 +149,6 @@ QCheckBox::indicator:focus {
 QLabel#riskBadge {
     border-radius: 10px;
     padding: 1px 8px;
-    font-family: 'Consolas', 'Cascadia Mono';
     font-size: 9pt;
     font-weight: bold;
 }
@@ -283,7 +281,6 @@ QLabel#emptyState {
 }
 
 QLabel#actionStatus {
-    font-family: 'Consolas', 'Cascadia Mono';
     font-size: 9pt;
     font-weight: bold;
 }
@@ -348,7 +345,6 @@ QLineEdit#searchBox {
     border: 1px solid #232d3a;
     border-radius: 10px;
     padding: 5px 10px;
-    font-family: 'Consolas', 'Cascadia Mono';
     color: #d6e2f0;
 }
 QLineEdit#searchBox:focus {
@@ -517,7 +513,6 @@ QComboBox {
     border: 1px solid #232d3a;
     border-radius: 10px;
     padding: 4px 10px;
-    font-family: 'Consolas', 'Cascadia Mono';
     color: #d6e2f0;
     min-width: 80px;
 }
@@ -558,7 +553,6 @@ QStatusBar {
     background-color: #06080c;
     border-top: 1px solid #1c2530;
     color: #8a97a8;
-    font-family: 'Consolas', 'Cascadia Mono';
     font-size: 9pt;
 }
 QStatusBar::item {
@@ -607,7 +601,6 @@ QFrame#historyRow[failed="true"] {
     border-left: 3px solid #ff2d6f;
 }
 QLabel#historyText {
-    font-family: 'Consolas', 'Cascadia Mono';
     font-size: 9pt;
     color: #c4d0de;
 }

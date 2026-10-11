@@ -53,6 +53,10 @@ class ItemsDialog(QDialog):
         select_row.addStretch(1)
         layout.addLayout(select_row)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        # Qt's standard buttons stay English in the Slovak UI.
+        for button_kind, key in ((QDialogButtonBox.StandardButton.Ok, "ok"), (QDialogButtonBox.StandardButton.Cancel, "cancel")):
+            if key in texts:
+                buttons.button(button_kind).setText(texts[key])
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

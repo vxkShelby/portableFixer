@@ -111,3 +111,45 @@ def test_write_crash_log_records_a_caught_exception(tmp_path):
     log_text = crash_log_path(tmp_path).read_text(encoding="utf-8")
     assert "RuntimeError: startup exploded" in log_text
     assert "Traceback" in log_text
+
+
+def test_excepthook_notifies_the_window_once_per_interval(tmp_path, monkeypatch):
+    from portablefix import diagnostics
+
+    notices = []
+    monkeypatch.setattr(sys, "excepthook", lambda *a: None)
+    monkeypatch.setattr(diagnostics, "_last_notice", float("-inf"))
+    monkeypatch.setattr(diagnostics, "_gui_notifier", None)
+    install_excepthook(tmp_path)
+    hook = sys.excepthook
+
+    try:
+        raise ValueError("before the window exists")
+    except ValueError as exc:
+        hook(type(exc), exc, exc.__traceback__)  # no notifier yet: only the log
+    diagnostics.set_gui_notifier(lambda: notices.append(1))
+    for _ in range(3):
+        try:
+            raise ValueError("slot failed")
+        except ValueError as exc:
+            hook(type(exc), exc, exc.__traceback__)
+
+    assert notices == [1]  # rate-limited
+    assert crash_log_path(tmp_path).read_text(encoding="utf-8").count("Traceback") == 4
+
+
+def test_excepthook_survives_a_failing_notifier(tmp_path, monkeypatch):
+    from portablefix import diagnostics
+
+    def broken():
+        raise RuntimeError("window gone")
+
+    monkeypatch.setattr(sys, "excepthook", lambda *a: None)
+    monkeypatch.setattr(diagnostics, "_last_notice", float("-inf"))
+    monkeypatch.setattr(diagnostics, "_gui_notifier", broken)
+    install_excepthook(tmp_path)
+    try:
+        raise ValueError("x")
+    except ValueError as exc:
+        sys.excepthook(type(exc), exc, exc.__traceback__)
+    assert crash_log_path(tmp_path).is_file()
