@@ -91,7 +91,7 @@ def run_in_client_hive(tmp_path: Path, script: str, backup: dict | list | None =
         "PF_BACKUP_JSON": json.dumps(backup) if backup is not None else "",
         "LOCALAPPDATA": str(tmp_path / "Local"), "APPDATA": str(tmp_path / "Roaming"),
     }
-    plan = build_execution_plan(script, dry_run=False, target_user=_client())
+    plan = build_execution_plan(script, dry_run=False, target_user=_client(), harden_backups=False)
     full = "\n".join(
         ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"]
         + [f"$env:{k} = {_ps_quote(v)}" for k, v in env_vars.items()]
