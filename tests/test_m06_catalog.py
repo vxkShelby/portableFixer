@@ -422,6 +422,25 @@ def test_firewall_reset_runs_after_a_successful_export(tmp_path):
     assert (tmp_path / "ProgramData" / "PortableFix" / "firewall_backup.wfw").exists()
 
 
+def test_firewall_reset_keeps_the_first_backup_on_a_repeat_run(tmp_path):
+    # A second run would export the already-reset defaults over the first
+    # backup and undo would then restore defaults, not the customer's rules.
+    bk = tmp_path / "ProgramData" / "PortableFix" / "firewall_backup.wfw"
+    bk.parent.mkdir(parents=True)
+    bk.write_text("ORIGINAL", encoding="utf-8")
+    result, calls = _run_ps(tmp_path, [_netsh_stub()], ["netsh"], _action("net_firewall_reset").command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ["netsh advfirewall reset"]
+    assert bk.read_text(encoding="utf-8") == "ORIGINAL"
+    assert "kept" in result.stdout
+
+
+def test_firewall_reset_drops_a_partial_backup_after_a_failed_export(tmp_path):
+    result, _ = _run_ps(tmp_path, [_netsh_stub(export_exit=1)], ["netsh"], _action("net_firewall_reset").command)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert not (tmp_path / "ProgramData" / "PortableFix" / "firewall_backup.wfw").exists()
+
+
 # --- net_set_public_dns -------------------------------------------------------
 
 ADAPTERS = [
