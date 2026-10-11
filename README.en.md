@@ -90,7 +90,10 @@ PowerShell.
   app, so cmd and PowerShell do not wait for it: run it as
   `start /wait "" PortableFix.exe --preset ...` (then `%ERRORLEVEL%`) or
   `(Start-Process .\PortableFix.exe -ArgumentList '--preset','quick_clean' -Wait -PassThru).ExitCode`.
-  Output is UTF-8 when redirected to a file. DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
+  Output is UTF-8 when redirected to a file. A quoted `--out` path must
+  not end in a backslash: Windows reads `\"` as an escaped quote, so
+  `--out "C:\My Reports\"` swallows the closing quote - write
+  `--out "C:\My Reports"` (or double the last backslash). DRY-RUN by default; a live run without `--accept-risk` allows SAFE actions
   only and refuses up front when the preset holds anything riskier or the
   pre-flight check finds a blocker. Same audit log, restore point,
   `undo.ps1` and report as the window; the registry hive backup is always
@@ -481,8 +484,16 @@ PowerShell.
   actions that change user settings (Start suggestions, web results,
   Copilot, advertising ID, Explorer ads, the reinstall block, Recall)
   write to that hive, and the M07 autostart actions read (Run, Winlogon,
-  the user's Startup folder) and disable from it; run on their own outside PortableFix they use
-  `HKCU:`. If the user has signed out meanwhile (hive not loaded), the
+  the user's Startup folder) and disable from it; so do the M12 proxy
+  reset and its check, M08 *restore Task Manager and Regedit*, the M16
+  add-in and Outlook-profile actions, the M17 browser actions and M09
+  *Storage Sense*; run on their own outside PortableFix they use
+  `HKCU:`. The M02 per-user cache and temp actions (user temp files,
+  browser and third-party app caches, shader cache, thumbnail cache)
+  refuse to run when the signed-in user differs from the elevated
+  account - they would only empty the technician's caches and report
+  success; the WER report clean-up then clears only the machine-wide
+  reports. If the user has signed out meanwhile (hive not loaded), the
   action changes nothing, prints "Profile hive not loaded, skipped" and
   fails (the hive is never loaded with `reg load`). The target user and
   SID are in the audit log for every action and event, in the report
@@ -786,7 +797,10 @@ ordered pipeline that stops at the first failing step:
    the whole zip including `PortableFix.cmd` and `Data/`), then
    `verify_release.py --zip`, which unpacks it with the same code the
    clients' updater uses (signature check included) and checks that
-   `Data/` holds only the allowlist;
+   `Data/` holds only the allowlist. The zip is not byte-reproducible
+   (`Compress-Archive` stores the current file times), so rebuilding the
+   same tag gives a different zip: compare the signed `.sha256` and
+   `Data/SHA256SUMS`, not a rebuilt zip;
 5. `Output/PortableFix-Setup.exe` via Inno Setup (`ISCC.exe`, required with
    `-Tag`; without it a development build skips the installer), optionally
    signed.
@@ -922,14 +936,17 @@ alone (`python -m pytest tests/test_gui_main_window.py::test_name`).
 
 ## Known limitations
 
-- Only the M13 and M07 actions use the signed-in user's hive (`$__pfUserHive`)
-  so far. HKCU in other modules still means the account PortableFix runs
-  as: M12 *proxy reset* (and its check), M16 (add-ins, Outlook profile),
-  M08 *restore Task Manager and Regedit*, the reports in M01, M05 (ESU),
-  M17, M22, the autostart inventory in the before/after snapshot (new
-  entries since the last visit), the M18 backup folders and the M09 tweaks (Storage
-  Sense and ESU at least print whose profile they use). AppX removal
-  in M13 applies to the process's account.
+- Only some actions use the signed-in user's hive (`$__pfUserHive`): M13,
+  M07, M12 *proxy reset*, M16 (add-ins, Outlook profile), M08 *restore
+  Task Manager and Regedit*, M17 and M09 *Storage Sense*. HKCU in other
+  modules still means the account PortableFix runs as: the reports in
+  M01, M05 (ESU), M22, the autostart inventory in the before/after
+  snapshot (new entries since the last visit), the M18 backup folders and
+  the other M09 tweaks (ESU at least prints whose profile it uses). AppX
+  removal in M13 applies to the process's account. The M16 add-in action
+  disables the signed-in user's add-ins only, not machine-wide (HKLM)
+  ones. M02 per-user cache actions refuse in the over-the-shoulder case
+  instead of targeting the signed-in user's profile.
 - Undo only covers actions with a static reversible command or with
   `ops:` (those restore the exact previous state); DISM/SFC/chkdsk repairs
   are inherently irreversible (covered by the restore point instead). The

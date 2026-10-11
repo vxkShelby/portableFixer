@@ -98,7 +98,11 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   cmd ani PowerShell naň nečakajú: spúšťaj ho ako
   `start /wait "" PortableFix.exe --preset ...` (potom `%ERRORLEVEL%`) alebo
   `(Start-Process .\PortableFix.exe -ArgumentList '--preset','quick_clean' -Wait -PassThru).ExitCode`.
-  Výstup presmerovaný do súboru je v UTF-8. Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
+  Výstup presmerovaný do súboru je v UTF-8. Cesta v úvodzovkách pri
+  `--out` nesmie končiť spätným lomítkom: Windows číta `\"` ako
+  escapovanú úvodzovku, takže `--out "C:\Moje reporty\"` pohltí
+  koncovú úvodzovku - píš `--out "C:\Moje reporty"` (alebo zdvoj posledné
+  lomítko). Predvolene DRY-RUN; ostrý beh bez `--accept-risk` pustí len SAFE akcie a
   odmietne sa hneď na začiatku, ak predvoľba obsahuje niečo rizikovejšie
   alebo kontrola pred spustením nájde blokujúci problém. Rovnaký audit,
   bod obnovenia, `undo.ps1` aj report ako z okna; pred prvou DESTRUCTIVE
@@ -476,8 +480,15 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   v Štarte, webové výsledky, Copilot, reklamné ID, reklamy v
   Prieskumníkovi, blokovanie reinštalácie, Recall), zapisujú do tohto
   hive a akcie autoštartu M07 z neho čítajú (Run, Winlogon, priečinok
-  Startup používateľa) a vypínajú; spustené samostatne mimo PortableFixu
-  použijú `HKCU:`. Ak je
+  Startup používateľa) a vypínajú; rovnako reset proxy v M12 a jeho
+  kontrola, M08 *obnova Task Managera a Regeditu*, akcie M16 pre doplnky
+  a profil Outlooku, akcie prehliadačov M17 a M09 *Storage Sense*;
+  spustené samostatne mimo PortableFixu použijú `HKCU:`. Akcie M02 pre
+  cache a dočasné súbory používateľa (dočasné súbory, cache prehliadačov
+  a aplikácií tretích strán, cache shaderov, cache náhľadov) odmietnu
+  bežať, keď sa prihlásený používateľ líši od zvýšeného účtu - vyčistili
+  by len cache technika a nahlásili úspech; čistenie hlásení WER vtedy
+  vyčistí len hlásenia za celý systém. Ak je
   používateľ medzitým odhlásený (hive nie je načítaný), akcia nič
   nezmení, vypíše „Profile hive not loaded, skipped“ a skončí s chybou
   (hive sa nikdy nenačítava cez `reg load`). Cieľový používateľ a SID sú
@@ -774,7 +785,11 @@ pevne zoradená postupnosť krokov, ktorá sa zastaví pri prvom zlyhanom:
    celý zip vrátane `PortableFix.cmd` a `Data/`), potom
    `verify_release.py --zip`, ktorý zip rozbalí tým istým kódom, aký
    používa aktualizátor u klientov (vrátane overenia podpisu), a
-   skontroluje, že `Data/` obsahuje len povolené súbory;
+   skontroluje, že `Data/` obsahuje len povolené súbory. Zip nie je
+   bajt po bajte reprodukovateľný (`Compress-Archive` ukladá aktuálne
+   časy súborov), takže opätovné zostavenie toho istého tagu dá iný zip:
+   porovnávaj podpísaný `.sha256` a `Data/SHA256SUMS`, nie znovu zostavený
+   zip;
 5. `Output/PortableFix-Setup.exe` cez Inno Setup (`ISCC.exe`, s `-Tag`
    povinný; vývojový build bez neho inštalátor preskočí), voliteľne
    podpísaný.
@@ -956,14 +971,18 @@ lokálne nainštalovaný Archon CLI (`archon doctor` by mal prejsť — pozri
 
 ## Známe obmedzenia
 
-- Na hive prihláseného používateľa (`$__pfUserHive`) sú zatiaľ prevedené
-  len akcie M13 a M07. HKCU v ďalších moduloch stále znamená účet, pod ktorým
-  PortableFix beží: M12 *reset proxy* (a jej kontrola), M16 (doplnky a
-  profil Outlooku), M08 *obnova Task Managera a Regeditu*, prehľady v
-  M01, M05 (ESU), M17, M22, súpis autoštartu v snímke „pred/po“ (nové
-  položky od minulej návštevy), priečinky M18 (zálohy) a tweaky M09
-  (Storage Sense a ESU aspoň vypíšu, do koho profilu siahajú).
-  Odstraňovanie AppX balíkov v M13 platí pre účet procesu.
+- Na hive prihláseného používateľa (`$__pfUserHive`) sú prevedené len
+  niektoré akcie: M13, M07, M12 *reset proxy*, M16 (doplnky, profil
+  Outlooku), M08 *obnova Task Managera a Regeditu*, M17 a M09 *Storage
+  Sense*. HKCU v ďalších moduloch stále znamená účet, pod ktorým
+  PortableFix beží: prehľady v M01, M05 (ESU), M22, súpis autoštartu v
+  snímke „pred/po“ (nové položky od minulej návštevy), priečinky M18
+  (zálohy) a ostatné tweaky M09 (ESU aspoň vypíše, do koho profilu
+  siaha). Odstraňovanie AppX balíkov v M13 platí pre účet procesu.
+  Akcia M16 vypína doplnky len prihláseného používateľa, nie tie za celý
+  počítač (HKLM). Akcie M02 pre cache používateľa v prípade „cez rameno“
+  odmietnu bežať namiesto toho, aby cielili na profil prihláseného
+  používateľa.
 - Undo pokrýva len akcie so statickým vratným príkazom alebo s `ops:`
   (tie vrátia presný pôvodný stav); DISM/SFC/chkdsk opravy sú z princípu
   nevratné (kryje ich bod obnovenia). Plány napájania, zastavenie služieb

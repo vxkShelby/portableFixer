@@ -2,6 +2,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 from portablefix.models import ModuleCategory, RiskLevel
 from portablefix.module_engine import load_module
 from portablefix.preflight import is_long_action
@@ -497,6 +499,66 @@ def test_thumbnail_cache_runs_for_the_process_own_account(tmp_path):
     assert calls == ["Stop-Process", "Start-Process"]
     assert not (cache / "thumbcache_256.db").exists()
     assert "Explorer restart: OK" in result.stdout
+
+
+# --- the per-user cache family: refuse when the signed-in user is another account
+
+OTHER_USER = "$__pfUserSid = 'S-1-5-21-1-1-1-1001'; "
+OWN_USER = "$__pfUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+PER_USER_CACHE_IDS = ["user_temp", "browser_cache_sweep", "directx_shader_cache", "thirdparty_app_caches"]
+
+
+def _cache_env(tmp_path):
+    # Every per-user root points into tmp_path, so a guard that fails to
+    # refuse can only touch the test's own files.
+    for sub in ("Temp", "Local/D3DSCache", "Roaming"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Local" / "D3DSCache" / "shader.bin").write_bytes(b"\0" * 10)
+    return {"TEMP": tmp_path / "Temp", "LOCALAPPDATA": tmp_path / "Local", "APPDATA": tmp_path / "Roaming"}
+
+
+@pytest.mark.parametrize("action_id", PER_USER_CACHE_IDS)
+def test_per_user_cache_actions_refuse_when_the_signed_in_user_is_another_account(tmp_path, action_id):
+    # Over-the-shoulder elevation: $env:TEMP / $env:LOCALAPPDATA are the
+    # technician's, so the action would empty the wrong caches and still print
+    # success for the client.
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == action_id)
+    env = _cache_env(tmp_path)
+    result, _ = _run_m02(tmp_path, [], [], OTHER_USER + action.command, env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+    assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+    result, _ = _run_m02(tmp_path, [], [], OTHER_USER + action.preview_command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Would refuse" in result.stdout
+
+
+def test_per_user_cache_actions_still_run_for_the_process_own_account(tmp_path):
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "directx_shader_cache")
+    env = _cache_env(tmp_path)
+    result, _ = _run_m02(tmp_path, [], [], OWN_USER + action.command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+
+
+def test_wer_reports_clears_only_machine_wide_reports_for_another_signed_in_user(tmp_path):
+    # C:\ProgramData is hard-coded in the command; point it into tmp_path.
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "wer_reports")
+    machine = tmp_path / "PD" / "Microsoft" / "Windows" / "WER" / "ReportQueue"
+    user = tmp_path / "Local" / "Microsoft" / "Windows" / "WER" / "ReportQueue"
+    for d in (machine, user):
+        d.mkdir(parents=True)
+        (d / "r.wer").write_bytes(b"x")
+    assert "C:\\ProgramData" in action.command
+    command = action.command.replace("C:\\ProgramData", str(tmp_path / "PD"))
+    env = {"LOCALAPPDATA": tmp_path / "Local"}
+    result, _ = _run_m02(tmp_path, [], [], OTHER_USER + command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (machine / "r.wer").exists()
+    assert (user / "r.wer").exists()
+    result, _ = _run_m02(tmp_path, [], [], OWN_USER + command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (user / "r.wer").exists()
 
 
 # --- hibernation_off / component_store_cleanup: the two untested MODERATE ids -
