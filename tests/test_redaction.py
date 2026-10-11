@@ -6,7 +6,7 @@ import time
 import pytest
 
 from portablefix.redaction import (
-    DOMAIN, EMAIL, IP, KEY, MAC, SERIAL, SID, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
+    DOMAIN, EMAIL, IP, KEY, KEY_ID, MAC, SERIAL, SID, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
 )
 
 
@@ -420,3 +420,31 @@ def test_report_target_user_sid_is_masked():
     out = redact_report_data(data, mask=[])
     assert out["target_user"]["sid"] == f"S-1-5-21-{SID}-1001"
     assert out["target_user"]["user"] == f"CONTOSO\\{USER}"
+
+
+def test_bitlocker_key_protector_ids_are_masked():
+    text = ("BitLocker protects C: - have the recovery key at hand. Recovery key ID: "
+            "{1A2B3C4D-0000-1111-2222-333344445555}, 9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff\n"
+            "KeyProtectorId : {1A2B3C4D-0000-1111-2222-333344445555}\n"
+            "Driver class {4d36e967-e325-11ce-bfc1-08002be10318} stays")
+    out = redact_text(text)
+    assert out == (f"BitLocker protects C: - have the recovery key at hand. Recovery key ID: {KEY_ID}\n"
+                   f"KeyProtectorId : {KEY_ID}\n"
+                   "Driver class {4d36e967-e325-11ce-bfc1-08002be10318} stays")
+    assert redact_text(out) == out
+
+
+def test_a_missing_recovery_key_id_line_is_left_alone():
+    text = "Recovery key ID: no recovery password protector"
+    assert redact_text(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    # Documents CURRENT behaviour, not a promise: masking these classes is an open privacy-policy
+    # decision. If one starts being masked, update this test together with the README.
+    r"Share \FILESRV\data mapped",
+    "Fetch https://example.com/dl?token=abc123SECRET&x=1",
+    "http://user:pw@host/path",
+])
+def test_known_not_masked_unc_server_names_and_urls(text):
+    assert redact_text(text) == text

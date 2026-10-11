@@ -255,12 +255,12 @@ class _FakePopen:
 
 
 @pytest.fixture
-def fake_reports(monkeypatch):
+def fake_reports(monkeypatch, patch_popen):
     _FakePopen.calls = []
     _FakePopen.stderrs = []
     _FakePopen.procs = []
     _FakePopen.behaviour = {}
-    monkeypatch.setattr(handoff.subprocess, "Popen", _FakePopen)
+    patch_popen(handoff, _FakePopen)
     monkeypatch.setattr(handoff, "_has_battery", lambda: True)
     monkeypatch.setattr(handoff, "_find_winget", lambda: os.path.abspath("WindowsApps/winget.exe"))
     return _FakePopen
@@ -278,14 +278,14 @@ def _zip_texts(zip_path):
         return {name: zf.read(name) for name in zf.namelist()}
 
 
-def test_diagnostics_off_runs_nothing(tmp_path, monkeypatch):
+def test_diagnostics_off_runs_nothing(tmp_path, monkeypatch, patch_popen):
     state = tmp_path / "state"
     _write_run(state)
 
     def _forbidden(*args, **kwargs):
         raise AssertionError("no report may run when diagnostics are off")
 
-    monkeypatch.setattr(handoff.subprocess, "Popen", _forbidden)
+    patch_popen(handoff, _forbidden)
     monkeypatch.setattr(handoff, "_has_battery", _forbidden)
     monkeypatch.setattr(handoff, "_find_winget", _forbidden)
     monkeypatch.setattr(handoff.tempfile, "mkdtemp", _forbidden)

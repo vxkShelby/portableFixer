@@ -178,3 +178,37 @@ def test_frozen_app_updates_itself_and_the_new_version_relaunches(work_dir, star
     assert relaunched["meipass"] != launch["meipass"]
     assert "--post-update" in relaunched["argv"]
     assert os.path.samefile(relaunched["cwd"], install_dir)
+
+
+def test_frozen_app_rolls_back_a_failed_swap_and_the_old_version_relaunches(work_dir):
+    # The swap moves the new folders in, finds the staged Vendor\ empty (the probe emptied it after staging),
+    # puts the old ones back and still relaunches - the OLD exe, through the frozen bootloader.
+    zip_path = _release_zip(work_dir)
+    install_dir = _install(work_dir)
+    old_exe = (install_dir / "App" / "PortableFix.exe").read_bytes()
+
+    probe = subprocess.run(
+        [str(install_dir / "App" / "PortableFix.exe"), "--probe-apply", str(zip_path), "--sabotage-vendor"],
+        cwd=str(install_dir), timeout=120,
+    )
+
+    launch = _read_json(install_dir / "Data" / "probe_launch.json", 5)
+    print(f"probe launch: {launch!a}")
+    assert probe.returncode == 0 and launch and launch["ok"], (launch, _logs(launch))
+    status = _wait_for_status(install_dir, "rolled_back", 120)
+    assert status == "rolled_back", (status, _logs(launch))
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == old_exe
+    assert (install_dir / "Modules" / "m00_probe" / "actions.yaml").read_bytes() == b"old-module"
+    assert (install_dir / "Vendor" / "probe.txt").read_bytes() == b"old-vendor"
+    assert (install_dir / "PortableFix.cmd").read_bytes() == b"@echo off\r\nold-launcher\r\n"
+    for parked in ("App.failed", "Modules.failed", "Vendor.failed", "_update_stage"):
+        assert not (install_dir / parked).exists(), parked
+
+    relaunched = _read_json(install_dir / "Data" / "relaunched.json", 60)
+    print(f"relaunched: {relaunched!a}")
+    assert relaunched, ("the old exe never started again after the rollback", _logs(launch))
+    assert relaunched["version"] == "1"
+    # A fresh _MEI folder, not the dead process's.
+    assert relaunched["meipass"] != launch["meipass"]
+    assert "--post-update" in relaunched["argv"]
+    assert os.path.samefile(relaunched["cwd"], install_dir)

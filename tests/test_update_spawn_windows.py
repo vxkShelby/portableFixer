@@ -19,7 +19,6 @@ started in its App folder, and from inside a kill-on-close Job Object.
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -27,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from update_fixtures import make_install, release_files, write_release_zip
+from update_fixtures import make_install, noop_gui_exe, release_files, write_release_zip
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="real Windows process creation")
 
@@ -95,9 +94,12 @@ def test_powershell_detached_process_never_runs_script(tmp_path):
 # release zip and calls the REAL launch_swap, which waits for the 'ready'
 # marker and returns. A helper process stands in for the rest of the app:
 # the swap waits for it, so the test decides when the swap may start. The
-# fake install's exe is a copy of hostname.exe; the update's is a copy of
-# whoami.exe, which the swap really starts when it relaunches the app.
+# fake install's exe is a tiny no-op exe; the update's is a byte-different one
+# (noop_gui_exe), which the swap really starts when it relaunches the app.
 
+# A tiny valid exe (not a System32 copy, which can pop "Application Error 0xc0000142" when relaunched).
+OLD_EXE = noop_gui_exe(0)
+NEW_EXE = noop_gui_exe(1)
 TESTS_DIR = Path(__file__).resolve().parent
 LAUNCHER = TESTS_DIR / "update_spawn_launcher.py"
 HOSTILE_INSTALL = "Jano\u2019s $(Set-Content INJ.txt x) \u201eq\u201d [2024] \u013e\u0161\u010d\u0165"
@@ -106,10 +108,6 @@ LAUNCH_TIMEOUT_SEC = 90  # staging a tiny zip + the 45 s handshake at most
 # Cold PowerShell 5.1 starts plus RenameDelayMs retries while Defender scans
 # the fresh copies can pass 45 s on a loaded CI runner.
 SWAP_TIMEOUT_SEC = 90
-
-
-def _system_exe(name: str) -> Path:
-    return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
 
 
 def _terminate_if_powershell(pid: int) -> None:
@@ -144,10 +142,10 @@ def _hand_off(tmp_path: Path, spawned, install_dir: Path, *, temp_dir: Path | No
               cwd_in_app: bool = False, kill_on_close_job: bool = False):
     procs, powershell_pids = spawned
     make_install(install_dir)
-    shutil.copyfile(_system_exe("hostname.exe"), install_dir / "App" / "PortableFix.exe")
+    (install_dir / "App" / "PortableFix.exe").write_bytes(OLD_EXE)
     zip_path = write_release_zip(
         tmp_path / "download" / "PortableFix-Portable.zip",
-        release_files(exe=_system_exe("whoami.exe").read_bytes()),
+        release_files(exe=NEW_EXE),
     )
     temp_dir = temp_dir or tmp_path / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -217,7 +215,7 @@ def _finish_swap(install_dir: Path, helper, result: dict) -> None:
         time.sleep(0.25)
     log = _update_log(result)
     assert "relaunched " in log and "relaunch FAILED" not in log, log
-    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == _system_exe("whoami.exe").read_bytes()
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == NEW_EXE
     assert (install_dir / "Data" / "settings.json").read_bytes() == b'{"k": "v"}'
     assert not (install_dir / "App.old").exists()
 
@@ -283,5 +281,5 @@ def test_real_hand_off_inside_a_kill_on_close_job(tmp_path, spawned):
     helper.kill()
     helper.wait(timeout=10)
     assert _status(install_dir) == "handed_off"
-    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == _system_exe("hostname.exe").read_bytes()
+    assert (install_dir / "App" / "PortableFix.exe").read_bytes() == OLD_EXE
     assert updater.update_status_message_key(_status(install_dir), []) == "update_status_incomplete"

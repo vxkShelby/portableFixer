@@ -4,6 +4,7 @@ The zips copy the shape of the real v1.11.4 release: Compress-Archive on
 Windows PowerShell 5.1 wrote backslash-separated names, no entry for most
 folders, and only a stray one for Modules\\ and Vendor\\."""
 import hashlib
+import struct
 import zipfile
 from pathlib import Path
 
@@ -15,6 +16,37 @@ NEW_EXE = b"new-exe"
 # Newer than any APP_VERSION, so a stage_update in the tests passes the
 # version check without pinning the tests to the current release number.
 NEW_VERSION = "99.0.0"
+
+
+def noop_gui_exe(variant: int = 0) -> bytes:
+    """A 1 KB PE32+ GUI-subsystem exe that does nothing and exits 0 (it only calls ExitProcess(0)).
+
+    A byte copy of a System32 console tool (whoami.exe) relaunched from a temp folder can die with
+    "Application Error 0xc0000142" - a dialog on a developer's desktop. This one imports one function,
+    has no manifest and no console, so the loader has nothing to fail on. `variant` only changes the
+    timestamp field, to get a second, byte-different exe (old install vs. update)."""
+    file_align, rva = 0x200, 0x1000
+    dos = b"MZ" + bytes(58) + struct.pack("<I", 0x40)
+    coff = struct.pack("<HHIIIHH", 0x8664, 1, 0x5F000000 + variant, 0, 0, 0xF0, 0x22)
+    optional = struct.pack(
+        "<HBBIIIIIQIIHHHHHHIIIIHHQQQQII",
+        0x20B, 14, 0, file_align, 0, 0, rva, rva,         # magic, linker, SizeOfCode.., entry point, BaseOfCode
+        0x140000000, rva, file_align,                     # ImageBase, SectionAlignment, FileAlignment
+        6, 0, 0, 0, 6, 0,                                 # OS / image / subsystem versions
+        0, 0x2000, file_align, 0, 2, 0x8100,              # Win32Version, SizeOfImage/Headers, CheckSum, GUI, NX|TS-aware
+        0x100000, 0x1000, 0x100000, 0x1000, 0, 16,        # stack / heap sizes, LoaderFlags, directory count
+    ) + bytes(8) + struct.pack("<II", rva + 0x40, 40) + bytes(14 * 8)  # data directory 1 = imports
+    section = b".text\0\0\0" + struct.pack("<IIIIIIHHI", 0x200, rva, file_align, file_align, 0, 0, 0, 0, 0xE0000060)
+    headers = dos + b"PE\0\0" + coff + optional + section
+    body = bytearray(file_align)
+    code = b"\x31\xc9" + b"\x48\x83\xec\x28" + b"\xff\x15" + struct.pack("<i", 0x90 - 12)  # ExitProcess(0)
+    body[0:len(code)] = code
+    body[0x40:0x54] = struct.pack("<IIIII", rva + 0x80, 0, 0, rva + 0xB0, rva + 0x90)  # then a zero descriptor
+    body[0x80:0x90] = struct.pack("<QQ", rva + 0xA0, 0)   # import lookup table
+    body[0x90:0xA0] = struct.pack("<QQ", rva + 0xA0, 0)   # import address table
+    body[0xA0:0xAE] = struct.pack("<H", 0) + b"ExitProcess\0"
+    body[0xB0:0xBD] = b"KERNEL32.dll\0"
+    return headers.ljust(file_align, b"\0") + bytes(body)
 
 
 def release_files(exe: bytes = NEW_EXE) -> dict[str, bytes]:

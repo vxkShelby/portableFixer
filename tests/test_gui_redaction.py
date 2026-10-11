@@ -2,33 +2,23 @@
 dialog, its persistence and where the setting is handed on. A module of its
 own so it runs without a real batch."""
 
+import functools
 import socket
 import zipfile
+
+import pytest
 
 from PySide6.QtWidgets import QCheckBox, QFileDialog
 
 from portablefix import handoff, report
-from portablefix.gui.main_window import MainWindow
 from portablefix.settings import Settings, load_settings
 
 RUN_ID = "20260925T100000-abcd"
 
 
-def _window(qtbot, tmp_path, settings=None):
-    module_dir = tmp_path / "Modules" / "m01_diagnostics"
-    module_dir.mkdir(parents=True)
-    (module_dir / "actions.yaml").write_text(
-        "module_id: m01_diagnostics\n"
-        "actions:\n"
-        "  - {id: one, label_sk: Jedna, label_en: One, risk: SAFE, command: \"Write-Output 1\"}\n",
-        encoding="utf-8",
-    )
-    window = MainWindow(
-        assets_dir=tmp_path, state_dir=tmp_path, settings=settings or Settings(language="en"),
-        is_admin=True, run_id=RUN_ID,
-    )
-    qtbot.addWidget(window)
-    return window
+@pytest.fixture
+def make_window(make_window):
+    return functools.partial(make_window, run_id=RUN_ID)
 
 
 def _redact_box(window):
@@ -37,8 +27,8 @@ def _redact_box(window):
     return box
 
 
-def test_redact_toggle_is_off_by_default_and_persists_on_accept(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_redact_toggle_is_off_by_default_and_persists_on_accept(tmp_path, make_window):
+    window = make_window()
     box = _redact_box(window)
     assert box.text() == "Redact for the client"
     assert not box.isChecked()
@@ -51,8 +41,8 @@ def test_redact_toggle_is_off_by_default_and_persists_on_accept(qtbot, tmp_path)
     assert _redact_box(window).isChecked()
 
 
-def test_redact_toggle_is_not_saved_on_cancel(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_redact_toggle_is_not_saved_on_cancel(tmp_path, make_window):
+    window = make_window()
     box = _redact_box(window)
     box.setChecked(True)
     window._job_dialog.reject()
@@ -60,13 +50,13 @@ def test_redact_toggle_is_not_saved_on_cancel(qtbot, tmp_path):
     assert load_settings(tmp_path).redact_for_client is False
 
 
-def test_redact_toggle_is_translated(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path, Settings(language="sk"))
+def test_redact_toggle_is_translated(tmp_path, make_window):
+    window = make_window(Settings(language="sk"))
     assert _redact_box(window).text() == "Redigovať pre klienta"
 
 
-def test_report_runner_gets_the_setting(qtbot, tmp_path, monkeypatch):
-    window = _window(qtbot, tmp_path, Settings(language="en", redact_for_client=True))
+def test_report_runner_gets_the_setting(qtbot, tmp_path, monkeypatch, make_window):
+    window = make_window(Settings(language="en", redact_for_client=True))
     captured = {}
 
     def fake_generate_report(*args, **kwargs):
@@ -82,8 +72,8 @@ def test_report_runner_gets_the_setting(qtbot, tmp_path, monkeypatch):
     assert captured["redact"] is True
 
 
-def test_client_package_is_redacted_when_the_setting_is_on(qtbot, tmp_path, monkeypatch):
-    window = _window(qtbot, tmp_path, Settings(language="en", redact_for_client=True))
+def test_client_package_is_redacted_when_the_setting_is_on(tmp_path, monkeypatch, make_window):
+    window = make_window(Settings(language="en", redact_for_client=True))
     host = socket.gethostname()
     reports = tmp_path / "Reports"
     reports.mkdir()

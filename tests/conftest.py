@@ -1,7 +1,9 @@
 import os
 import shutil
+import subprocess
 import time
 import traceback
+import types
 import warnings
 
 # Before any Qt import: test windows and dialogs that show() must not pop up
@@ -60,6 +62,58 @@ def _refuse(kind: str):
         raise UnexpectedDialogError(f"unexpected modal {kind} in a test: {text!r}")
 
     return _raise
+
+
+@pytest.fixture
+def patch_popen(monkeypatch):
+    """patch_popen(module, fake): `module.subprocess.Popen` becomes `fake` for that module only.
+
+    `monkeypatch.setattr(module.subprocess, "Popen", ...)` would replace Popen process-wide (module.subprocess
+    IS the subprocess module), so a background thread calling subprocess.run would get the fake too. This
+    swaps the module's `subprocess` name for a namespace copy instead."""
+    def apply(module, fake):
+        shim = types.SimpleNamespace(**{k: v for k, v in vars(subprocess).items() if not k.startswith("__")})
+        shim.Popen = fake
+        monkeypatch.setattr(module, "subprocess", shim)
+    return apply
+
+
+_ONE_SAFE_ACTION = (
+    "module_id: m01_diagnostics\n"
+    "actions:\n"
+    "  - {id: one, label_sk: Jedna, label_en: One, risk: SAFE, command: \"Write-Output 1\"}\n"
+)
+
+
+@pytest.fixture
+def make_window(qtbot, tmp_path):
+    """make_window(...) -> a MainWindow over a one-module catalog written under tmp_path.
+
+    settings: a ready Settings, else Settings(language=language[, dry_run=dry_run]).
+    module_id/actions_yaml: the catalog (default: one SAFE action in m01_diagnostics).
+    files: {path relative to tmp_path: text} written before the window is built.
+    A test module with its own defaults overrides this fixture with a functools.partial of it."""
+    from portablefix.gui.main_window import MainWindow
+    from portablefix.settings import Settings
+
+    def build(settings=None, *, language="en", dry_run=None, run_id="run_test", target=None,
+              module_id="m01_diagnostics", actions_yaml=_ONE_SAFE_ACTION, files=None):
+        module_dir = tmp_path / "Modules" / module_id
+        module_dir.mkdir(parents=True, exist_ok=True)
+        (module_dir / "actions.yaml").write_text(actions_yaml, encoding="utf-8")
+        for name, text in (files or {}).items():
+            (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        if settings is None:
+            settings = Settings(language=language, **({} if dry_run is None else {"dry_run": dry_run}))
+        window = MainWindow(
+            assets_dir=tmp_path, state_dir=tmp_path, settings=settings, is_admin=True, run_id=run_id,
+            **({} if target is None else {"target": target}),
+        )
+        qtbot.addWidget(window)
+        return window
+
+    return build
 
 
 @pytest.fixture(autouse=True)

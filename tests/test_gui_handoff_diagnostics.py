@@ -18,8 +18,6 @@ import pytest
 from PySide6.QtWidgets import QCheckBox, QDialog, QFileDialog, QMessageBox, QPushButton
 
 from portablefix import handoff
-from portablefix.gui.main_window import MainWindow
-from portablefix.settings import Settings
 
 RUN_ID = "20260924T100000-abcd"
 REPORT_COMMANDS = {os.path.basename(spec.argv[0]).lower() for spec in handoff.DIAGNOSTIC_REPORTS}
@@ -62,11 +60,11 @@ class _FakeReport:
 
 
 @pytest.fixture
-def fake_reports(monkeypatch):
+def fake_reports(monkeypatch, patch_popen):
     _FakeReport.calls = []
     _FakeReport.procs = []
     _FakeReport.hang = False
-    monkeypatch.setattr(handoff.subprocess, "Popen", _FakeReport)
+    patch_popen(handoff, _FakeReport)
     monkeypatch.setattr(handoff, "_has_battery", lambda: True)
     monkeypatch.setattr(handoff, "_find_winget", lambda: None)
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda parent, title, default, filters: (default, filters))
@@ -76,27 +74,13 @@ def fake_reports(monkeypatch):
     _FakeReport.hang = False
 
 
-def _window(qtbot, tmp_path, dry_run=False):
-    module_dir = tmp_path / "Modules" / "m01_diagnostics"
-    module_dir.mkdir(parents=True)
-    (module_dir / "actions.yaml").write_text(
-        "module_id: m01_diagnostics\n"
-        "actions:\n"
-        "  - {id: one, label_sk: Jedna, label_en: One, risk: SAFE, command: \"Write-Output 1\"}\n",
-        encoding="utf-8",
-    )
-    reports = tmp_path / "Reports"
-    reports.mkdir()
+def _window(make_window, dry_run=False):
     host = socket.gethostname()
     data = {"run_id": RUN_ID, "generated_at": "2026-09-24T10:00:00+00:00", "actions": [{"exit_code": 0, "dry_run": dry_run}]}
-    (reports / f"{host}_{RUN_ID}.json").write_text(json.dumps(data), encoding="utf-8")
-    (reports / f"{host}_{RUN_ID}.html").write_text("<html></html>", encoding="utf-8")
-    window = MainWindow(
-        assets_dir=tmp_path, state_dir=tmp_path, settings=Settings(language="en", dry_run=dry_run),
-        is_admin=True, run_id=RUN_ID,
-    )
-    qtbot.addWidget(window)
-    return window
+    return make_window(dry_run=dry_run, run_id=RUN_ID, files={
+        f"Reports/{host}_{RUN_ID}.json": json.dumps(data),
+        f"Reports/{host}_{RUN_ID}.html": "<html></html>",
+    })
 
 
 def _package(tmp_path):
@@ -114,8 +98,8 @@ def _wait_idle(qtbot, window):
     qtbot.waitUntil(lambda: window._handoff_runner is None, timeout=10000)
 
 
-def test_diagnostics_checkboxes_are_off_by_default_and_off_runs_no_report(qtbot, tmp_path, fake_reports):
-    window = _window(qtbot, tmp_path)
+def test_diagnostics_checkboxes_are_off_by_default_and_off_runs_no_report(tmp_path, fake_reports, make_window):
+    window = _window(make_window)
     assert window._history_handoff_diag_checkbox.objectName() == "handoffDiagnostics"
     assert not window._history_handoff_diag_checkbox.isChecked()
     window._show_batch_summary(tmp_path / "report.html")
@@ -131,8 +115,8 @@ def test_diagnostics_checkboxes_are_off_by_default_and_off_runs_no_report(qtbot,
         assert not any(n.startswith("diagnostics/") for n in zf.namelist())
 
 
-def test_history_checkbox_collects_diagnostics_in_worker_with_dry_run_note(qtbot, tmp_path, fake_reports):
-    window = _window(qtbot, tmp_path, dry_run=True)
+def test_history_checkbox_collects_diagnostics_in_worker_with_dry_run_note(qtbot, tmp_path, fake_reports, make_window):
+    window = _window(make_window, dry_run=True)
     window._history_handoff_diag_checkbox.setChecked(True)
 
     _history_handoff_button(window).click()
@@ -149,8 +133,8 @@ def test_history_checkbox_collects_diagnostics_in_worker_with_dry_run_note(qtbot
     assert not window._handoff_folder_button.isHidden()
 
 
-def test_summary_dialog_checkbox_collects_diagnostics(qtbot, tmp_path, fake_reports):
-    window = _window(qtbot, tmp_path)
+def test_summary_dialog_checkbox_collects_diagnostics(qtbot, tmp_path, fake_reports, make_window):
+    window = _window(make_window)
     window._show_batch_summary(tmp_path / "report.html")
     dialog = window._summary_dialog
     [checkbox] = dialog.findChildren(QCheckBox, "handoffDiagnostics")
@@ -167,8 +151,8 @@ def test_summary_dialog_checkbox_collects_diagnostics(qtbot, tmp_path, fake_repo
     assert window._t("handoff_diag_dry_run_note") not in window.console.toPlainText()
 
 
-def test_second_diagnostics_package_is_refused_while_one_runs(qtbot, tmp_path, fake_reports, monkeypatch):
-    window = _window(qtbot, tmp_path)
+def test_second_diagnostics_package_is_refused_while_one_runs(qtbot, tmp_path, fake_reports, monkeypatch, make_window):
+    window = _window(make_window)
     fake_reports.hang = True
     infos = []
     monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text: infos.append(text))
@@ -194,10 +178,10 @@ def test_second_diagnostics_package_is_refused_while_one_runs(qtbot, tmp_path, f
     assert _package(tmp_path).is_file()
 
 
-def test_handoff_result_with_deleted_summary_dialog_uses_main_window(qtbot, tmp_path, monkeypatch):
+def test_handoff_result_with_deleted_summary_dialog_uses_main_window(make_window, monkeypatch):
     from shiboken6 import Shiboken
 
-    window = _window(qtbot, tmp_path)
+    window = _window(make_window)
     dialog = QDialog(window)
     Shiboken.delete(dialog)
     warnings = []
@@ -215,15 +199,15 @@ def test_handoff_result_with_deleted_summary_dialog_uses_main_window(qtbot, tmp_
     assert window._t("handoff_failed") in window.console.toPlainText()
 
 
-def test_cancelled_handoff_result_shows_nothing(qtbot, tmp_path):
-    window = _window(qtbot, tmp_path)
+def test_cancelled_handoff_result_shows_nothing(make_window):
+    window = _window(make_window)
     # conftest fails the test on any message box.
     window._on_handoff_result(None, "cancelled", "", None)
     assert window._handoff_runner is None
 
 
-def test_closing_window_stops_diagnostics_and_kills_report(qtbot, tmp_path, fake_reports):
-    window = _window(qtbot, tmp_path)
+def test_closing_window_stops_diagnostics_and_kills_report(qtbot, tmp_path, fake_reports, make_window):
+    window = _window(make_window)
     fake_reports.hang = True
     window._history_handoff_diag_checkbox.setChecked(True)
     _history_handoff_button(window).click()
@@ -267,8 +251,8 @@ def export_stubs(monkeypatch):
     return rec
 
 
-def test_export_diagnostics_confirms_with_members_and_defaults_to_no(qtbot, tmp_path, export_stubs):
-    window = _window(qtbot, tmp_path)
+def test_export_diagnostics_confirms_with_members_and_defaults_to_no(export_stubs, make_window):
+    window = _window(make_window)
     export_stubs["answers"] = [QMessageBox.No]
     window._on_export_diagnostics_clicked()
     [(text, buttons, default)] = export_stubs["questions"]
@@ -278,8 +262,8 @@ def test_export_diagnostics_confirms_with_members_and_defaults_to_no(qtbot, tmp_
     assert export_stubs["exports"] == []
 
 
-def test_export_diagnostics_is_scoped_to_run_and_offers_folder_without_opening_an_issue(qtbot, tmp_path, export_stubs):
-    window = _window(qtbot, tmp_path)
+def test_export_diagnostics_is_scoped_to_run_and_offers_folder_without_opening_an_issue(tmp_path, export_stubs, make_window):
+    window = _window(make_window)
     dest = tmp_path / "out" / "d.zip"
     export_stubs["dest"] = str(dest)
     window._on_export_diagnostics_clicked()
@@ -290,8 +274,8 @@ def test_export_diagnostics_is_scoped_to_run_and_offers_folder_without_opening_a
     assert export_stubs["urls"] == []
 
 
-def test_export_diagnostics_open_folder_opens_only_the_folder(qtbot, tmp_path, export_stubs):
-    window = _window(qtbot, tmp_path)
+def test_export_diagnostics_open_folder_opens_only_the_folder(tmp_path, export_stubs, make_window):
+    window = _window(make_window)
     dest = tmp_path / "out" / "d.zip"
     export_stubs["dest"] = str(dest)
     export_stubs["answers"] = [QMessageBox.Yes, QMessageBox.Yes]

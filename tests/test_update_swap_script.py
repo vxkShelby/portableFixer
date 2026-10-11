@@ -20,7 +20,7 @@ import pytest
 from portablefix import update_swap
 from portablefix.update_swap import stage_update, write_swap_job
 from portablefix.update_swap_script import SWAP_SCRIPT
-from update_fixtures import make_install, release_files, sums_for, write_release_zip
+from update_fixtures import make_install, noop_gui_exe, release_files, sums_for, write_release_zip
 
 _FAST_JOB = dict(max_wait_sec=10, rename_tries=2, rename_delay_ms=10, poll_ms=50, sums_tries=2, sums_delay_ms=10)
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -56,11 +56,11 @@ def _parse_errors(script: str) -> list[str]:
 
 def _relaunch_probe() -> bytes:
     """The staged 'exe': something that can really be started, so the
-    relaunch is observed rather than stubbed. On Windows a copy of
-    whoami.exe (it just prints an error for --post-update); elsewhere a
-    shell script that records its arguments and working directory."""
+    relaunch is observed rather than stubbed. On Windows a tiny no-op
+    GUI exe (a System32 copy can pop "Application Error 0xc0000142");
+    elsewhere a shell script that records its arguments and working directory."""
     if sys.platform == "win32":
-        return (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe").read_bytes()
+        return noop_gui_exe()
     return b'#!/bin/sh\nd="$(dirname "$0")/.."\necho "$@" > "$d/relaunched.txt"\npwd >> "$d/relaunched.txt"\n'
 
 
@@ -711,3 +711,12 @@ def test_swap_logs_how_many_items_a_stuck_backup_still_holds(tmp_path):
     _run(job, tmp_path, override=_undeletable("*App.old"))
 
     assert "could not remove " + str(install_dir / "App.old") + " (1 item(s) left)" in _log(job)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows PE")
+def test_the_relaunch_fixture_exe_really_starts_and_exits_0(tmp_path):
+    exes = [tmp_path / "a.exe", tmp_path / "b.exe"]
+    for variant, exe in enumerate(exes):
+        exe.write_bytes(noop_gui_exe(variant))
+        assert subprocess.run([str(exe)], timeout=30).returncode == 0
+    assert exes[0].read_bytes() != exes[1].read_bytes()
