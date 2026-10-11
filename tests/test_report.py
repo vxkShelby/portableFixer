@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -1891,3 +1892,30 @@ def test_report_badges_actions_from_user_modules(tmp_path):
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert [a["custom"] for a in data["actions"]] == [True, False]
     assert html_path.read_text(encoding="utf-8").count(">custom</span>") == 1
+
+
+def test_html_report_has_a_toc_of_its_own_sections_and_a_print_detail_toggle(tmp_path):
+    _mixed_run(tmp_path, "run_toc")
+    html_path, _ = generate_report(tmp_path, "run_toc", _two_module_fixture(), "en", {}, {})
+    content = html_path.read_text(encoding="utf-8")
+
+    nav = re.search(r'<nav class="toc no-print" aria-label="Contents">(.*?)</nav>', content, re.S)
+    assert nav, "no table of contents"
+    anchors = re.findall(r'href="#(pf-h-[a-z-]+)"', nav.group(1))
+    assert "pf-h-actions" in anchors
+    # Every link lands on a heading that exists, and the TOC is not printed.
+    assert all(f'id="{a}"' in content for a in anchors)
+    assert "nav.toc" in content.split("@media print", 1)[1]
+    # Commands/outputs come back in print when the toolbar box is ticked.
+    assert 'id="pf-print-full"' in content and "body:not(.print-full) details.cmd" in content
+    assert "print-full" in content.split("<script>", 1)[1]
+
+
+def test_html_report_toc_is_localized_and_skipped_for_short_pages(tmp_path):
+    _mixed_run(tmp_path, "run_toc_sk")
+    html_path, _ = generate_report(tmp_path, "run_toc_sk", _two_module_fixture(), "sk", {}, {})
+    assert 'aria-label="Obsah"' in html_path.read_text(encoding="utf-8")
+
+    from portablefix.report import _render_toc
+
+    assert _render_toc('<h2 id="pf-h-a">A</h2>', "en") == ""

@@ -610,6 +610,21 @@ def test_consume_update_status_reads_once_then_deletes(tmp_path):
     assert updater_module.consume_update_status(tmp_path) is None
 
 
+def test_consume_update_status_is_not_repeated_when_it_cannot_be_deleted(tmp_path, monkeypatch):
+    # A write-protected stick: the leftover file would be reported at every start.
+    (tmp_path / "Data").mkdir()
+    path = updater_module.update_status_path(tmp_path)
+    path.write_text("rolled_back", encoding="ascii")
+
+    def refuse(self, *a, **k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    assert updater_module.consume_update_status(tmp_path) is None
+    assert path.exists()
+
+
 @pytest.mark.parametrize(
     "status, restored, expected",
     [

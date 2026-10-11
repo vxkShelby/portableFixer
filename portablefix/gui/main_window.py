@@ -268,6 +268,10 @@ class _CheckRunner(QThread):
 
 
 class MainWindow(QMainWindow):
+    # Emitted from diagnostics' excepthook (main.py wires it): a signal is
+    # queued to the GUI thread whichever thread the exception came from.
+    internal_error = Signal()
+
     def __init__(
         self,
         assets_dir: Path,
@@ -281,6 +285,11 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.assets_dir = assets_dir
         self.state_dir = state_dir
+        # main.py sets it when the background integrity check is done.
+        self.integrity_mismatches: list | None = None
+        self.internal_error.connect(
+            lambda: self.statusBar().showMessage(self._t("internal_error_see_log"), 15000)
+        )
         self.settings = settings
         self.is_admin = is_admin
         self.run_id = run_id
@@ -851,6 +860,11 @@ class MainWindow(QMainWindow):
             lambda _checked=False: self._open_job_dialog())
         menu.addAction(self._t("job_branding_button")).triggered.connect(
             lambda _checked=False: self._open_branding_dialog())
+        menu.addSeparator()
+        menu.addAction(self._t("settings_menu_reports")).triggered.connect(
+            lambda _checked=False: self._open_reports_folder())
+        menu.addAction(self._t("settings_menu_about")).triggered.connect(
+            lambda _checked=False: self._show_about())
 
         def sync() -> None:
             # setChecked on an unchanged value emits nothing, so this
@@ -863,6 +877,28 @@ class MainWindow(QMainWindow):
         button.setMenu(menu)
         self._settings_menu = menu
         return button
+
+    def _open_reports_folder(self) -> None:
+        folder = self.state_dir / "Reports"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _about_text(self) -> str:
+        if self.integrity_mismatches is None:
+            integrity = self._t("about_integrity_pending")
+        elif self.integrity_mismatches:
+            integrity = self._t("about_integrity_changed").format(count=len(self.integrity_mismatches))
+        else:
+            integrity = self._t("about_integrity_ok")
+        return self._t("about_text").format(
+            version=APP_VERSION, integrity=integrity, state_dir=self.state_dir, logs_dir=self.state_dir / "Logs",
+        )
+
+    def _show_about(self) -> None:
+        QMessageBox.information(self, self._t("settings_menu_about").rstrip("…"), self._about_text())
 
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
@@ -4823,7 +4859,10 @@ class MainWindow(QMainWindow):
         label = action.label(self.settings.language)
         dialog = ItemsDialog(
             self._t("items_dialog_title").format(action=label), self._t("items_dialog_intro"), listed,
-            {"select_all": self._t("items_select_all"), "select_none": self._t("items_select_none")}, parent=self,
+            {
+                "select_all": self._t("items_select_all"), "select_none": self._t("items_select_none"),
+                "ok": self._t("dialog_ok"), "cancel": self._t("dialog_cancel"),
+            }, parent=self,
         )
         try:
             return dialog.ask()
@@ -4946,6 +4985,7 @@ class MainWindow(QMainWindow):
             items, result, self.settings.language,
             hive_backup_bytes=hive_backup.estimate_bytes() if any(a.risk == RiskLevel.DESTRUCTIVE for _, a in items) else None,
             notes=self._restart_notes(queue, resuming) + self._items_notes(queue),
+            estimate_seconds=sum(self._load_eta_history().get(aid, 0.0) for aid in queue),
         )
         if not review.needs_confirmation:
             return queue
@@ -5957,7 +5997,7 @@ class MainWindow(QMainWindow):
         if self._closed:
             return
         self._sysinfo_labels["os"].setText(info.os_name)
-        self._sysinfo_labels["cpu_name"].setText(f"{info.cpu_name} ({info.cpu_cores} cores)")
+        self._sysinfo_labels["cpu_name"].setText(f"{info.cpu_name} ({self._tn('sysinfo_cores', info.cpu_cores, 'core')})")
         self._sysinfo_labels["ram_speed"].setText(
             f"{info.ram_speed_mhz} MHz" if info.ram_speed_mhz else self._t("sysinfo_na")
         )

@@ -3444,14 +3444,27 @@ def test_batch_progress_is_announced_to_screen_readers(qtbot, tmp_path, monkeypa
     assert window._batch_active is False
 
 
-def test_announce_to_screen_reader_is_safe_to_call(qtbot, tmp_path):
+def test_announce_to_screen_reader_is_safe_to_call(qtbot, tmp_path, monkeypatch):
     from portablefix.gui import main_window as mw
 
     base_dir = _make_base_dir(tmp_path)
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_announce2")
     qtbot.addWidget(window)
-    mw._announce_to_screen_reader(window, "text")  # must not raise on any Qt version
+    sent = []
+
+    class FakeEvent:
+        def __init__(self, widget, text):
+            sent.append(text)
+
+    monkeypatch.setattr(mw, "QAccessibleAnnouncementEvent", FakeEvent)
+    monkeypatch.setattr(mw.QAccessible, "updateAccessibility", lambda event: sent.append(event))
+    mw._announce_to_screen_reader(window, "text")
     mw._announce_to_screen_reader(window, "")
+    assert sent[0] == "text" and isinstance(sent[1], FakeEvent) and len(sent) == 2
+    # Qt < 6.8 has no such event: a silent no-op, never an error.
+    monkeypatch.setattr(mw, "QAccessibleAnnouncementEvent", None)
+    mw._announce_to_screen_reader(window, "text")
+    assert len(sent) == 2
 
 
 def test_style_muted_text_meets_wcag_aa_contrast():
@@ -8513,3 +8526,89 @@ def test_stylesheet_uses_three_radii_and_a_9pt_font_floor():
     sheet = style.STYLE
     assert set(re.findall(r"border-radius: (\d+)px", sheet)) <= {"4", "10", "16"}
     assert all(float(pt) >= 9 for pt in re.findall(r"font-size: ([\d.]+)pt", sheet))
+
+
+# --- batch 4: settings menu, About, internal-error notice, review estimate ----
+
+def _menu_action_named(window, text):
+    return next(a for a in window._settings_menu.actions() if a.text() == text)
+
+
+def test_settings_menu_opens_the_reports_folder_and_shows_about(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import main_window as mw
+    from portablefix.version import APP_VERSION
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_menu_b4")
+    qtbot.addWidget(window)
+    opened = []
+    monkeypatch.setattr(mw.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    _menu_action_named(window, "Open Reports folder").trigger()
+    assert Path(opened[0]) == base_dir / "Reports" and (base_dir / "Reports").is_dir()
+
+    shown = []
+    monkeypatch.setattr(mw.QMessageBox, "information", lambda parent, title, text: shown.append(text))
+    # The background check has not reported yet / found changes / found none.
+    _menu_action_named(window, "About…").trigger()
+    window.integrity_mismatches = ["Vendor/x.dll"]
+    _menu_action_named(window, "About…").trigger()
+    window.integrity_mismatches = []
+    _menu_action_named(window, "About…").trigger()
+    assert all(f"PortableFix v{APP_VERSION}" in text and str(base_dir / "Logs") in text for text in shown)
+    assert "still being checked" in shown[0] and "changed files: 1" in shown[1] and "File integrity: OK" in shown[2]
+
+
+def test_internal_error_signal_puts_a_notice_in_the_status_bar(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"), is_admin=True, run_id="run_internal_err")
+    qtbot.addWidget(window)
+    window.internal_error.emit()
+    assert "crash.log" in window.statusBar().currentMessage()
+
+
+def test_cpu_cores_follow_the_language_and_slovak_plural(qtbot, tmp_path):
+    from portablefix import sysinfo
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="sk"), is_admin=True, run_id="run_cores_sk")
+    qtbot.addWidget(window)
+    for cores, text in ((1, "1 jadro"), (4, "4 jadrá"), (8, "8 jadier")):
+        window._on_static_info_ready(sysinfo.StaticInfo(
+            os_name="W", cpu_name="CPU", cpu_cores=cores, local_ip="1", ram_speed_mhz=0, disk_health_summary="",
+        ))
+        assert window._sysinfo_labels["cpu_name"].text() == f"CPU ({text})"
+
+
+def test_items_dialog_buttons_use_the_given_texts(qtbot):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from portablefix.gui.items_dialog import ItemsDialog
+    from portablefix.items import Item
+
+    dialog = ItemsDialog("t", "intro", [Item("a", "A")],
+                         {"select_all": "all", "select_none": "none", "ok": "Dobre", "cancel": "Zrusit"})
+    qtbot.addWidget(dialog)
+    box = dialog.findChild(QDialogButtonBox)
+    assert box.button(QDialogButtonBox.StandardButton.Ok).text() == "Dobre"
+    assert box.button(QDialogButtonBox.StandardButton.Cancel).text() == "Zrusit"
+
+
+def test_batch_review_shows_an_estimate_only_from_history(qtbot, tmp_path, monkeypatch):
+    from portablefix import preflight
+    from portablefix.gui.batch_review import BatchReviewDialog, build_review
+
+    window = _review_window(qtbot, tmp_path, monkeypatch, "run_review_eta")
+    items = [window._find_action("wipe_thing")]
+    result = preflight.PreflightResult()
+    assert BatchReviewDialog(build_review(items, result, "en"), parent=window).estimate_label is None
+    assert BatchReviewDialog(build_review(items, result, "en", estimate_seconds=20), parent=window).estimate_label is None
+    dialog = BatchReviewDialog(build_review(items, result, "en", estimate_seconds=400), parent=window)
+    assert "~7 min" in dialog.estimate_label.text()
+
+    # _review_batch feeds it from the run history of this PC.
+    monkeypatch.setattr(window, "_load_eta_history", lambda: {"wipe_thing": 300.0, "tweak_one": 120.0})
+    seen = []
+    monkeypatch.setattr(BatchReviewDialog, "exec", lambda self: seen.append(self.estimate_label.text()) or self.reject())
+    _check(window, "wipe_thing", "tweak_one")
+    window.run_selected_actions()
+    assert "~7 min" in seen[0]

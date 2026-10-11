@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portablefix import batch_resume, i18n, update_swap, updater
 from portablefix.audit_log import append_entry, make_entry
-from portablefix.diagnostics import install_excepthook, write_crash_log
+from portablefix.diagnostics import install_excepthook, set_gui_notifier, write_crash_log
 from portablefix.elevation import is_admin
 from portablefix.gui import style
 from portablefix.gui.main_window import MainWindow
@@ -353,12 +353,15 @@ def main() -> int:
             is_admin=is_admin(),
             run_id=run_id,
         )
+        # A slot that raises would otherwise vanish in this --noconsole build.
+        set_gui_notifier(window.internal_error.emit)
         if window.prefer_maximized:
             window.showMaximized()
         else:
             window.show()
 
         def _on_integrity_checked(mismatches: list) -> None:
+            window.integrity_mismatches = mismatches
             if mismatches:
                 QMessageBox.warning(
                     window,

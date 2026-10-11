@@ -1,6 +1,7 @@
 import json
 import platform
 import sys
+import time
 import traceback
 import zipfile
 from datetime import datetime, timezone
@@ -16,6 +17,31 @@ def crash_log_path(base_dir: Path) -> Path:
     return base_dir / "Logs" / "crash.log"
 
 
+# Set by main() once the window exists (the hook is installed before it):
+# called with no arguments, at most once per _NOTICE_INTERVAL_SEC, so a slot
+# that fails every tick does not flood the status bar.
+_gui_notifier = None
+_last_notice = float("-inf")
+_NOTICE_INTERVAL_SEC = 10.0
+
+
+def set_gui_notifier(notifier) -> None:
+    global _gui_notifier
+    _gui_notifier = notifier
+
+
+def _notify_gui() -> None:
+    global _last_notice
+    now = time.monotonic()
+    if _gui_notifier is None or now - _last_notice < _NOTICE_INTERVAL_SEC:
+        return
+    _last_notice = now
+    try:
+        _gui_notifier()
+    except Exception:  # noqa: BLE001 - reporting a crash must not crash
+        pass
+
+
 def install_excepthook(base_dir: Path) -> None:
     """Uncaught exceptions in a --noconsole build vanish silently otherwise -
     this is the only place they'd ever be recorded."""
@@ -23,6 +49,7 @@ def install_excepthook(base_dir: Path) -> None:
 
     def _hook(exc_type, exc_value, exc_tb) -> None:
         write_crash_log(base_dir, exc_value, exc_tb)
+        _notify_gui()
         previous_hook(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _hook

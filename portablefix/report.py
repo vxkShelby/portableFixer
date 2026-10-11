@@ -702,7 +702,11 @@ table.summary td.zero { color: var(--faint); font-weight: normal; }
 .failed-list li { margin: 3px 0; }
 .failed-list .mod { margin-left: 6px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px;
-           position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 8px 0; }
+           position: sticky; top: 38px; z-index: 1; background: var(--bg); padding: 8px 0; }
+nav.toc { position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; gap: 14px;
+          overflow-x: auto; white-space: nowrap; padding: 8px 0; margin-bottom: 4px; font-size: 13px;
+          border-bottom: 1px solid var(--line); }
+.print-opt { font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: none; border-right: 1px solid var(--line); }
 .seg button:last-child { border-right: none; }
@@ -763,7 +767,7 @@ footer.foot { color: var(--muted); font-size: 11px; border-top: 1px solid var(--
   .wrap { max-width: none; }
   h2 { border-bottom: 1px solid #999; padding-bottom: 2px; break-after: avoid; }
   details.sec > summary h2::before { content: none !important; }
-  .toolbar, .no-print, #pf-no-match { display: none !important; }
+  .toolbar, .no-print, nav.toc, #pf-no-match { display: none !important; }
   /* Print the whole log even if a screen filter is active. */
   .card[hidden] { display: block !important; }
   .card, tr { break-inside: avoid; page-break-inside: avoid; }
@@ -772,7 +776,8 @@ footer.foot { color: var(--muted); font-size: 11px; border-top: 1px solid var(--
   a { color: var(--fg); text-decoration: none; }
   details::details-content { content-visibility: visible; display: block; }
   /* PowerShell is noise for the client; outputs only where something failed. */
-  details.cmd, .card:not(.fail) details { display: none; }
+  /* The toolbar checkbox (body.print-full) brings them back. */
+  body:not(.print-full) details.cmd, body:not(.print-full) .card:not(.fail) details { display: none; }
   section.actions { break-before: page; }
   footer.foot { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; }
   .status, .badge, .tile { border: 1px solid #555; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -811,6 +816,10 @@ _JS = """
     b.addEventListener('click', function () { mode = b.getAttribute('data-filter'); apply(); });
   });
   search.addEventListener('input', apply);
+  var full = document.getElementById('pf-print-full');
+  if (full) full.addEventListener('change', function () {
+    document.body.classList.toggle('print-full', full.checked);
+  });
   var printBtn = document.getElementById('pf-print');
   if (printBtn) printBtn.addEventListener('click', function () { window.print(); });
   // A link from the failed-actions list must never land on a filtered-out card.
@@ -1445,6 +1454,7 @@ def _render_toolbar(language: str) -> str:
         "</div>"
         f'<label for="pf-search" class="sr-only">{t("report_search_label")}</label>'
         f'<input type="search" id="pf-search" placeholder="{t("report_search_placeholder")}" autocomplete="off">'
+        f'<label class="print-opt"><input type="checkbox" id="pf-print-full">{t("report_print_full")}</label>'
         f'<button type="button" id="pf-print" class="print-btn">{t("report_print")}</button>'
         "</div>"
     )
@@ -1650,7 +1660,7 @@ def _render_html(data: dict) -> str:
             + "".join(f"<li>{html.escape(str(d.get('label', '')))}</li>" for d in drift) + "</ul></section>"
         )
 
-    return f"""<!DOCTYPE html>
+    page = f"""<!DOCTYPE html>
 <html lang="{html.escape(language)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'sha256-{_JS_SHA256}'">
@@ -1662,6 +1672,7 @@ def _render_html(data: dict) -> str:
 {_render_branding(data.get('branding'), language)}
 <h1>PortableFix &mdash; {html.escape(data['hostname'])}</h1>
 {storage_banner}
+<!--pf-toc-->
 {_render_job(data.get('job') or dict(), t, data.get('target_user'))}
 {_render_attention(data, restart_labels, language)}
 <div class="meta">{t('report_run')} {html.escape(data['run_id'])} &middot; {html.escape(data['os'])} &middot; PortableFix v{html.escape(str(data.get('app_version') or '?'))}<br>
@@ -1693,6 +1704,21 @@ def _render_html(data: dict) -> str:
 <script>{_JS}</script>
 </body></html>
 """
+    return page.replace("<!--pf-toc-->", _render_toc(page, language), 1)
+
+
+def _render_toc(page: str, language: str) -> str:
+    """Anchor links to the page's own headed sections (those with a pf-h-*
+    id), read back from the rendered HTML so it can never list a section the
+    report does not have. Not worth showing for a short page."""
+    links = [
+        (anchor, re.sub(r"<[^>]+>", "", title).strip())
+        for anchor, title in re.findall(r'<h2 id="(pf-h-[a-z-]+)">(.*?)</h2>', page, flags=re.S)
+    ]
+    if len(links) < 3:
+        return ""
+    items = "".join(f'<a href="#{anchor}">{title}</a>' for anchor, title in links)
+    return f'<nav class="toc no-print" aria-label="{html.escape(translate("report_toc", language))}">{items}</nav>'
 
 
 def generate_report(
