@@ -39,6 +39,17 @@ def pytest_sessionstart(session):
         pytest.exit("PowerShell missing on CI", returncode=1)
 
 
+def pytest_report_header(config):
+    # Informational: a local environment that drifted from the pins
+    # (another Qt, no pytest-timeout) explains "passes here, fails on CI".
+    from scripts.check_env import find_drift
+
+    drift = find_drift()
+    if drift:
+        return ["WARNING: installed packages differ from requirements*.txt (scripts/check_env.py):"] + [f"  {d}" for d in drift]
+    return None
+
+
 class UnexpectedDialogError(AssertionError):
     pass
 
