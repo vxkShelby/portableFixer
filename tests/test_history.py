@@ -80,3 +80,23 @@ def test_run_report_paths_agree_with_recent_runs(tmp_path):
     (run,) = recent_runs(reports, "PC1")
     html, json_path = run_report_paths(reports, "PC1", run.run_id)
     assert run.html_path == html and json_path.exists()
+
+
+def test_typical_durations_is_the_median_of_real_runs_only(tmp_path):
+    from portablefix.history import typical_durations
+
+    reports = tmp_path / "Reports"
+    _write_report(reports, "PC1", "20260901T100000-aaaa", [{"action_id": "sfc", "duration_sec": 100.0, "dry_run": False}])
+    _write_report(reports, "PC1", "20260902T100000-bbbb", [{"action_id": "sfc", "duration_sec": 300.0, "dry_run": False}])
+    _write_report(
+        reports, "PC1", "20260903T100000-cccc",
+        [
+            {"action_id": "sfc", "duration_sec": 0.01, "dry_run": True},
+            {"action_id": "dism", "duration_sec": None, "dry_run": False},
+            {"action_id": "x", "duration_sec": "fast", "dry_run": False},
+        ],
+    )
+    _write_report(reports, "OTHER", "20260904T100000-dddd", [{"action_id": "sfc", "duration_sec": 9999.0, "dry_run": False}])
+
+    assert typical_durations(reports, "PC1") == {"sfc": 200.0}
+    assert typical_durations(tmp_path / "missing", "PC1") == {}

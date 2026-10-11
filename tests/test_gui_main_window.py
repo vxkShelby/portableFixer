@@ -703,12 +703,12 @@ def test_language_toggle_flips_language_and_labels(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     assert window.settings.language == "sk"
-    assert window.run_button.text() == "Spustiť vybrané"
+    assert window.run_button.text() == "Spustiť náhľad"  # dry-run is the default
 
     _toggle_language(qtbot, window)
 
     assert window.settings.language == "en"
-    assert window.run_button.text() == "Run selected"
+    assert window.run_button.text() == "Run preview"
     assert window.language_button.text() == "EN"
 
 
@@ -3887,10 +3887,11 @@ def test_handoff_write_failure_shows_disk_write_message(qtbot, tmp_path, monkeyp
 
     monkeypatch.setattr(handoff, "build_handoff_zip", _boom)
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: warnings.append(text))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append((box.text(), box.detailedText())))
 
     assert window._save_handoff_package("run_handoff_fail") is None
-    assert len(warnings) == 1 and window._t("handoff_failed") in warnings[0] and "USB gone" in warnings[0]
+    # Next step in the text, the raw exception only under "Show Details".
+    assert warnings == [(window._t("handoff_failed_dialog"), "USB gone")]
     assert window._t("handoff_failed") in window.console.toPlainText()
     assert not (tmp_path / "x.zip").exists()
 
@@ -7971,11 +7972,12 @@ def test_run_button_is_amber_while_dry_run_is_on(qtbot, tmp_path):
     window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en", dry_run=True), is_admin=True, run_id="run_tint_btn")
     qtbot.addWidget(window)
     assert window.run_button.property("dryrun") == "true"
-    assert "DRY-RUN" in window.run_button.toolTip()
+    assert "Preview mode" in window.run_button.toolTip() and "(F5)" in window.run_button.toolTip()
+    assert window.run_button.text() == "Run preview"
 
     window.dry_run_checkbox.setChecked(False)
     assert window.run_button.property("dryrun") == "false"
-    assert window.run_button.toolTip() == ""
+    assert window.run_button.toolTip() == "Run selected (F5)"
 
     # Survives the language toggle's rebuild.
     window.dry_run_checkbox.setChecked(True)
@@ -8387,3 +8389,127 @@ def test_winget_auto_check_still_scans_after_the_update_runner_deleted_itself(qt
     assert started == [True]
     window._winget_scan_runner = None
     window._winget_update_runner = None
+
+
+# --- clearer modes, ETA, hints, actionable errors (GUI review B7/B8/B11/B12/B15) ---
+
+
+def test_run_button_names_the_mode_in_both_languages(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="sk", dry_run=True),
+        is_admin=True, run_id="run_mode_names",
+    )
+    qtbot.addWidget(window)
+    assert window.run_button.text() == "Spustiť náhľad"
+    assert "DRY-RUN" not in window.dry_run_checkbox.text()
+    window.dry_run_checkbox.setChecked(False)
+    assert window.run_button.text() == "Spustiť vybrané"
+    assert window.run_button.toolTip().endswith("(F5)")
+    assert "Ctrl+J" in window.job_button.toolTip() and "Ctrl+F" in window.search_box.toolTip()
+
+
+def test_progress_text_shows_count_and_an_eta_from_past_runs(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+        is_admin=True, run_id="run_eta",
+    )
+    qtbot.addWidget(window)
+    window._eta_history = {"sfc": 300.0, "dism": 120.0}
+
+    window._update_progress_eta(["sfc", "dism", "unknown"])
+    assert window.progress_bar.format() == "%v / %m · about 7 min left"
+    # No history for what is left (or only seconds): the count alone.
+    window._update_progress_eta(["unknown"])
+    assert window.progress_bar.format() == "%v / %m"
+    # A preview takes no real time: no history is read for it.
+    window._batch_dry_run = True
+    assert window._load_eta_history() == {}
+
+
+def test_non_admin_rows_that_need_admin_get_a_chip(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    base_dir = _make_base_dir(tmp_path, MODERATE_ACTIONS_YAML)
+    chips = lambda w: [  # noqa: E731
+        c for c in w.findChildren(QLabel) if c.objectName() == "riskBadge" and c.property("risk") == "ADMIN"
+    ]
+    plain = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+        is_admin=False, run_id="run_chip_no",
+    )
+    qtbot.addWidget(plain)
+    assert len(chips(plain)) == 1 and "administrator" in chips(plain)[0].toolTip()
+    admin = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+        is_admin=True, run_id="run_chip_yes",
+    )
+    qtbot.addWidget(admin)
+    assert chips(admin) == []
+
+
+def test_write_failure_raises_a_counted_banner_that_a_retry_clears(qtbot, tmp_path):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+        is_admin=True, run_id="run_write_banner",
+    )
+    qtbot.addWidget(window)
+    window.show()
+    assert not window.write_banner.isVisible()
+
+    window._report_write_failure()
+    window._report_write_failure()
+
+    assert window.write_banner.isVisible()
+    assert "2" in window.write_banner_label.text()
+    assert window._t("disk_write_failed") in window.console.toPlainText()
+    window.write_retry_button.click()  # the state dir is writable
+    assert not window.write_banner.isVisible()
+    assert not list(base_dir.glob(".write_check_*"))
+
+
+def test_write_retry_keeps_the_banner_while_the_drive_still_fails(qtbot, tmp_path, monkeypatch):
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+        is_admin=True, run_id="run_write_still",
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window._report_write_failure()
+
+    def _boom(self, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+    window._on_write_retry()
+
+    assert window.write_banner.isVisible()
+    assert window.statusBar().currentMessage() == window._t("write_retry_failed")
+
+
+def test_avatar_keeps_its_inline_colour_only_without_high_contrast(qtbot, tmp_path, monkeypatch):
+    from portablefix.gui import style
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(
+        assets_dir=base_dir, state_dir=base_dir, settings=Settings(language="en"),
+        is_admin=True, run_id="run_avatar",
+    )
+    qtbot.addWidget(window)
+    monkeypatch.setattr(style, "is_high_contrast", lambda *a: True)
+    assert window._make_avatar("Fake App").styleSheet() == ""
+    monkeypatch.setattr(style, "is_high_contrast", lambda *a: False)
+    assert "background" in window._make_avatar("Fake App").styleSheet()
+
+
+def test_stylesheet_uses_three_radii_and_a_9pt_font_floor():
+    import re
+
+    from portablefix.gui import style
+
+    sheet = style.STYLE
+    assert set(re.findall(r"border-radius: (\d+)px", sheet)) <= {"4", "10", "16"}
+    assert all(float(pt) >= 9 for pt in re.findall(r"font-size: ([\d.]+)pt", sheet))
