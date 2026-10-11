@@ -66,13 +66,13 @@ QLabel#adminPill[admin="false"] {
 QListWidget#categoryList {
     background-color: #10141c;
     border: 1px solid #1c2530;
-    border-radius: 2px;
+    border-radius: 4px;
     padding: 6px;
     outline: none;
 }
 QListWidget#categoryList::item {
     padding: 10px 12px;
-    border-radius: 14px;
+    border-radius: 16px;
     margin: 2px 4px;
 }
 QListWidget#categoryList::item:hover {
@@ -97,11 +97,11 @@ QScrollArea > QWidget > QWidget {
 QScrollBar:vertical {
     background: #0b0e14;
     width: 10px;
-    border-radius: 2px;
+    border-radius: 4px;
 }
 QScrollBar::handle:vertical {
     background: #232d3a;
-    border-radius: 2px;
+    border-radius: 4px;
     min-height: 30px;
 }
 QScrollBar::handle:vertical:hover {
@@ -115,7 +115,7 @@ QFrame#actionCard {
     background-color: #10141c;
     border: 1px solid #1c2530;
     border-top: 1px solid #26323f;
-    border-radius: 14px;
+    border-radius: 16px;
 }
 QLabel#cardHeading {
     font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
@@ -148,10 +148,10 @@ QCheckBox::indicator:focus {
 }
 
 QLabel#riskBadge {
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 1px 8px;
     font-family: 'Consolas', 'Cascadia Mono';
-    font-size: 8pt;
+    font-size: 9pt;
     font-weight: bold;
 }
 QLabel#riskBadge[risk="SAFE"] {
@@ -164,6 +164,7 @@ QLabel#riskBadge[risk="MODERATE"] { background-color: #ffb020; color: #06080c; }
 QLabel#riskBadge[risk="DESTRUCTIVE"] { background-color: #ff2d6f; color: #06080c; }
 QLabel#riskBadge[risk="REQUIRES_REBOOT"] { background-color: #b26bff; color: #06080c; }
 QLabel#riskBadge[risk="CUSTOM"] { background: transparent; border: 1px solid #5ee6ff; color: #5ee6ff; }
+QLabel#riskBadge[risk="ADMIN"] { background: transparent; border: 1px solid #ffb020; color: #ffb020; }
 
 QPushButton {
     background-color: #141a24;
@@ -183,7 +184,7 @@ QPushButton#runButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 #00d9ff, stop:1 #00ffa3);
     border: none;
-    border-radius: 18px;
+    border-radius: 16px;
     color: #06080c;
     font-weight: bold;
     padding: 9px 24px;
@@ -203,7 +204,7 @@ QPushButton#cancelButton {
     background-color: #10141c;
     color: #ff2d6f;
     border: 1px solid #ff2d6f;
-    border-radius: 18px;
+    border-radius: 16px;
     padding: 9px 18px;
 }
 QPushButton#cancelButton:hover {
@@ -283,7 +284,7 @@ QLabel#emptyState {
 
 QLabel#actionStatus {
     font-family: 'Consolas', 'Cascadia Mono';
-    font-size: 8pt;
+    font-size: 9pt;
     font-weight: bold;
 }
 QLabel#actionStatus[state="running"] { color: #ffb020; }
@@ -293,7 +294,7 @@ QLabel#actionStatus[state="fail"] { color: #ff2d6f; }
 QToolButton#actionDetailToggle {
     background: transparent;
     border: 1px dashed #232d3a;
-    border-radius: 2px;
+    border-radius: 4px;
     padding: 1px 6px;
     font-family: 'Consolas', 'Cascadia Mono';
     font-size: 9pt;
@@ -320,7 +321,7 @@ QFrame#actionCard[tile="true"]:focus {
 QWidget#actionDetailPanel {
     background-color: #0b0e14;
     border: 1px solid #1c2530;
-    border-radius: 2px;
+    border-radius: 4px;
 }
 QLabel#actionDetailDescription {
     color: #d6e2f0;
@@ -328,17 +329,17 @@ QLabel#actionDetailDescription {
 }
 QLabel#actionDetailLabel {
     font-family: 'Consolas', 'Cascadia Mono';
-    font-size: 8pt;
+    font-size: 9pt;
     font-weight: bold;
     color: #7c8799;
 }
 QPlainTextEdit#actionDetailCommand {
     background-color: #06080c;
     border: 1px solid #1c2530;
-    border-radius: 2px;
+    border-radius: 4px;
     padding: 6px;
     font-family: 'Cascadia Mono', 'Consolas';
-    font-size: 8.5pt;
+    font-size: 9pt;
     color: #9fd9e8;
 }
 
@@ -362,7 +363,7 @@ QWidget#updateBanner {
     background-color: #10141c;
     border: 1px solid #ff2bd6;
     border-left: 3px solid #ff2bd6;
-    border-radius: 2px;
+    border-radius: 4px;
 }
 QLabel#summaryHeader {
     font-family: 'Sora', 'Segoe UI Semibold', 'Segoe UI';
@@ -400,7 +401,7 @@ QLabel#summaryMetricDelta[trend="bad"] { color: #ff2d6f; }
 QPlainTextEdit#console {
     background-color: #06080c;
     border: 1px solid #1c2530;
-    border-radius: 2px;
+    border-radius: 4px;
     padding: 8px;
     font-family: 'Cascadia Mono', 'Consolas';
     font-size: 9pt;
@@ -419,11 +420,11 @@ QSplitter::handle:hover {
 QProgressBar#batchProgress {
     background-color: #06080c;
     border: 1px solid #1c2530;
-    border-radius: 8px;
+    border-radius: 10px;
     text-align: center;
     font-family: 'Consolas', 'Cascadia Mono';
     font-weight: bold;
-    font-size: 8.5pt;
+    font-size: 9pt;
     color: #8ff2ff;
     padding: 1px;
     min-height: 16px;
@@ -436,11 +437,11 @@ QProgressBar#batchProgress::chunk {
 }
 
 QLabel#countPill {
-    border-radius: 9px;
+    border-radius: 10px;
     padding: 1px 9px;
     font-family: 'Consolas', 'Cascadia Mono';
     font-weight: bold;
-    font-size: 8.5pt;
+    font-size: 9pt;
 }
 QLabel#countPill[state="ok"] {
     background-color: rgba(57, 255, 136, 30);
@@ -483,6 +484,12 @@ QLabel#wingetBanner {
 QLabel#wingetBanner[state="warn"] {
     background-color: rgba(255, 176, 32, 22);
     border: 1px solid rgba(255, 176, 32, 90);
+    color: #d6e2f0;
+}
+QWidget#writeBanner {
+    background-color: rgba(255, 45, 111, 22);
+    border: 1px solid rgba(255, 45, 111, 110);
+    border-radius: 10px;
     color: #d6e2f0;
 }
 QLabel#targetUserBanner {
@@ -543,7 +550,7 @@ QToolTip {
     background-color: #10141c;
     color: #d6e2f0;
     border: 1px solid #2fe6ff;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 6px 8px;
 }
 
@@ -571,11 +578,11 @@ QMessageBox QPushButton {
 QScrollBar:horizontal {
     background: #0b0e14;
     height: 10px;
-    border-radius: 2px;
+    border-radius: 4px;
 }
 QScrollBar::handle:horizontal {
     background: #232d3a;
-    border-radius: 2px;
+    border-radius: 4px;
     min-width: 30px;
 }
 QScrollBar::handle:horizontal:hover {
@@ -594,7 +601,7 @@ QFrame#historyRow {
     background-color: #0d1118;
     border: 1px solid #1c2530;
     border-left: 3px solid #39ff88;
-    border-radius: 8px;
+    border-radius: 10px;
 }
 QFrame#historyRow[failed="true"] {
     border-left: 3px solid #ff2d6f;

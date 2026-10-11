@@ -73,6 +73,8 @@ def _no_blocking_modal_dialogs(monkeypatch):
         return
     for name in ("question", "warning", "information", "critical"):
         monkeypatch.setattr(QMessageBox, name, _refuse(f"QMessageBox.{name}"))
+    # Instance dialogs (MainWindow._show_error) block on exec() just the same.
+    monkeypatch.setattr(QMessageBox, "exec", _refuse("QMessageBox.exec"))
     for name in ("getText", "getItem", "getInt", "getDouble"):
         monkeypatch.setattr(QInputDialog, name, _refuse(f"QInputDialog.{name}"))
     for name in ("getSaveFileName", "getOpenFileName", "getExistingDirectory"):

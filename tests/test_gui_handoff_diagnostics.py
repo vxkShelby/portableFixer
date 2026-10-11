@@ -202,7 +202,7 @@ def test_handoff_result_with_deleted_summary_dialog_uses_main_window(qtbot, tmp_
     Shiboken.delete(dialog)
     warnings = []
     monkeypatch.setattr(
-        QMessageBox, "warning", lambda parent, title, text: warnings.append((parent, text))
+        QMessageBox, "exec", lambda box: warnings.append((box.parent(), box.text() + box.detailedText()))
     )
 
     window._on_handoff_result(None, "failed", "USB gone", dialog)

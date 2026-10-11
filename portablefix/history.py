@@ -6,6 +6,7 @@ survives copying the USB drive around.
 """
 
 import json
+import statistics
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ class RunSummary:
     failed_count: int
     dry_run: bool
     html_path: Path | None
+    json_path: Path | None = None
 
     def display_date(self) -> str:
         try:
@@ -56,6 +58,7 @@ def _summarize(json_path: Path) -> RunSummary | None:
         # report counts as dry-run since it changed nothing either.
         dry_run=all(a.get("dry_run") is True for a in actions),
         html_path=html_path if html_path.exists() else None,
+        json_path=json_path,
     )
 
 
@@ -94,3 +97,22 @@ def recent_runs(reports_dir: Path, hostname: str, limit: int = 5, exclude_run_id
         if len(runs) >= limit:
             break
     return runs
+
+
+def typical_durations(reports_dir: Path, hostname: str, limit: int = 10) -> dict[str, float]:
+    """action_id -> median seconds over this machine's last `limit` reports.
+
+    Real (non-dry-run) runs only: a preview takes no time. Feeds the batch
+    progress ETA; empty when there is no history.
+    """
+    samples: dict[str, list[float]] = {}
+    for run in recent_runs(reports_dir, hostname, limit=limit):
+        try:
+            data = json.loads(run.json_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        for a in data.get("actions", []):
+            seconds = a.get("duration_sec") if isinstance(a, dict) else None
+            if isinstance(seconds, (int, float)) and seconds > 0 and a.get("dry_run") is not True:
+                samples.setdefault(str(a.get("action_id")), []).append(float(seconds))
+    return {action_id: statistics.median(values) for action_id, values in samples.items()}

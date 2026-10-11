@@ -406,6 +406,11 @@ class MainWindow(QMainWindow):
         # started - its duration is logged at the end for the report's work
         # time (research G20).
         self._batch_started_at: float | None = None
+        # action_id -> typical seconds from past reports (progress ETA).
+        self._eta_history: dict[str, float] = {}
+        # How many audit/report writes failed (USB full or pulled) - the
+        # persistent banner counts them.
+        self._write_failures = 0
         self._tray_icon: QSystemTrayIcon | None = None
         self._cancel_requested = False
         self._close_after_restore_point = False
@@ -891,7 +896,7 @@ class MainWindow(QMainWindow):
         top_bar.addStretch(1)
         self.job_button = self._make_selection_button(self._t("job_button"), self._open_job_dialog)
         self.job_button.setObjectName("jobBtn")
-        self.job_button.setToolTip(self._t("job_tooltip"))
+        self.job_button.setToolTip(f"{self._t('job_tooltip')} (Ctrl+J)")
         top_bar.addWidget(self.job_button)
         self._refresh_job_button()
         self.dry_run_checkbox = QCheckBox(self._t("dry_run_toggle"))
@@ -927,6 +932,19 @@ class MainWindow(QMainWindow):
         update_banner_layout.addWidget(self.update_dismiss_button)
         self.update_banner.setVisible(False)
         root_layout.addWidget(self.update_banner)
+
+        self.write_banner = QWidget()
+        self.write_banner.setObjectName("writeBanner")
+        write_banner_layout = QHBoxLayout(self.write_banner)
+        write_banner_layout.setContentsMargins(10, 6, 10, 6)
+        self.write_banner_label = QLabel("")
+        self.write_banner_label.setWordWrap(True)
+        write_banner_layout.addWidget(self.write_banner_label, 1)
+        self.write_retry_button = QPushButton(self._t("write_retry"))
+        self.write_retry_button.clicked.connect(self._on_write_retry)
+        write_banner_layout.addWidget(self.write_retry_button)
+        root_layout.addWidget(self.write_banner)
+        self._refresh_write_banner()
 
         category_i18n_keys = {
             ModuleCategory.DIAGNOSTICS: "category_diagnostics",
@@ -1037,6 +1055,7 @@ class MainWindow(QMainWindow):
         self.search_box.setObjectName("searchBox")
         self.search_box.setPlaceholderText(self._t("search_placeholder"))
         self.search_box.setAccessibleName(self._t("search_placeholder"))
+        self.search_box.setToolTip(f"{self._t('search_placeholder')} (Ctrl+F)")
         self.search_box.setMaximumWidth(220)
         self.search_box.textChanged.connect(self._on_search_changed)
         # Esc clears the search - handled on the box itself (eventFilter)
@@ -1165,6 +1184,15 @@ class MainWindow(QMainWindow):
                     badge.setToolTip(action.risk.value)
                     badge.setProperty("risk", action.risk.value)
                     row.addWidget(badge)
+                    if not self.is_admin and preflight.profile_for([(module, action)]).needs_admin:
+                        # Same predicate as the pre-flight "no_admin" blocker:
+                        # say it here, not only after "Run".
+                        admin_chip = QLabel(self._t("admin_chip"))
+                        admin_chip.setObjectName("riskBadge")
+                        admin_chip.setProperty("risk", "ADMIN")
+                        admin_chip.setToolTip(self._t("admin_chip_tip"))
+                        admin_chip.setAccessibleName(self._t("admin_chip_tip"))
+                        row.addWidget(admin_chip)
                     if module.custom:
                         # Research G32: from UserModules/ - the shop's own
                         # action, not shipped with or checked by PortableFix.
@@ -1251,6 +1279,7 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("batchProgress")
         self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%v / %m")
         self.progress_bar.setVisible(False)
         center_layout.addWidget(self.progress_bar)
 
@@ -1350,6 +1379,7 @@ class MainWindow(QMainWindow):
                 # The rebuilt bar starts hidden - the download/stage/launch
                 # still running would otherwise look finished.
                 done, total = self._update_progress
+                self.progress_bar.setFormat("%p%")
                 self.progress_bar.setMaximum(total)
                 self.progress_bar.setValue(done)
                 self.progress_bar.setVisible(True)
@@ -1877,7 +1907,7 @@ class MainWindow(QMainWindow):
         if self._closed:
             return
         if write_failed:
-            self._append_console(self._t("disk_write_failed"))
+            self._report_write_failure()
         elif html_path is not None:
             self._append_console(self._t("report_refreshed"))
         self._run_pending_report_refresh()
@@ -2009,7 +2039,7 @@ class MainWindow(QMainWindow):
         try:
             save_settings(self.state_dir, self.settings)
         except OSError:
-            self._append_console(self._t("disk_write_failed"))
+            self._report_write_failure()
 
     def _on_save_preset_clicked(self) -> None:
         selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
@@ -3274,7 +3304,7 @@ class MainWindow(QMainWindow):
             return None
         except OSError as exc:
             self._append_console(self._t("handoff_failed"))
-            QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{exc}")
+            self._show_error(parent, self._t("handoff_failed_dialog"), str(exc))
             return None
         self._show_handoff_saved(saved)
         return saved
@@ -3321,7 +3351,7 @@ class MainWindow(QMainWindow):
             return
         if error:
             self._append_console(self._t("handoff_failed"))
-            QMessageBox.warning(parent or self, self._t("app_title"), f"{self._t('handoff_failed')}\n{detail}")
+            self._show_error(parent, self._t("handoff_failed_dialog"), detail)
             return
         self._append_console(self._t("handoff_saved").format(path=saved))
         self._show_handoff_saved(saved)
@@ -3401,9 +3431,12 @@ class MainWindow(QMainWindow):
         avatar = QLabel(initials)
         avatar.setFixedSize(28, 28)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar.setStyleSheet(
-            f"background:{color}; color:#06141a; border-radius:14px; font-weight:bold; font-size:9pt;"
-        )
+        # High Contrast applies no stylesheet (style.stylesheet): an inline
+        # colour here would be the one thing that ignores the user's palette.
+        if not style.is_high_contrast():
+            avatar.setStyleSheet(
+                f"background:{color}; color:#06141a; border-radius:14px; font-weight:bold; font-size:9pt;"
+            )
         return avatar
 
     def _uninstaller_row_label(self, program: "uninstaller.InstalledProgram") -> str:
@@ -3893,7 +3926,7 @@ class MainWindow(QMainWindow):
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
             if not self._closed:
-                self._append_console(self._t("disk_write_failed"))
+                self._report_write_failure()
 
     def _panel_refused_without_admin(self, console: QPlainTextEdit) -> bool:
         """True (and shown) when a panel's real run needs admin rights it
@@ -4060,6 +4093,57 @@ class MainWindow(QMainWindow):
             shown.append(self._t("uninstaller_and_more").format(count=len(lines) - limit))
         return "\n".join(shown)
 
+    def _report_write_failure(self) -> None:
+        """An audit/report write failed (USB full or pulled): the client
+        record is incomplete. The console line scrolls away, so a red banner
+        with the count stays until a retry shows the stick writable again."""
+        self._append_console(self._t("disk_write_failed"))
+        self._write_failures += 1
+        self._refresh_write_banner()
+
+    def _refresh_write_banner(self) -> None:
+        self.write_banner.setVisible(self._write_failures > 0)
+        self.write_banner_label.setText(self._t("write_banner").format(count=self._write_failures))
+
+    def _on_write_retry(self) -> None:
+        probe = self.state_dir / f".write_check_{os.getpid()}"
+        try:
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError:
+            self.statusBar().showMessage(self._t("write_retry_failed"))
+            return
+        self._write_failures = 0
+        self._refresh_write_banner()
+        self.statusBar().showMessage(self._t("write_retry_ok"))
+
+    def _show_error(self, parent: QWidget | None, text: str, detail: str = "") -> None:
+        """What happened and what to do next; the raw exception is only under
+        'Show Details' for the technician."""
+        box = QMessageBox(QMessageBox.Icon.Warning, self._t("app_title"), text, QMessageBox.StandardButton.Ok, parent or self)
+        if detail:
+            box.setDetailedText(detail)
+        box.exec()
+
+    def _load_eta_history(self) -> dict[str, float]:
+        # A preview takes no real time, so it gets no estimate.
+        if self._batch_dry_run:
+            return {}
+        try:
+            return history.typical_durations(self.state_dir / "Reports", socket.gethostname())
+        except Exception:  # noqa: BLE001 - an ETA is never worth failing a batch for
+            return {}
+
+    def _update_progress_eta(self, remaining_ids: list[str]) -> None:
+        """'3 / 12' plus 'about 6 min left' from past runs of the same
+        actions. Actions with no history add nothing, so the estimate can only
+        be low; under half a minute is not worth showing."""
+        seconds = sum(self._eta_history.get(action_id, 0.0) for action_id in remaining_ids)
+        text = "%v / %m"
+        if seconds >= 30:
+            text += " · " + self._t("progress_eta").format(minutes=max(1, round(seconds / 60)))
+        self.progress_bar.setFormat(text)
+
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.settings.dry_run = checked
         self._apply_run_button_dry_run_tint()
@@ -4069,7 +4153,9 @@ class MainWindow(QMainWindow):
         item 9) - QSS runButton[dryrun="true"], like riskBadge[risk=...]."""
         dry_run = bool(self.settings.dry_run)
         self.run_button.setProperty("dryrun", "true" if dry_run else "false")
-        self.run_button.setToolTip(self._t("run_dry_run_tooltip") if dry_run else "")
+        self.run_button.setText(self._t("run_selected_preview" if dry_run else "run_selected"))
+        tip = self._t("run_dry_run_tooltip") if dry_run else self._t("run_selected")
+        self.run_button.setToolTip(f"{tip} (F5)")
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
 
@@ -4214,6 +4300,7 @@ class MainWindow(QMainWindow):
         self.update_banner_label.setToolTip("")
         self.update_button.setEnabled(False)
         self.update_dismiss_button.setEnabled(False)
+        self.progress_bar.setFormat("%p%")  # bytes, not an action count
         self.progress_bar.setMaximum(0)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
@@ -4564,6 +4651,7 @@ class MainWindow(QMainWindow):
         self._batch_results = []
         self._failure_hints = {}
         self._action_durations = {}
+        self._eta_history = self._load_eta_history()
         self._summary_dialog = None
         self._cancel_requested = False
         for action_id in self._queue:
@@ -4911,7 +4999,7 @@ class MainWindow(QMainWindow):
             self.dry_run_checkbox.setEnabled(True)
             self.restart_admin_button.setEnabled(True)
             if write_failed:
-                self._append_console(self._t("disk_write_failed"))
+                self._report_write_failure()
         self._refresh_dashboard()
         if not self._closed:
             self._notify_batch_finished()
@@ -5043,6 +5131,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(running_text)
             _announce_to_screen_reader(self, running_text)
             self.progress_bar.setValue(position - 1)
+            self._update_progress_eta([action_id, *self._queue])
 
         needs_restore_point = preflight.needs_restore_point(module, action)
         if needs_restore_point and not self._restore_point_attempted and not self._batch_dry_run:
@@ -5212,7 +5301,7 @@ class MainWindow(QMainWindow):
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
             if not self._closed:
-                self._append_console(self._t("disk_write_failed"))
+                self._report_write_failure()
 
     def _save_resume(self, restart_action_id: str) -> bool:
         """Saves what is still queued to the resume file (G03). False when
@@ -5284,7 +5373,7 @@ class MainWindow(QMainWindow):
     def _on_pre_restart_report_ready(self, html_path, write_failed: bool, module: ModuleDef, action: ActionDef) -> None:
         self._report_runner = None
         if write_failed and not self._closed:
-            self._append_console(self._t("disk_write_failed"))
+            self._report_write_failure()
         if self._cancel_requested or self._closed:
             # Cancelled while the report was written: the restart never
             # comes, so there is nothing to continue after it.
@@ -5365,7 +5454,7 @@ class MainWindow(QMainWindow):
                 target_user=self.target_user, temp_protect=action_temp_protect, item_ids=item_ids,
             )
         except (OSError, items_mod.ItemsError):
-            self._append_console(self._t("disk_write_failed"))
+            self._report_write_failure()
             self._run_next()
             return
         plan = prepared.plan
@@ -5410,7 +5499,7 @@ class MainWindow(QMainWindow):
                 target_user=self.target_user, temp_protect=temp_protect,
             )
         except (OSError, items_mod.ItemsError):
-            self._append_console(self._t("disk_write_failed"))
+            self._report_write_failure()
             return
         self._append_console(self._t("preview_console_start").format(action=action.label(self.settings.language)))
         runner = ActionRunner(
@@ -5490,7 +5579,7 @@ class MainWindow(QMainWindow):
             append_entry(self.state_dir, self.run_id, entry)
         except OSError:
             if not self._closed:
-                self._append_console(self._t("disk_write_failed"))
+                self._report_write_failure()
         self._batch_results.append((action_id, exit_code))
         if exit_code != 0:
             self._failure_hints[action_id] = _failure_hint(exit_code, list(runner.captured_output))
@@ -5565,7 +5654,7 @@ class MainWindow(QMainWindow):
             self._undo_written_state = state
         except OSError:
             if not self._closed:
-                self._append_console(self._t("disk_write_failed"))
+                self._report_write_failure()
         # A batch saved for after a restart under this run_id rewrites
         # undo.ps1 from its own copy of these lists - keep that copy in step
         # with every change made since, or the continued batch drops them.
@@ -5576,7 +5665,7 @@ class MainWindow(QMainWindow):
             )
         except OSError:
             if not self._closed:
-                self._append_console(self._t("disk_write_failed"))
+                self._report_write_failure()
 
     def _build_sysinfo_panel(self) -> QWidget:
         panel = QFrame()
@@ -5818,7 +5907,7 @@ class MainWindow(QMainWindow):
         try:
             diagnostics.export_diagnostics_zip(self.state_dir, Path(dest), run_id=self.run_id)
         except OSError as exc:
-            QMessageBox.critical(self, self._t("app_title"), f"{self._t('export_diagnostics_failed')}\n{exc}")
+            self._show_error(self, self._t("export_diagnostics_failed"), str(exc))
             return
         # Nothing opens a GitHub issue from here: the user does that with
         # the Report a Bug button, on purpose (the tracker is public).
