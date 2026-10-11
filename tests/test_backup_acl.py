@@ -102,6 +102,20 @@ def test_hardening_fails_closed_or_locks_the_folder(tmp_path):
         return
     # Elevated (CI runner): the lock path must really work, no fail-closed excuse.
     assert run.returncode == 0 and "GUARDED-RAN" in run.stdout, run.stdout
-    acl = subprocess.run(["icacls", str(folder), "/sid"], capture_output=True, text=True).stdout
-    assert "*S-1-5-18" in acl and "*S-1-5-32-544" in acl
-    assert "(I)" not in acl and "S-1-5-32-545" not in acl and "S-1-1-0" not in acl
+    read = (
+        "$d = New-Object IO.DirectoryInfo $env:PF_DIR; $a = $d.GetAccessControl(); "
+        "'PROTECTED=' + $a.AreAccessRulesProtected; "
+        "'OWNER=' + $a.GetOwner([Security.Principal.SecurityIdentifier]).Value; "
+        "foreach ($r in $a.Access) { 'RULE=' + $r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value + ' inherited=' + $r.IsInherited }"
+    )
+    check = subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-Command", read],
+        env=dict(os.environ, PF_DIR=str(folder)), capture_output=True, text=True, timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    msg = f"stdout={check.stdout!r} stderr={check.stderr!r} rc={check.returncode}"
+    lines = [ln.strip() for ln in check.stdout.splitlines() if ln.strip()]
+    assert "PROTECTED=True" in lines and "OWNER=S-1-5-32-544" in lines, msg
+    rules = [ln for ln in lines if ln.startswith("RULE=")]
+    assert {r.split()[0] for r in rules} == {"RULE=S-1-5-18", "RULE=S-1-5-32-544"}, msg
+    assert all(r.endswith("inherited=False") for r in rules), msg
