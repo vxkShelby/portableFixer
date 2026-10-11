@@ -492,6 +492,12 @@ QLabel#targetUserBanner {
     padding: 8px 12px;
     color: #d6e2f0;
 }
+QFrame#firstRunBanner {
+    background-color: rgba(94, 230, 255, 18);
+    border: 1px solid rgba(94, 230, 255, 80);
+    border-radius: 10px;
+    color: #d6e2f0;
+}
 QLabel#wingetBanner[state="ok"] {
     background: transparent;
     border: none;
