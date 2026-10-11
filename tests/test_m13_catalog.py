@@ -222,7 +222,7 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
-    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    plan = build_execution_plan(command, dry_run=False, target_user=target, harden_backups=False)
     script = "; ".join(stubs + [guard, plan.argv[-1]])
     result = subprocess.run(
         [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -530,7 +530,7 @@ def _run_onedrive(target, setup_exit: int):
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
         f"{{ exit {STUB_GUARD_EXIT} }} }}",
     ]
-    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    plan = build_execution_plan(command, dry_run=False, target_user=target, harden_backups=False)
     result = subprocess.run(
         [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
          "; ".join(stubs + [plan.argv[-1]])],
@@ -576,7 +576,7 @@ def _run_appx_removal(action_id: str, target=None, fail_names=("Bad",)):
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
         f"{{ exit {STUB_GUARD_EXIT} }} }}",
     ]
-    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    plan = build_execution_plan(command, dry_run=False, target_user=target, harden_backups=False)
     result = subprocess.run(
         [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
          "; ".join(stubs + [plan.argv[-1]])],

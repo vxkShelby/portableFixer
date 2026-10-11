@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .audit_log import audit_log_path
+from .backup_acl import HARDEN_PS, references_backup_dir
 
 
 def create_undo_script(
@@ -56,6 +57,11 @@ def create_undo_script(
             "",
         ])
     if steps:
+        if any(references_backup_dir(step) for step in steps):
+            # The steps re-import backups from %ProgramData%\PortableFix as an
+            # administrator: refuse to run (exit 1) unless that folder is
+            # locked to SYSTEM/Administrators and free of planted files.
+            lines.extend(["# Secure the backup folder before importing from it:", HARDEN_PS.rstrip(), ""])
         lines.extend(steps)
     else:
         lines.append("# No reversible changes were made in this run.")

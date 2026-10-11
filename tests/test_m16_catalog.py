@@ -132,7 +132,7 @@ def _run_stubbed(command: str, stubs: list[str], stubbed: tuple, target=None):
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
         f"{{ exit {STUB_GUARD_EXIT} }} }}"
     )
-    plan = build_execution_plan(command, dry_run=False, target_user=target)
+    plan = build_execution_plan(command, dry_run=False, target_user=target, harden_backups=False)
     result = subprocess.run(
         [_pwsh_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
          "; ".join(stubs + [guard, plan.argv[-1]])],
