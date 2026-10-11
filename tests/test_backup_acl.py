@@ -93,8 +93,15 @@ def test_hardening_fails_closed_or_locks_the_folder(tmp_path):
         env=dict(os.environ, ProgramData=str(tmp_path)), capture_output=True, text=True, timeout=120,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    if run.returncode != 0:
+    import ctypes
+
+    elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    if not elevated:
         assert run.returncode == 1 and "GUARDED-RAN" not in run.stdout
         assert "Could not secure the backup folder" in run.stdout
-    else:
-        assert "GUARDED-RAN" in run.stdout
+        return
+    # Elevated (CI runner): the lock path must really work, no fail-closed excuse.
+    assert run.returncode == 0 and "GUARDED-RAN" in run.stdout, run.stdout
+    acl = subprocess.run(["icacls", str(folder), "/sid"], capture_output=True, text=True).stdout
+    assert "*S-1-5-18" in acl and "*S-1-5-32-544" in acl
+    assert "(I)" not in acl and "S-1-5-32-545" not in acl and "S-1-1-0" not in acl
