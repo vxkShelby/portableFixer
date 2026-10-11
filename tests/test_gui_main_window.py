@@ -3456,8 +3456,12 @@ def test_announce_to_screen_reader_is_safe_to_call(qtbot, tmp_path, monkeypatch)
         def __init__(self, widget, text):
             sent.append(text)
 
+    class FakeAccessible:
+        updateAccessibility = staticmethod(lambda event: sent.append(event))
+
+    # Qt < 6.8 (the pinned 6.7.2) has neither name: mw.QAccessible can be None.
     monkeypatch.setattr(mw, "QAccessibleAnnouncementEvent", FakeEvent)
-    monkeypatch.setattr(mw.QAccessible, "updateAccessibility", lambda event: sent.append(event))
+    monkeypatch.setattr(mw, "QAccessible", FakeAccessible)
     mw._announce_to_screen_reader(window, "text")
     mw._announce_to_screen_reader(window, "")
     assert sent[0] == "text" and isinstance(sent[1], FakeEvent) and len(sent) == 2
