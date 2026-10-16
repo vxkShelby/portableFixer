@@ -846,7 +846,11 @@ class MainWindow(QMainWindow):
         target_language = "English" if self.settings.language == "sk" else "Slovenčina"
         menu.addAction(self._t("language_switch_tooltip").format(language=target_language)).triggered.connect(
             lambda _checked=False: self._on_toggle_language())
-        theme_menu = menu.addMenu(self._t("settings_menu_theme"))
+        # Parent it explicitly and hold a reference: PySide can free the
+        # submenu returned by addMenu(str) once the Python wrapper is collected.
+        theme_menu = QMenu(self._t("settings_menu_theme"), menu)
+        menu.addMenu(theme_menu)
+        self._theme_menu = theme_menu
         theme_actions = {}
         for value in style.THEMES:
             theme_actions[value] = theme_menu.addAction(self._t(f"theme_{value}"))
