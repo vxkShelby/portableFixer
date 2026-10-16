@@ -6,11 +6,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m16_office_repair" / "actions.yaml"
 
 
-def test_m16_catalog_loads_7_actions_in_repair_category():
+def test_m16_catalog_loads_8_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m16_office_repair"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 7
+    assert len(module.actions) == 8
 
 
 def test_m16_catalog_risk_distribution():
@@ -25,6 +25,7 @@ def test_m16_catalog_risk_distribution():
     }
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "office_com_addin_disable_all_thirdparty",
+        "office_com_addin_disable_machine_wide",
         "office_quick_repair",
         "office_online_repair",
         "office_reset_outlook_profile",
@@ -37,6 +38,7 @@ def test_m16_catalog_only_addin_disable_has_undo():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
     assert by_id["office_com_addin_disable_all_thirdparty"].undo_command is not None
+    assert by_id["office_com_addin_disable_machine_wide"].undo_command is not None
     for not_undoable in (
         "office_version_channel_report",
         "office_addins_report",
@@ -56,6 +58,7 @@ def test_m16_catalog_covers_expected_ids():
         "office_addins_report",
         "office_ost_pst_report",
         "office_com_addin_disable_all_thirdparty",
+        "office_com_addin_disable_machine_wide",
         "office_quick_repair",
         "office_online_repair",
         "office_reset_outlook_profile",
@@ -89,6 +92,7 @@ def test_m16_catalog_outlook_profile_reset_fails_the_action_if_rename_fails():
 
 
 import json  # noqa: E402
+import re  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
@@ -252,6 +256,273 @@ def test_m16_long_running_repairs_have_extended_inactivity_timeouts():
         "office_addins_report",
         "office_ost_pst_report",
         "office_com_addin_disable_all_thirdparty",
+        "office_com_addin_disable_machine_wide",
         "office_reset_outlook_profile",
     ):
         assert by_id[default_timeout].inactivity_timeout_sec is None, default_timeout
+
+
+# --- office_com_addin_disable_machine_wide (HKLM / WOW6432Node, every user) ---
+
+HK64 = "HKLM:\\SOFTWARE\\Microsoft\\Office"
+HK32 = "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Office"
+MW_THIRD_PARTY = [
+    HK64 + "\\Outlook\\Addins\\Acme.Addin",
+    HK32 + "\\Outlook\\Addins\\Acme.Addin",  # same name, 32-bit branch: its own key
+    HK32 + "\\Excel\\Addins\\Contoso.Sync",
+]
+MW_STUBS = [
+    "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $p = if ($LiteralPath) { $LiteralPath } else { $Path }; "
+    "if ($p -like '*.json') { Microsoft.PowerShell.Management\\Test-Path -LiteralPath $p } "
+    "elseif ($env:PF_GONE -and ($p -like ('*' + $env:PF_GONE + '*'))) { $false } else { $true } }",
+    "function Get-ChildItem { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) $p = $LiteralPath; $names = @(); if ($env:PF_EMPTY) { } "
+    "elseif ($p -eq 'HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins') { $names = 'Microsoft.VbaAddin', 'Acme.Addin', 'TeamsAddin.FastConnect' } "
+    "elseif ($p -eq 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Office\\Outlook\\Addins') { $names = 'Acme.Addin', 'UCAddin.LyncAddin.1' } "
+    "elseif ($p -eq 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Office\\Excel\\Addins') { $names = 'Contoso.Sync' } "
+    "if ($env:PF_EXTRA_KEY -and ($p -eq 'HKLM:\\SOFTWARE\\Microsoft\\Office\\Word\\Addins')) { $names = $env:PF_EXTRA_KEY } "
+    "foreach ($n in $names) { [pscustomobject]@{ PSChildName = $n; PSPath = ($p + '\\' + $n) } } }",
+    "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Name) $lb = $env:PF_LOAD_DEFAULT; [pscustomobject]@{ LoadBehavior = $(if ($lb -eq 'str') { 'x' } else { [int]$lb }) } }",
+    "function Set-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Name, $Value, $Type) "
+    "[Console]::Out.WriteLine('STUB Set-ItemProperty ' + $LiteralPath + ' ' + $Value); "
+    "if ($env:PF_FAIL -and ($LiteralPath -like ('*' + $env:PF_FAIL))) { throw 'Prístup odmietnutý.' } }",
+    "function Remove-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Name) [Console]::Out.WriteLine('STUB Remove-ItemProperty ' + $LiteralPath) }",
+    # Like the registry provider: '/' is a separator and '..' climbs, so the Name says where a path really lands.
+    "function Get-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) "
+    "$p = ($LiteralPath -replace '^(HKLM:|Microsoft\\.PowerShell\\.Core\\\\Registry::HKEY_LOCAL_MACHINE)', '') -replace '/', '\\'; "
+    "$st = New-Object System.Collections.ArrayList; foreach ($s in $p.Split('\\')) { if ($s -eq '') { } elseif ($s -eq '..') { if ($st.Count) { $st.RemoveAt($st.Count - 1) } } else { [void]$st.Add($s) } }; "
+    "$n = 'HKEY_LOCAL_MACHINE\\' + ($st -join '\\'); "
+    "if ($env:PF_REDIRECT -and ($LiteralPath -like ('*' + $env:PF_REDIRECT + '*'))) { $n = 'HKEY_LOCAL_MACHINE\\SOFTWARE\\Elsewhere' }; [pscustomobject]@{ Name = $n } }",
+    "function Get-Process { [CmdletBinding()] param($Name) if ($env:PF_RUNNING) { [pscustomobject]@{ ProcessName = $env:PF_RUNNING } } }",
+]
+MW_STUBBED = ("Test-Path", "Get-ChildItem", "Get-ItemProperty", "Set-ItemProperty", "Remove-ItemProperty", "Get-Item", "Get-Process")
+MW_ID = "office_com_addin_disable_machine_wide"
+
+
+def _run_machine_wide(tmp_path, field="command", backup=None, raw_backup=None, **env_vars):
+    program_data = tmp_path / "ProgramData"
+    (program_data / "PortableFix").mkdir(parents=True, exist_ok=True)
+    backup_file = program_data / "PortableFix" / "office_addins_machine_backup.json"
+    backup_file.unlink(missing_ok=True)
+    if backup is not None:
+        backup_file.write_text(json.dumps(backup), encoding="utf-8")
+    if raw_backup is not None:
+        backup_file.write_text(raw_backup, encoding="utf-8")
+    env_vars = {"PF_LOAD_DEFAULT": "3", **env_vars}
+    env = [f"$env:ProgramData = '{program_data}'"] + [f"$env:{k} = '{v}'" for k, v in env_vars.items()]
+    result, ran = _run_stubbed(getattr(_m16(MW_ID), field), env + MW_STUBS, MW_STUBBED)
+    return result, ran, backup_file
+
+
+def _backup_map(path):
+    return {e["Path"]: e["LoadBehavior"] for e in json.loads(path.read_text(encoding="utf-8-sig"))}
+
+
+def test_m16_machine_wide_catalog_contract():
+    action = _m16(MW_ID)
+    assert action.risk == RiskLevel.MODERATE and action.exclude_from_select_all is True
+    assert action.undo_command is not None
+    # Machine-wide: never touches the signed-in user's hive (that is the other action).
+    assert "HKCU" not in action.command and "__pfUserHive" not in action.command
+    assert "WOW6432Node" in action.command
+    for app in ("Outlook", "Word", "Excel", "PowerPoint"):
+        assert app in action.command
+    assert "VŠETKÝCH" in action.description_sk and "EVERY user" in action.description_en
+
+
+def test_m16_machine_wide_disables_third_party_in_both_registry_views_and_backs_up_per_key(tmp_path):
+    result, ran, backup = _run_machine_wide(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Disabled 3 of 3 third-party machine-wide Office add-in(s), failed 0." in result.stdout
+    assert sorted(ran) == sorted(f"STUB Set-ItemProperty {k} 0" for k in MW_THIRD_PARTY), ran
+    assert not any("Microsoft.VbaAddin" in line or "TeamsAddin" in line or "UCAddin" in line for line in ran)
+    assert _backup_map(backup) == {k: 3 for k in MW_THIRD_PARTY}
+
+
+def test_m16_machine_wide_backup_is_first_run_only_per_key(tmp_path):
+    # A re-run reads 0 everywhere: it must not overwrite an earlier backup ...
+    first = {k: 3 for k in MW_THIRD_PARTY}
+    result, _, backup = _run_machine_wide(
+        tmp_path, backup=[{"Path": k, "LoadBehavior": v} for k, v in first.items()], PF_LOAD_DEFAULT="0",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Earlier backup kept" in result.stdout
+    assert _backup_map(backup) == first
+    # ... but an add-in that was not in it yet is added with its current value.
+    partial = [{"Path": MW_THIRD_PARTY[0], "LoadBehavior": 3}]
+    result, _, backup = _run_machine_wide(tmp_path, backup=partial, PF_LOAD_DEFAULT="0")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _backup_map(backup) == {MW_THIRD_PARTY[0]: 3, MW_THIRD_PARTY[1]: 0, MW_THIRD_PARTY[2]: 0}
+
+
+def test_m16_machine_wide_lists_failed_writes_and_fails(tmp_path):
+    result, _, _ = _run_machine_wide(tmp_path, PF_FAIL="Contoso.Sync")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Disabled 2 of 3 third-party machine-wide Office add-in(s), failed 1." in result.stdout
+    assert "Failed: " + MW_THIRD_PARTY[2] + " (" in result.stdout
+
+
+@pytest.mark.parametrize("app", ["OUTLOOK", "WINWORD", "EXCEL", "POWERPNT"])
+def test_m16_machine_wide_refuses_while_an_office_app_runs(tmp_path, app):
+    result, ran, backup = _run_machine_wide(tmp_path, PF_RUNNING=app)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Nothing was changed." in result.stdout
+    assert ran == [] and not backup.exists()
+
+
+def test_m16_machine_wide_with_nothing_to_disable_changes_nothing_and_writes_no_backup(tmp_path):
+    result, ran, backup = _run_machine_wide(tmp_path, PF_EMPTY="1")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No third-party machine-wide Office add-ins found." in result.stdout
+    assert ran == [] and not backup.exists()
+
+
+def test_m16_machine_wide_refuses_without_a_valid_backup(tmp_path):
+    result, ran, backup = _run_machine_wide(tmp_path, raw_backup="{not json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "refusing to change add-ins without a valid backup" in result.stdout
+    assert ran == [] and backup.read_text(encoding="utf-8") == "{not json"
+
+
+def test_m16_machine_wide_undo_restores_the_backed_up_values(tmp_path):
+    backup = [{"Path": MW_THIRD_PARTY[0], "LoadBehavior": 3}, {"Path": MW_THIRD_PARTY[1], "LoadBehavior": 2},
+              {"Path": MW_THIRD_PARTY[2], "LoadBehavior": None}]
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=backup, PF_LOAD_DEFAULT="0")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(ran) == sorted([
+        f"STUB Set-ItemProperty {MW_THIRD_PARTY[0]} 3", f"STUB Set-ItemProperty {MW_THIRD_PARTY[1]} 2",
+        f"STUB Remove-ItemProperty {MW_THIRD_PARTY[2]}",
+    ]), ran
+    assert "Restored 3 of 3" in result.stdout and "failed 0" in result.stdout
+
+
+def test_m16_machine_wide_undo_reports_failures_and_uninstalled_add_ins(tmp_path):
+    backup = [{"Path": k, "LoadBehavior": 3} for k in MW_THIRD_PARTY]
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=backup, PF_GONE="Excel", PF_FAIL="Acme.Addin")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Restored 0 of 3 machine-wide Office add-in LoadBehavior value(s), failed 2, no longer installed 1." in result.stdout
+    assert not any("Contoso.Sync" in line for line in ran)
+
+
+def test_m16_machine_wide_undo_without_a_backup_says_so(tmp_path):
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No backup found." in result.stdout and ran == []
+
+
+BAD_PATHS = [
+    "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Evil",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\..\\..\\..\\Run",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\*",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme[1]",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme\\Sub",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\OneNote\\Addins\\Acme",
+    "HKCU:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme",
+    "HKEY_USERS\\S-1-5-21\\Software\\Microsoft\\Office\\Outlook\\Addins\\Acme",
+    "Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme\n",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\x/../../../..",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a/../b",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a/b",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\..",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\.",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a..b",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a:b",
+]
+
+
+@pytest.mark.parametrize("bad_path", BAD_PATHS)
+def test_m16_machine_wide_undo_rejects_tampered_paths(tmp_path, bad_path):
+    backup = [{"Path": bad_path, "LoadBehavior": 3}, {"Path": MW_THIRD_PARTY[0], "LoadBehavior": 3}]
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=backup)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "rejected" in result.stdout and "failed 1" in result.stdout
+    assert ran == [f"STUB Set-ItemProperty {MW_THIRD_PARTY[0]} 3"], ran  # the valid entry is still restored
+
+
+@pytest.mark.parametrize("bad_value", [4, -1, 17, 255, "3", 3.5, True, [3], {"a": 1}])
+def test_m16_machine_wide_undo_rejects_out_of_range_load_behavior(tmp_path, bad_value):
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=[{"Path": MW_THIRD_PARTY[0], "LoadBehavior": bad_value}])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "rejected" in result.stdout and ran == []
+
+
+@pytest.mark.parametrize("value", [0, 1, 2, 3, 8, 9, 16])
+def test_m16_machine_wide_undo_accepts_every_known_load_behavior(tmp_path, value):
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=[{"Path": MW_THIRD_PARTY[0], "LoadBehavior": value}])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ran == [f"STUB Set-ItemProperty {MW_THIRD_PARTY[0]} {value}"]
+
+
+def test_m16_machine_wide_undo_accepts_the_real_registry_provider_prefix_case_insensitively(tmp_path):
+    path = "microsoft.powershell.core\\registry::hkey_local_machine\\software\\wow6432node\\microsoft\\office\\excel\\addins\\Contoso.Sync"
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=[{"Path": path, "LoadBehavior": 3}])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ran == [f"STUB Set-ItemProperty {path} 3"]
+
+
+@pytest.mark.parametrize("bad_path", BAD_PATHS[:6])
+def test_m16_machine_wide_refuses_to_rewrite_a_tampered_backup(tmp_path, bad_path):
+    result, ran, backup = _run_machine_wide(tmp_path, backup=[{"Path": bad_path, "LoadBehavior": 3}])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert ran == [] and _backup_map(backup) == {bad_path: 3}
+
+
+def test_m16_machine_wide_refuses_a_backup_with_out_of_range_load_behavior(tmp_path):
+    result, ran, backup = _run_machine_wide(tmp_path, backup=[{"Path": MW_THIRD_PARTY[0], "LoadBehavior": 99}])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert ran == [] and _backup_map(backup) == {MW_THIRD_PARTY[0]: 99}
+
+
+@pytest.mark.parametrize("load_default", ["99", "str"])
+def test_m16_machine_wide_does_not_back_up_or_change_a_key_it_would_reject(tmp_path, load_default):
+    # An existing value the undo would refuse to restore: skipped, listed, exit 1, nothing written for it.
+    result, ran, backup = _run_machine_wide(tmp_path, PF_LOAD_DEFAULT=load_default)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Disabled 0 of 3" in result.stdout and "failed 3" in result.stdout
+    assert ran == [] and not backup.exists()
+
+
+@pytest.mark.parametrize("name", ["Evil*", "Evil/../../../..", "x/../../../..", "a/../b", "a/b", "..", "a..b", "a:b", "Evil[1]"])
+def test_m16_machine_wide_skips_add_in_keys_with_hostile_names(tmp_path, name):
+    result, ran, backup = _run_machine_wide(tmp_path, PF_EXTRA_KEY=name)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Disabled 3 of 4" in result.stdout and "failed 1" in result.stdout
+    assert not any(name in line for line in ran)
+    assert name not in backup.read_text(encoding="utf-8-sig")
+
+
+def test_m16_machine_wide_does_not_write_a_key_that_resolves_elsewhere(tmp_path):
+    # Name passes the pattern but the provider says the key is somewhere else: skipped before any write.
+    result, ran, backup = _run_machine_wide(tmp_path, PF_EXTRA_KEY="Redirect.Addin", PF_REDIRECT="Redirect")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Disabled 3 of 4" in result.stdout and "does not resolve to the expected add-in key" in result.stdout
+    assert not any("Redirect" in line for line in ran)
+    assert "Redirect" not in backup.read_text(encoding="utf-8-sig")
+
+
+def test_m16_machine_wide_undo_does_not_write_a_key_that_resolves_elsewhere(tmp_path):
+    redirected = HK64 + "\\Word\\Addins\\Redirect.Addin"
+    backup = [{"Path": redirected, "LoadBehavior": 3}, {"Path": MW_THIRD_PARTY[0], "LoadBehavior": 3}]
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=backup, PF_REDIRECT="Redirect")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "failed 1" in result.stdout and "does not resolve to the expected add-in key" in result.stdout
+    assert ran == [f"STUB Set-ItemProperty {MW_THIRD_PARTY[0]} 3"], ran
+
+
+def test_m16_machine_wide_uses_literal_paths_for_registry_access():
+    action = _m16(MW_ID)
+    for script in (action.command, action.undo_command):
+        for cmdlet in ("Get-ChildItem", "Get-ItemProperty", "Set-ItemProperty", "Remove-ItemProperty"):
+            assert not re.search(cmdlet + r" -Path\b", script), cmdlet
+    assert "Test-Path -Path" not in action.undo_command
+
+
+def test_m16_machine_wide_undo_script_starts_with_the_backup_folder_hardening(tmp_path):
+    from portablefix import undo
+    from portablefix.backup_acl import HARDEN_PS, references_backup_dir
+
+    step = _m16(MW_ID).undo_command
+    assert references_backup_dir(step)
+    text = undo.create_undo_script(tmp_path, "run1", steps=[step]).read_text(encoding="utf-8-sig")
+    assert HARDEN_PS.rstrip() in text
+    assert text.index(HARDEN_PS.rstrip()) < text.index(step)
