@@ -118,8 +118,8 @@ def _elapsed_text(seconds: float) -> str:
 
 
 try:
-    # Qt 6.8+. requirements.txt still pins 6.7.2, where announcements are a
-    # silent no-op - the status bar text stays readable either way.
+    # Qt 6.8+ (requirements.txt pins 6.8.3). Older Qt has neither name:
+    # announcements are then a silent no-op - the status bar text stays readable.
     from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent
 except ImportError:  # pragma: no cover - depends on the installed PySide6
     QAccessible = QAccessibleAnnouncementEvent = None
@@ -2415,6 +2415,11 @@ class MainWindow(QMainWindow):
             rec_button_row.addWidget(apply_rec_button)
             layout.addLayout(rec_button_row)
 
+        if self.settings.redact_for_client:
+            tech_note = QLabel(self._t("report_technician_copy_note").format(run_id=self.run_id))
+            tech_note.setWordWrap(True)
+            layout.addWidget(tech_note)
+
         button_row = QHBoxLayout()
         button_row.addStretch(1)
         open_button = QPushButton(self._t("open_report"))
@@ -3431,7 +3436,8 @@ class MainWindow(QMainWindow):
         self._show_handoff_saved(saved)
 
     def _show_handoff_saved(self, saved: Path) -> None:
-        self.statusBar().showMessage(self._t("handoff_saved").format(path=saved), 15000)
+        note = f" {self._t('handoff_saved_redacted_note')}" if self.settings.redact_for_client else ""
+        self.statusBar().showMessage(self._t("handoff_saved").format(path=saved) + note, 15000)
         button = getattr(self, "_handoff_folder_button", None)
         if button is None:
             button = QPushButton(self._t("handoff_open_folder"))

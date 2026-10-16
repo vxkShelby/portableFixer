@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from . import branding as branding_mod
-from . import health, intake, redaction
+from . import health, history, intake, redaction
 from .audit_log import audit_log_path
 from .i18n import translate
 from .models import ActionDef, ModuleDef
@@ -1738,15 +1738,20 @@ def generate_report(
         storage_fallback=storage_fallback, branding=branding,
     )
     # The file name keeps the real computer name - the history is looked up by it.
+    # That technician copy is always the full, unredacted report; with
+    # redact_for_client the client-facing copy is a separate pc_<run>_client file.
     name = data["hostname"]
-    if redact:
-        data = redact_report_data(data)
     reports_dir = base_dir / "Reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     html_path = reports_dir / f"{name}_{run_id}.html"
     json_path = reports_dir / f"{name}_{run_id}.json"
     html_path.write_text(_render_html(data), encoding="utf-8")
     json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    if redact:
+        client_data = redact_report_data(data)
+        client_html, client_json = history.client_report_paths(reports_dir, run_id)
+        client_html.write_text(_render_html(client_data), encoding="utf-8")
+        client_json.write_text(json.dumps(client_data, indent=2, ensure_ascii=False), encoding="utf-8")
     return html_path, json_path
 
 

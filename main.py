@@ -110,6 +110,9 @@ def _offer_resume(base_dir: Path, language: str) -> "batch_resume.PendingBatch |
     return None
 
 
+# Also installer/PortableFix.iss AppMutex= (Setup asks to close a running app).
+# Held by the process running the app and gone with it, so the in-app update
+# swap (which waits for that exit) is unaffected.
 _SINGLE_INSTANCE_MUTEX_NAME = "Global\\PortableFix_SingleInstance_Mutex"
 _ERROR_ALREADY_EXISTS = 183
 # Kept for the process lifetime: closing the last handle would free the name.

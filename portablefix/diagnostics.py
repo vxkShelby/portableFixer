@@ -126,9 +126,12 @@ def collect_members(base_dir: Path, run_id: str | None = None) -> list[tuple[str
         if data is None:
             continue
         redacted = report.redact_report_data(data, mask)
-        members.append((f"Reports/{json_path.name}", json.dumps(redacted, indent=2, ensure_ascii=False).encode("utf-8")))
+        # The technician's <hostname>_<run> file is read, but the export names
+        # its redacted copy without the computer name.
+        stem = f"pc_{run_id}"
+        members.append((f"Reports/{stem}.json", json.dumps(redacted, indent=2, ensure_ascii=False).encode("utf-8")))
         if json_path.with_suffix(".html").is_file():
-            members.append((f"Reports/{json_path.stem}.html", report.render_report_html(redacted).encode("utf-8")))
+            members.append((f"Reports/{stem}.html", report.render_report_html(redacted).encode("utf-8")))
     return members
 
 

@@ -178,7 +178,10 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
   sa nemenia; loopback, masky a verejné DNS (8.8.8.8, 1.1.1.1) tiež nie.
   Neoznačené krátke štvorčíslie (`ovládač 10.1.18.2`) sa zamení za `<ip>`. Report to na začiatku
   viditeľne uvedie („Redigované pre klienta“) a JSON má `"redacted": true`.
-  Redaguje sa až pri zápise reportu a pri ukladaní balíka - auditný log
+  Táto kópia sa zapíše ako `Reports\pc_<beh>_client.html/.json`; technikov
+  `Reports\<počítač>_<beh>.html/.json` ostáva úplný a bez redakcie (číta ho
+  história) a nikdy sa nedostane do balíka ani do exportu diagnostiky.
+  Redaguje sa až pri zápise kópie pre klienta a pri ukladaní balíka - auditný log
   na USB sa nikdy nemení a v balíku ostáva `undo.ps1` bez zmeny (musí
   vrátiť presné cesty). Vstavané reporty Windows v `diagnostics/` sa
   neredigujú a `diagnostics/README.txt` to povie. Je to maskovanie podľa

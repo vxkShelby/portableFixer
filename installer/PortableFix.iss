@@ -14,6 +14,10 @@
 
 [Setup]
 AppId={{B4E6C6A0-3F5D-4B7C-9E1A-2C8D6F0A1B3E}
+; Setup/uninstaller refuse to touch a running app: this is the single-instance
+; mutex main.py already holds for the whole process lifetime (_SINGLE_INSTANCE_MUTEX_NAME;
+; tests/test_main.py keeps the two equal). Do not rename one without the other.
+AppMutex=Global\PortableFix_SingleInstance_Mutex
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
