@@ -3459,7 +3459,7 @@ def test_announce_to_screen_reader_is_safe_to_call(qtbot, tmp_path, monkeypatch)
     class FakeAccessible:
         updateAccessibility = staticmethod(lambda event: sent.append(event))
 
-    # Qt < 6.8 (the pinned 6.7.2) has neither name: mw.QAccessible can be None.
+    # Qt < 6.8 has neither name: mw.QAccessible can be None.
     monkeypatch.setattr(mw, "QAccessibleAnnouncementEvent", FakeEvent)
     monkeypatch.setattr(mw, "QAccessible", FakeAccessible)
     mw._announce_to_screen_reader(window, "text")
@@ -3469,6 +3469,24 @@ def test_announce_to_screen_reader_is_safe_to_call(qtbot, tmp_path, monkeypatch)
     monkeypatch.setattr(mw, "QAccessibleAnnouncementEvent", None)
     mw._announce_to_screen_reader(window, "text")
     assert len(sent) == 2
+
+
+def test_announce_to_screen_reader_builds_the_real_qt_event(qtbot, tmp_path, monkeypatch):
+    # Qt 6.8 (pinned) ships QAccessibleAnnouncementEvent; the fakes above would
+    # not notice a renamed or re-signatured class. Constructing and posting the
+    # real one must not raise (no screen reader is attached here, so it is
+    # delivered to no one).
+    from portablefix.gui import main_window as mw
+
+    assert mw.QAccessibleAnnouncementEvent is not None, "Qt >= 6.8 expected (requirements.txt)"
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(), is_admin=True, run_id="run_announce3")
+    qtbot.addWidget(window)
+    posted = []
+    real_update = mw.QAccessible.updateAccessibility
+    monkeypatch.setattr(mw.QAccessible, "updateAccessibility", staticmethod(lambda event: (posted.append(event), real_update(event))))
+    mw._announce_to_screen_reader(window, "Done")
+    assert isinstance(posted[0], mw.QAccessibleAnnouncementEvent)
 
 
 def test_style_muted_text_meets_wcag_aa_contrast():

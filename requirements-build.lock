@@ -1,9 +1,3 @@
-# Hash-locked install for the release build (.github/workflows/release.yml)
-# and the CI build-smoke job:  pip install --require-hashes -r requirements-build.lock
-# Generated from requirements-build.txt (Windows, Python 3.12) - regenerate
-# whenever a pin there or in requirements.txt changes (tests/test_build_requirements.py
-# fails until you do):
-#   uv pip compile requirements-build.txt --generate-hashes --python-version 3.12 --python-platform windows --no-header --no-annotate -o requirements-build.lock
 altgraph==0.17.5 \
     --hash=sha256:c87b395dd12fabde9c99573a9749d67da8d29ef9de0125c7f536699b4a9bc9e7 \
     --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
@@ -162,21 +156,21 @@ pynacl==1.6.2 \
     --hash=sha256:d071c6a9a4c94d79eb665db4ce5cedc537faf74f2355e4d502591d850d3913c0 \
     --hash=sha256:d29bfe37e20e015a7d8b23cfc8bd6aa7909c92a1b8f41ee416bbb3e79ef182b2 \
     --hash=sha256:fe9847ca47d287af41e82be1dd5e23023d3c31a951da134121ab02e42ac218c9
-pyside6==6.7.2 \
-    --hash=sha256:15e7696a09072ee977f6e6179ab1e48184953df8417bcaa83cfadf0b79747242 \
-    --hash=sha256:602debef9ec159b0db48f83b38a0e43e2dad3961f7d99f708d98620f04e9112b \
-    --hash=sha256:6e0acb471535de303f56e3077aa86f53496b4de659b99ecce80520bcee508a63 \
-    --hash=sha256:f73ae0de77d67f51ca3ce8207b12d3a5fa0107d3d5b6e4aeb3b53ee842b0927a
-pyside6-addons==6.7.2 \
-    --hash=sha256:22979b1aa09d9cf1d7a86c8a9aa0cb4791d6bd1cc94f96c5b6780c5ef8a9e34e \
-    --hash=sha256:90b995efce61058d995c603ea480a9a3054fe8206739dcbc273fc3b53d40650f \
-    --hash=sha256:94b9bf6a2a4a7ac671e1776633e50d51326c86f4184f1c6e556f4dd5498fd52a \
-    --hash=sha256:ebf549eb25998665d8e4ec24014fbbd37bebc5ecdcb050b34db1e1c03e1bf81d
-pyside6-essentials==6.7.2 \
-    --hash=sha256:0111d5fa8cf826de3ca9d82fed54726cce116d57f454f88a6467578652032d69 \
-    --hash=sha256:4d13666e796ec140ecfb432c4f3d7baef6dfafc11929985a83b22c0025532fb7 \
-    --hash=sha256:9135513e1c4c6e2fbb1e4f9afcb3d42e54708b0d9ed870cb3213ea4874cafa1e \
-    --hash=sha256:a1a4c09f1e916b9cfe53151fe4a503a6acb1f6621ba28204d1bfe636f80d6780
+pyside6==6.8.3 \
+    --hash=sha256:31f390c961b54067ae41360e5ea3b340ce0e0e5feadea2236c28226d3b37edcc \
+    --hash=sha256:5bf5153cab9484629315f57c56a9ad4b7d075b4dd275f828f7549abf712c590b \
+    --hash=sha256:722dc0061d8ef6dbb8c0b99864f21e83a5b49ece1ecb2d0b890840d969e1e461 \
+    --hash=sha256:8e53e2357bfbdee1fa86c48312bf637460a2c26d49e7af0b3fae2e179ccc7052
+pyside6-addons==6.8.3 \
+    --hash=sha256:67548f6db11f4e1b7e4b6efd9c3fc2e8d275188a7b2feac388961128572a6955 \
+    --hash=sha256:6983d3b01fad53637bad5360930d5923509c744cc39704f9c1190eb9934e33da \
+    --hash=sha256:7949a844a40ee10998eb2734e2c06c4c7182dfcd4c21cc4108a6b96655ebe59f \
+    --hash=sha256:ea46649e40b9e6ab11a0da2da054d3914bff5607a5882885e9c3bc2eef200036
+pyside6-essentials==6.8.3 \
+    --hash=sha256:3c0fae5550aff69f2166f46476c36e0ef56ce73d84829eac4559770b0c034b07 \
+    --hash=sha256:aa56c135db924ecfaf50088baf32f737d28027419ca5fee67c0c7141b29184e3 \
+    --hash=sha256:b4f4823f870b5bed477d6f7b6a3041839b859f70abfd703cf53208c73c2fe4cd \
+    --hash=sha256:fd57fa0c886ef99b3844173322c0023ec77cc946a0c9a0cdfbc2ac5c511053c1
 pythonnet==3.1.0 \
     --hash=sha256:698dd88edc198819ad63b624a6ebe76208c7b46e4fe13626f65e484f0358d6ba \
     --hash=sha256:7b34c382905d10a371509ffafd64cae0416305c28817738a9cd138336f4e9991 \
@@ -256,8 +250,8 @@ pyyaml==6.0.2 \
 setuptools==84.0.0 \
     --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 \
     --hash=sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73
-shiboken6==6.7.2 \
-    --hash=sha256:50c33ac6317b673a1eb97a9abaafccb162c4ba0c9ca658a8e449c49a8aadc379 \
-    --hash=sha256:70e80737b27cd5d83504b373013b55e70462bd4a27217d919ff9a83958731990 \
-    --hash=sha256:9024e6afb2af1568ebfc8a5d07e4ff6c8829f40923eeb28901f535463e2b6b65 \
-    --hash=sha256:98bedf9a15f1d8ba1af3e4d1e7527f7946ce36da541e08074fd9dc9ab5ff1adf
+shiboken6==6.8.3 \
+    --hash=sha256:295a003466ca2cccf6660e2f2ceb5e6cef4af192a48a196a32d46b6f0c9ec5cb \
+    --hash=sha256:2b1a41348102952d2a5fbf3630bddd4d44112e18058b5e4cf505e51f2812429d \
+    --hash=sha256:483efc7dd53c69147b8a8ade71f7619c79ffc683efcb1dc4f4cb6c40bb23d29b \
+    --hash=sha256:bca3a94513ce9242f7d4bbdca902072a1631888e0aa3a8711a52cc5dbe93588f

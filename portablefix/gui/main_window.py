@@ -118,8 +118,8 @@ def _elapsed_text(seconds: float) -> str:
 
 
 try:
-    # Qt 6.8+. requirements.txt still pins 6.7.2, where announcements are a
-    # silent no-op - the status bar text stays readable either way.
+    # Qt 6.8+ (requirements.txt pins 6.8.3). Older Qt has neither name:
+    # announcements are then a silent no-op - the status bar text stays readable.
     from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent
 except ImportError:  # pragma: no cover - depends on the installed PySide6
     QAccessible = QAccessibleAnnouncementEvent = None
