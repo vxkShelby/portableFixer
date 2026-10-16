@@ -106,3 +106,30 @@ def test_settings_menu_forwards_to_the_existing_settings(qtbot, tmp_path, monkey
     _menu_action(window, "Technician and job details…").trigger()
     _menu_action(window, "Report branding…").trigger()
     assert opened == ["job", "branding"]
+
+
+def test_appearance_menu_switches_the_theme_live_and_remembers_it(qtbot, tmp_path):
+    from portablefix.gui import style
+
+    try:
+        window = _plain_window(qtbot, tmp_path, theme="dark")
+        window._settings_menu.aboutToShow.emit()
+        theme_menu = _menu_action(window, "Appearance").menu()
+        assert theme_menu is not None
+        by_text = {a.text(): a for a in theme_menu.actions()}
+        assert list(by_text) == ["Follow system", "Light", "Dark"]
+        assert by_text["Dark"].isChecked() and not by_text["Light"].isChecked()
+
+        by_text["Light"].trigger()
+        assert window.settings.theme == "light"
+        assert load_settings(tmp_path).theme == "light"
+        assert window.styleSheet() == style.build_stylesheet("light")
+        window._settings_menu.aboutToShow.emit()
+        assert by_text["Light"].isChecked() and not by_text["Dark"].isChecked()
+
+        # "auto" has no OS scheme under the offscreen platform: dark.
+        by_text["Follow system"].trigger()
+        assert window.settings.theme == "auto"
+        assert window.styleSheet() == style.build_stylesheet("dark")
+    finally:
+        style.set_theme("dark")

@@ -311,10 +311,6 @@ def main() -> int:
         # is an offline portable app with no guaranteed internet access.
         for font_path in _trusted_font_paths(raw_base_dir):
             QFontDatabase.addApplicationFont(str(font_path))
-        # style.stylesheet(), not style.STYLE: empty under Windows High
-        # Contrast so the user's system colors win (see style.py).
-        app.setStyleSheet(style.stylesheet())
-
         icon_path = app_icon_path(raw_base_dir)
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
@@ -322,6 +318,11 @@ def main() -> int:
         crash_log_dir = base_dir
         install_excepthook(base_dir)
         settings = load_settings(base_dir)
+        # style.stylesheet(), not style.STYLE: empty under Windows High
+        # Contrast so the user's system colors win (see style.py). Applied
+        # once the theme setting (auto/light/dark) is known.
+        style.set_theme(settings.theme)
+        app.setStyleSheet(style.stylesheet())
 
         if used_fallback:
             QMessageBox.warning(
