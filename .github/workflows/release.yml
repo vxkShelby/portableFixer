@@ -7,6 +7,15 @@ name: Release build
 # maintainer would, then puts the four assets on a DRAFT release. Nothing
 # reaches users until the maintainer has tested the draft's zip and
 # published it (README.md, "Release proces").
+#
+# Three jobs, so that each holds only what it needs:
+#   build   - the only job with the signing key (one step) and the only one
+#             that runs third-party code (pip, Inno Setup); uploads the four
+#             assets as a workflow artifact.
+#   attest  - build provenance for the zip and Setup.exe (id-token and
+#             attestations: write, nothing else). Runs no build code.
+#   publish - downloads the artifact and drafts the release (contents: write).
+#             Has no secret and runs nothing but gh and sha256sum.
 on:
   workflow_dispatch:
     inputs:
@@ -14,10 +23,8 @@ on:
         description: "Release tag, e.g. v1.15.0 (must match portablefix/version.py)"
         required: true
 
-permissions:
-  contents: write
-  # "Tests passed for this commit" reads the Tests workflow's runs.
-  actions: read
+# Nothing by default; every job asks for exactly what it uses.
+permissions: {}
 
 concurrency:
   group: release
@@ -29,6 +36,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      # contents: write only so that "The tag is new" sees DRAFT releases
+      # (the list hides them from a read-only token); nothing in this job
+      # pushes or creates a release.
+      contents: write
+      # "Tests passed for this commit" reads the Tests workflow's runs.
+      actions: read
     # Everything below runs on the machine that later holds the signing key
     # - the single trust root of every client - so third-party code is
     # pinned to what was reviewed: actions by commit SHA (a tag can be moved),
@@ -108,12 +122,73 @@ jobs:
           python scripts/verify_release.py --setup $exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Only the four release assets leave this job. They share a directory,
+      # so the artifact holds them under their bare names.
+      - name: Keep the release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: release-assets
+          path: |
+            Output/PortableFix-Portable.zip
+            Output/PortableFix-Portable.zip.sha256
+            Output/PortableFix-Setup.exe
+            Output/PortableFix-Setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Get the release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: release-assets
+          path: Output
+
+      # Signed provenance (Sigstore) of the two files people run, tied to this
+      # workflow run and commit: verify with
+      #   gh attestation verify <file> --repo vxkShelby/portableFixer
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            Output/PortableFix-Portable.zip
+            Output/PortableFix-Setup.exe
+
+  publish:
+    # A failed attestation stops the draft.
+    needs: [build, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Get the release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: release-assets
+          path: Output
+
       - name: Draft the release
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: |
-          gh release create $env:TAG --draft --target $env:GITHUB_SHA --title $env:TAG --notes "Draft - test before publishing (README.md, Release proces)." `
-            Output\PortableFix-Portable.zip Output\PortableFix-Portable.zip.sha256 Output\PortableFix-Setup.exe Output\PortableFix-Setup.exe.sha256
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          set -euo pipefail
+          cd Output
+          # What was built is what is released: the checksums written in the
+          # build job must still match the files that crossed the artifact (the
+          # zip's is written by PowerShell, hence the CR strip).
+          head -n 1 PortableFix-Portable.zip.sha256 | tr -d '\r' | sha256sum -c -
+          head -n 1 PortableFix-Setup.exe.sha256 | tr -d '\r' | sha256sum -c -
+          [ "$(ls | wc -l)" -eq 4 ]
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" \
+            --notes "Draft - test before publishing (README.md, Release proces)." \
+            PortableFix-Portable.zip PortableFix-Portable.zip.sha256 PortableFix-Setup.exe PortableFix-Setup.exe.sha256
