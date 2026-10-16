@@ -112,14 +112,15 @@ def collect_members(base_dir: Path, run_id: str | None = None) -> list[tuple[str
 
     run_id = run_id or _current_run_id(base_dir)
     mask = redaction.local_profile_names() + redaction.local_account_names()
+    hosts = redaction.local_hostnames()
     members: list[tuple[str, bytes]] = []
     crash = crash_log_path(base_dir)
     if crash.is_file():
         text = crash.read_text(encoding="utf-8", errors="replace")
-        members.append(("Logs/crash.log", redaction.redact_text(text, (), mask).encode("utf-8")))
+        members.append(("Logs/crash.log", redaction.redact_text(text, (), mask, hosts).encode("utf-8")))
     audit = audit_log_path(base_dir, run_id) if run_id else None
     if audit is not None and audit.is_file():
-        members.append((f"Logs/{audit.name}", handoff._redacted_audit_log(audit, [], mask)))
+        members.append((f"Logs/{audit.name}", handoff._redacted_audit_log(audit, [], mask, hosts)))
     for json_path in sorted((base_dir / "Reports").glob(f"*_{run_id}.json")) if run_id else []:
         data = handoff._load_report_json(json_path)
         if data is None:

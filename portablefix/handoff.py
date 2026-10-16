@@ -501,8 +501,9 @@ def diagnostics_readme(results: list[DiagnosticResult], hostname: str, run_id: s
     return "\n".join(lines)
 
 
-def default_package_name(hostname: str, run_id: str) -> str:
-    return f"PortableFix_{hostname}_{run_id}.zip"
+def default_package_name(hostname: str, run_id: str, redact: bool = False) -> str:
+    # A redacted package goes to the client: no computer name in its file name.
+    return f"PortableFix_{'pc' if redact else hostname}_{run_id}.zip"
 
 
 def _check_name(value: str, what: str) -> None:
@@ -617,7 +618,7 @@ def _audit_target_users(source: Path) -> list[str]:
     return users
 
 
-def _redacted_audit_log(source: Path, keep: list[str], mask: list[str]) -> bytes:
+def _redacted_audit_log(source: Path, keep: list[str], mask: list[str], hosts: list[str] = ()) -> bytes:
     """The audit log copy with every entry redacted, one JSON object per
     line as audit_log.append_entry writes them. Parsed first so a path is
     matched as the text it is, not as JSON-escaped backslashes; a line that
@@ -633,20 +634,20 @@ def _redacted_audit_log(source: Path, keep: list[str], mask: list[str]) -> bytes
     # One call for the whole log: an SSID or serial number named by key in
     # one entry is masked in every other entry too.
     redacted = redaction.redact_data(
-        [e for e in entries if not isinstance(e, str)], keep=keep, mask=mask,
+        [e for e in entries if not isinstance(e, str)], keep=keep, mask=mask, hosts=hosts,
     )
     out = []
     parsed = iter(redacted)
     for entry in entries:
         if isinstance(entry, str):
-            out.append(redaction.redact_text(_unescape_json_text(entry), keep, mask))
+            out.append(redaction.redact_text(_unescape_json_text(entry), keep, mask, hosts))
         else:
             out.append(json.dumps(next(parsed)))
     return ("\n".join(out) + ("\n" if out else "")).encode("utf-8")
 
 
 def _redacted_report_html(redacted_report: dict | None, html_source: Path, keep: list[str],
-                          mask: list[str]) -> bytes:
+                          mask: list[str], hosts: list[str]) -> bytes:
     # Re-rendered from the redacted JSON when there is one: the page then
     # carries the "Redacted for the client" banner, and every masked value
     # is escaped the way the report escapes everything else.
@@ -655,7 +656,7 @@ def _redacted_report_html(redacted_report: dict | None, html_source: Path, keep:
             return report.render_report_html(redacted_report).encode("utf-8")
         except (KeyError, TypeError, AttributeError, ValueError):
             pass  # Hand-edited or foreign JSON - fall back to the page itself.
-    text = redaction.redact_text(html_source.read_text(encoding="utf-8", errors="replace"), keep, mask)
+    text = redaction.redact_text(html_source.read_text(encoding="utf-8", errors="replace"), keep, mask, hosts)
     for placeholder, escaped in _HTML_PLACEHOLDERS.items():
         text = text.replace(placeholder, escaped)
     return text.encode("utf-8")
@@ -665,8 +666,9 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
     paths = dict(sources)
     report_data = _load_report_json(paths.get(ARC_REPORT_JSON))
     job = report_data.get("job") if report_data is not None and isinstance(report_data.get("job"), dict) else {}
-    # The computer name and what the technician typed in stay readable.
-    keep = [hostname, *(str(value) for value in job.values())]
+    # What the technician typed in stays readable; the computer name does not.
+    keep = [str(value) for value in job.values()]
+    hosts = [hostname, *redaction.local_hostnames()]
     # The package is saved on the client PC: its profile folders name the
     # people to hide even where a name is printed without its path.
     mask = redaction.local_profile_names() + redaction.local_account_names()
@@ -680,15 +682,15 @@ def _write_redacted_sources(zf: zipfile.ZipFile, sources: list[tuple[str, Path]]
             _write_bytes(zf, arcname, json.dumps(redacted_report, indent=2, ensure_ascii=False).encode("utf-8"))
         elif arcname == ARC_REPORT_JSON:
             text = _unescape_json_text(source.read_text(encoding="utf-8", errors="replace"))
-            _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask).encode("utf-8"))
+            _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask, hosts).encode("utf-8"))
         elif arcname == ARC_REPORT_HTML:
-            _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep, mask))
+            _write_bytes(zf, arcname, _redacted_report_html(redacted_report, source, keep, mask, hosts))
         elif arcname == ARC_AUDIT_LOG:
-            _write_bytes(zf, arcname, _redacted_audit_log(source, keep, mask))
+            _write_bytes(zf, arcname, _redacted_audit_log(source, keep, mask, hosts))
         elif arcname.startswith(ARC_SCANNERS_DIR + "/"):
             # Scanner logs list file paths - user names included.
             text = source.read_text(encoding="utf-8-sig", errors="replace")
-            _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask).encode("utf-8"))
+            _write_bytes(zf, arcname, redaction.redact_text(text, keep, mask, hosts).encode("utf-8"))
         else:
             zf.write(source, arcname=arcname)
 
@@ -732,7 +734,8 @@ def build_handoff_zip(
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as raw, zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as zf:
-                readme = README_TEXT.format(hostname=hostname, run_id=run_id)
+                shown = redaction.PC if redact else hostname  # the client copy names no computer
+                readme = README_TEXT.format(hostname=shown, run_id=run_id)
                 if redact:
                     readme += REDACTED_README_NOTE
                 _write_text(zf, ARC_README, readme)
@@ -743,7 +746,7 @@ def build_handoff_zip(
                         zf.write(source, arcname=arcname)
                 if diag_dir is not None:
                     _write_text(zf, ARC_DIAG_README, diagnostics_readme(
-                        diag_results, hostname, run_id, dry_run, redacted=redact,
+                        diag_results, shown, run_id, dry_run, redacted=redact,
                     ))
                     for result in diag_results:
                         if result.status == STATUS_OK and result.path is not None:

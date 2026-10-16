@@ -3322,7 +3322,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(parent or self, self._t("app_title"), self._t("handoff_diag_busy"))
             return None
         hostname = socket.gethostname()
-        default_path = self.state_dir / "Reports" / handoff.default_package_name(hostname, run_id)
+        default_path = self.state_dir / "Reports" / handoff.default_package_name(hostname, run_id, redact=self.settings.redact_for_client)
         dest, _ = QFileDialog.getSaveFileName(
             parent or self, self._t("handoff_button"), str(default_path), "Zip (*.zip)"
         )

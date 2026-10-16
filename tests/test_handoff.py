@@ -32,6 +32,23 @@ def _names(zip_path):
         return sorted(zf.namelist())
 
 
+def test_default_package_name_of_a_redacted_package_has_no_computer_name():
+    assert handoff.default_package_name(HOST, RUN, redact=True) == f"PortableFix_pc_{RUN}.zip"
+    assert handoff.default_package_name(HOST, RUN, redact=False) == f"PortableFix_{HOST}_{RUN}.zip"
+
+
+def test_redacted_package_readmes_name_no_computer(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state, host="JAN-LAPTOP")
+    files = _zip_texts(handoff.build_handoff_zip(
+        state, "JAN-LAPTOP", RUN, tmp_path / "out.zip", include_diagnostics=True, redact=True))
+    for name in ("README.txt", handoff.ARC_DIAG_README):
+        text = files[name].decode("utf-8-sig")
+        assert "JAN-LAPTOP" not in text and "<pc>" in text, name
+    plain = _zip_texts(handoff.build_handoff_zip(state, "JAN-LAPTOP", RUN, tmp_path / "plain.zip"))
+    assert "JAN-LAPTOP" in plain["README.txt"].decode("utf-8-sig")
+
+
 def test_default_package_name():
     assert handoff.default_package_name(HOST, RUN) == f"PortableFix_{HOST}_{RUN}.zip"
 
@@ -610,7 +627,7 @@ def test_redacted_package_masks_report_and_audit_log_but_not_the_originals(tmp_p
             assert secret not in text, (arcname, secret)
     report_data = json.loads(files["report.json"])
     assert report_data["redacted"] is True
-    assert report_data["hostname"] == host
+    assert report_data["hostname"] == "<pc>"
     assert report_data["job"]["client"] == "Klient s.r.o."
     # Re-rendered from the redacted JSON: the page says so, masked values
     # are escaped text.
@@ -625,7 +642,7 @@ def test_redacted_package_masks_report_and_audit_log_but_not_the_originals(tmp_p
         "IPv4 <ip> MAC <mac>\nSSID : <ssid>",
         "Joined <ssid>",
     ]
-    assert entries[0]["run_id"] == RUN and entries[0]["hostname"] == host
+    assert entries[0]["run_id"] == RUN and entries[0]["hostname"] == "<pc>"
     # undo.ps1 must keep working: it is copied as it is.
     assert files["undo.ps1"] == undo
     readme = files["README.txt"].decode("utf-8-sig")
@@ -710,15 +727,16 @@ def test_redacted_package_falls_back_to_text_for_foreign_report_files(tmp_path):
     assert len(lines) == 3
 
 
-def test_hostname_that_looks_like_a_key_is_kept_in_the_package(tmp_path):
+def test_hostname_that_looks_like_a_key_is_masked_as_the_computer_not_a_key(tmp_path):
     state = tmp_path / "state"
     host = "ABCD1-EFGH2"
     _write_run(state, host=host)
     (state / "Logs" / f"{RUN}.jsonl").write_bytes(
         b'{"run_id": "r", "hostname": "ABCD1-EFGH2", "output": "on ABCD1-EFGH2, key VK7JG-NPHTM-C97JM"}\n')
     files = _zip_texts(handoff.build_handoff_zip(state, host, RUN, tmp_path / "out.zip", redact=True))
-    assert b'"output": "on ABCD1-EFGH2, key <key>"' in files["audit_log.jsonl"]
-    assert host in files["README.txt"].decode("utf-8-sig")
+    assert b'"hostname": "<pc>", "output": "on <pc>, key <key>"' in files["audit_log.jsonl"]
+    assert host not in files["README.txt"].decode("utf-8-sig")
+    assert "<pc>" in files["README.txt"].decode("utf-8-sig")
 
 
 def test_diagnostics_readme_says_windows_reports_are_not_redacted(tmp_path, fake_reports):

@@ -4,7 +4,8 @@ With the technician's "Redact for the client" setting on, the report and the
 handoff package's own text files go out with user names in paths (and the
 PC's profile names wherever else they appear), IP and MAC addresses, serial
 numbers, product-key fragments and Wi-Fi network names replaced by
-placeholders. Applied only when those files are rendered or
+placeholders - and the computer's own name, when the caller passes it as
+`hosts` (see local_hostnames). Applied only when those files are rendered or
 exported - the audit log on the stick always keeps the full record.
 
 Pure and Qt-free on purpose: the same functions serve the report, the
@@ -19,6 +20,7 @@ import bisect
 import ipaddress
 import os
 import re
+import socket
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,6 +34,7 @@ DOMAIN = "<domain>"
 EMAIL = "<email>"
 SID = "<sid>"
 KEY_ID = "<key-id>"
+PC = "<pc>"
 
 # Profile folders every Windows has - naming them says nothing about the client.
 _SHARED_PROFILES = {"public", "default", "default user", "all users", "defaultapppool"}
@@ -280,15 +283,19 @@ def _normalize_keep(keep: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted((k for k in terms if len(k) >= _MIN_COLLECTED_LENGTH), key=len, reverse=True))
 
 
-def redact_text(text: str, keep: Iterable[str] = (), mask: Iterable[str] = ()) -> str:
-    """`text` with personal data replaced by placeholders (<user>, <ip>,
-    <mac>, <serial>, <key>, <ssid>, <domain>, <email>, <sid>). `keep`: values never masked (the
-    computer name, the technician and client). `mask`: user profile names
-    masked wherever they appear (see local_profile_names). Idempotent."""
+def redact_text(text: str, keep: Iterable[str] = (), mask: Iterable[str] = (),
+                hosts: Iterable[str] = ()) -> str:
+    r"""`text` with personal data replaced by placeholders (<user>, <ip>,
+    <mac>, <serial>, <key>, <ssid>, <domain>, <email>, <sid>, <pc>). `keep`:
+    values never masked (the technician and client). `mask`: user profile
+    names masked wherever they appear (see local_profile_names). `hosts`:
+    computer names masked as whole words - also in \\HOST\share and
+    HOST.domain - whatever `keep` says (see local_hostnames). Idempotent."""
     if not isinstance(text, str) or not text:
         return text
     collected = _Collected()
     collected.add_names(mask)
+    collected.add_hosts(hosts)
     collected.add_from(text)
     return _redact(text, _normalize_keep(keep), collected.masker())
 
@@ -296,6 +303,8 @@ def redact_text(text: str, keep: Iterable[str] = (), mask: Iterable[str] = ()) -
 def _redact(text: str, kept: tuple[str, ...], masker: "_Masker") -> str:
     if not isinstance(text, str) or not text:
         return text
+    # First: a name like ABCD1-EFGH2 would otherwise be taken for a key.
+    text = masker.mask_hosts(text)
 
     def user(match: re.Match) -> str:
         name = next(match.group(g) for g in ("name", "full", "tail") if match.group(g) is not None)
@@ -364,6 +373,7 @@ class _Collected:
         self.kinds: dict[str, str] = {}
         self.names: set[str] = set()
         self.domains: set[str] = set()
+        self.hosts: set[str] = set()
 
     def add_from(self, text: str) -> None:
         for pattern, placeholder in ((_SSID, SSID), (_SERIAL, SERIAL)):
@@ -389,8 +399,14 @@ class _Collected:
             if isinstance(name, str) and _worth_collecting_name(name):
                 self.names.add(name.strip().lower())
 
+    def add_hosts(self, hosts: Iterable[str]) -> None:
+        # A computer name shorter than this ("PC") is ordinary text.
+        for host in hosts:
+            if isinstance(host, str) and len(host.strip()) >= _MIN_COLLECTED_LENGTH:
+                self.hosts.add(host.strip().lower())
+
     def masker(self) -> "_Masker":
-        return _Masker(self.kinds, self.names, self.domains)
+        return _Masker(self.kinds, self.names, self.domains, self.hosts)
 
 
 _WORD = re.compile(r"\w+")
@@ -402,7 +418,8 @@ class _ValueSet:
     into the regex - one alternation over every value (or one regex per
     value) made a large audit log with many values take minutes."""
 
-    def __init__(self, values: Iterable[str], ignore_case: bool) -> None:
+    def __init__(self, values: Iterable[str], ignore_case: bool, edge: str = r"\w") -> None:
+        self._edge = edge
         self._fold = str.lower if ignore_case else (lambda text: text)
         self._flags = re.IGNORECASE if ignore_case else 0
         self._by_word: dict[str, list[str]] = {}
@@ -429,7 +446,7 @@ class _ValueSet:
         if pattern is None:
             # Whole values only, so a network called "Novak5G" leaves
             # "Novak5GHz"; the longest first, so "Home 5G" wins over "Home".
-            pattern = re.compile(rf"(?<!\w)(?:{'|'.join(re.escape(v) for v in key)})(?!\w)", self._flags)
+            pattern = re.compile(rf"(?<![{self._edge}])(?:{'|'.join(re.escape(v) for v in key)})(?![{self._edge}])", self._flags)
             if len(self._patterns) < 256:
                 self._patterns[key] = pattern
         return pattern
@@ -438,12 +455,19 @@ class _ValueSet:
 class _Masker:
     """The collected values of one document, prepared once for all its strings."""
 
-    def __init__(self, kinds: dict[str, str], names: set[str], domains: set[str] = frozenset()) -> None:
+    def __init__(self, kinds: dict[str, str], names: set[str], domains: set[str] = frozenset(),
+                 hosts: set[str] = frozenset()) -> None:
         self._kinds = kinds
         self._values = _ValueSet(kinds, ignore_case=False)
         # Windows compares account and folder names case-insensitively.
         self._users = _ValueSet(names, ignore_case=True)
         self._domains = _ValueSet(domains, ignore_case=True)
+        # "-" is an edge too: DESKTOP-AB12C is another PC than DESKTOP.
+        self._hosts = _ValueSet(hosts, ignore_case=True, edge=r"\w-")
+
+    def mask_hosts(self, text: str) -> str:
+        pattern = self._hosts.pattern_for(text)
+        return text if pattern is None else pattern.sub(PC, text)
 
     def apply(self, text: str, kept: tuple[str, ...]) -> str:
         pattern = self._values.pattern_for(text)
@@ -462,6 +486,24 @@ class _Masker:
             # C:\Users\ path it came from - the kept values do not protect it.
             text = pattern.sub(USER, text)
         return text
+
+
+def local_hostnames() -> list[str]:
+    """This PC's own name (COMPUTERNAME and socket.gethostname(), plus the
+    short label of a dotted one), for `hosts`. [] when neither is available."""
+    names: dict[str, str] = {}
+    for raw in (os.environ.get("COMPUTERNAME", ""), _socket_hostname()):
+        for name in (raw, raw.split(".", 1)[0]):
+            if name.strip():
+                names.setdefault(name.strip().lower(), name.strip())
+    return sorted(names.values())
+
+
+def _socket_hostname() -> str:
+    try:
+        return socket.gethostname()
+    except OSError:
+        return ""
 
 
 def local_profile_names(users_dir: Path | None = None) -> list[str]:
@@ -557,23 +599,28 @@ def _strings(value) -> Iterable[str]:
             yield from _strings(item)
 
 
-def redact_data(data, keep: Iterable[str] = (), mask: Iterable[str] = ()):
+def redact_data(data, keep: Iterable[str] = (), mask: Iterable[str] = (), hosts: Iterable[str] = ()):
     """A copy of a JSON-like value (a report, an audit entry) with every
     string redacted, except the structural fields above. SSIDs, serial
     numbers and profile names found anywhere in it - and the profile names
-    in `mask` - are masked everywhere in it."""
+    in `mask` - are masked everywhere in it, and so are the computer names
+    in `hosts` (also in the structural "hostname" field)."""
     kept = _normalize_keep(keep)
     collected = _Collected()
     collected.add_names(mask)
+    collected.add_hosts(hosts)
     for text in _strings(data):
         collected.add_from(text)
     masker = collected.masker()
+
+    def structural(key, value):
+        return masker.mask_hosts(value) if key == "hostname" and isinstance(value, str) else value
 
     def walk(value):
         if isinstance(value, str):
             return _redact(value, kept, masker)
         if isinstance(value, dict):
-            return {k: (v if k in _STRUCTURAL_KEYS else walk(v)) for k, v in value.items()}
+            return {k: (structural(k, v) if k in _STRUCTURAL_KEYS else walk(v)) for k, v in value.items()}
         if isinstance(value, list):
             return [walk(item) for item in value]
         return value
