@@ -83,6 +83,66 @@ def test_nothing_to_check_is_a_usage_error():
     assert exc.value.code == 2
 
 
+SETUP_HASH = hashlib.sha256(b"installer bytes").hexdigest()
+
+
+def _setup(tmp_path: Path, sha_text="", *, sha_name="PortableFix-Setup.exe.sha256") -> Path:
+    """sha_text "" = the correct file, None = no checksum file at all."""
+    exe = tmp_path / "Output" / "PortableFix-Setup.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"installer bytes")
+    if sha_text is not None:
+        body = sha_text or f"{SETUP_HASH}  PortableFix-Setup.exe\n"
+        (exe.parent / sha_name).write_bytes(body.encode())
+    return exe
+
+
+def test_a_good_setup_checksum_passes(tmp_path, capsys):
+    assert verify_release.main(["--setup", str(_setup(tmp_path))]) == 0
+    assert "OK" in capsys.readouterr().out
+
+
+def test_setup_sha_can_name_the_checksum_file(tmp_path):
+    exe = _setup(tmp_path, sha_name="elsewhere.txt")
+    assert verify_release.main(["--setup", str(exe)]) == 1
+    assert verify_release.main(["--setup", str(exe), "--setup-sha", str(exe.parent / "elsewhere.txt")]) == 0
+
+
+def test_setup_sha_without_setup_is_a_usage_error():
+    with pytest.raises(SystemExit) as exc:
+        verify_release.main(["--setup-sha", "x.sha256"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "sha_text, expected",
+    [
+        (None, "PortableFix-Setup.exe.sha256 is missing"),
+        ("0" * 64 + "  PortableFix-Setup.exe\n", "does not match"),
+        (SETUP_HASH + "  Other.exe\n", "does not match"),
+        (SETUP_HASH + "  PortableFix-Setup.exe\r\n", "LF line ending"),
+        (SETUP_HASH + "  PortableFix-Setup.exe", "LF line ending"),
+        (SETUP_HASH.upper() + "  PortableFix-Setup.exe\n", "LF line ending"),
+        ("\n", "LF line ending"),
+    ],
+    ids=["missing", "wrong-hash", "wrong-name", "crlf", "no-newline", "uppercase", "empty"],
+)
+def test_a_bad_setup_checksum_fails(tmp_path, capsys, sha_text, expected):
+    assert verify_release.main(["--setup", str(_setup(tmp_path, sha_text))]) == 1
+    assert expected in capsys.readouterr().err
+
+
+def test_a_missing_setup_fails(tmp_path, capsys):
+    assert verify_release.main(["--setup", str(tmp_path / "nope.exe")]) == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_the_release_workflow_ships_the_setup_checksum_as_a_fourth_asset():
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "verify_release.py --setup" in text
+    assert text.count("Output\\PortableFix-Setup.exe.sha256") == 1
+
+
 @pytest.mark.parametrize(
     "files, sums, expected",
     [

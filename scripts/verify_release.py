@@ -4,6 +4,10 @@ sound. scripts/build.ps1 runs it twice:
   verify_release.py --tree <repo>   after generate_sha256sums.py
   verify_release.py --zip <zip>     after build_release_zip.ps1
 
+and the release workflow runs it once more on the installer:
+
+  verify_release.py --setup <exe> [--setup-sha <file>]
+
 --tree: Data/SHA256SUMS covers exactly the files under App/ and Modules/,
 with their current hashes. A manifest generated before the exe was signed
 (or rebuilt) is a tamper warning on every launch of every copy.
@@ -15,8 +19,13 @@ the allowlist (never a build machine's settings.json), the manifest covers
 the whole App/ and Modules/, the icon is there, and the .sha256 file next
 to the zip matches it. Both SHA256SUMS (checked by stage_update) and the
 .sha256 must carry the release key's signature (scripts/sign_release.py).
+
+--setup: PortableFix-Setup.exe against its PortableFix-Setup.exe.sha256,
+byte for byte '<lowercase sha256>  PortableFix-Setup.exe' + one LF. That
+file is unsigned and informational, for people - no client reads it.
 """
 import argparse
+import re
 import shutil
 import sys
 import tempfile
@@ -131,18 +140,40 @@ def check_zip(zip_path: Path) -> list[str]:
     return problems
 
 
+def check_setup(setup_path: Path, sha_path: Path | None = None) -> list[str]:
+    setup_path = Path(setup_path)
+    sha_path = Path(sha_path) if sha_path else setup_path.with_name(setup_path.name + ".sha256")
+    if not setup_path.is_file():
+        return [f"{setup_path} does not exist"]
+    if not sha_path.is_file():
+        return [f"{sha_path.name} is missing"]
+    # Byte-exact, so a CRLF, BOM or uppercase hex from a careless writer is caught.
+    actual = sha_path.read_bytes()
+    if actual == f"{compute_sha256(setup_path)}  {setup_path.name}\n".encode():
+        return []
+    if not re.fullmatch(rb"[0-9a-f]{64}  [^\r\n]+\n", actual):
+        return [f"{sha_path.name} is not '<lowercase sha256>  {setup_path.name}' with one LF line ending"]
+    return [f"{sha_path.name} does not match {setup_path.name}"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check a PortableFix release before publishing it.")
     parser.add_argument("--tree", type=Path, help="the built repo tree (App/, Modules/, Data/SHA256SUMS)")
     parser.add_argument("--zip", type=Path, help="the finished PortableFix-Portable.zip")
+    parser.add_argument("--setup", type=Path, help="the finished PortableFix-Setup.exe")
+    parser.add_argument("--setup-sha", type=Path, help="its checksum file (default: <setup>.sha256)")
     args = parser.parse_args(argv)
-    if args.tree is None and args.zip is None:
-        parser.error("give --tree, --zip or both")
+    if args.tree is None and args.zip is None and args.setup is None:
+        parser.error("give --tree, --zip, --setup or a combination")
+    if args.setup_sha is not None and args.setup is None:
+        parser.error("--setup-sha needs --setup")
     problems = []
     if args.tree is not None:
         problems += [f"tree: {p}" for p in check_tree(args.tree)]
     if args.zip is not None:
         problems += [f"zip: {p}" for p in check_zip(args.zip)]
+    if args.setup is not None:
+        problems += [f"setup: {p}" for p in check_setup(args.setup, args.setup_sha)]
     for problem in problems:
         print(problem, file=sys.stderr)
     if problems:

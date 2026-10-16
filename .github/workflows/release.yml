@@ -4,7 +4,7 @@ name: Release build
 # secret PORTABLEFIX_RELEASE_SIGNING_KEY, so a signed release can only be
 # built here. Run it by hand (Actions > Release build > Run workflow) on the
 # release commit, with the tag; it runs scripts/build.ps1 -Tag exactly as a
-# maintainer would, then puts the three assets on a DRAFT release. Nothing
+# maintainer would, then puts the four assets on a DRAFT release. Nothing
 # reaches users until the maintainer has tested the draft's zip and
 # published it (README.md, "Release proces").
 on:
@@ -96,6 +96,18 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: .\scripts\build.ps1 -Tag $env:TAG
 
+      # Informational, for people: not signed, not read by any client (the
+      # updater trusts only the zip's signed .sha256). Same format as that
+      # file's first line: lowercase hex, two spaces, name, one LF.
+      - name: Checksum the installer
+        shell: pwsh
+        run: |
+          $exe = "Output\PortableFix-Setup.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$PWD\$exe.sha256", "$hash  PortableFix-Setup.exe`n")
+          python scripts/verify_release.py --setup $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Draft the release
         shell: pwsh
         env:
@@ -103,5 +115,5 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           gh release create $env:TAG --draft --target $env:GITHUB_SHA --title $env:TAG --notes "Draft - test before publishing (README.md, Release proces)." `
-            Output\PortableFix-Portable.zip Output\PortableFix-Portable.zip.sha256 Output\PortableFix-Setup.exe
+            Output\PortableFix-Portable.zip Output\PortableFix-Portable.zip.sha256 Output\PortableFix-Setup.exe Output\PortableFix-Setup.exe.sha256
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -843,7 +843,7 @@ V tomto poradí - každý krok predpokladá, že predchádzajúci prešiel:
    alebo `gh workflow run release.yml -f tag=v<verzia>`). Ten na čistom
    Windows runneri spustí `.\scripts\build.ps1 -Tag v<verzia>` s kľúčom
    `PORTABLEFIX_RELEASE_SIGNING_KEY` zo secrets (Inno Setup si doinštaluje)
-   a vytvorí **draft** release s tromi assetmi. Ak ktorýkoľvek krok zlyhá,
+   a vytvorí **draft** release so štyrmi assetmi. Ak ktorýkoľvek krok zlyhá,
    nič nezverejňuj. Lokálny `build.ps1 -Tag` bez kľúča v premennej
    prostredia odmietne začať - nepodpísaný release by žiadny klient
    nenainštaloval. Authenticode (`-SignCommand`) workflow nerobí, kým
@@ -869,6 +869,7 @@ V tomto poradí - každý krok predpokladá, že predchádzajúci prešiel:
    - `PortableFix-Portable.zip` — toto sťahuje aj auto-update mechanizmus
    - `PortableFix-Portable.zip.sha256` (podpísaný release kľúčom)
    - `PortableFix-Setup.exe` — inštalátor pre bežných používateľov
+   - `PortableFix-Setup.exe.sha256` (iba informatívny kontrolný súčet pre ľudí, nepodpísaný; appka ho nečíta)
 6. Po zverejnení aktualizuj jednu skutočnú inštaláciu predchádzajúcej
    verzie priamo z appky a odlož si jej záznamy z
    `%TEMP%\PortableFixUpdate` (pozri „Keď aktualizácia zlyhá“). 1.12.0 sa

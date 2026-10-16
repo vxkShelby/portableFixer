@@ -853,11 +853,12 @@ In this order - each step assumes the previous one passed:
    PyInstaller-built app updates itself and restarts). Never call an update
    fix done without both.
 5. Create a GitHub Release tagged `v<version>` (e.g. `v1.1.0`), upload
-   **three** files as assets, with exactly these names (auto-update and
+   **four** files as assets, with exactly these names (auto-update and
    the installer both look them up by a fixed name, not by version):
    - `PortableFix-Portable.zip` — this is what the auto-update mechanism downloads
    - `PortableFix-Portable.zip.sha256`
    - `PortableFix-Setup.exe` — the installer for regular users
+   - `PortableFix-Setup.exe.sha256` — informational checksum for humans, unsigned; no client reads it
 6. After publishing, update one real install of the previous version from
    inside the app and keep its `%TEMP%\PortableFixUpdate` logs (see "When
    an update fails"). 1.12.0 has to be installed by hand; the first real
