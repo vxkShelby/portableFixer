@@ -1737,12 +1737,14 @@ def generate_report(
         base_dir, run_id, modules, language, snapshot_before, snapshot_after, job,
         storage_fallback=storage_fallback, branding=branding,
     )
+    # The file name keeps the real computer name - the history is looked up by it.
+    name = data["hostname"]
     if redact:
         data = redact_report_data(data)
     reports_dir = base_dir / "Reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    html_path = reports_dir / f"{data['hostname']}_{run_id}.html"
-    json_path = reports_dir / f"{data['hostname']}_{run_id}.json"
+    html_path = reports_dir / f"{name}_{run_id}.html"
+    json_path = reports_dir / f"{name}_{run_id}.json"
     html_path.write_text(_render_html(data), encoding="utf-8")
     json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return html_path, json_path
@@ -1751,16 +1753,17 @@ def generate_report(
 def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
     """The report with personal data masked for the client (research G20):
     user names in paths, IP/MAC addresses, serial numbers, product-key
-    fragments and Wi-Fi names. The computer name and the technician /
-    client / note entered on purpose stay - they are also never masked
-    where the command output happens to repeat them. Only the rendered copy
-    changes; the audit log keeps everything.
+    fragments, Wi-Fi names and the computer name (this PC's and the
+    report's). The technician / client / note entered on purpose stay - they
+    are also never masked where the command output happens to repeat them.
+    Only the rendered copy changes; the audit log keeps everything.
 
     `mask`: profile names masked wherever they appear - by default the
     profile folders of this PC, which the report was made on, so a name
     printed without a path after it ("PC\\Jan Novak") is caught too."""
     job = data.get("job") if isinstance(data.get("job"), dict) else {}
-    keep = [str(data.get("hostname") or ""), *(str(value) for value in job.values())]
+    keep = [str(value) for value in job.values()]
+    hosts = [str(data.get("hostname") or ""), *redaction.local_hostnames()]
     if mask is None:
         mask = redaction.local_profile_names() + redaction.local_account_names()
     # The target user's account name need not match any profile folder
@@ -1780,7 +1783,7 @@ def redact_report_data(data: dict, mask: list[str] | None = None) -> dict:
         keep += [str(value) for key, value in brand.items() if key not in ("logo", "logo_mime")]
     if handed_to:
         keep.append(str(handed_to))
-    redacted = redaction.redact_data(data, keep=keep, mask=mask)
+    redacted = redaction.redact_data(data, keep=keep, mask=mask, hosts=hosts)
     if brand is not None:
         redacted["branding"] = brand
     if handed_to and isinstance(redacted.get("outtake"), dict):

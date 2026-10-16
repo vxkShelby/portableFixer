@@ -1571,8 +1571,11 @@ def test_redacted_report_masks_personal_data_and_says_so(tmp_path, language, ban
         assert secret not in content
     # Escaped like any other text on the page, never markup.
     assert "C:\\Users\\&lt;user&gt;\\AppData" in content
-    # Entered on purpose: the computer name and the job fields stay.
-    assert data["hostname"] == socket.gethostname()
+    # The computer name is masked; the job fields entered on purpose stay.
+    assert data["hostname"] == "<pc>"
+    assert socket.gethostname().lower() not in content.lower()
+    # ... but the file on the stick keeps the real name (the history finds it by that).
+    assert html_path.name == f"{socket.gethostname()}_run_red.html"
     assert data["job"] == job
     assert "Firma 192.168.1.23" in content
     # The audit log itself is never touched.

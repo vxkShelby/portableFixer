@@ -6,7 +6,7 @@ import time
 import pytest
 
 from portablefix.redaction import (
-    DOMAIN, EMAIL, IP, KEY, KEY_ID, MAC, SERIAL, SID, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
+    DOMAIN, EMAIL, IP, KEY, KEY_ID, MAC, PC, SERIAL, SID, SSID, USER, account_names, local_profile_names, redact_data, redact_text,
 )
 
 
@@ -448,3 +448,93 @@ def test_a_missing_recovery_key_id_line_is_left_alone():
 ])
 def test_known_not_masked_unc_server_names_and_urls(text):
     assert redact_text(text) == text
+
+
+# --- the computer's own name (hosts=) ---------------------------------------
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # in a path / UNC share
+    (r"\\JAN-LAPTOP\share\file.txt", rf"\\{PC}\share\file.txt"),
+    (r"\\JAN-LAPTOP\C$\Windows", rf"\\{PC}\C$\Windows"),
+    # FQDN: only the host label goes, the domain is another rule's business
+    ("JAN-LAPTOP.contoso.local is up", f"{PC}.contoso.local is up"),
+    ("ping jan-laptop.lan", f"ping {PC}.lan"),
+    # mixed case and the NetBIOS "HOST\account" form
+    ("Jan-Laptop and jan-LAPTOP", f"{PC} and {PC}"),
+    (r"JAN-LAPTOP\Administrator", rf"{PC}\Administrator"),
+    # punctuation around it
+    ("Computer: JAN-LAPTOP, checked", f"Computer: {PC}, checked"),
+])
+def test_hostname_is_masked_as_a_whole_word(text, expected):
+    assert redact_text(text, hosts=["JAN-LAPTOP"]) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "JAN-LAPTOP2 and JAN-LAPTOP-OLD and XJAN-LAPTOP",  # another name that contains it
+    "MYJAN-LAPTOPS",
+])
+def test_a_name_inside_another_word_is_not_masked(text):
+    assert redact_text(text, hosts=["JAN-LAPTOP"]) == text
+
+
+def test_a_plain_word_hostname_does_not_hit_longer_words_or_hyphenated_names():
+    out = redact_text("DESKTOP-AB12C, Desktops, desktop folder, DESKTOP", hosts=["desktop"])
+    assert out == f"DESKTOP-AB12C, Desktops, {PC} folder, {PC}"
+
+
+@pytest.mark.parametrize("host", ["", "A", "PC", "  ", None, 5])
+def test_short_or_empty_hostnames_are_ignored(host):
+    text = r"PC pc A \\PC\share"
+    assert redact_text(text, hosts=[host]) == text
+
+
+def test_hostname_wins_over_keep_and_the_key_rule():
+    # A hostname that looks like a product-key fragment, once kept on purpose.
+    out = redact_text("on ABCD1-EFGH2, key VK7JG-NPHTM-C97JM", keep=["ABCD1-EFGH2"], hosts=["ABCD1-EFGH2"])
+    assert out == f"on {PC}, key {KEY}"
+
+
+def test_hostname_masking_is_idempotent_and_off_without_hosts():
+    text = r"\\JAN-LAPTOP\share JAN-LAPTOP.lan"
+    assert redact_text(text) == text
+    once = redact_text(text, hosts=["JAN-LAPTOP"])
+    assert redact_text(once, hosts=["JAN-LAPTOP"]) == once
+
+
+def test_redact_data_masks_the_hostname_field_and_the_text_only_with_hosts():
+    data = {"hostname": "JAN-LAPTOP", "run_id": "r1", "job": {"note": "JAN-LAPTOP"},
+            "output": r"Connected \\JAN-LAPTOP\share from 192.168.0.5"}
+    assert redact_data(data)["hostname"] == "JAN-LAPTOP"
+    out = redact_data(data, keep=["JAN-LAPTOP"], hosts=["jan-laptop"])
+    assert out["hostname"] == PC and out["run_id"] == "r1"
+    assert out["job"] == data["job"]  # the technician's own entry
+    assert out["output"] == rf"Connected \\{PC}\share from {IP}"
+
+
+def test_local_hostnames_reads_the_environment_and_the_socket(monkeypatch):
+    from portablefix import redaction
+
+    monkeypatch.setenv("COMPUTERNAME", "JAN-LAPTOP")
+    monkeypatch.setattr(redaction.socket, "gethostname", lambda: "jan-laptop.contoso.local")
+    assert redaction.local_hostnames() == ["JAN-LAPTOP", "jan-laptop.contoso.local"]
+    monkeypatch.delenv("COMPUTERNAME")
+
+    def broken():
+        raise OSError
+
+    monkeypatch.setattr(redaction.socket, "gethostname", broken)
+    assert redaction.local_hostnames() == []
+
+
+def test_redacted_report_masks_this_pcs_name_everywhere_but_not_when_unredacted(monkeypatch):
+    from portablefix import redaction
+    from portablefix.report import redact_report_data
+
+    monkeypatch.setattr(redaction, "local_hostnames", lambda: ["JAN-LAPTOP"])
+    data = {"run_id": "r", "hostname": "JAN-LAPTOP", "job": {"technician": "Ján"},
+            "actions": [{"output": r"Share \\JAN-LAPTOP\scans, host jan-laptop.contoso.local"}]}
+    out = redact_report_data(data, mask=[])
+    assert out["hostname"] == PC
+    assert out["actions"][0]["output"] == rf"Share \\{PC}\scans, host {PC}.contoso.local"
+    assert data["hostname"] == "JAN-LAPTOP"  # the input is never changed
