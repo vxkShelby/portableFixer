@@ -7,6 +7,9 @@ from . import branding
 
 DEFAULT_LANGUAGE = "sk"
 SUPPORTED_LANGUAGES = ("sk", "en")
+# "auto" follows the OS light/dark setting (see gui/style.py).
+DEFAULT_THEME = "auto"
+SUPPORTED_THEMES = ("auto", "light", "dark")
 MAX_CUSTOM_PRESETS = 20
 MAX_PRESET_NAME_LENGTH = 40
 MAX_TECHNICIAN_NAME_LENGTH = 60
@@ -75,6 +78,7 @@ class Settings:
     sysinfo_collapsed: bool = False
     # The dashboard's one-time "start here" hint was dismissed.
     first_run_seen: bool = False
+    theme: str = DEFAULT_THEME
 
     def branding_info(self) -> dict:
         """The branding as report.py takes it (see branding.clean_branding)."""
@@ -130,6 +134,7 @@ def load_settings(base_dir: Path) -> Settings:
         allow_modified_modules=allow_modified is True,
         sysinfo_collapsed=data.get("sysinfo_collapsed") is True,
         first_run_seen=data.get("first_run_seen") is True,
+        theme=data.get("theme") if data.get("theme") in SUPPORTED_THEMES else DEFAULT_THEME,
         branding_company=branding.clean_text(data.get("branding_company"), branding.MAX_COMPANY_LENGTH),
         branding_company_id=branding.clean_text(data.get("branding_company_id"), branding.MAX_COMPANY_ID_LENGTH),
         branding_contact=branding.clean_text(data.get("branding_contact"), branding.MAX_CONTACT_LENGTH),

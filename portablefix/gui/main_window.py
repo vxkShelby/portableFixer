@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QEventLoop, QThread, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -846,6 +846,16 @@ class MainWindow(QMainWindow):
         target_language = "English" if self.settings.language == "sk" else "Slovenčina"
         menu.addAction(self._t("language_switch_tooltip").format(language=target_language)).triggered.connect(
             lambda _checked=False: self._on_toggle_language())
+        theme_menu = menu.addMenu(self._t("settings_menu_theme"))
+        theme_actions = {}
+        for value in style.THEMES:
+            theme_actions[value] = theme_menu.addAction(self._t(f"theme_{value}"))
+            theme_actions[value].setCheckable(True)
+            theme_actions[value].triggered.connect(lambda _checked=False, v=value: self._set_theme(v))
+        scheme_changed = getattr(QGuiApplication.styleHints(), "colorSchemeChanged", None)
+        if scheme_changed is not None and not getattr(self, "_scheme_hooked", False):
+            self._scheme_hooked = True
+            scheme_changed.connect(self._on_color_scheme_changed)
         quiet = menu.addAction(self._t("quiet_mode_toggle"))
         quiet.setCheckable(True)
         quiet.toggled.connect(lambda checked: self.quiet_mode_checkbox.setChecked(checked))
@@ -872,6 +882,8 @@ class MainWindow(QMainWindow):
             quiet.setChecked(self.quiet_mode_checkbox.isChecked())
             winget_auto.setChecked(self.winget_auto_check_checkbox.isChecked())
             redact.setChecked(self.settings.redact_for_client)
+            for value, action in theme_actions.items():
+                action.setChecked(value == self.settings.theme)
 
         menu.aboutToShow.connect(sync)
         button.setMenu(menu)
@@ -902,6 +914,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{self._t('app_title')} v{APP_VERSION}")
+        style.set_theme(self.settings.theme)
         self.setStyleSheet(style.stylesheet())
         central = QWidget(self)
         central.setObjectName("central")
@@ -1835,6 +1848,27 @@ class MainWindow(QMainWindow):
         self._job_client = client.strip()[:120]
         self._job_note = note.strip()[:2000]
         self._refresh_job_button()
+
+    def _set_theme(self, value: str) -> None:
+        """Appearance menu: remember the choice and re-skin right away."""
+        if value in style.THEMES and value != self.settings.theme:
+            self.settings.theme = value
+            self._persist_settings()
+        self._apply_theme()
+
+    def _on_color_scheme_changed(self, _scheme=None) -> None:
+        if self.settings.theme == "auto":
+            self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        style.set_theme(self.settings.theme)
+        sheet = style.stylesheet()
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(sheet)
+        self.setStyleSheet(sheet)
+        if self._console_window is not None:
+            self._console_window.setStyleSheet(sheet)
 
     def _set_redact_for_client(self, checked: bool) -> None:
         if checked == self.settings.redact_for_client:
@@ -3458,10 +3492,8 @@ class MainWindow(QMainWindow):
             pill.style().polish(pill)
             self._update_dashboard_tile_accessible_name(category)
 
-    _AVATAR_COLORS = ["#5ee6ff", "#39c2ff", "#6bd4c2", "#8f7cff", "#4dd0e1", "#64b5f6"]
-
     def _make_avatar(self, name: str) -> QLabel:
-        color = self._AVATAR_COLORS[sum(ord(c) for c in name) % len(self._AVATAR_COLORS)]
+        color, text_color = style.avatar_colors(name)
         words = name.split()
         initials = "".join(w[0] for w in words[:2]).upper() if words else "?"
         avatar = QLabel(initials)
@@ -3471,7 +3503,7 @@ class MainWindow(QMainWindow):
         # colour here would be the one thing that ignores the user's palette.
         if not style.is_high_contrast():
             avatar.setStyleSheet(
-                f"background:{color}; color:#06141a; border-radius:14px; font-weight:bold; font-size:9pt;"
+                f"background:{color}; color:{text_color}; border-radius:14px; font-weight:bold; font-size:9pt;"
             )
         return avatar
 

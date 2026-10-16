@@ -149,3 +149,14 @@ def test_redact_for_client_defaults_off_round_trips_and_rejects_non_bool(tmp_pat
     for raw in ("true", 1, None, []):
         _write_raw(tmp_path, json.dumps({"redact_for_client": raw}))
         assert load_settings(tmp_path).redact_for_client is False, raw
+
+
+def test_theme_defaults_to_auto_round_trips_and_ignores_unknown_values(tmp_path):
+    assert Settings().theme == "auto"
+    assert load_settings(tmp_path).theme == "auto"
+    for theme in ("light", "dark", "auto"):
+        save_settings(tmp_path, Settings(theme=theme))
+        assert load_settings(tmp_path).theme == theme
+    for raw in ("Light", "solarized", 1, None, [], True):
+        _write_raw(tmp_path, json.dumps({"theme": raw}))
+        assert load_settings(tmp_path).theme == "auto", raw
