@@ -286,9 +286,15 @@ MW_STUBS = [
     "[Console]::Out.WriteLine('STUB Set-ItemProperty ' + $LiteralPath + ' ' + $Value); "
     "if ($env:PF_FAIL -and ($LiteralPath -like ('*' + $env:PF_FAIL))) { throw 'Prístup odmietnutý.' } }",
     "function Remove-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath, $Name) [Console]::Out.WriteLine('STUB Remove-ItemProperty ' + $LiteralPath) }",
+    # Like the registry provider: '/' is a separator and '..' climbs, so the Name says where a path really lands.
+    "function Get-Item { [CmdletBinding()] param([Parameter(Position=0)] $Path, $LiteralPath) "
+    "$p = ($LiteralPath -replace '^(HKLM:|Microsoft\\.PowerShell\\.Core\\\\Registry::HKEY_LOCAL_MACHINE)', '') -replace '/', '\\'; "
+    "$st = New-Object System.Collections.ArrayList; foreach ($s in $p.Split('\\')) { if ($s -eq '') { } elseif ($s -eq '..') { if ($st.Count) { $st.RemoveAt($st.Count - 1) } } else { [void]$st.Add($s) } }; "
+    "$n = 'HKEY_LOCAL_MACHINE\\' + ($st -join '\\'); "
+    "if ($env:PF_REDIRECT -and ($LiteralPath -like ('*' + $env:PF_REDIRECT + '*'))) { $n = 'HKEY_LOCAL_MACHINE\\SOFTWARE\\Elsewhere' }; [pscustomobject]@{ Name = $n } }",
     "function Get-Process { [CmdletBinding()] param($Name) if ($env:PF_RUNNING) { [pscustomobject]@{ ProcessName = $env:PF_RUNNING } } }",
 ]
-MW_STUBBED = ("Test-Path", "Get-ChildItem", "Get-ItemProperty", "Set-ItemProperty", "Remove-ItemProperty", "Get-Process")
+MW_STUBBED = ("Test-Path", "Get-ChildItem", "Get-ItemProperty", "Set-ItemProperty", "Remove-ItemProperty", "Get-Item", "Get-Process")
 MW_ID = "office_com_addin_disable_machine_wide"
 
 
@@ -414,6 +420,13 @@ BAD_PATHS = [
     "HKEY_USERS\\S-1-5-21\\Software\\Microsoft\\Office\\Outlook\\Addins\\Acme",
     "Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme",
     "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\Acme\n",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\x/../../../..",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a/../b",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a/b",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\..",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\.",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a..b",
+    "HKLM:\\SOFTWARE\\Microsoft\\Office\\Outlook\\Addins\\a:b",
 ]
 
 
@@ -469,12 +482,31 @@ def test_m16_machine_wide_does_not_back_up_or_change_a_key_it_would_reject(tmp_p
     assert ran == [] and not backup.exists()
 
 
-def test_m16_machine_wide_skips_add_in_keys_with_wildcard_names(tmp_path):
-    result, ran, backup = _run_machine_wide(tmp_path, PF_EXTRA_KEY="Evil*")
+@pytest.mark.parametrize("name", ["Evil*", "Evil/../../../..", "x/../../../..", "a/../b", "a/b", "..", "a..b", "a:b", "Evil[1]"])
+def test_m16_machine_wide_skips_add_in_keys_with_hostile_names(tmp_path, name):
+    result, ran, backup = _run_machine_wide(tmp_path, PF_EXTRA_KEY=name)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "Disabled 3 of 4" in result.stdout and "failed 1" in result.stdout and "Evil*" in result.stdout
-    assert not any("Evil" in line for line in ran)
-    assert "Evil" not in backup.read_text(encoding="utf-8-sig")
+    assert "Disabled 3 of 4" in result.stdout and "failed 1" in result.stdout
+    assert not any(name in line for line in ran)
+    assert name not in backup.read_text(encoding="utf-8-sig")
+
+
+def test_m16_machine_wide_does_not_write_a_key_that_resolves_elsewhere(tmp_path):
+    # Name passes the pattern but the provider says the key is somewhere else: skipped before any write.
+    result, ran, backup = _run_machine_wide(tmp_path, PF_EXTRA_KEY="Redirect.Addin", PF_REDIRECT="Redirect")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Disabled 3 of 4" in result.stdout and "does not resolve to the expected add-in key" in result.stdout
+    assert not any("Redirect" in line for line in ran)
+    assert "Redirect" not in backup.read_text(encoding="utf-8-sig")
+
+
+def test_m16_machine_wide_undo_does_not_write_a_key_that_resolves_elsewhere(tmp_path):
+    redirected = HK64 + "\\Word\\Addins\\Redirect.Addin"
+    backup = [{"Path": redirected, "LoadBehavior": 3}, {"Path": MW_THIRD_PARTY[0], "LoadBehavior": 3}]
+    result, ran, _ = _run_machine_wide(tmp_path, field="undo_command", backup=backup, PF_REDIRECT="Redirect")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "failed 1" in result.stdout and "does not resolve to the expected add-in key" in result.stdout
+    assert ran == [f"STUB Set-ItemProperty {MW_THIRD_PARTY[0]} 3"], ran
 
 
 def test_m16_machine_wide_uses_literal_paths_for_registry_access():
