@@ -12,11 +12,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m06_network" / "actions.yaml"
 
 
-def test_m06_catalog_loads_18_actions_in_repair_category():
+def test_m06_catalog_loads_19_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m06_network"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 18
+    assert len(module.actions) == 19
 
 
 def test_m06_catalog_risk_distribution():
@@ -24,7 +24,7 @@ def test_m06_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 5
+    assert len(by_risk[RiskLevel.SAFE]) == 6
     assert len(by_risk[RiskLevel.MODERATE]) == 10
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 3
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -52,6 +52,7 @@ def test_m06_catalog_covers_expected_ids():
         "net_set_public_dns",
         "net_time_sync_repair",
         "net_dns_client_restart",
+        "net_dns_cache_report",
     }
 
 
@@ -567,3 +568,44 @@ def test_time_sync_repair_switches_to_automatic_only_when_the_start_fails(tmp_pa
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls == ["start W32Time", "set-service W32Time Automatic", "start W32Time", "w32tm /resync /force"]
     assert _backup(tmp_path, "time_sync_backup.json") == {"StartType": "Disabled"}
+
+
+# --- net_dns_cache_report ---------------------------------------------------------
+
+def _dns_stub(rows):
+    objs = ", ".join(_ps_object(r) for r in rows)
+    return f"function Get-DnsClientCache {{ [CmdletBinding()] param() @({objs}) }}"
+
+
+def test_dns_cache_report_is_a_read_only_safe_report():
+    action = _action("net_dns_cache_report")
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None and action.items_command is None
+    assert action.label_sk and action.label_en and action.description_sk and action.description_en
+    for verb in ("Clear-DnsClientCache", "ipconfig", "Set-", "Remove-", "New-Item"):
+        assert verb not in action.command, verb
+
+
+def test_dns_cache_report_counts_entries_and_failed_lookups():
+    from report_rig import run_ps
+
+    rows = [
+        {"Entry": "a.example", "Name": "a.example", "Type": 1, "Status": 0, "TimeToLive": 60, "Data": "1.1.1.1"},
+        {"Entry": "b.example", "Name": "b.example", "Type": 1, "Status": 0, "TimeToLive": 60, "Data": "2.2.2.2"},
+        {"Entry": "c.example", "Name": "c.example", "Type": 1, "Status": 9003, "TimeToLive": 5, "Data": ""},
+    ]
+    result = run_ps(_action("net_dns_cache_report").command, [_dns_stub(rows)], ["Get-DnsClientCache"])
+    assert result.returncode == 0, result.stderr
+    assert "DNS client cache entries: 3" in result.stdout
+    assert "failed lookups): 1" in result.stdout
+    assert "a.example" in result.stdout
+
+
+def test_dns_cache_report_handles_an_empty_cache_and_an_unreadable_one():
+    from report_rig import run_ps
+
+    command = _action("net_dns_cache_report").command
+    empty = run_ps(command, [_dns_stub([])], ["Get-DnsClientCache"])
+    assert empty.returncode == 0 and "DNS client cache entries: 0" in empty.stdout and "empty" in empty.stdout
+    broken = run_ps(command, ["function Get-DnsClientCache { throw 'Pristup odmietnuty' }"], ["Get-DnsClientCache"])
+    assert broken.returncode == 1 and "Could not read the DNS client cache" in broken.stdout

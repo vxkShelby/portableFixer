@@ -97,3 +97,11 @@ actions:
     command: "vssadmin list writers"
     description_sk: "Zobrazí stav VSS writerov (dôležité pre zálohovanie a shadow copies). Writer v chybovom stave často blokuje zálohy. Nič nemení."
     description_en: "Shows VSS writer status (relevant for backups and shadow copies). A failed writer often blocks backups. Changes nothing."
+
+  - id: disk_trim_status_report
+    label_sk: "Stav TRIM (DisableDeleteNotify)"
+    label_en: "TRIM status (DisableDeleteNotify)"
+    risk: SAFE
+    command: "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem'; $p = Get-ItemProperty -LiteralPath $k -EA SilentlyContinue; $ntfs = if ($p) { $p.DisableDeleteNotify } else { $null }; $refs = if ($p) { $p.RefsDisableDeleteNotify } else { $null }; Write-Output ('NTFS DisableDeleteNotify: ' + $(if ($null -eq $ntfs) { 'not set (default 0 = TRIM on)' } else { [string]$ntfs })); Write-Output ('ReFS DisableDeleteNotify: ' + $(if ($null -eq $refs) { 'not set (default 0 = TRIM on)' } else { [string]$refs })); try { Write-Output '--- Physical disks ---'; Get-PhysicalDisk -EA Stop | Select-Object FriendlyName,MediaType,BusType | Format-Table -AutoSize } catch { Write-Output ('Could not list physical disks: ' + $_.Exception.Message) }; if ($null -ne $ntfs -and [int]$ntfs -ne 0) { Write-Output 'VERDICT: TRIM is DISABLED for NTFS (DisableDeleteNotify=1) - an SSD is not told which blocks are free, which can slow it down over time.' } else { Write-Output 'VERDICT: TRIM is enabled for NTFS (DisableDeleteNotify=0 or not set). Windows still sends TRIM only to drives that support it.' }"
+    description_sk: "Prečíta z registra DisableDeleteNotify (NTFS aj ReFS) a vypíše fyzické disky s typom média (SSD/HDD). Hodnota 0 alebo nenastavené znamená, že Windows posiela príkazy TRIM; 1 znamená, že sú vypnuté, čo môže SSD časom spomaliť. Číta register, nie text príkazu fsutil, takže výstup nezávisí od jazyka Windows. Nič nemení."
+    description_en: "Reads DisableDeleteNotify (NTFS and ReFS) from the registry and lists the physical disks with their media type (SSD/HDD). 0 or not set means Windows sends TRIM commands; 1 means they are turned off, which can slow an SSD down over time. It reads the registry, not fsutil text, so the result does not depend on the Windows display language. Changes nothing."

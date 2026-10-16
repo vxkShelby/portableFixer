@@ -12,11 +12,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_26_actions_in_security_category():
+def test_m08_catalog_loads_27_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 26
+    assert len(module.actions) == 27
 
 
 def test_m08_catalog_risk_distribution():
@@ -24,7 +24,7 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 17
+    assert len(by_risk[RiskLevel.SAFE]) == 18
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "hard_uac_restore_default",
         "sec_wpbt_disable",
@@ -162,6 +162,7 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "hard_smartscreen_default",
         "sec_wdigest_status",
         "sec_exploit_mitigation_baseline",
+        "sec_lsa_runasppl_status",
     }
 
 
@@ -477,3 +478,34 @@ def test_m08_catalog_scripts_parse_without_powershell_7_only_syntax(tmp_path):
     )
     assert "PARSE_DONE" in result.stdout, result.stdout + result.stderr
     assert [line for line in result.stdout.splitlines() if line.startswith("ERR")] == []
+
+
+# --- sec_lsa_runasppl_status ------------------------------------------------------
+
+LSA_KEY = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa"
+
+
+def _lsa_run(values):
+    from report_rig import registry_stub, run_ps
+
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "sec_lsa_runasppl_status")
+    return action, run_ps(action.command, [registry_stub({LSA_KEY: values} if values is not None else {})])
+
+
+def test_m08_lsa_status_is_a_read_only_locale_free_registry_report():
+    action, _ = _lsa_run({})
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None and action.items_command is None
+    assert "RunAsPPL" in action.command
+    for verb in ("Set-ItemProperty", "Remove-ItemProperty", "New-Item", "Set-ProcessMitigation", "reg ", "bcdedit"):
+        assert verb not in action.command, verb
+
+
+def test_m08_lsa_status_reports_each_registry_state():
+    expected = {1: "configured on", 2: "configured on", 0: "switched off (RunAsPPL=0)"}
+    for value, text in expected.items():
+        _, result = _lsa_run({"RunAsPPL": value})
+        assert result.returncode == 0, result.stderr
+        assert f"RunAsPPL: {value}" in result.stdout and text in result.stdout, value
+    _, result = _lsa_run(None)
+    assert "RunAsPPL: not set" in result.stdout and "RunAsPPL is not set" in result.stdout

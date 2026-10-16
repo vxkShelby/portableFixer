@@ -13,11 +13,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m05_windows_update" / "actions.yaml"
 
 
-def test_m05_catalog_loads_9_actions_in_repair_category():
+def test_m05_catalog_loads_10_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m05_windows_update"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 9
+    assert len(module.actions) == 10
 
 
 def test_m05_catalog_risk_distribution():
@@ -31,6 +31,7 @@ def test_m05_catalog_risk_distribution():
         "wu_trigger_detection",
         "wu_driver_updates_report",
         "os_win10_esu_status",
+        "wu_pause_status_report",
     }
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "wu_stop_services",
@@ -54,6 +55,7 @@ def test_m05_catalog_covers_expected_ids():
         "wu_driver_updates_report",
         "wu_uninstall_last_update",
         "os_win10_esu_status",
+        "wu_pause_status_report",
     }
 
 
@@ -598,3 +600,44 @@ def test_m05_catalog_scripts_parse_without_powershell_7_only_syntax(tmp_path):
     )
     assert "PARSE_DONE" in result.stdout, result.stdout + result.stderr
     assert [line for line in result.stdout.splitlines() if line.startswith("ERR")] == []
+
+
+# --- wu_pause_status_report -------------------------------------------------------
+
+PAUSE_UX = "HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings"
+PAUSE_POLICY_AU = "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU"
+
+
+def _pause_run(table):
+    from report_rig import registry_stub, run_ps
+
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "wu_pause_status_report")
+    return action, run_ps(action.command, [registry_stub(table)])
+
+
+def test_wu_pause_status_report_is_a_read_only_registry_report():
+    action, _ = _pause_run({})
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None and action.items_command is None
+    for verb in ("Set-ItemProperty", "Remove-ItemProperty", "New-Item", "Start-Service", "Stop-Service"):
+        assert verb not in action.command, verb
+
+
+def test_wu_pause_status_report_says_paused_while_the_expiry_is_in_the_future():
+    # Run under the Slovak culture (report_rig): the ISO timestamp must be parsed invariantly.
+    _, result = _pause_run({PAUSE_UX: {"PauseUpdatesExpiryTime": "2999-12-31T10:00:00Z"}})
+    assert result.returncode == 0, result.stderr
+    assert "VERDICT: PAUSED" in result.stdout and "2999-12-31 10:00 UTC" in result.stdout
+
+
+def test_wu_pause_status_report_ignores_a_past_expiry_and_an_empty_registry():
+    for table in ({PAUSE_UX: {"PauseUpdatesExpiryTime": "2001-01-01T00:00:00Z"}}, {}):
+        _, result = _pause_run(table)
+        assert result.returncode == 0, result.stderr
+        assert "VERDICT: NOT PAUSED" in result.stdout, table
+
+
+def test_wu_pause_status_report_notes_a_policy_that_disables_updates_separately():
+    _, result = _pause_run({PAUSE_POLICY_AU: {"NoAutoUpdate": 1}})
+    assert "VERDICT: NOT PAUSED" in result.stdout
+    assert "NOTE: a policy disables automatic updates" in result.stdout
