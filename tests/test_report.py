@@ -1238,7 +1238,9 @@ def test_report_sentences_match_what_main_window_logs():
 
     from portablefix import report
 
-    source = (Path(report.__file__).parent / "gui" / "main_window.py").read_text(encoding="utf-8")
+    # MainWindow's methods live in main_window.py and its mw_*.py mixins.
+    gui = Path(report.__file__).parent / "gui"
+    source = "".join(p.read_text(encoding="utf-8") for p in [gui / "main_window.py", *sorted(gui.glob("mw_*.py"))])
     assert '"Registry hive backup saved: ' in source
     assert '"Registry hive backup failed: ' in source and '"Registry hive backup failed."' in source
     assert f'" {report._HIVE_REQUESTED} before the first DESTRUCTIVE action."' in source
@@ -1520,7 +1522,9 @@ def test_restart_sentences_match_what_main_window_and_main_log():
     from portablefix import report
 
     root = Path(report.__file__).parent
-    window = (root / "gui" / "main_window.py").read_text(encoding="utf-8")
+    window = "".join(
+        p.read_text(encoding="utf-8") for p in [root / "gui" / "main_window.py", *sorted((root / "gui").glob("mw_*.py"))]
+    )
     main = (root.parent / "main.py").read_text(encoding="utf-8")
     assert f"{{action.id}} {report._RESTART_IMMEDIATE} - " in window
     assert '" Saved to continue after the restart: {waiting}."' in window
