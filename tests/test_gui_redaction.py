@@ -5,6 +5,7 @@ own so it runs without a real batch."""
 import functools
 import socket
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -84,6 +85,8 @@ def test_client_package_is_redacted_when_the_setting_is_on(tmp_path, monkeypatch
 
     saved = window._save_handoff_package(RUN_ID)
 
+    # The dialog's suggested name (returned as-is here) names no computer.
+    assert Path(saved).name == f"PortableFix_pc_{RUN_ID}.zip"
     with zipfile.ZipFile(saved) as zf:
         assert "192.168.1.23" not in zf.read("report.html").decode("utf-8")
         assert "REDACTED FOR THE CLIENT" in zf.read(handoff.ARC_README).decode("utf-8-sig")
