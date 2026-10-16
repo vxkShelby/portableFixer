@@ -32,6 +32,23 @@ def _names(zip_path):
         return sorted(zf.namelist())
 
 
+def test_default_package_name_of_a_redacted_package_has_no_computer_name():
+    assert handoff.default_package_name(HOST, RUN, redact=True) == f"PortableFix_pc_{RUN}.zip"
+    assert handoff.default_package_name(HOST, RUN, redact=False) == f"PortableFix_{HOST}_{RUN}.zip"
+
+
+def test_redacted_package_readmes_name_no_computer(tmp_path, fake_reports):
+    state = tmp_path / "state"
+    _write_run(state, host="JAN-LAPTOP")
+    files = _zip_texts(handoff.build_handoff_zip(
+        state, "JAN-LAPTOP", RUN, tmp_path / "out.zip", include_diagnostics=True, redact=True))
+    for name in ("README.txt", handoff.ARC_DIAG_README):
+        text = files[name].decode("utf-8-sig")
+        assert "JAN-LAPTOP" not in text and "<pc>" in text, name
+    plain = _zip_texts(handoff.build_handoff_zip(state, "JAN-LAPTOP", RUN, tmp_path / "plain.zip"))
+    assert "JAN-LAPTOP" in plain["README.txt"].decode("utf-8-sig")
+
+
 def test_default_package_name():
     assert handoff.default_package_name(HOST, RUN) == f"PortableFix_{HOST}_{RUN}.zip"
 
@@ -718,7 +735,8 @@ def test_hostname_that_looks_like_a_key_is_masked_as_the_computer_not_a_key(tmp_
         b'{"run_id": "r", "hostname": "ABCD1-EFGH2", "output": "on ABCD1-EFGH2, key VK7JG-NPHTM-C97JM"}\n')
     files = _zip_texts(handoff.build_handoff_zip(state, host, RUN, tmp_path / "out.zip", redact=True))
     assert b'"hostname": "<pc>", "output": "on <pc>, key <key>"' in files["audit_log.jsonl"]
-    assert host in files["README.txt"].decode("utf-8-sig")  # the technician's own README is not redacted
+    assert host not in files["README.txt"].decode("utf-8-sig")
+    assert "<pc>" in files["README.txt"].decode("utf-8-sig")
 
 
 def test_diagnostics_readme_says_windows_reports_are_not_redacted(tmp_path, fake_reports):

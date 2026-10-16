@@ -501,8 +501,9 @@ def diagnostics_readme(results: list[DiagnosticResult], hostname: str, run_id: s
     return "\n".join(lines)
 
 
-def default_package_name(hostname: str, run_id: str) -> str:
-    return f"PortableFix_{hostname}_{run_id}.zip"
+def default_package_name(hostname: str, run_id: str, redact: bool = False) -> str:
+    # A redacted package goes to the client: no computer name in its file name.
+    return f"PortableFix_{'pc' if redact else hostname}_{run_id}.zip"
 
 
 def _check_name(value: str, what: str) -> None:
@@ -733,7 +734,8 @@ def build_handoff_zip(
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as raw, zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as zf:
-                readme = README_TEXT.format(hostname=hostname, run_id=run_id)
+                shown = redaction.PC if redact else hostname  # the client copy names no computer
+                readme = README_TEXT.format(hostname=shown, run_id=run_id)
                 if redact:
                     readme += REDACTED_README_NOTE
                 _write_text(zf, ARC_README, readme)
@@ -744,7 +746,7 @@ def build_handoff_zip(
                         zf.write(source, arcname=arcname)
                 if diag_dir is not None:
                     _write_text(zf, ARC_DIAG_README, diagnostics_readme(
-                        diag_results, hostname, run_id, dry_run, redacted=redact,
+                        diag_results, shown, run_id, dry_run, redacted=redact,
                     ))
                     for result in diag_results:
                         if result.status == STATUS_OK and result.path is not None:
