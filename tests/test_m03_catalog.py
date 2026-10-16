@@ -11,11 +11,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m03_disk" / "actions.yaml"
 
 
-def test_m03_catalog_loads_9_actions_in_repair_category():
+def test_m03_catalog_loads_10_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m03_disk"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 9
+    assert len(module.actions) == 10
 
 
 def test_m03_catalog_risk_distribution():
@@ -23,7 +23,7 @@ def test_m03_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 6
+    assert len(by_risk[RiskLevel.SAFE]) == 7
     assert len(by_risk[RiskLevel.MODERATE]) == 2
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 1
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -220,3 +220,41 @@ def test_full_scan_reboot_writes_an_entry_even_when_bootexecute_is_empty(tmp_pat
     result, _, final = _run_full_scan(tmp_path, boot=())
     assert result.returncode == 0, result.stdout + result.stderr
     assert final == [C_ENTRY]
+
+
+# --- disk_trim_status_report ------------------------------------------------------
+
+FS_KEY = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem"
+
+
+def _trim_run(values):
+    from report_rig import registry_stub, run_ps
+
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "disk_trim_status_report")
+    disks = (
+        "function Get-PhysicalDisk { [CmdletBinding()] param() "
+        "[pscustomobject]@{ FriendlyName = 'Test SSD'; MediaType = 'SSD'; BusType = 'NVMe' } }"
+    )
+    table = {FS_KEY: values} if values is not None else {}
+    return action, run_ps(action.command, [registry_stub(table), disks], ["Get-ItemProperty", "Get-PhysicalDisk"])
+
+
+def test_m03_trim_status_reads_the_registry_not_fsutil_text():
+    action, _ = _trim_run({})
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None and action.items_command is None
+    # fsutil prints localized text; the registry value is the locale-free source.
+    assert "fsutil" not in action.command and "DisableDeleteNotify" in action.command
+    for verb in ("Set-ItemProperty", "Remove-ItemProperty", "Optimize-Volume", "New-Item"):
+        assert verb not in action.command, verb
+
+
+def test_m03_trim_status_verdict_follows_disable_delete_notify():
+    _, on = _trim_run({"DisableDeleteNotify": 0})
+    assert on.returncode == 0, on.stderr
+    assert "NTFS DisableDeleteNotify: 0" in on.stdout and "TRIM is enabled for NTFS" in on.stdout
+    assert "Test SSD" in on.stdout
+    _, off = _trim_run({"DisableDeleteNotify": 1})
+    assert "TRIM is DISABLED for NTFS" in off.stdout
+    _, absent = _trim_run(None)
+    assert "not set (default 0 = TRIM on)" in absent.stdout and "TRIM is enabled for NTFS" in absent.stdout

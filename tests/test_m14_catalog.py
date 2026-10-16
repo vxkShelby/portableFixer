@@ -13,11 +13,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m14_printing" / "actions.yaml"
 
 
-def test_m14_catalog_loads_9_actions_in_repair_category():
+def test_m14_catalog_loads_10_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m14_printing"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 9
+    assert len(module.actions) == 10
 
 
 def test_m14_catalog_risk_distribution():
@@ -31,6 +31,7 @@ def test_m14_catalog_risk_distribution():
         "print_offline_ghost_printers_report",
         "print_driver_class_report",
         "print_smb_compat_report",
+        "print_test_page",
     }
     assert set(by_risk[RiskLevel.MODERATE]) == {"print_remove_offline_printers", "print_backup_printbrm"}
     assert set(by_risk[RiskLevel.DESTRUCTIVE]) == {
@@ -72,6 +73,7 @@ def test_m14_catalog_covers_expected_ids():
         "print_driver_class_report",
         "print_backup_printbrm",
         "print_smb_compat_report",
+        "print_test_page",
     }
 
 
@@ -878,3 +880,75 @@ def test_smb_compat_still_reports_when_the_spooler_is_not_running(tmp_path, spoo
     assert f"Print Spooler: {spooler or 'not installed'}" in result.stdout
     assert "NOTE: The Print Spooler is not running" in result.stdout
     assert _verdict(result.stdout).startswith("VERDICT: SECURE")
+
+
+# --- print_test_page (per-item, SAFE) -----------------------------------------------
+
+def _test_page_action():
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == "print_test_page")
+
+
+def test_print_test_page_is_a_safe_per_item_action_left_out_of_select_all():
+    action = _test_page_action()
+    assert action.risk == RiskLevel.SAFE
+    assert action.items_command and action.preview_command
+    assert action.undo_command is None and action.check_command is None
+    # It spends paper, so a blanket "select all" must not print on every printer.
+    assert action.exclude_from_select_all is True
+    for verb in ("Remove-Printer", "Add-Printer", "Set-Printer", "Remove-PrinterDriver", "Restart-Service"):
+        assert verb not in action.command and verb not in action.items_command, verb
+
+
+def _printers_stub():
+    return (
+        "function Get-Printer { [CmdletBinding()] param() "
+        "[pscustomobject]@{ Name = 'Office HP'; PortName = 'IP_10.0.0.5'; DriverName = 'HP Universal' }; "
+        "[pscustomobject]@{ Name = '\\\\srv\\Label'; PortName = 'SRV'; DriverName = 'Zebra' } }"
+    )
+
+
+def test_print_test_page_lists_the_printers_as_valid_items():
+    from portablefix import items as items_mod
+    from report_rig import run_ps
+
+    result = run_ps(_test_page_action().items_command, [_printers_stub()], ["Get-Printer"])
+    assert result.returncode == 0, result.stderr
+    found = items_mod.parse_items(result.stdout.splitlines())
+    assert [i.id for i in found] == ["Office HP", "\\\\srv\\Label"]
+    assert "HP Universal" in found[0].detail
+
+
+def _cim_stubs(log: Path):
+    lg = "'" + str(log).replace("'", "''") + "'"
+    return [
+        "function Get-CimInstance { [CmdletBinding()] param([Parameter(Position = 0)] [string] $ClassName) "
+        "'Office HP', 'Bad', 'Other' | ForEach-Object { [pscustomobject]@{ Name = $_ } } }",
+        f"function Invoke-CimMethod {{ [CmdletBinding()] param($InputObject, [string] $MethodName) "
+        f"Add-Content -Path {lg} -Value ($MethodName + ' ' + $InputObject.Name); "
+        "[pscustomobject]@{ ReturnValue = $(if ($InputObject.Name -eq 'Bad') { 5 } else { 0 }) } }",
+    ]
+
+
+def test_print_test_page_prints_only_on_the_picked_printers(tmp_path):
+    from report_rig import run_ps
+
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    command = "$__pfItems = [string[]]@('Office HP'); " + _test_page_action().command
+    result = run_ps(command, _cim_stubs(log), ["Get-CimInstance", "Invoke-CimMethod"])
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8-sig").splitlines() == ["PrintTestPage Office HP"]
+    assert "Test page sent to: Office HP" in result.stdout and "1 of 1 printer" in result.stdout
+
+
+def test_print_test_page_exit_code_follows_whether_any_page_was_sent(tmp_path):
+    from report_rig import run_ps
+
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    body = _test_page_action().command
+    names = ["Get-CimInstance", "Invoke-CimMethod"]
+    partial = run_ps("$__pfItems = [string[]]@('Office HP', 'Bad'); " + body, _cim_stubs(log), names)
+    assert partial.returncode == 0 and "failed on Bad (WMI return code 5)" in partial.stdout
+    none = run_ps("$__pfItems = [string[]]@('Bad', 'Gone'); " + body, _cim_stubs(log), names)
+    assert none.returncode == 1 and "printer not found" in none.stdout

@@ -115,7 +115,7 @@ symptoms:
       - internet not working
       - wifi not working
       - websites won't load
-    diagnostics: [online_connectivity_ladder, net_adapter_status, net_ip_config_report, online_proxy_check]
+    diagnostics: [online_connectivity_ladder, net_adapter_status, net_ip_config_report, online_proxy_check, net_dns_cache_report]
     fixes: [net_flush_dns, net_dhcp_renew, online_proxy_reset, net_dns_reset_automatic, net_winsock_reset]
 
   - id: slow_internet
@@ -187,7 +187,7 @@ symptoms:
       - everything lags
       - sluggish
       - disk at 100 percent
-    diagnostics: [top_cpu_processes, tune_memory_usage_report, disk_health_verdict, tune_startup_apps_report, volumes]
+    diagnostics: [top_cpu_processes, tune_memory_usage_report, disk_health_verdict, tune_startup_apps_report, volumes, disk_trim_status_report]
     fixes: [autoruns_disable_items, tune_power_high_performance, tune_visual_effects_performance, user_temp, system_temp]
 
   - id: blue_screen
@@ -261,7 +261,7 @@ symptoms:
       - windows update fails
       - updates won't install
       - update error
-    diagnostics: [wu_check_services, pending_reboot, dism_checkhealth, recent_hotfixes]
+    diagnostics: [wu_check_services, pending_reboot, dism_checkhealth, recent_hotfixes, wu_pause_status_report]
     fixes: [wu_reset_cache, wu_reregister_dlls, dism_restorehealth, wu_trigger_detection]
 
   - id: virus_suspected
@@ -767,7 +767,7 @@ symptoms:
       - security check
       - is my pc secure
       - security audit
-    diagnostics: [sec_defender_status, sec_firewall_status, sec_uac_status, sec_local_admins, sec_autologon_check, sec_wdigest_status, sec_exploit_mitigation_baseline, feature_legacy_insecure_report]
+    diagnostics: [sec_defender_status, sec_firewall_status, sec_uac_status, sec_local_admins, sec_autologon_check, sec_wdigest_status, sec_exploit_mitigation_baseline, feature_legacy_insecure_report, sec_lsa_runasppl_status]
     fixes: [hard_firewall_enable_all, hard_uac_restore_default, hard_disable_smb1, hard_smartscreen_default]
 
   - id: start_menu_ads

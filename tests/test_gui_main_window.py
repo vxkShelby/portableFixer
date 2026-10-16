@@ -8215,7 +8215,7 @@ def test_window_minimum_size_fits_a_small_laptop_screen(qtbot, monkeypatch, lang
     from portablefix import winget_updates
 
     monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [])
-    # The real catalog: 269 actions, the longest labels and every panel.
+    # The real catalog: 274 actions, the longest labels and every panel.
     base_dir = Path(__file__).resolve().parent.parent
     window = MainWindow(
         assets_dir=base_dir, state_dir=base_dir, settings=Settings(language=language, quiet_mode=True),
