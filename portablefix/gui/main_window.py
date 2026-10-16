@@ -2377,6 +2377,11 @@ class MainWindow(QMainWindow):
             rec_button_row.addWidget(apply_rec_button)
             layout.addLayout(rec_button_row)
 
+        if self.settings.redact_for_client:
+            tech_note = QLabel(self._t("report_technician_copy_note").format(run_id=self.run_id))
+            tech_note.setWordWrap(True)
+            layout.addWidget(tech_note)
+
         button_row = QHBoxLayout()
         button_row.addStretch(1)
         open_button = QPushButton(self._t("open_report"))
@@ -3393,7 +3398,8 @@ class MainWindow(QMainWindow):
         self._show_handoff_saved(saved)
 
     def _show_handoff_saved(self, saved: Path) -> None:
-        self.statusBar().showMessage(self._t("handoff_saved").format(path=saved), 15000)
+        note = f" {self._t('handoff_saved_redacted_note')}" if self.settings.redact_for_client else ""
+        self.statusBar().showMessage(self._t("handoff_saved").format(path=saved) + note, 15000)
         button = getattr(self, "_handoff_folder_button", None)
         if button is None:
             button = QPushButton(self._t("handoff_open_folder"))

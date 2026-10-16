@@ -14,6 +14,10 @@ from pathlib import Path
 # A report is a few KB; anything this large is not one of ours.
 _MAX_REPORT_BYTES = 10 * 1024 * 1024
 
+# Reports/pc_<run_id>_client.{html,json}: the redacted copy for the client,
+# written beside the technician's full <hostname>_<run_id> report.
+CLIENT_SUFFIX = "_client"
+
 
 @dataclass
 class RunSummary:
@@ -69,6 +73,14 @@ def run_report_paths(reports_dir: Path, hostname: str, run_id: str) -> tuple[Pat
     return reports_dir / f"{stem}.html", reports_dir / f"{stem}.json"
 
 
+def client_report_paths(reports_dir: Path, run_id: str) -> tuple[Path, Path]:
+    """(html, json) of the redacted client copy written next to the technician's
+    full report when redact_for_client is on. The name carries no computer
+    name, and the suffix keeps it out of recent_runs / package_sources."""
+    stem = f"pc_{run_id}{CLIENT_SUFFIX}"
+    return reports_dir / f"{stem}.html", reports_dir / f"{stem}.json"
+
+
 def recent_runs(reports_dir: Path, hostname: str, limit: int = 5, exclude_run_id: str | None = None) -> list[RunSummary]:
     """Newest-first summaries of this machine's past runs.
 
@@ -82,7 +94,7 @@ def recent_runs(reports_dir: Path, hostname: str, limit: int = 5, exclude_run_id
     prefix = f"{hostname}_"
     try:
         candidates = sorted(
-            (p for p in reports_dir.glob("*.json") if p.name.startswith(prefix)),
+            (p for p in reports_dir.glob("*.json") if p.name.startswith(prefix) and not p.stem.endswith(CLIENT_SUFFIX)),
             key=lambda p: p.name,
             reverse=True,
         )

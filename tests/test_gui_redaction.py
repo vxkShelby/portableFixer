@@ -90,3 +90,15 @@ def test_client_package_is_redacted_when_the_setting_is_on(tmp_path, monkeypatch
     with zipfile.ZipFile(saved) as zf:
         assert "192.168.1.23" not in zf.read("report.html").decode("utf-8")
         assert "REDACTED FOR THE CLIENT" in zf.read(handoff.ARC_README).decode("utf-8-sig")
+
+
+@pytest.mark.parametrize("language", ["sk", "en"])
+def test_ui_tells_the_technician_copy_from_the_client_copy(tmp_path, make_window, language):
+    from PySide6.QtWidgets import QDialog, QLabel
+
+    window = make_window(Settings(language=language, redact_for_client=True))
+    window._show_batch_summary(tmp_path / "report.html")
+    texts = [label.text() for dlg in window.findChildren(QDialog) for label in dlg.findChildren(QLabel)]
+    assert window._t("report_technician_copy_note").format(run_id=RUN_ID) in texts
+    window._show_handoff_saved(tmp_path / "x.zip")
+    assert window._t("handoff_saved_redacted_note") in window.statusBar().currentMessage()
