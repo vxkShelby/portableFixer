@@ -662,3 +662,23 @@ def test_frozen_app_takes_its_icon_from_inside_the_exe_not_the_drive(tmp_path, m
     monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
     monkeypatch.setattr(paths.sys, "_MEIPASS", str(tmp_path / "meipass"), raising=False)
     assert paths.app_icon_path(tmp_path) == tmp_path / "meipass" / "portablefix.ico"
+
+def test_installer_app_mutex_is_the_single_instance_mutex():
+    # Inno's AppMutex only works if it names the mutex the app really holds.
+    import re
+    from pathlib import Path
+
+    import main as main_module
+
+    iss = (Path(__file__).resolve().parent.parent / "installer" / "PortableFix.iss").read_text(encoding="utf-8")
+    assert re.search(r"^AppMutex=(.+?)\s*$", iss, re.M).group(1) == main_module._SINGLE_INSTANCE_MUTEX_NAME
+
+
+def test_main_takes_the_single_instance_mutex_exactly_once(tmp_path, monkeypatch):
+    events = []
+    main_module = _fake_main_env(monkeypatch, tmp_path, events)
+    calls = []
+    monkeypatch.setattr(main_module, "_acquire_single_instance_lock", lambda *a, **k: calls.append(1) or True)
+
+    assert main_module.main() == 0
+    assert calls == [1]
