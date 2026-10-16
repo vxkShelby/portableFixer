@@ -137,10 +137,37 @@ def test_a_missing_setup_fails(tmp_path, capsys):
     assert "does not exist" in capsys.readouterr().err
 
 
+ASSETS = [
+    "PortableFix-Portable.zip",
+    "PortableFix-Portable.zip.sha256",
+    "PortableFix-Setup.exe",
+    "PortableFix-Setup.exe.sha256",
+]
+
+
+def _release_jobs() -> dict:
+    import yaml
+
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    return yaml.safe_load(text)["jobs"]
+
+
+def _step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
+
+
 def test_the_release_workflow_ships_the_setup_checksum_as_a_fourth_asset():
     text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert "verify_release.py --setup" in text
-    assert text.count("Output\\PortableFix-Setup.exe.sha256") == 1
+    jobs = _release_jobs()
+    # The four assets leave the build job as one artifact ...
+    uploaded = _step(jobs["build"], "Keep the release assets")["with"]["path"].split()
+    assert uploaded == [f"Output/{name}" for name in ASSETS]
+    # ... and the draft gets exactly those four.
+    draft = _step(jobs["publish"], "Draft the release")["run"]
+    assert "gh release create" in draft
+    assert all(name in draft for name in ASSETS)
+    assert draft.rstrip().endswith(" ".join(ASSETS))
 
 
 @pytest.mark.parametrize(
@@ -322,13 +349,82 @@ def test_workflows_pin_third_party_code_the_signing_job_runs(workflow):
     # A tag like @v4 can be moved to any commit; the release job holds the
     # key every client trusts, so what runs there is pinned by SHA.
     text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    uses = re.findall(r"^\s*-\s*uses:\s*(\S+)", text, re.MULTILINE)
+    uses = re.findall(r"^\s*(?:-\s*)?uses:\s*(\S+)", text, re.MULTILINE)
     assert uses
     for ref in uses:
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), ref
     for line in text.splitlines():
         if "choco install" in line:
             assert re.search(r"--version=\d+\.\d+\.\d+", line), line
+
+
+def test_the_signing_key_secret_reaches_only_the_build_jobs_signing_step():
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    # One reference to the secret in the whole file (comments aside) ...
+    code = chr(10).join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert code.count("secrets.") == 1
+    assert code.count("secrets.PORTABLEFIX_RELEASE_SIGNING_KEY") == 1
+    jobs = _release_jobs()
+    # ... in the env of the one step that runs build.ps1, not the job's.
+    assert "secrets." not in str(jobs["build"].get("env", {}))
+    signing = _step(jobs["build"], "Build and sign")
+    assert "secrets.PORTABLEFIX_RELEASE_SIGNING_KEY" in str(signing["env"])
+    assert "build.ps1" in signing["run"]
+    for name, job in jobs.items():
+        for step in job["steps"]:
+            if step is not signing:
+                assert "secrets." not in str(step), (name, step.get("name"))
+
+
+def test_the_release_jobs_hold_only_the_permissions_they_use():
+    import yaml
+
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["permissions"] == {}
+    jobs = _release_jobs()
+    assert jobs["publish"]["permissions"] == {"contents": "write"}
+    assert jobs["attest"]["permissions"] == {"id-token": "write", "attestations": "write"}
+    # Only the attesting job may mint tokens or write attestations.
+    for name in ("build", "publish"):
+        assert not {"id-token", "attestations"} & set(jobs[name]["permissions"])
+    # The job that runs build code never creates the release, and the job that
+    # creates it never runs a build.
+    assert "gh release create" not in str(jobs["build"])
+    assert "build.ps1" not in str(jobs["publish"]) + str(jobs["attest"])
+    assert not any("checkout" in step.get("uses", "") for step in jobs["publish"]["steps"] + jobs["attest"]["steps"])
+
+
+def test_the_release_jobs_hand_the_assets_over_in_order():
+    jobs = _release_jobs()
+    assert "needs" not in jobs["build"]
+    assert jobs["attest"]["needs"] == "build"
+    # A failed attestation stops the draft.
+    assert set(jobs["publish"]["needs"]) == {"build", "attest"}
+    produced = _step(jobs["build"], "Keep the release assets")["with"]["name"]
+    for job in ("attest", "publish"):
+        step = _step(jobs[job], "Get the release assets")
+        assert step["uses"].startswith("actions/download-artifact@")
+        assert step["with"]["name"] == produced
+        assert step["with"]["path"] == "Output"
+
+
+def test_the_release_attests_the_zip_and_the_installer():
+    step = _step(_release_jobs()["attest"], "Attest build provenance")
+    assert step["uses"].startswith("actions/attest-build-provenance@")
+    assert step["with"]["subject-path"].split() == [
+        "Output/PortableFix-Portable.zip",
+        "Output/PortableFix-Setup.exe",
+    ]
+
+
+def test_the_build_keeps_every_release_guard():
+    build = _release_jobs()["build"]
+    assert build["if"] == "github.ref == 'refs/heads/main'"
+    names = [step.get("name") for step in build["steps"]]
+    assert names.index("Tests passed for this commit") < names.index("Build and sign")
+    assert names.index("The tag is new") < names.index("Build and sign")
+    assert names.index("Build and sign") < names.index("Checksum the installer") < names.index("Keep the release assets")
+    assert "--draft" in _step(_release_jobs()["publish"], "Draft the release")["run"]
 
 
 def test_a_release_build_refuses_to_start_without_the_signing_key():
