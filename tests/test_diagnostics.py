@@ -51,13 +51,13 @@ def test_export_diagnostics_zip_holds_only_the_current_run_redacted(tmp_path, mo
         names = set(zf.namelist())
         texts = {n: zf.read(n).decode("utf-8") for n in names}
     assert names == {"README_DIAGNOSTICS.txt", "Logs/crash.log", "Logs/run1.jsonl",
-                     "Reports/PC_run1.json", "Reports/PC_run1.html"}
+                     "Reports/pc_run1.json", "Reports/pc_run1.html"}
     for name, text in texts.items():
         assert "jan" not in text, name
         assert "Home5G" not in text, name
     assert "Logs/run1.jsonl" in texts["README_DIAGNOSTICS.txt"]
     assert "<user>" in texts["Logs/crash.log"]
-    assert "&lt;ssid&gt;" in texts["Reports/PC_run1.html"]
+    assert "&lt;ssid&gt;" in texts["Reports/pc_run1.html"]
 
 
 def test_export_diagnostics_zip_defaults_to_the_newest_run(tmp_path, monkeypatch):

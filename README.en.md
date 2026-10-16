@@ -171,8 +171,11 @@ PowerShell.
   table column), hashes and GUIDs are left alone, and so are loopback,
   masks and public DNS (8.8.8.8, 1.1.1.1). An unlabelled short four-part
   number (`driver 10.1.18.2`) becomes `<ip>`. The report says so visibly at the top ("Redacted
-  for the client") and its JSON has `"redacted": true`. Masking happens
-  only when the report is written and the package is saved - the audit
+  for the client") and its JSON has `"redacted": true`. That redacted copy
+  is written as `Reports\pc_<run>_client.html/.json`; the technician's own
+  `Reports\<computer>_<run>.html/.json` stays full and unredacted (history
+  reads it) and is never put into a package or diagnostics export. Masking
+  happens only when the client copy and the package are written - the audit
   log on the stick is never changed, and `undo.ps1` goes into the package
   unchanged (it must restore the exact paths). Windows' built-in reports
   in `diagnostics/` are not redacted, and `diagnostics/README.txt` says

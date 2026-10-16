@@ -3,6 +3,7 @@ import re
 
 import pytest
 
+from portablefix import history
 from portablefix.audit_log import append_entry, audit_log_path, make_entry
 from portablefix.models import ActionDef, ModuleDef, RiskLevel
 from portablefix.report import build_report_data, generate_report
@@ -1559,6 +1560,10 @@ def test_redacted_report_masks_personal_data_and_says_so(tmp_path, language, ban
         tmp_path, "run_red", _fixture_modules(), language, {}, {}, job=job, redact=True,
     )
 
+    # The file on the stick under the real name is the technician's full copy;
+    # the redacted one is the separate pc_<run>_client file.
+    assert "5CD1234XYZ" in html_path.read_text(encoding="utf-8")
+    html_path, json_path = history.client_report_paths(tmp_path / "Reports", "run_red")
     content = html_path.read_text(encoding="utf-8")
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["redacted"] is True
@@ -1574,8 +1579,9 @@ def test_redacted_report_masks_personal_data_and_says_so(tmp_path, language, ban
     # The computer name is masked; the job fields entered on purpose stay.
     assert data["hostname"] == "<pc>"
     assert socket.gethostname().lower() not in content.lower()
-    # ... but the file on the stick keeps the real name (the history finds it by that).
-    assert html_path.name == f"{socket.gethostname()}_run_red.html"
+    # ... and the client copy's file name carries no computer name.
+    assert html_path.name == "pc_run_red_client.html"
+    assert (tmp_path / "Reports" / f"{socket.gethostname()}_run_red.html").is_file()
     assert data["job"] == job
     assert "Firma 192.168.1.23" in content
     # The audit log itself is never touched.
@@ -1600,6 +1606,7 @@ def test_redacted_events_keep_their_translated_rendering(tmp_path):
                   "Registry hive backup of the first half not found: C:\\Users\\jnovak\\AppData\\Local\\Temp\\PF\\hives-1.")
     _restart_events(tmp_path, "run_redev")
     html_path, _ = generate_report(tmp_path, "run_redev", _restart_modules(), "en", {}, {}, redact=True)
+    html_path, json_path = history.client_report_paths(tmp_path / "Reports", "run_redev")
     items = _safety_items(html_path.read_text(encoding="utf-8"))
     assert "C:\\Users\\&lt;user&gt;\\AppData\\Local\\Temp\\PF\\hives-1</li>" in items
     assert "Saved to continue after the restart: File check, Disk check" in items
@@ -1614,6 +1621,7 @@ def test_redacted_report_masks_this_pcs_profile_names_without_a_path(tmp_path, m
     output = "User : DESKTOP-X\\Jan Novak\nLocalPath : C:\\Users\\Jan Novak"
     append_entry(tmp_path, "run_prof", make_entry("m04_integrity", "profile_list", "cmd", 0, output, False, "run_prof"))
     html_path, json_path = generate_report(tmp_path, "run_prof", _fixture_modules(), "en", {}, {}, redact=True)
+    html_path, json_path = history.client_report_paths(tmp_path / "Reports", "run_prof")
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["actions"][0]["output"] == "User : DESKTOP-X\\<user>\nLocalPath : C:\\Users\\<user>"
     assert "Novak" not in html_path.read_text(encoding="utf-8")
@@ -1641,6 +1649,7 @@ def test_redacted_report_masks_the_target_user_that_has_no_matching_profile_fold
     )
     append_entry(tmp_path, "run_aad", entry)
     html_path, json_path = generate_report(tmp_path, "run_aad", _fixture_modules(), "en", {}, {}, redact=True)
+    html_path, json_path = history.client_report_paths(tmp_path / "Reports", "run_aad")
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["target_user"]["user"] == "AzureAD\\<user>"
     assert "JanNovak" not in json_path.read_text(encoding="utf-8")
@@ -1797,6 +1806,7 @@ def test_redacted_report_masks_form_text_but_keeps_branding_and_the_hand_over_na
     logo = base64.b64encode(_PNG_LOGO).decode("ascii") + "/5CD1234XYZ/"
     brand = {"company": "Servis 10.0.0.5", "contact": "Jan Novak, 0900", "logo": logo}
     html_path, json_path = generate_report(tmp_path, run, _fixture_modules(), "en", {}, {}, redact=True, branding=brand)
+    html_path, json_path = history.client_report_paths(tmp_path / "Reports", run)
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["intake"]["problem"] == "Nejde sieť na <ip>, SerialNumber : <serial>"
     assert data["outtake"]["handed_to"] == "Jan Novak"
@@ -1922,3 +1932,52 @@ def test_html_report_toc_is_localized_and_skipped_for_short_pages(tmp_path):
     from portablefix.report import _render_toc
 
     assert _render_toc('<h2 id="pf-h-a">A</h2>', "en") == ""
+
+
+def test_technician_copy_stays_full_and_the_client_copy_is_separate(tmp_path):
+    import socket
+
+    host = socket.gethostname()
+    append_entry(tmp_path, "run_tc", make_entry("m02_cleanup", "user_temp", "cmd", 0, _PERSONAL_OUTPUT, False, "run_tc"))
+    html_path, json_path = generate_report(tmp_path, "run_tc", _fixture_modules(), "en", {}, {}, redact=True)
+    # Technician copy: real name, nothing masked, not flagged as redacted.
+    assert html_path.name == f"{host}_run_tc.html" and json_path.name == f"{host}_run_tc.json"
+    full = json.loads(json_path.read_text(encoding="utf-8"))
+    assert "redacted" not in full and full["hostname"] == host
+    assert full["actions"][0]["output"] == _PERSONAL_OUTPUT
+    assert "5CD1234XYZ" in html_path.read_text(encoding="utf-8")
+    # Client copy: separate files, masked, no computer name in the file name.
+    client_html, client_json = history.client_report_paths(tmp_path / "Reports", "run_tc")
+    assert client_html.name == "pc_run_tc_client.html" and client_json.name == "pc_run_tc_client.json"
+    assert json.loads(client_json.read_text(encoding="utf-8"))["redacted"] is True
+    assert "5CD1234XYZ" not in client_html.read_text(encoding="utf-8")
+    # History finds the technician copy only, never the client one.
+    runs = history.recent_runs(tmp_path / "Reports", host)
+    assert [r.json_path for r in runs] == [json_path]
+    # Without the setting no client copy is written.
+    generate_report(tmp_path, "run_tc2", _fixture_modules(), "en", {}, {})
+    assert not history.client_report_paths(tmp_path / "Reports", "run_tc2")[0].exists()
+
+
+def test_handoff_and_diagnostics_never_contain_the_technician_copy(tmp_path):
+    import socket
+    import zipfile
+
+    from portablefix import diagnostics, handoff
+
+    host = socket.gethostname()
+    append_entry(tmp_path, "run_tc", make_entry("m02_cleanup", "user_temp", "cmd", 0, _PERSONAL_OUTPUT, False, "run_tc"))
+    generate_report(tmp_path, "run_tc", _fixture_modules(), "en", {}, {}, redact=True)
+
+    zips = {}
+    zips["handoff"] = handoff.build_handoff_zip(tmp_path, host, "run_tc", tmp_path / "h.zip", redact=True)
+    diagnostics.export_diagnostics_zip(tmp_path, tmp_path / "d.zip", run_id="run_tc")
+    zips["diagnostics"] = tmp_path / "d.zip"
+    for kind, path in zips.items():
+        with zipfile.ZipFile(path) as zf:
+            for name in zf.namelist():
+                assert host.lower() not in name.lower() and "_client" not in name, (kind, name)
+                text = zf.read(name).decode("utf-8", errors="replace")
+                assert "5CD1234XYZ" not in text and "jnovak" not in text, (kind, name)
+    # The technician copy is still intact afterwards.
+    assert "5CD1234XYZ" in (tmp_path / "Reports" / f"{host}_run_tc.html").read_text(encoding="utf-8")
