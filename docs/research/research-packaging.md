@@ -355,7 +355,7 @@ just asked for).
 
 **PyInstaller is pinned nowhere in the repository.**
 ```
-requirements.txt:       PySide6==6.7.2 / pywin32==306 / PyYAML==6.0.2
+requirements.txt:       PySide6==6.8.3 / pywin32==306 / PyYAML==6.0.2
 requirements-dev.txt:   -r requirements.txt / pytest==8.3.2 / pytest-qt==4.4.0
 ```
 Neither file mentions `pyinstaller`. `scripts/build.ps1:12` invokes bare `pyinstaller`

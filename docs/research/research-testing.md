@@ -382,7 +382,7 @@ worth hardening given it has already bitten this codebase once.
   raw counts below), with no file standing out as unusually thin except the two
   already covered by F5/F7.
 - **`pytest==8.3.2` / `pytest-qt==4.4.0`** (`requirements-dev.txt`) against
-  **`PySide6==6.7.2`** (`requirements.txt`) — current, compatible versions; not a
+  **`PySide6==6.8.3`** (`requirements.txt`) — current, compatible versions; not a
   stale-dependency contributor to the crash.
 
 Raw per-file test/assert counts (for reference, no file flagged beyond F5/F7):

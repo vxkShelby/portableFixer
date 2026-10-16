@@ -185,7 +185,7 @@ No new color-only signal was introduced by the work done since the design audit.
   8pt badge, 8.5pt selection button, 9pt scope label, 8pt status, 9pt console) — confirmed by re-reading the full
   file; **no hardcoded `px` font sizes exist anywhere**. Qt point sizes scale with both the OS logical-DPI setting
   and Qt's own high-DPI scale factor, unlike pixel sizes, which would not.
-- `requirements.txt` pins `PySide6==6.7.2` (Qt 6.7). Qt 6 enables per-monitor-v2 DPI awareness and high-DPI
+- `requirements.txt` pins `PySide6==6.8.3` (Qt 6.8). Qt 6 enables per-monitor-v2 DPI awareness and high-DPI
   scaling **by default** — no `Qt.AA_EnableHighDpiScaling` call is needed (and none exists; the attribute is a
   legacy Qt5 no-op in Qt6 anyway). No custom manifest is embedded by `scripts/build.ps1`'s PyInstaller invocation
   (no `--manifest`/`--uac-admin` flag), so the app relies on Qt6's own built-in DPI-awareness registration rather
@@ -250,7 +250,7 @@ No new color-only signal was introduced by the work done since the design audit.
   checked and the ones added since (§3 above).
 - **No hardcoded pixel font sizes** — every `style.py` font-size rule uses `pt`, which scales with Windows display
   scaling (§4).
-- **PySide6 6.7.2 / Qt 6** has per-monitor DPI awareness on by default; no manifest workaround needed or missing.
+- **PySide6 6.8.3 / Qt 6** has per-monitor DPI awareness on by default; no manifest workaround needed or missing.
 - The safety-critical confirmation dialogs (destructive/risky-action prompts, restore-point-failure prompt) use
   Qt's stock `QMessageBox`, which — as a side effect of the (separately flagged) missing QSS styling — correctly
   follows the OS's Windows High Contrast palette when active, unlike the rest of the app.
