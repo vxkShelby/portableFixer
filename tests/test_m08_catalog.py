@@ -12,11 +12,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m08_security" / "actions.yaml"
 
 
-def test_m08_catalog_loads_27_actions_in_security_category():
+def test_m08_catalog_loads_28_actions_in_security_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m08_security"
     assert module.category == ModuleCategory.SECURITY
-    assert len(module.actions) == 27
+    assert len(module.actions) == 28
 
 
 def test_m08_catalog_risk_distribution():
@@ -24,7 +24,7 @@ def test_m08_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 18
+    assert len(by_risk[RiskLevel.SAFE]) == 19
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "hard_uac_restore_default",
         "sec_wpbt_disable",
@@ -163,6 +163,7 @@ def test_m08_catalog_covers_expected_audit_surfaces():
         "sec_wdigest_status",
         "sec_exploit_mitigation_baseline",
         "sec_lsa_runasppl_status",
+        "sec_smart_app_control_status",
     }
 
 
@@ -509,3 +510,66 @@ def test_m08_lsa_status_reports_each_registry_state():
         assert f"RunAsPPL: {value}" in result.stdout and text in result.stdout, value
     _, result = _lsa_run(None)
     assert "RunAsPPL: not set" in result.stdout and "RunAsPPL is not set" in result.stdout
+
+
+# --- sec_smart_app_control_status ---------------------------------------------------
+
+CI_POLICY_KEY = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy"
+CI_CONFIG_KEY = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CI\\Config"
+HVCI_KEY = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity"
+
+
+def _sac_run(policy=None, config=None, hvci=None, running="@(1, 2)", events=0):
+    from report_rig import registry_stub, run_ps
+
+    action = next(a for a in load_module(CATALOG_PATH).actions if a.id == "sec_smart_app_control_status")
+    tables = {}
+    for key, values in ((CI_POLICY_KEY, policy), (CI_CONFIG_KEY, config), (HVCI_KEY, hvci)):
+        if values is not None:
+            tables[key] = values
+    cim = ("function Get-CimInstance { [CmdletBinding()] param([string] $Namespace, [string] $ClassName) "
+           + ("throw 'denied' }" if running is None else f"[pscustomobject]@{{ SecurityServicesRunning = {running} }} }}"))
+    winevent = ("function Get-WinEvent { [CmdletBinding()] param($FilterHashtable, $MaxEvents) "
+                f"if ({events} -gt 0) {{ 1..{events} | ForEach-Object {{ [pscustomobject]@{{ Id = 3077 }} }} }} }}")
+    result = run_ps(action.command, [registry_stub(tables), cim, winevent],
+                    names=("Get-ItemProperty", "Get-CimInstance", "Get-WinEvent"))
+    assert result.returncode == 0, result.stderr
+    return action, result.stdout
+
+
+def test_m08_smart_app_control_report_is_read_only_and_explains_the_repair_tool_impact():
+    action, _ = _sac_run()
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None and action.items_command is None
+    for verb in ("Set-ItemProperty", "Remove-ItemProperty", "New-Item", "Set-MpPreference", "Get-Tpm", "reg "):
+        assert verb not in action.command, verb
+    assert "VerifiedAndReputablePolicyState" in action.command
+    assert "unsigned" in action.description_en and "Smart App Control" in action.description_en
+    assert "nepodpísané" in action.description_sk
+
+
+def test_m08_smart_app_control_report_reads_each_state():
+    expected = {1: "ON (enforcement)", 2: "EVALUATION mode", 0: "OFF"}
+    for value, text in expected.items():
+        _, out = _sac_run(policy={"VerifiedAndReputablePolicyState": value})
+        assert f"Smart App Control: {text}" in out and f"VerifiedAndReputablePolicyState={value}" in out, value
+    _, out = _sac_run(policy={"VerifiedAndReputablePolicyState": 1})
+    assert "can block unsigned or unreputable repair tools" in out
+    _, out = _sac_run(policy={"VerifiedAndReputablePolicyState": 0})
+    assert "it is not the cause of a blocked tool" in out
+    _, out = _sac_run()
+    assert "Smart App Control: not present" in out and "not active on this PC" in out
+
+
+def test_m08_smart_app_control_report_shows_hvci_blocklist_and_event_count():
+    _, out = _sac_run(policy={"VerifiedAndReputablePolicyState": 0}, hvci={"Enabled": 1},
+                      config={"VulnerableDriverBlocklistEnable": 0}, events=4)
+    assert "Memory Integrity (HVCI): RUNNING; configured value Enabled=1" in out
+    assert "Vulnerable driver blocklist: OFF" in out
+    assert "last 7 days (ID 3077 = blocked, 3076 = would have blocked): 4" in out
+    _, out = _sac_run(running="@(1)", config={"VulnerableDriverBlocklistEnable": 1})
+    assert "Memory Integrity (HVCI): not running; configured value Enabled=not set" in out
+    assert "Vulnerable driver blocklist: ON" in out and "PawnIO" in out
+    _, out = _sac_run(running=None, events=0)
+    assert "Memory Integrity (HVCI): unknown" in out
+    assert "Vulnerable driver blocklist: not set" in out
