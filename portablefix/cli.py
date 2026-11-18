@@ -4,7 +4,15 @@
                     [--accept-risk MODERATE|DESTRUCTIVE] [--job-client X]
                     [--language sk|en]
     PortableFix.exe --export-preset <name> <file.json>
+    PortableFix.exe --visits [--csv FILE] [--html FILE] [--since YYYY-MM-DD]
     PortableFix.exe --help
+
+--visits lists every past run of every PC on the stick (from Reports/*.json):
+date, computer, technician, customer, actions, failures, work time. It writes
+Reports/visits.csv (';' separated, UTF-8 with BOM, opens in Excel) and
+Reports/visits.html, or only the file(s) named by --csv / --html; masked like
+the report when "Redact for the client" is on. It runs nothing, so it also
+works while the window is open.
 
 DRY-RUN unless --live. A live run refuses up front when the preset holds an
 action above --accept-risk (none given: SAFE only), or a pre-flight blocker.
@@ -43,6 +51,7 @@ from pathlib import Path
 
 from . import (
     action_service, diagnostics, health, hive_backup, intake, paths, preflight, report, restore_point, snapshot, undo,
+    visits,
 )
 from . import items as items_mod
 from .audit_log import append_entry, make_entry
@@ -58,7 +67,7 @@ EXIT_UNSUPPORTED_OS = 3
 EXIT_REBOOT_PENDING = 4
 EXIT_FROM_TEMP = 5
 
-CLI_SWITCHES = ("--preset", "--export-preset", "--help", "-h")
+CLI_SWITCHES = ("--preset", "--export-preset", "--visits", "--help", "-h")
 # What --accept-risk allows; REQUIRES_REBOOT counts as MODERATE.
 _RISK_RANK = {RiskLevel.SAFE: 0, RiskLevel.MODERATE: 1, RiskLevel.REQUIRES_REBOOT: 1, RiskLevel.DESTRUCTIVE: 2}
 _MAX_PRESET_ACTIONS = 500
@@ -83,6 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="PortableFix", add_help=False)
     parser.add_argument("--preset")
     parser.add_argument("--export-preset", nargs=2, metavar=("NAME", "FILE"))
+    parser.add_argument("--visits", action="store_true")
+    parser.add_argument("--csv")
+    parser.add_argument("--html")
+    parser.add_argument("--since")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--out")
     parser.add_argument("--accept-risk", choices=("MODERATE", "DESTRUCTIVE"))
@@ -459,6 +472,25 @@ class _Run:
         return EXIT_WARNING if self.warned or health.problems(self.findings) else EXIT_OK
 
 
+def export_visits(args, state_dir: Path, settings: Settings, out) -> int:
+    """--visits: the visits log of every PC on the stick (see visits.py)."""
+    try:
+        since = datetime.strptime(args.since, "%Y-%m-%d").date() if args.since else None
+    except ValueError as exc:
+        raise CliError(f"--since: {exc}") from exc
+    rows = visits.collect_visits(state_dir / "Reports", since, redact=settings.redact_for_client)
+    language = args.language or settings.language
+    # Neither file named: both, next to the reports.
+    csv_path, html_path = args.csv, args.html
+    if not csv_path and not html_path:
+        csv_path, html_path = state_dir / "Reports" / "visits.csv", state_dir / "Reports" / "visits.html"
+    if csv_path:
+        out(f"[PortableFix] Visits ({len(rows)}): {visits.write_csv(rows, Path(csv_path), language)}")
+    if html_path:
+        out(f"[PortableFix] Visits ({len(rows)}): {visits.write_html(rows, Path(html_path), language)}")
+    return EXIT_OK
+
+
 def say(line: str) -> None:
     # A windowed (frozen) exe has no stdout unless the caller redirected it.
     if sys.stdout is not None:
@@ -504,6 +536,8 @@ def run(argv: list[str], *, assets_dir: Path | None = None, deps: Deps | None = 
             name, dest = args.export_preset
             out(f"[PortableFix] Preset saved: {export_preset(name, Path(dest), settings)}")
             return EXIT_OK
+        if args.visits:
+            return export_visits(args, state_dir, settings, out)
         if not args.preset:
             raise CliError("--preset is required")
         preset = load_preset(args.preset, settings)
