@@ -128,3 +128,13 @@ def test_cli_visits_paths_since_and_redaction(reports, tmp_path):
 def test_cli_visits_refuses_a_bad_since_date(reports, tmp_path):
     code, lines = _cli(tmp_path, "--since", "yesterday")
     assert code == cli.EXIT_ERROR and "--since" in lines[0]
+
+
+def test_a_report_without_run_id_does_not_leak_the_hostname_through_the_file_name(tmp_path):
+    folder = tmp_path / "Reports"
+    folder.mkdir()
+    (folder / "Shop_PC_20260901T080000-aaaa.json").write_text(
+        json.dumps({"generated_at": "2026-09-01T08:30:00+00:00", "actions": [{"exit_code": 0}]}), encoding="utf-8")
+    [visit] = visits.collect_visits(folder, redact=True)
+    assert visit.run_id == "20260901T080000-aaaa"
+    assert "Shop" not in visit.run_id and visit.hostname == "<pc>"
