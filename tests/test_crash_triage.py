@@ -520,7 +520,8 @@ def test_reliability_reports_index_trend_and_top_failing_sources(tmp_path):
     stamp = re.fullmatch(r"  Filter TimeGenerated >= '(\d{14})\.\d{6}\+000'", filters[0]).group(1)
     since = datetime.datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc)
     age = datetime.datetime.now(datetime.timezone.utc) - since
-    assert abs(age - datetime.timedelta(days=30)) < datetime.timedelta(minutes=5), age
+    # AddDays(-30) counts local calendar days, so a DST change inside the window shifts it by an hour.
+    assert abs(age - datetime.timedelta(days=30)) < datetime.timedelta(hours=1, minutes=5), age
     assert [c for c in calls if c.startswith("  Property ")] == [
         "  Property SystemStabilityIndex,TimeGenerated",
         "  Property SourceName,EventIdentifier,ProductName,TimeGenerated",
