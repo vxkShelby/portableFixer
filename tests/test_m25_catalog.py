@@ -101,12 +101,18 @@ def _q(value: str) -> str:
 
 
 def _run(tmp_path, action_id, *, exit_code=0, text=SK_TEXT, cim=None, cim_throws=False, cs="absent",
-         writes_report=True):
+         writes_report=True, root_link_to=None):
     """cim: list of (InstanceName, Enable) pairs; cs: 'absent' or the CsEnabled value."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     log = tmp_path / "calls.log"
     pdata = tmp_path / "ProgramData"
     pdata.mkdir()
+    if root_link_to is not None:
+        # %ProgramData%\PortableFix is a junction to somewhere else.
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(pdata / "PortableFix"), str(root_link_to)],
+                              capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if made.returncode != 0:
+            pytest.skip("cannot create a junction here")
     out_lines = "; ".join(_q(t) for t in text) if text else "$null"
     stubs = [
         # powercfg.exe: logs its arguments, prints Slovak text, writes the
@@ -115,7 +121,6 @@ def _run(tmp_path, action_id, *, exit_code=0, text=SK_TEXT, cim=None, cim_throws
         f"Add-Content -Path {_q(str(log))} -Value ('powercfg ' + ($args -join ' ')); "
         f"if ({'$true' if writes_report else '$false'} -and $args[0] -eq '/sleepstudy') {{ Set-Content -LiteralPath $args[2] -Value '<html/>' }}; "
         f"$global:LASTEXITCODE = {exit_code}; @({out_lines}) }}",
-        "function icacls { }",
     ]
     if cim_throws:
         stubs.append("function Get-CimInstance { [CmdletBinding()] param([string] $Namespace, [string] $ClassName) throw 'Neplatný priestor názvov' }")
@@ -129,7 +134,7 @@ def _run(tmp_path, action_id, *, exit_code=0, text=SK_TEXT, cim=None, cim_throws
     else:
         stubs.append("function Get-ItemProperty { [CmdletBinding()] param([string] $LiteralPath, [string] $Name) "
                      f"[pscustomobject]@{{ CsEnabled = {cs} }} }}")
-    names = ["powercfg.exe", "icacls", "Get-CimInstance", "Get-ItemProperty"]
+    names = ["powercfg.exe", "Get-CimInstance", "Get-ItemProperty"]
     guard = (
         "foreach ($n in " + ", ".join(_q(n) for n in names) + ") { "
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
@@ -238,3 +243,42 @@ def test_sleepstudy_failure_exits_non_zero_and_leaves_no_empty_folder(tmp_path, 
     assert f"(exit code {exit_code})" in result.stdout
     assert "Chyba: Modern Standby nie je podporovaný." in result.stdout
     assert list((pdata / "PortableFix").glob("SleepStudy_*")) == []
+
+
+# --- the sleepstudy artifact folder -----------------------------------------------
+
+def test_sleepstudy_runs_under_the_central_acl_prelude_and_adds_no_icacls_of_its_own():
+    from portablefix.backup_acl import HARDEN_PS, references_backup_dir
+    from portablefix.executor import build_execution_plan
+
+    command = _action("sleepstudy_report").command
+    assert references_backup_dir(command)
+    assert "icacls" not in command  # a user grant on the folder would weaken the SYSTEM/Administrators-only ACL
+    plan = build_execution_plan(command, dry_run=False, harden_backups=True)
+    script = plan.argv[-1]
+    assert script.startswith(HARDEN_PS)
+    assert script.index(HARDEN_PS) < script.index(command)
+    # Deleting is limited to the one file and an empty folder.
+    assert "-Recurse" not in command and "Remove-Item" not in command
+    assert "[IO.File]::Delete($reportPath)" in command and "[IO.Directory]::Delete($dest, $false)" in command
+
+
+@pytest.mark.parametrize("action_id", [i for i in IDS if i != "sleepstudy_report"])
+def test_the_other_actions_write_no_artifact_and_need_no_folder(tmp_path, action_id):
+    from portablefix.backup_acl import references_backup_dir
+
+    command = _action(action_id).command
+    assert not references_backup_dir(command)
+    for forbidden in ("/output", "Set-Content", "Out-File", "Add-Content", "New-Item", "Remove-Item",
+                      "[IO.File]::", "Copy-Item", "Move-Item", ">"):
+        assert forbidden not in command.replace("-Where-Object", ""), f"{action_id}: {forbidden}"
+
+
+def test_sleepstudy_refuses_a_reparse_point_as_the_folder_and_writes_nothing(tmp_path):
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    result, calls, _ = _run(tmp_path / "run", "sleepstudy_report", root_link_to=target)
+    assert result.returncode == 1
+    assert "Refusing to write" in result.stdout
+    assert not any(c.startswith("powercfg") for c in calls)
+    assert list(target.iterdir()) == []
