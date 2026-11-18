@@ -538,3 +538,43 @@ def test_redacted_report_masks_this_pcs_name_everywhere_but_not_when_unredacted(
     assert out["hostname"] == PC
     assert out["actions"][0]["output"] == rf"Share \\{PC}\scans, host {PC}.contoso.local"
     assert data["hostname"] == "JAN-LAPTOP"  # the input is never changed
+
+
+def test_wifi_key_material_is_masked_in_every_form_netsh_prints_it():
+    text = (
+        "    Key Content            : My pass phrase 1!\n"
+        "<keyMaterial>s3cr3t pw</keyMaterial>\n"
+        "KeyMaterial : hunter2\n"
+        "Authentication         : WPA2-Personal"
+    )
+    out = redact_text(text)
+    assert out == (
+        f"    Key Content            : {KEY}\n"
+        f"<keyMaterial>{KEY}</keyMaterial>\n"
+        f"KeyMaterial : {KEY}\n"
+        "Authentication         : WPA2-Personal"
+    )
+    assert redact_text(out) == out
+
+
+def test_firmware_product_key_is_masked_by_label_and_by_shape():
+    out = redact_text("OA3xOriginalProductKey : VK7JG-NPHTM-C97JM-9MPGT-3V66T\nNote: key VK7JG-NPHTM-C97JM-9MPGT-3V66T saved")
+    assert out == f"OA3xOriginalProductKey : {KEY}\nNote: key {KEY} saved"
+    # A value the 5x5 shape would miss still goes when it follows the label.
+    assert redact_text("OA3xOriginalProductKey : AB12") == f"OA3xOriginalProductKey : {KEY}"
+
+
+def test_bitlocker_recovery_password_is_masked_but_not_a_longer_number():
+    password = "123456-234567-345678-456789-567890-678901-789012-890123"
+    assert redact_text(f"RecoveryPassword : {password}") == f"RecoveryPassword : {KEY}"
+    assert redact_text(f"typed {password} here") == f"typed {KEY} here"
+    # Seven groups, or a ninth one, are not a recovery password.
+    seven = "123456-234567-345678-456789-567890-678901-789012"
+    assert redact_text(seven) == seven
+    assert redact_text(password + "-111111") == password + "-111111"
+
+
+def test_redact_data_masks_the_reinstall_secrets_inside_action_output():
+    report = {"results": [{"output": "Key Content : pw123\nOA3xOriginalProductKey : VK7JG-NPHTM-C97JM-9MPGT-3V66T"}]}
+    out = redact_data(report)
+    assert out["results"][0]["output"] == f"Key Content : {KEY}\nOA3xOriginalProductKey : {KEY}"
