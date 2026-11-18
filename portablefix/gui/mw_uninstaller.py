@@ -135,6 +135,9 @@ class UninstallerPanelMixin:
                 reason_text = self._t(f"uninstaller_protected_{reason}")
                 tooltip = f"{reason_text}\n{tooltip}" if tooltip else reason_text
             checkbox.setToolTip(tooltip)
+            # Publisher, location or why it is protected: the tooltip text
+            # is invisible to a screen reader unless it is also the description.
+            checkbox.setAccessibleDescription(tooltip)
             row.addWidget(checkbox, 1)
             row_checkboxes[program.name] = checkbox
             row_widgets[program.name] = row_widget
@@ -226,6 +229,7 @@ class UninstallerPanelMixin:
                 # Unchecked: every deleted entry is the technician's explicit
                 # pick, not a default they would have to notice and untick.
                 cb.setToolTip(f"{orphan.install_location or ''}\n{uninstaller.registry_key_name(*key)}")
+                cb.setAccessibleDescription(cb.toolTip())
                 orphan_checkboxes[key] = cb
                 orphan_by_key[key] = orphan
                 cleanup_layout.addWidget(cb)

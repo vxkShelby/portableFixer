@@ -322,6 +322,8 @@ def main() -> int:
         # Contrast so the user's system colors win (see style.py). Applied
         # once the theme setting (auto/light/dark) is known.
         style.set_theme(settings.theme)
+        # Windows' "Text size" slider: the stylesheet's pt sizes follow it.
+        style.set_text_scale(style.system_text_scale())
         app.setStyleSheet(style.stylesheet())
 
         if used_fallback:
