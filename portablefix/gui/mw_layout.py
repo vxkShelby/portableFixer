@@ -45,8 +45,9 @@ class LayoutMixin:
         process_user = target.process_user or target.process_sid or "?"
         if target.differs:
             user = target.target_user or target.target_sid or "?"
-            banner.setText(self._t("target_user_banner").format(user=user, process_user=process_user))
-            banner.setToolTip(self._t("target_user_banner_tooltip").format(
+            key = "target_user_banner_adminprot" if target.admin_protection else "target_user_banner"
+            banner.setText(self._t(key).format(user=user, process_user=process_user))
+            banner.setToolTip(self._t(key + "_tooltip").format(
                 user=user, process_user=process_user, sid=target.target_sid or "?",
             ))
         elif target.status in (target_user.AMBIGUOUS, target_user.NO_USER):

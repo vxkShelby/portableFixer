@@ -2,6 +2,7 @@
 prelude handed to every action, the audit fields and undo.ps1. A module of
 its own, run one test per process like the other GUI tests."""
 
+import dataclasses
 import functools
 import json
 from types import SimpleNamespace
@@ -199,3 +200,13 @@ def test_integrity_guard_entry_records_the_target(tmp_path, monkeypatch, make_wi
     assert (entry["target_user"], entry["target_user_sid"], entry["target_user_status"]) == (
         "PC\\klient", CLIENT, "different",
     )
+
+
+def test_banner_names_administrator_protection_when_it_is_the_reason(tmp_path, make_window):
+    window = make_window(target=dataclasses.replace(DIFFERENT, admin_protection=True))
+    banner = window.target_user_banner
+    assert not banner.isHidden()
+    assert banner.text().startswith("Ochrana správcu (Administrator Protection) je zapnutá")
+    assert "PC\\klient" in banner.text() and "PC\\technik" in banner.text()
+    assert f"HKEY_USERS\\{CLIENT}" in banner.toolTip()
+    assert banner.accessibleName() == banner.text()

@@ -1,3 +1,6 @@
+import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -281,3 +284,98 @@ def test_powershell_executable_falls_back_to_path_lookup(tmp_path, monkeypatch):
     monkeypatch.delenv("WINDIR", raising=False)
 
     assert powershell_executable() == "powershell"
+
+
+# --- Cancel / timeout end the whole process tree (research F1) --------------
+
+
+class _FakeProcess:
+    pid = 4242
+
+    def __init__(self):
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+
+
+def _taskkill_calls(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+
+    monkeypatch.setattr(executor_module.subprocess, "run", fake_run)
+    return calls
+
+
+def test_cancel_kills_the_whole_process_tree(monkeypatch):
+    calls = _taskkill_calls(monkeypatch)
+    run = executor_module.PlanRun(build_execution_plan("x", dry_run=False))
+    run.process = _FakeProcess()
+    run.cancel()
+    assert calls == [["taskkill", "/F", "/T", "/PID", "4242"]]
+    assert run.process.killed  # the plain kill stays as the fallback
+    assert run.cancel_requested
+
+
+def test_watchdog_timeout_kills_the_whole_process_tree(monkeypatch):
+    calls = _taskkill_calls(monkeypatch)
+    monkeypatch.setattr(executor_module, "WATCHDOG_POLL_SEC", 0.01)
+    run = executor_module.PlanRun(build_execution_plan("x", dry_run=False), inactivity_timeout_sec=0)
+    run.process = _FakeProcess()
+    run._watchdog()
+    assert calls == [["taskkill", "/F", "/T", "/PID", "4242"]]
+    assert run.process.killed
+    assert run._timed_out
+
+
+def test_kill_process_tree_still_kills_when_taskkill_is_unavailable(monkeypatch):
+    def broken(argv, **kwargs):
+        raise FileNotFoundError("taskkill")
+
+    monkeypatch.setattr(executor_module.subprocess, "run", broken)
+    process = _FakeProcess()
+    executor_module.kill_process_tree(process)
+    assert process.killed
+
+
+def _pid_alive(pid: int) -> bool:
+    out = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    ).stdout
+    return str(pid) in out
+
+
+def test_cancel_ends_a_child_started_by_the_command():
+    # The tool a fix runs (DISM, sfc, a scanner) is a child of powershell.exe;
+    # Popen.kill() used to leave it running after "Cancel".
+    command = (
+        "$c = Start-Process -PassThru -WindowStyle Hidden powershell.exe "
+        "-ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60'; "
+        "Write-Output ('CHILD:' + $c.Id); Start-Sleep -Seconds 60"
+    )
+    run = executor_module.PlanRun(build_execution_plan(command, dry_run=False))
+    done = threading.Thread(target=run.run, daemon=True)
+    done.start()
+    child = None
+    try:
+        deadline = time.monotonic() + 30
+        while child is None and time.monotonic() < deadline:
+            child = next((int(l[6:]) for l in list(run.captured_output) if l.startswith("CHILD:")), None)
+            time.sleep(0.1)
+        assert child is not None, run.captured_output
+        assert _pid_alive(child)
+        run.cancel()
+        done.join(timeout=30)
+        assert not done.is_alive()
+        deadline = time.monotonic() + 10
+        while _pid_alive(child) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _pid_alive(child)
+    finally:
+        run.cancel()
+        if child is not None and _pid_alive(child):
+            subprocess.run(["taskkill", "/F", "/PID", str(child)], capture_output=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW)

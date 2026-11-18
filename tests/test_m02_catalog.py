@@ -1130,3 +1130,136 @@ def test_downloads_aging_report_counts_only_old_files_and_deletes_nothing(tmp_pa
     assert out.index("big_old.iso") < out.index("small_old.zip")  # largest first
     for p in old_files + [fresh]:
         assert p.exists(), p
+
+
+# --- Windows 11 Administrator Protection: the elevated account is a hidden
+# admin with its own profile, so the per-user caches are the signed-in user's
+# profile folder (ProfileList), not $env:LOCALAPPDATA of the elevated process.
+
+AP_SID = "S-1-5-21-7777-8888-9999-1002"
+ADMIN_PROTECTION = f"$__pfUserSid = '{AP_SID}'; $__pfUserAdminProt = $true; "
+
+
+def _profile_list_stub(profile) -> str:
+    # The prelude names the user's SID; ProfileList answers with the folder.
+    answer = f"[pscustomobject]@{{ ProfileImagePath = {_ps_quote(str(profile))} }}" if profile else "$null"
+    return (
+        "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) "
+        f"if ($Path -like '*ProfileList\\{AP_SID}') {{ {answer} }} }}; "
+    )
+
+
+def _m02(action_id):
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == action_id)
+
+
+def test_directx_shader_cache_cleans_the_signed_in_users_profile_under_administrator_protection(tmp_path):
+    env = _cache_env(tmp_path)  # the elevated account's own (wrong) folders
+    client = tmp_path / "Users" / "klient"
+    shader = client / "AppData" / "Local" / "D3DSCache" / "shader.bin"
+    shader.parent.mkdir(parents=True)
+    shader.write_bytes(b"\0" * 10)
+    script = _profile_list_stub(client) + ADMIN_PROTECTION
+    result, _ = _run_m02(tmp_path, [], [], script + _m02("directx_shader_cache").preview_command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Would delete 1 files" in result.stdout
+    result, _ = _run_m02(tmp_path, [], [], script + _m02("directx_shader_cache").command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not shader.exists()
+    assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+    assert "Signed-in user differs" not in result.stdout
+
+
+def test_user_temp_cleans_the_signed_in_users_temp_under_administrator_protection(tmp_path):
+    env = _cache_env(tmp_path)
+    client = tmp_path / "Users" / "klient"
+    stale = client / "AppData" / "Local" / "Temp" / "stale.tmp"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"x")
+    technician = tmp_path / "Temp" / "stale.tmp"
+    technician.write_bytes(b"x")
+    for f in (stale, technician):
+        _os.utime(f, (1_000_000_000, 1_000_000_000))
+    script = _profile_list_stub(client) + ADMIN_PROTECTION
+    result, _ = _run_m02(tmp_path, [], [], script + _m02("user_temp").preview_command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Would delete 1 files" in result.stdout and "klient" in result.stdout
+    result, _ = _run_m02(tmp_path, [], [], script + _m02("user_temp").command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not stale.exists()
+    assert technician.exists()
+
+
+def test_wer_reports_also_clears_the_signed_in_users_reports_under_administrator_protection(tmp_path):
+    action = _m02("wer_reports")
+    machine = tmp_path / "PD" / "Microsoft" / "Windows" / "WER" / "ReportQueue"
+    client = tmp_path / "Users" / "klient"
+    user = client / "AppData" / "Local" / "Microsoft" / "Windows" / "WER" / "ReportQueue"
+    technician = tmp_path / "Local" / "Microsoft" / "Windows" / "WER" / "ReportQueue"
+    for d in (machine, user, technician):
+        d.mkdir(parents=True)
+        (d / "r.wer").write_bytes(b"x")
+    command = action.command.replace("C:\\ProgramData", str(tmp_path / "PD"))
+    script = _profile_list_stub(client) + ADMIN_PROTECTION + command
+    result, _ = _run_m02(tmp_path, [], [], script, {"LOCALAPPDATA": tmp_path / "Local"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (machine / "r.wer").exists()
+    assert not (user / "r.wer").exists()
+    assert (technician / "r.wer").exists()
+
+
+def test_browser_cache_sweep_cleans_the_signed_in_users_browsers_under_administrator_protection(tmp_path):
+    technician = _browser_tree(tmp_path / "tech")
+    client = tmp_path / "Users" / "klient"
+    chrome = _chromium_profile(client / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default")
+    script = _profile_list_stub(client) + ADMIN_PROTECTION + _sweep_action().command
+    result, stops = _run_browser_ps(tmp_path, script, technician["local"], technician["roaming"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_swept(chrome)
+    _assert_untouched(technician["chrome_default"])
+    assert stops == []
+
+
+def test_thirdparty_app_caches_cleans_the_signed_in_users_apps_under_administrator_protection(tmp_path):
+    client = tmp_path / "Users" / "klient"
+    mine = _cache_only(client / "AppData" / "Roaming" / "discord" / "Cache")
+    technician_local = tmp_path / "tech" / "Local"
+    technician_roaming = tmp_path / "tech" / "Roaming"
+    theirs = _cache_only(technician_roaming / "discord" / "Cache")
+    technician_local.mkdir(parents=True, exist_ok=True)
+    script = _profile_list_stub(client) + ADMIN_PROTECTION + _m02("thirdparty_app_caches").command
+    result, _ = _run_browser_ps(tmp_path, script, technician_local, technician_roaming)
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_swept(mine)
+    _assert_untouched(theirs)
+
+
+@pytest.mark.parametrize("action_id", ["user_temp", "browser_cache_sweep", "directx_shader_cache", "thirdparty_app_caches"])
+def test_per_user_cache_actions_still_refuse_under_administrator_protection_without_a_profile(tmp_path, action_id):
+    # ProfileList has no folder for the SID: never fall back to the elevated
+    # account's own caches.
+    env = _cache_env(tmp_path)
+    script = _profile_list_stub(None) + ADMIN_PROTECTION
+    result, _ = _run_m02(tmp_path, [], [], script + _m02(action_id).command, env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+    assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+
+
+def test_thumbnail_cache_refuses_under_administrator_protection_and_says_why(tmp_path):
+    action = _m02("thumbnail_cache")
+    stubs = ["function Stop-Process { exit 96 }", "function Start-Process { exit 96 }", "function Get-Process { exit 96 }"]
+    result, _ = _run_m02(tmp_path, stubs, EXPLORER_NAMES, ADMIN_PROTECTION + action.command)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Administrator Protection is on" in result.stdout
+    result, _ = _run_m02(tmp_path, [], [], ADMIN_PROTECTION + action.preview_command, {"LOCALAPPDATA": tmp_path})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Would refuse: Administrator Protection is on" in result.stdout
+
+
+def test_the_six_per_user_cache_actions_mention_administrator_protection():
+    for action_id in ("user_temp", "wer_reports", "thumbnail_cache", "browser_cache_sweep", "directx_shader_cache",
+                      "thirdparty_app_caches"):
+        action = _m02(action_id)
+        assert "Administrator Protection" in action.description_en, action_id
+        assert "Administrator Protection" in action.description_sk, action_id

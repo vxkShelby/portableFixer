@@ -31,6 +31,13 @@ _SID_RE = re.compile(r"^S-1-\d+(-\d+)+$")
 # WTSGetActiveConsoleSessionId's "no session attached to the console".
 _NO_CONSOLE_SESSION = 0xFFFFFFFF
 
+# Windows 11 Administrator Protection: policy "Configure type of Admin
+# Approval Mode" = HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\
+# System\TypeOfAdminApprovalMode, 2 = with Administrator protection (1 =
+# legacy). An elevation then runs as a hidden, profile-separated account, so
+# the process SID is never the desktop user's.
+ADMIN_PROTECTION_TYPE = 2
+
 
 def is_valid_sid(sid) -> bool:
     return isinstance(sid, str) and bool(_SID_RE.match(sid))
@@ -56,6 +63,10 @@ class TargetUser:
     target_sid: str | None = None
     target_user: str = ""
     session_id: int | None = None
+    # DIFFERENT because Administrator Protection elevated into its hidden
+    # admin account (policy on + process is not the desktop user). Heuristic:
+    # an over-the-shoulder admin with the policy on looks the same.
+    admin_protection: bool = False
 
     @property
     def differs(self) -> bool:
@@ -72,7 +83,8 @@ class TargetUser:
         if not is_valid_sid(self.target_sid):
             # Unknown: the commands fall back to HKCU: themselves.
             return ""
-        return f"$__pfUserHive = '{hive_path(self.target_sid)}'; $__pfUserSid = '{self.target_sid}'; "
+        prelude = f"$__pfUserHive = '{hive_path(self.target_sid)}'; $__pfUserSid = '{self.target_sid}'; "
+        return prelude + "$__pfUserAdminProt = $true; " if self.admin_protection else prelude
 
     def audit_fields(self) -> dict:
         """make_entry keyword arguments recording whose hive an action used."""
@@ -90,6 +102,7 @@ def resolve(
     explorer_sids: list[str],
     session_user_sid: str | None,
     account_name,
+    admin_approval_type: int | None = None,
 ) -> TargetUser:
     """The comparison itself, free of any Windows call.
 
@@ -130,7 +143,7 @@ def resolve(
     return TargetUser(
         status=DIFFERENT, process_sid=process_sid, process_user=process_user,
         target_sid=desktop_sid, target_user=account_name(desktop_sid) or desktop_sid,
-        session_id=session_id,
+        session_id=session_id, admin_protection=admin_approval_type == ADMIN_PROTECTION_TYPE,
     )
 
 
@@ -144,6 +157,14 @@ def pick_session(own_session: int | None, console_session: int | None) -> int | 
     if console_session is None or console_session == _NO_CONSOLE_SESSION:
         return None
     return console_session
+
+
+def _admin_approval_type(api) -> int | None:
+    """A failed policy read only means "no Administrator Protection"."""
+    try:
+        return api.admin_approval_type()
+    except Exception:
+        return None
 
 
 def detect(api=None) -> TargetUser:
@@ -172,7 +193,7 @@ def detect(api=None) -> TargetUser:
             session_user_sid = api.account_sid(session_user) if session_user else None
         return resolve(
             process_sid, api.account_name(process_sid) or process_sid, session_id,
-            explorer_sids, session_user_sid, api.account_name,
+            explorer_sids, session_user_sid, api.account_name, _admin_approval_type(api),
         )
     except Exception:
         return TargetUser()
@@ -291,6 +312,18 @@ class Win32Api:
             return self._sid_to_string(user.Sid)
         finally:
             self._k32.CloseHandle(token)
+
+    def admin_approval_type(self) -> int | None:
+        import winreg
+
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            ) as key:
+                value, kind = winreg.QueryValueEx(key, "TypeOfAdminApprovalMode")
+        except OSError:
+            return None
+        return value if kind == winreg.REG_DWORD else None
 
     def process_session_id(self) -> int | None:
         session = self._wt.DWORD(0)

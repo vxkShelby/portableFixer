@@ -634,6 +634,9 @@ _STRINGS = {
         "noun_core_many": "jadier",
         "restart_admin_busy": "Reštart ako administrátor počká, kým skončí prebiehajúca úloha.",
         "closing_waiting_uninstall": "Čakám na dokončenie prebiehajúceho odinštalovania, potom sa aplikácia zavrie…",
+        # --- Administrator Protection (Windows 11) ---
+        "target_user_banner_adminprot": "Ochrana správcu (Administrator Protection) je zapnutá: PortableFix beží pod skrytým účtom správcu ({process_user}). Nastavenia používateľa a cache pôjdu do profilu {user} (prihlásený). Cache náhľadov sa preskočí.",
+        "target_user_banner_adminprot_tooltip": "Windows 11 pri zvýšení oprávnení spúšťa PortableFix pod skrytým, systémom spravovaným účtom správcu {process_user} s vlastným profilom - jeho HKCU a %USERPROFILE% nie sú profil používateľa. Preto akcie zapisujú do profilu {user} (HKEY_USERS\\{sid}). Akcia Cache náhľadov odmietne bežať (reštart Explorera by nahradil plochu používateľa).",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1270,6 +1273,9 @@ _STRINGS = {
         "noun_core_many": "cores",
         "restart_admin_busy": "Restart as administrator waits until the running task has finished.",
         "closing_waiting_uninstall": "Waiting for the running uninstall to finish, then the app closes…",
+        # --- Administrator Protection (Windows 11) ---
+        "target_user_banner_adminprot": "Administrator Protection is on: PortableFix runs as a hidden admin account ({process_user}). User settings and caches will go to the profile of {user} (signed in). The thumbnail cache is skipped.",
+        "target_user_banner_adminprot_tooltip": "On elevation Windows 11 runs PortableFix as a hidden, system-managed admin account {process_user} with its own profile - its HKCU and %USERPROFILE% are not the user's. Actions therefore write to the profile of {user} (HKEY_USERS\\{sid}). The Thumbnail cache action refuses to run (restarting Explorer would replace the user's desktop).",
     },
 }
 
