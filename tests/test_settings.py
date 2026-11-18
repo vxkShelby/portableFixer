@@ -160,3 +160,21 @@ def test_theme_defaults_to_auto_round_trips_and_ignores_unknown_values(tmp_path)
     for raw in ("Light", "solarized", 1, None, [], True):
         _write_raw(tmp_path, json.dumps({"theme": raw}))
         assert load_settings(tmp_path).theme == "auto", raw
+
+
+def test_winget_updated_unknown_round_trip_and_old_file(tmp_path):
+    save_settings(tmp_path, Settings(winget_updated_unknown={"Blizzard.BattleNet": "2.1"}))
+    assert load_settings(tmp_path).winget_updated_unknown == {"Blizzard.BattleNet": "2.1"}
+    path = settings_path(tmp_path)
+    path.write_text(json.dumps({"language": "en"}), encoding="utf-8")  # a file from before the key existed
+    assert load_settings(tmp_path).winget_updated_unknown == {}
+
+
+def test_winget_updated_unknown_tolerates_wrong_types(tmp_path):
+    path = settings_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"winget_updated_unknown": {"A.B": "1.0", "C.D": 5, "E.F": None}}), encoding="utf-8")
+    assert load_settings(tmp_path).winget_updated_unknown == {"A.B": "1.0"}
+    for bad in (["A.B"], "A.B", 7, None):
+        path.write_text(json.dumps({"winget_updated_unknown": bad}), encoding="utf-8")
+        assert load_settings(tmp_path).winget_updated_unknown == {}

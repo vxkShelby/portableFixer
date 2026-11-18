@@ -82,6 +82,23 @@ class OutdatedPackage:
     source: str
 
 
+def has_unknown_installed_version(package: OutdatedPackage) -> bool:
+    # winget prints "Unknown" (localized, or nothing) for a version it cannot
+    # read; every real version has a digit.
+    return not any(ch.isdigit() for ch in package.installed_version)
+
+
+def visible_packages(
+    packages: list[OutdatedPackage], ignored_ids, updated_unknown: dict[str, str],
+) -> list[OutdatedPackage]:
+    """The rows to show: not ignored, and not an "Unknown"-version package
+    that was already updated to the very version winget offers again."""
+    return [
+        p for p in packages
+        if p.id not in ignored_ids and updated_unknown.get(p.id) != p.available_version
+    ]
+
+
 def format_exit_code(code: int) -> str:
     # Python hands a Windows exit code over unsigned, but a caller (or a
     # test) may pass the signed form winget's docs also list - both mean

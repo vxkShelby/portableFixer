@@ -45,6 +45,11 @@ class Settings:
     language: str = DEFAULT_LANGUAGE
     dry_run: bool = True
     winget_ignored_ids: list[str] = field(default_factory=list)
+    # Package id -> the available version that was installed while winget
+    # could not read the installed one ("Unknown"). winget relists such a
+    # package on every scan, so it stays hidden until it offers another
+    # version. A separate list from the ignored ids: not the user's choice.
+    winget_updated_unknown: dict[str, str] = field(default_factory=dict)
     winget_auto_check_minutes: int = 0
     # User-saved action selections, name -> action ids (insertion-ordered).
     custom_presets: dict[str, list[str]] = field(default_factory=dict)
@@ -110,6 +115,7 @@ def load_settings(base_dir: Path) -> Settings:
     language = data.get("language")
     dry_run = data.get("dry_run")
     ignored = data.get("winget_ignored_ids")
+    updated_unknown = data.get("winget_updated_unknown")
     minutes = data.get("winget_auto_check_minutes")
     presets = data.get("custom_presets")
     technician = data.get("technician_name")
@@ -121,6 +127,10 @@ def load_settings(base_dir: Path) -> Settings:
         language=language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
         dry_run=dry_run if isinstance(dry_run, bool) else True,
         winget_ignored_ids=[i for i in ignored if isinstance(i, str)] if isinstance(ignored, list) else [],
+        winget_updated_unknown=(
+            {k: v for k, v in updated_unknown.items() if isinstance(k, str) and isinstance(v, str)}
+            if isinstance(updated_unknown, dict) else {}
+        ),
         winget_auto_check_minutes=(
             minutes if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes >= 0 else 0
         ),
