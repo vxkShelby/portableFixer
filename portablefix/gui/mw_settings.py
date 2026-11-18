@@ -1,5 +1,7 @@
 """Settings menu, appearance, job/branding dialogs and presets."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
@@ -7,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -20,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import job_forms, style
-from .. import intake
+from .. import intake, visits
 from ..settings import (
     MAX_CUSTOM_PRESETS,
     MAX_PRESET_NAME_LENGTH,
@@ -84,6 +87,8 @@ class SettingsMixin:
         menu.addSeparator()
         menu.addAction(self._t("settings_menu_reports")).triggered.connect(
             lambda _checked=False: self._open_reports_folder())
+        menu.addAction(self._t("settings_menu_visits")).triggered.connect(
+            lambda _checked=False: self._export_visits_log())
         menu.addAction(self._t("settings_menu_about")).triggered.connect(
             lambda _checked=False: self._show_about())
 
@@ -108,6 +113,23 @@ class SettingsMixin:
         except OSError:
             pass
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _export_visits_log(self) -> None:
+        """Ask where to save the visits log (every PC's runs on this stick,
+        visits.py) and write it as CSV; masked when "Redact for the client" is on."""
+        dest, _ = QFileDialog.getSaveFileName(
+            self, self._t("settings_menu_visits").rstrip("…"), str(self.state_dir / "Reports" / "visits.csv"),
+            self._t("visits_filter"),
+        )
+        if not dest:
+            return
+        rows = visits.collect_visits(self.state_dir / "Reports", redact=self.settings.redact_for_client)
+        try:
+            saved = visits.write_csv(rows, Path(dest), self.settings.language)
+        except OSError as exc:
+            self._show_error(self, self._t("visits_failed"), str(exc))
+            return
+        self._append_console(self._t("visits_saved").format(count=len(rows), path=saved))
 
     def _about_text(self) -> str:
         if self.integrity_mismatches is None:

@@ -259,6 +259,10 @@ def _main_cli() -> int:
     _attach_parent_console()
     # Same crash.log as the window, for whatever escapes cli.run's own guard.
     install_excepthook(resolve_writable_base_dir(get_base_dir())[0])
+    if "--visits" in sys.argv:
+        # Only reads Reports/ and writes a CSV/HTML beside it: no reason to
+        # wait for a window or an update to finish.
+        return cli.run(sys.argv)
     if update_swap.update_mutex_present():
         cli.say("[PortableFix] An update is being installed - try again in a minute.")
         return cli.EXIT_ERROR
