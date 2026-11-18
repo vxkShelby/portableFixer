@@ -89,7 +89,7 @@ def test_update_package_retries_with_location_when_required():
     fake_program = type("P", (), {"name": "Battle.net", "install_location": r"C:\Games\Battle.net"})()
     with patch("portablefix.winget_updates.subprocess.Popen", side_effect=[fail_process, ok_process]) as mock_popen, \
          patch("portablefix.uninstaller.list_installed_programs", return_value=[fake_program]):
-        ok, output = update_package(package)
+        ok, output, _ = update_package(package)
     assert ok is True
     assert output == "Successfully installed"
     second_call_args = mock_popen.call_args_list[1][0][0]
@@ -102,7 +102,7 @@ def test_update_package_does_not_retry_when_no_install_location_found():
     fail_process = _fake_process(0x8A15005F, "Install location is required by the package but it was not provided")
     with patch("portablefix.winget_updates.subprocess.Popen", return_value=fail_process) as mock_popen, \
          patch("portablefix.uninstaller.list_installed_programs", return_value=[]):
-        ok, _ = update_package(package)
+        ok, _, _ = update_package(package)
     assert ok is False
     assert mock_popen.call_count == 1
 
@@ -111,7 +111,7 @@ def test_update_package_does_not_retry_on_a_message_match_alone():
     package = OutdatedPackage(name="Mystery App", id="Mystery.App", installed_version="1", available_version="2", source="winget")
     fail_process = _fake_process(1, "Install location is required by the package but it was not provided")
     with patch("portablefix.winget_updates.subprocess.Popen", return_value=fail_process) as mock_popen:
-        ok, _ = update_package(package)
+        ok, _, _ = update_package(package)
     assert ok is False and mock_popen.call_count == 1
 
 
@@ -128,7 +128,7 @@ def test_update_output_is_decoded_as_utf8():
         return _fake_process(0, text)
 
     with patch("portablefix.winget_updates.subprocess.Popen", side_effect=fake_popen):
-        ok, output = update_package(package)
+        ok, output, _ = update_package(package)
     assert ok is True and output == "█ done"
     assert "â" not in output and captured["encoding"] == "utf-8"
 
@@ -145,7 +145,7 @@ def test_run_winget_upgrade_kills_process_tree_on_timeout():
     process.communicate.side_effect = subprocess.TimeoutExpired(cmd="winget", timeout=1)
     with patch("portablefix.winget_updates.subprocess.Popen", return_value=process), \
          patch("portablefix.winget_updates.subprocess.run") as mock_taskkill:
-        ok, output = update_package(package, timeout_sec=1)
+        ok, output, _ = update_package(package, timeout_sec=1)
     assert ok is False
     assert output == "Update timed out."
     taskkill_args = mock_taskkill.call_args[0][0]
@@ -170,6 +170,39 @@ def test_winget_update_runner_request_stop_skips_remaining_packages():
     with patch("portablefix.winget_updates.update_package") as mock_update:
         runner.run()
     mock_update.assert_not_called()
+
+
+def test_update_package_returns_wingets_exit_code_and_its_reason():
+    from portablefix.winget_updates import update_failure_reason
+
+    package = OutdatedPackage(name="Docker Desktop", id="Docker.DockerDesktop", installed_version="4.96.0", available_version="4.99.0", source="winget")
+    process = _fake_process(0x8A15002B, "No applicable upgrade found.")
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=process):
+        ok, _, code = update_package(package)
+    assert ok is False and code == 0x8A15002B
+    assert update_failure_reason(code) == "not_applicable"
+    # The signed form of the same HRESULT, an installer failure, an unnamed code, a timeout.
+    assert update_failure_reason(-1978335189) == "not_applicable"
+    assert update_failure_reason(0x8A150006) == "installer_failed"
+    assert update_failure_reason(0x8A150011) == "hash_mismatch"
+    assert update_failure_reason(1) == "" and update_failure_reason(None) == ""
+
+
+def test_winget_update_runner_continues_after_a_failed_package():
+    packages = [
+        OutdatedPackage(name=n, id=f"{n}.{n}", installed_version="1", available_version="2", source="winget")
+        for n in ("A", "B", "C")
+    ]
+    results = {"A.A": (False, "Installer failed with exit code: 1", 0x8A150006), "B.B": (False, "Update timed out.", None),
+               "C.C": (True, "Successfully installed", 0)}
+    runner = WingetUpdateRunner(packages)
+    finished, done = [], []
+    runner.package_finished.connect(lambda *args: finished.append(args))
+    runner.all_finished.connect(lambda: done.append(True))
+    with patch("portablefix.winget_updates.update_package", side_effect=lambda p: results[p.id]):
+        runner.run()
+    assert finished == [(pid, *results[pid]) for pid in ("A.A", "B.B", "C.C")]
+    assert done == [True]
 
 
 def test_parse_winget_upgrade_table_skips_blank_rows_and_dashes():

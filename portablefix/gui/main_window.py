@@ -1184,6 +1184,9 @@ class MainWindow(
             return
         proceed = True
         if not success:
+            # Checkpoint-Computer can take its whole 300 s to fail; by then the
+            # technician is in another window and the run just sits waiting.
+            QApplication.alert(self)
             answer = QMessageBox.warning(
                 self, self._t("app_title"), self._t("restore_point_failed_confirm"),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,

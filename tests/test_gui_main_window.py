@@ -4305,7 +4305,7 @@ def test_winget_update_dry_run_starts_no_runner_and_logs_each_package(qtbot, tmp
     from portablefix import winget_updates
 
     updated = []
-    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: updated.append(p) or (True, ""))
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: updated.append(p) or (True, "", 0))
     monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
     window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_dry", True, _fake_outdated_package())
 
@@ -4347,7 +4347,7 @@ def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monke
     # G01: the real update makes a restore point first - never a real one here.
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (True, ""))
 
-    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed"))
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed", 0))
     window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_yes", False, _fake_outdated_package())
     shown = []
     monkeypatch.setattr(QMessageBox, "question", lambda parent, title, text, *a: shown.append(text) or QMessageBox.Yes)
@@ -4367,6 +4367,70 @@ def test_winget_update_confirmed_logs_each_package_result(qtbot, tmp_path, monke
     assert entry["output"] == "Successfully installed"
     undo_text = (tmp_path / "Backups" / "run_winget_yes" / "undo.ps1").read_text(encoding="utf-8-sig")
     assert "NOT reversible" in undo_text and "Fake.Editor" in undo_text
+
+
+def test_winget_update_run_survives_a_failed_package_and_says_how_it_ended(qtbot, tmp_path, monkeypatch):
+    # The maintainer's run: 10 packages, 7 failed, the last output line was
+    # one installer's "exit code: 1" - then a rescan silently rebuilt the
+    # same list with nothing checked, which read as a queue that had hung.
+    from PySide6.QtWidgets import QCheckBox, QPushButton
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    _stub_restore_point(monkeypatch)
+    failing = _fake_outdated_package()
+    unknown = winget_updates.OutdatedPackage(
+        name="Fake Launcher", id="Fake.Launcher", installed_version="Unknown", available_version="2.0", source="winget",
+    )
+    results = {
+        "Fake.Editor": (False, "No applicable upgrade found.", 0x8A15002B),
+        "Fake.Launcher": (True, "Successfully installed", 0),
+    }
+    attempted = []
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: attempted.append(p.id) or results[p.id])
+    window, card, _row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_mixed", False, failing)
+    # winget keeps offering both afterwards: one failed, the other has no readable installed version.
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [failing, unknown])
+
+    def rows():
+        return {cb.toolTip(): cb for cb in card.findChildren(QCheckBox) if cb.toolTip() in results}
+
+    _panel_button(card, window._t("winget_refresh_button")).click()
+    qtbot.waitUntil(lambda: len(rows()) == 2, timeout=10000)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    for checkbox in rows().values():
+        checkbox.setChecked(True)
+    update_btn = _panel_button(card, window._t("winget_update_selected_button"))
+    update_btn.click()
+
+    qtbot.waitUntil(lambda: len(attempted) == 2, timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_update_runner), timeout=10000)
+    summary = window._t("winget_update_summary").format(ok=1, failed=1)
+    qtbot.waitUntil(lambda: summary in _panel_console_text(card), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    qtbot.waitUntil(
+        lambda: len(rows()) == 2 and all(" – " in cb.text() for cb in rows().values()), timeout=10000,
+    )
+
+    assert attempted == ["Fake.Editor", "Fake.Launcher"]
+    console_text = _panel_console_text(card)
+    assert window._t("winget_fail_not_applicable") in console_text and "0x8A15002B" in console_text
+    after = rows()
+    assert after["Fake.Editor"].text().endswith(window._t("winget_row_failed"))
+    assert after["Fake.Launcher"].text().endswith(window._t("winget_row_still_listed"))
+    # The manual-update button outlives the rescan, for the failed package only
+    # (waited for: the pre-rescan row and its button go through deleteLater).
+    qtbot.waitUntil(lambda: len([
+        b for b in card.findChildren(QPushButton) if b.text() == window._t("winget_manual_update_button")
+    ]) == 1, timeout=10000)
+    # Nothing is checked after the rescan, so Update is off - but selecting re-arms it.
+    assert not update_btn.isEnabled() and _panel_button(card, window._t("winget_refresh_button")).isEnabled()
+    after["Fake.Editor"].setChecked(True)
+    assert update_btn.isEnabled()
+    codes = {e["action_id"]: e["exit_code"] for e in _audit_entries(audit_log_path(tmp_path, "run_winget_mixed"))
+             if e["module_id"] == "_winget"}
+    assert codes == {"Fake.Editor": 0x8A15002B, "Fake.Launcher": 0}
 
 
 def test_winget_update_without_admin_is_refused_before_any_confirmation(qtbot, tmp_path, monkeypatch):
@@ -4938,7 +5002,7 @@ def test_closing_during_an_uninstall_waits_for_the_running_one_and_skips_the_res
         ran.append(program.name)
         started.set()
         release.wait(10)
-        return True, ""
+        return True, "", 0
 
     waits = []
 
@@ -4982,7 +5046,7 @@ def test_closing_during_a_winget_update_waits_without_blocking(qtbot, tmp_path, 
     def fake_update(package, *a, **k):
         started.set()
         release.wait(10)
-        return True, ""
+        return True, "", 0
 
     monkeypatch.setattr(winget_updates, "update_package", fake_update, raising=False)
     window = _update_window(qtbot, tmp_path, "run_close_mid_winget")
@@ -6634,7 +6698,7 @@ def test_winget_update_creates_a_restore_point_and_warns_about_the_running_progr
     from portablefix.gui.main_window import _thread_running
 
     rp_calls = _stub_restore_point(monkeypatch)
-    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed"))
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed", 0))
     installed = _fake_installed_program("Fake Editor", location=r"C:\Tools\FakeEditor")
     monkeypatch.setattr(uninstaller, "list_installed_programs", lambda *a, **k: [installed])
     monkeypatch.setattr(
