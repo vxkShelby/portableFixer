@@ -236,6 +236,11 @@ class WingetPanelMixin:
                 row.addWidget(unignore_btn)
                 ignored_panel_layout.addWidget(row_widget)
 
+        def shown(packages: list) -> list:
+            return winget_updates.visible_packages(
+                packages, set(self.settings.winget_ignored_ids), self.settings.winget_updated_unknown,
+            )
+
         def populate(packages: list) -> None:
             while list_layout.count():
                 item = list_layout.takeAt(0)
@@ -248,8 +253,7 @@ class WingetPanelMixin:
             package_by_id.clear()
             for package in packages:
                 known_packages[package.id] = package
-            ignored_ids = set(self.settings.winget_ignored_ids)
-            visible_packages = [p for p in packages if p.id not in ignored_ids]
+            visible_packages = shown(packages)
             if not visible_packages:
                 set_status(self._t("winget_no_updates"), "ok")
                 list_scroll.setVisible(False)
@@ -327,8 +331,7 @@ class WingetPanelMixin:
             text = describe_scan_error(error)
             # Only when a list is actually shown - populate hides it when
             # every partial row is on the ignore list.
-            ignored_ids = set(self.settings.winget_ignored_ids)
-            if any(p.id not in ignored_ids for p in packages):
+            if shown(packages):
                 text += " " + self._t("winget_scan_partial")
             set_status(text, "warn", error.detail)
 
@@ -561,7 +564,7 @@ class WingetPanelMixin:
             # counter is concrete evidence it's still alive, not frozen.
             elapsed_timer = QTimer(panel)
             elapsed_state = {"package_id": None, "seconds": 0}
-            counts = {"ok": 0, "failed": 0}
+            counts = {"ok": 0, "failed": 0, "hidden": 0}
 
             def tick_elapsed() -> None:
                 pid = elapsed_state["package_id"]
@@ -627,6 +630,12 @@ class WingetPanelMixin:
                         text += self._t("winget_exit_code_suffix").format(code=winget_updates.format_exit_code(code))
                     if text:
                         console.appendPlainText(f"  → {text.strip()}")
+                if ok and package is not None and winget_updates.has_unknown_installed_version(package):
+                    # winget cannot read this package's installed version, so
+                    # it will offer the same update again on every scan.
+                    self.settings.winget_updated_unknown[package_id] = package.available_version
+                    self._persist_settings()
+                    counts["hidden"] += 1
                 if ok:
                     # Successfully updated - it's no longer outdated, so drop
                     # it from the list right away instead of waiting for the
@@ -650,6 +659,8 @@ class WingetPanelMixin:
                 summary = self._t("winget_update_summary").format(ok=counts["ok"], failed=counts["failed"])
                 if counts["failed"]:
                     summary += " " + self._t("winget_update_summary_failed_hint")
+                if counts["hidden"]:
+                    summary += " " + self._t("winget_unknown_hidden").format(count=counts["hidden"])
                 console.appendPlainText(summary)
                 self.statusBar().showMessage(summary)
                 start_scan()

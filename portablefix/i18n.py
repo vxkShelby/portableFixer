@@ -661,6 +661,7 @@ _STRINGS = {
         "winget_fail_pinned": "Balík je vo winget pripnutý (pin), preto sa neaktualizuje.",
         "winget_fail_in_use": "Program alebo jeho súbory sa práve používajú. Zatvorte ho a skúste to znova.",
         "winget_fail_reboot": "Inštalácia potrebuje reštart počítača.",
+        "winget_unknown_hidden": "Balíky s neznámou nainštalovanou verziou ({count}) boli aktualizované a zostanú skryté, kým sa neobjaví novšia verzia.",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1324,6 +1325,7 @@ _STRINGS = {
         "winget_fail_pinned": "The package is pinned in winget, so it is not upgraded.",
         "winget_fail_in_use": "The program or its files are in use. Close it and try again.",
         "winget_fail_reboot": "The installation needs a restart of the PC.",
+        "winget_unknown_hidden": "{count} package(s) with an unknown installed version were updated and will be hidden until a newer version appears.",
     },
 }
 

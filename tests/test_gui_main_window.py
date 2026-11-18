@@ -4409,16 +4409,20 @@ def test_winget_update_run_survives_a_failed_package_and_says_how_it_ended(qtbot
     summary = window._t("winget_update_summary").format(ok=1, failed=1)
     qtbot.waitUntil(lambda: summary in _panel_console_text(card), timeout=10000)
     qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    # The launcher's installed version is "Unknown": winget lists it again,
+    # but it was just installed, so the row stays hidden.
     qtbot.waitUntil(
-        lambda: len(rows()) == 2 and all(" – " in cb.text() for cb in rows().values()), timeout=10000,
+        lambda: len(rows()) == 1 and all(" – " in cb.text() for cb in rows().values()), timeout=10000,
     )
 
     assert attempted == ["Fake.Editor", "Fake.Launcher"]
     console_text = _panel_console_text(card)
     assert window._t("winget_fail_not_applicable") in console_text and "0x8A15002B" in console_text
+    assert window._t("winget_unknown_hidden").format(count=1) in console_text
+    assert window.settings.winget_updated_unknown == {"Fake.Launcher": "2.0"}
     after = rows()
+    assert list(after) == ["Fake.Editor"]
     assert after["Fake.Editor"].text().endswith(window._t("winget_row_failed"))
-    assert after["Fake.Launcher"].text().endswith(window._t("winget_row_still_listed"))
     # The manual-update button outlives the rescan, for the failed package only
     # (waited for: the pre-rescan row and its button go through deleteLater).
     qtbot.waitUntil(lambda: len([
@@ -4431,6 +4435,74 @@ def test_winget_update_run_survives_a_failed_package_and_says_how_it_ended(qtbot
     codes = {e["action_id"]: e["exit_code"] for e in _audit_entries(audit_log_path(tmp_path, "run_winget_mixed"))
              if e["module_id"] == "_winget"}
     assert codes == {"Fake.Editor": 0x8A15002B, "Fake.Launcher": 0}
+
+
+def test_winget_unknown_version_package_stays_hidden_until_a_newer_version_is_offered(qtbot, tmp_path, monkeypatch):
+    # Battle.net / FiveM: installed fine, but winget cannot read the installed
+    # version and offered the same update again on every scan.
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+    from portablefix.settings import load_settings
+
+    _stub_restore_point(monkeypatch)
+    unknown = winget_updates.OutdatedPackage(
+        name="Fake Launcher", id="Fake.Launcher", installed_version="Unknown", available_version="2.0", source="winget",
+    )
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (True, "Successfully installed", 0))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_unknown", False, unknown)
+
+    def rows():
+        return [cb for cb in card.findChildren(QCheckBox) if cb.toolTip() == "Fake.Launcher"]
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+    summary = window._t("winget_update_summary").format(ok=1, failed=0)
+    qtbot.waitUntil(lambda: summary in _panel_console_text(card), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    qtbot.waitUntil(lambda: not rows(), timeout=10000)
+    assert window._t("winget_unknown_hidden").format(count=1) in _panel_console_text(card)
+    assert load_settings(tmp_path).winget_updated_unknown == {"Fake.Launcher": "2.0"}
+    assert window.settings.winget_ignored_ids == []
+
+    # A refresh that offers the same version keeps it hidden; a newer one shows it.
+    _panel_button(card, window._t("winget_refresh_button")).click()
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    assert not rows()
+    newer = winget_updates.OutdatedPackage(
+        name="Fake Launcher", id="Fake.Launcher", installed_version="Unknown", available_version="3.0", source="winget",
+    )
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [newer])
+    _panel_button(card, window._t("winget_refresh_button")).click()
+    qtbot.waitUntil(lambda: bool(rows()), timeout=10000)
+    assert "3.0" in rows()[0].text()
+
+
+def test_winget_failed_unknown_version_package_is_not_hidden(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    _stub_restore_point(monkeypatch)
+    unknown = winget_updates.OutdatedPackage(
+        name="Fake Launcher", id="Fake.Launcher", installed_version="Unknown", available_version="2.0", source="winget",
+    )
+    monkeypatch.setattr(winget_updates, "update_package", lambda p, *a, **k: (False, "installer failed", 1603))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_unknown_fail", False, unknown)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    row.setChecked(True)
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+    summary = window._t("winget_update_summary").format(ok=0, failed=1)
+    qtbot.waitUntil(lambda: summary in _panel_console_text(card), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    qtbot.waitUntil(
+        lambda: any(cb.toolTip() == "Fake.Launcher" and " – " in cb.text() for cb in card.findChildren(QCheckBox)),
+        timeout=10000,
+    )
+    assert window.settings.winget_updated_unknown == {}
 
 
 def test_winget_update_without_admin_is_refused_before_any_confirmation(qtbot, tmp_path, monkeypatch):

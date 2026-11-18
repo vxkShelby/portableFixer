@@ -736,3 +736,24 @@ def test_module_scan_accepts_json_with_a_utf8_bom(monkeypatch):
     # stdout; json.loads rejects it, which silently disabled the module path.
     _scan_with(monkeypatch, _completed(0, '﻿[{"Name":"A","Id":"A.A","InstalledVersion":"1","Available":"2","Source":"winget"}]'))
     assert winget_updates._scan_with_powershell_module(5) == [OutdatedPackage("A", "A.A", "1", "2", "winget")]
+
+
+def _pkg(pkg_id, installed, available):
+    return winget_updates.OutdatedPackage(name=pkg_id, id=pkg_id, installed_version=installed, available_version=available, source="winget")
+
+
+def test_has_unknown_installed_version():
+    assert winget_updates.has_unknown_installed_version(_pkg("A.B", "Unknown", "1.0"))
+    assert winget_updates.has_unknown_installed_version(_pkg("A.B", "", "1.0"))
+    assert winget_updates.has_unknown_installed_version(_pkg("A.B", "Neznáma", "1.0"))
+    assert not winget_updates.has_unknown_installed_version(_pkg("A.B", "1.0", "2.0"))
+
+
+def test_visible_packages_hides_updated_unknown_only_while_the_version_matches():
+    same = _pkg("A.B", "Unknown", "2.0")
+    newer = _pkg("A.B", "Unknown", "3.0")
+    other = _pkg("C.D", "1.0", "2.0")
+    ignored = _pkg("E.F", "1.0", "2.0")
+    remembered = {"A.B": "2.0", "C.D": "9.9"}
+    assert winget_updates.visible_packages([same, other, ignored], {"E.F"}, remembered) == [other]
+    assert winget_updates.visible_packages([newer, other], set(), remembered) == [newer, other]
