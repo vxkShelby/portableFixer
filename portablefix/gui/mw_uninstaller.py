@@ -241,6 +241,7 @@ class UninstallerPanelMixin:
                 if not chosen:
                     return
                 console.setVisible(True)
+                self._show_console()
                 risk = RiskLevel.DESTRUCTIVE.value
 
                 def delete_command(orphan: uninstaller.InstalledProgram) -> str:
@@ -355,6 +356,7 @@ class UninstallerPanelMixin:
                 selected = [p for p in selected if p.name not in protected]
                 lines = [f"{p.name} - {self._t('uninstaller_protected_' + protected[p.name])}" for p in refused]
                 console.setVisible(True)
+                self._show_console()
                 for line in lines:
                     console.appendPlainText(f"[{self._t('uninstaller_protected_marker')}] {line}")
                 for program in refused:
@@ -380,6 +382,7 @@ class UninstallerPanelMixin:
                 # DRY-RUN never starts an uninstaller - it shows and logs the
                 # exact command each one would run, and the rows stay put.
                 console.setVisible(True)
+                self._show_console()
                 console.appendPlainText(self._t("uninstaller_dry_run_notice"))
                 for line in self._uninstall_queue_summary(interactive_queue, silent_queue):
                     console.appendPlainText(line)
@@ -458,6 +461,7 @@ class UninstallerPanelMixin:
             select_all_btn.setEnabled(False)
             select_none_btn.setEnabled(False)
             console.setVisible(True)
+            self._show_console()
             console.appendPlainText(self._t("uninstaller_running"))
             for line in self._uninstall_queue_summary(*uninstall_plan.split_queues(selected, plans)):
                 console.appendPlainText(line)

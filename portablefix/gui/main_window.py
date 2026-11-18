@@ -1128,6 +1128,7 @@ class MainWindow(
         if self.is_admin:
             return False
         console.setVisible(True)
+        self._show_console()
         console.appendPlainText(self._t("panel_needs_admin"))
         return True
 
@@ -1162,6 +1163,7 @@ class MainWindow(
             self.statusBar().showMessage(self._t("panel_restore_point_busy"))
             return False
         console.setVisible(True)
+        self._show_console()
         console.appendPlainText(self._t("panel_restore_point_running"))
         runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
         runner.result_ready.connect(

@@ -4314,6 +4314,8 @@ def test_winget_update_dry_run_starts_no_runner_and_logs_each_package(qtbot, tmp
 
     assert updated == [] and window._winget_update_runner is None
     assert "[DRY-RUN] winget upgrade --id Fake.Editor" in _panel_console_text(card)
+    # The console starts folded: the preview must unfold it, not write into a hidden panel.
+    assert window._console_collapsed is False
     entries = [e for e in _audit_entries(audit_log_path(tmp_path, "run_winget_dry")) if e["module_id"] == "_winget"]
     assert len(entries) == 1
     assert entries[0]["action_id"] == "Fake.Editor" and entries[0]["dry_run"] is True
