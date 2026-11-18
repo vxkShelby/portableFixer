@@ -58,6 +58,8 @@ synonyms:
   grafika: [graphics, gpu, graficka, grafiku, nvidia, radeon]
   # Not "date": stemmed it is "dat", the same as "dáta" (zálohovať dáta).
   cas: [hodiny, time, clock, datum]
+  zobudenie: [zobudi, zobudil, zobudilo, zobudenie, budi, prebudi, prebudza, wake, wakes, woke, waking, wakeup]
+  spanok: [sleep, sleeps, sleeping, asleep, uspat, uspi, uspava, uspany, standby, zaspat, zaspi]
   certifikat: [certificate, certificates, certifikatu, ssl, https]
   zdielany: [zdielane, zdielanie, zdielana, share, shared, smb, nas, synology, qnap]
   vzdialena: [remote, rdp, vzdialenu, vzdialeny]
@@ -383,6 +385,60 @@ symptoms:
       - battery doesn't last
       - battery not charging
     diagnostics: [battery_wear, battery_health_report, tune_power_plan_report, top_cpu_processes]
+    fixes: []
+
+  - id: unwanted_wake
+    title_sk: Počítač sa sám budí zo spánku
+    title_en: The PC wakes from sleep by itself
+    why_sk: Zdroj posledného zobudenia, časovače a zariadenia, ktoré smú počítač zobudiť, ukážu, či budí úloha, Windows Update, myš alebo sieťová karta.
+    why_en: The last wake source, the wake timers and the devices allowed to wake the PC show whether a task, Windows Update, a mouse or the network card does it.
+    phrases_sk:
+      - počítač sa v noci zobudí
+      - notebook sa sám zobudí zo spánku
+      - budí sa sám z úsporného režimu
+      - zobudí sa v noci
+    phrases_en:
+      - wakes up by itself
+      - pc wakes at night
+      - laptop wakes from sleep on its own
+      - computer wakes up randomly
+    diagnostics: [wake_last_report, wake_timers_report, wake_armed_devices_report, sleep_blockers_report]
+    fixes: []
+
+  - id: wont_sleep
+    title_sk: Počítač sa neuspí
+    title_en: The PC will not go to sleep
+    why_sk: Požiadavky procesov a ovládačov (powercfg /requests), časovače a plán napájania ukážu, čo drží počítač hore.
+    why_en: Process and driver requests (powercfg /requests), wake timers and the power plan show what keeps the PC awake.
+    phrases_sk:
+      - počítač sa neuspí
+      - nejde do spánku
+      - nechce zaspať
+      - monitor sa nevypína
+    phrases_en:
+      - won't go to sleep
+      - pc doesn't sleep
+      - computer stays awake
+      - sleep mode not working
+    diagnostics: [sleep_blockers_report, wake_timers_report, wake_armed_devices_report, tune_power_plan_report, modern_standby_report]
+    fixes: []
+
+  - id: drains_asleep
+    title_sk: Batéria sa vybíja aj v spánku
+    title_en: The battery drains while asleep
+    why_sk: Modern Standby a správa Sleep Study ukážu spotrebu po reláciách spánku; zdroje zobudenia vylúčia počítač, ktorý sa v taške budí.
+    why_en: Modern Standby and the Sleep Study report show the drain per sleep session; the wake sources rule out a PC that wakes up in the bag.
+    phrases_sk:
+      - batéria sa vybíja v spánku
+      - cez noc vybitá batéria
+      - notebook v spánku vybíja batériu
+      - po zatvorení krytu horúci
+    phrases_en:
+      - battery drains while sleeping
+      - battery drains overnight
+      - laptop loses charge in sleep
+      - hot in the bag
+    diagnostics: [modern_standby_report, sleepstudy_report, wake_last_report, wake_timers_report, battery_wear]
     fixes: []
 
   - id: overheating

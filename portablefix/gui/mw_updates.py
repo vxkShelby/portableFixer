@@ -48,6 +48,13 @@ class UpdatesMixin:
         # at start has always stayed silent.
         if info is None and manual:
             self.statusBar().showMessage(self._t("update_check_none"), 8000)
+        # A check that did not work is not "nothing new": an explicit click
+        # gets its own message with the releases page to look at by hand.
+        if isinstance(info, updater.UpdateCheckFailed):
+            if manual:
+                self.statusBar().showMessage(
+                    self._t("update_check_failed").format(url=updater.RELEASES_PAGE_URL), 15000)
+            return
         # A local update started with the developer switch may already be
         # running when the release check comes back.
         if info is None or self._update_in_progress:

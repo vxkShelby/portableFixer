@@ -56,6 +56,7 @@ z USB kľúča. Python 3.12 + PySide6 GUI, akcie vykonáva cez PowerShell.
 | M22 | Čistenie | Hlbšie čistenie: osamotené uninstall položky, duplicitné súbory, nefunkčné odkazy (.lnk), bezpečné prepísanie voľného miesta |
 | M23 | Antivírus | Microsoft Defender: stav, história hrozieb s verdiktom, aktualizácia definícií, rýchly/úplný/offline sken, výnimky, ochrana pred PUA |
 | M24 | Antivírus | Druhý názor: AdwCleaner, Microsoft Safety Scanner a Kaspersky KVRT - sken bez čistenia, spustený len s overeným podpisom; odstránenie nálezov je samostatná DESTRUCTIVE akcia |
+| M25 | Diagnostika | Spánok a zobudenie (len čítanie): čo PC naposledy zobudilo (`powercfg /lastwake`), časovače zobudenia, zariadenia, ktoré smú zobudiť PC, čo bráni uspatiu (`/requests`), stav Modern Standby a správa Sleep Study. Text powercfg sa vypíše tak, ako ho dá Windows; úspech určuje návratový kód |
 
 ## Funkcie pre technika
 

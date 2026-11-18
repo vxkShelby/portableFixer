@@ -56,6 +56,7 @@ PowerShell.
 | M21 | Repair | Hardware sensors: PawnIO status/install (CPU temp/clock via LibreHardwareMonitor), battery wear (verdict), RAM test at next restart and its result |
 | M22 | Cleanup | Deep cleanup: orphaned uninstall entries, duplicate files, broken shortcuts (.lnk), secure free-space wipe |
 | M23 | Antivirus | Microsoft Defender: status, threat history with a verdict, signature update, quick/full/offline scan, exclusions, PUA protection |
+| M25 | Diagnostics | Sleep and wake (read-only): what woke the PC last (`powercfg /lastwake`), wake timers, devices allowed to wake the PC, what keeps it awake (`/requests`), Modern Standby state and the Sleep Study report. powercfg's text is shown as Windows prints it; success is judged by the exit code |
 
 ## Technician features
 

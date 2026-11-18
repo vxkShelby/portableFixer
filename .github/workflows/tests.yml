@@ -111,10 +111,16 @@ jobs:
             exit 1
           }
           $ids = @($collect | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^tests/.+\.py::' })
-          # 90% of the 336 collected when this was set: a broken or partial
-          # collection must not pass as "All 0 tests passed". Raise it as
-          # tests are added.
-          $minIds = 302
+          # A broken or partial collection must not pass as "All 0 tests
+          # passed". Every `def test_` in these files has to show up as at
+          # least one id (parametrization only adds more), so the floor is
+          # counted from the source and needs no bump when tests are added.
+          $declared = @(Select-String -Path tests/test_gui_main_window.py, tests/test_gui_target_user.py, tests/test_executor.py -Pattern '^\s*def test_').Count
+          if ($declared -eq 0) {
+            Write-Host "::error::found no test functions in the GUI/executor test files"
+            exit 1
+          }
+          $minIds = $declared
           if ($ids.Count -lt $minIds) {
             Write-Host "::error::only $($ids.Count) GUI/executor tests collected, expected at least $minIds"
             exit 1

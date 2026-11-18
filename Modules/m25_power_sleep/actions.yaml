@@ -1,0 +1,53 @@
+module_id: m25_power_sleep
+category: DIAGNOSTICS
+# N3: read-only sleep/wake reports. powercfg prints localized text, so each
+# action shows it raw and decides success by exit codes (and the registry /
+# WMI instance paths) only - never by parsing the words.
+actions:
+  - id: wake_last_report
+    label_sk: "Čo naposledy zobudilo PC (lastwake)"
+    label_en: "What woke the PC last (lastwake)"
+    risk: SAFE
+    command: "$o = @(& powercfg.exe /lastwake); $c = $LASTEXITCODE; foreach ($l in $o) { Write-Output ([string]$l) }; if ($c -ne 0) { Write-Output ('powercfg /lastwake failed (exit code ' + $c + ').'); exit 1 }; Write-Output 'Above: powercfg /lastwake as printed by Windows (in the Windows display language).'"
+    description_sk: "Vypíše `powercfg /lastwake` - zdroj posledného zobudenia z úsporného režimu (zariadenie, časovač, udalosť). Text je v jazyku Windows, aplikácia ho nijako nepreklada; úspech určuje len návratový kód. Nič nemení."
+    description_en: "Prints `powercfg /lastwake` - the source of the last wake from sleep (device, timer, event). The text is in the Windows display language and is shown as is; success is judged by the exit code only. Changes nothing."
+
+  - id: wake_timers_report
+    label_sk: "Časovače, ktoré môžu zobudiť PC"
+    label_en: "Wake timers that can wake the PC"
+    risk: SAFE
+    command: "$o = @(& powercfg.exe /waketimers); $c = $LASTEXITCODE; foreach ($l in $o) { Write-Output ([string]$l) }; if ($c -ne 0) { Write-Output ('powercfg /waketimers failed (exit code ' + $c + ') (needs administrator).'); exit 1 }; Write-Output 'Above: powercfg /waketimers as printed by Windows (in the Windows display language).'"
+    description_sk: "Vypíše `powercfg /waketimers` - aktívne časovače (naplánované úlohy, Windows Update), ktoré vedia zobudiť PC. Vyžaduje administrátora. Nič nemení."
+    description_en: "Prints `powercfg /waketimers` - active timers (scheduled tasks, Windows Update) that can wake the PC. Needs administrator. Changes nothing."
+
+  - id: wake_armed_devices_report
+    label_sk: "Zariadenia, ktoré smú zobudiť PC"
+    label_en: "Devices allowed to wake the PC"
+    risk: SAFE
+    command: "$o = @(& powercfg.exe /devicequery wake_armed); $c = $LASTEXITCODE; foreach ($l in $o) { Write-Output ([string]$l) }; if ($c -ne 0) { Write-Output ('powercfg /devicequery wake_armed failed (exit code ' + $c + ').'); exit 1 }; $armed = $null; try { $armed = @(Get-CimInstance -Namespace 'root\\wmi' -ClassName MSPower_DeviceWakeEnable -EA Stop | Where-Object { $_.Enable -eq $true }) } catch { $armed = $null }; if ($null -eq $armed) { Write-Output 'The WMI class MSPower_DeviceWakeEnable is not readable here - only the powercfg list above is available.' } else { Write-Output ('Device instances with wake enabled (WMI MSPower_DeviceWakeEnable): ' + $armed.Count); foreach ($d in $armed) { Write-Output ('  ' + $d.InstanceName) } }"
+    description_sk: "Vypíše `powercfg /devicequery wake_armed` (zariadenia, ktoré smú zobudiť PC - zvyčajne myš, klávesnica, sieťová karta) a doplní zoznam inštancií zo WMI MSPower_DeviceWakeEnable (cesty zariadení, bez prekladu). Text powercfg je v jazyku Windows. Nič nemení."
+    description_en: "Prints `powercfg /devicequery wake_armed` (devices allowed to wake the PC - usually mouse, keyboard, network card) and adds the device instance paths from WMI MSPower_DeviceWakeEnable (untranslated). The powercfg text is in the Windows display language. Changes nothing."
+
+  - id: sleep_blockers_report
+    label_sk: "Čo bráni uspatiu (requests)"
+    label_en: "What keeps the PC awake (requests)"
+    risk: SAFE
+    command: "$o = @(& powercfg.exe /requests); $c = $LASTEXITCODE; foreach ($l in $o) { Write-Output ([string]$l) }; if ($c -ne 0) { Write-Output ('powercfg /requests failed (exit code ' + $c + ') (needs administrator).'); exit 1 }; Write-Output 'Above: powercfg /requests as printed by Windows (in the Windows display language).'"
+    description_sk: "Vypíše `powercfg /requests` - procesy, služby a ovládače, ktoré práve bránia uspatiu displeja alebo systému (prehrávač, zálohovanie, ovládač). Ide o okamžitý stav, nie históriu. Vyžaduje administrátora. Nič nemení."
+    description_en: "Prints `powercfg /requests` - the processes, services and drivers that currently keep the display or the system awake (a player, a backup, a driver). A snapshot of right now, not a history. Needs administrator. Changes nothing."
+
+  - id: modern_standby_report
+    label_sk: "Stav Modern Standby a režimy spánku"
+    label_en: "Modern Standby state and sleep states"
+    risk: SAFE
+    command: "$cs = $null; try { $cs = (Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power' -Name CsEnabled -EA Stop).CsEnabled } catch { $cs = $null }; $o = @(& powercfg.exe /a); $c = $LASTEXITCODE; foreach ($l in $o) { Write-Output ([string]$l) }; if ($c -ne 0) { Write-Output ('powercfg /a failed (exit code ' + $c + ').'); exit 1 }; if ($cs -eq 1) { Write-Output 'MODERN STANDBY: yes - registry CsEnabled = 1 (S0 low power idle; the sleep study report applies).' } elseif ($null -eq $cs) { Write-Output 'MODERN STANDBY: no - registry CsEnabled is absent (classic S3 sleep).' } else { Write-Output ('MODERN STANDBY: no - registry CsEnabled = ' + $cs + '.') }"
+    description_sk: "Vypíše `powercfg /a` (dostupné režimy spánku - text v jazyku Windows) a z registra `CsEnabled` určí, či PC používa Modern Standby (S0). Modern Standby vysvetľuje, prečo sa PC v batérii „vybíja v spánku“, a len v ňom funguje správa Sleep Study. Verdikt vychádza z registra, nie z textu powercfg. Nič nemení."
+    description_en: "Prints `powercfg /a` (the available sleep states - text in the Windows display language) and reads the registry value `CsEnabled` to tell whether the PC uses Modern Standby (S0). Modern Standby explains a battery draining during sleep, and only it has a Sleep Study report. The verdict comes from the registry, not from powercfg's text. Changes nothing."
+
+  - id: sleepstudy_report
+    label_sk: "Sleep Study (HTML správa o spánku)"
+    label_en: "Sleep Study (HTML sleep report)"
+    risk: SAFE
+    command: "function __pfLink([string]$p) { try { return (([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::ReparsePoint) -ne 0) } catch { return $false } }; $root = Join-Path $env:ProgramData 'PortableFix'; $dest = Join-Path $root ('SleepStudy_' + (Get-Date -Format 'yyyyMMdd_HHmmss')); $reportPath = Join-Path $dest 'SleepStudy.html'; if (__pfLink $root) { Write-Output ('Refusing to write: ' + $root + ' is a link - nothing was written.'); exit 1 }; try { New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null } catch { Write-Output ('Could not create ' + $dest + ' (' + $_.Exception.GetType().Name + ') - nothing was written.'); exit 1 }; if ((__pfLink $dest) -or (@(Get-ChildItem -LiteralPath $dest -Force -ErrorAction SilentlyContinue).Count -ne 0)) { Write-Output ('Refusing to write: ' + $dest + ' is a link or was not empty - nothing was written.'); exit 1 }; $o = @(& powercfg.exe /sleepstudy /output $reportPath /duration 7); $c = $LASTEXITCODE; foreach ($l in $o) { Write-Output ([string]$l) }; $ok = ($c -eq 0) -and (Test-Path -LiteralPath $reportPath) -and -not (__pfLink $reportPath); if ($ok) { Write-Output ('Sleep Study report saved to: ' + $reportPath); Write-Output 'Open it in a browser: battery drain per sleep session and the apps and drivers behind it.' } else { try { if (Test-Path -LiteralPath $reportPath) { [IO.File]::Delete($reportPath) }; if (-not (__pfLink $dest)) { [IO.Directory]::Delete($dest, $false) } } catch { }; Write-Output ('powercfg /sleepstudy failed (exit code ' + $c + '). It needs administrator and a PC with Modern Standby - see the Modern Standby state action.'); exit 1 }"
+    description_sk: "Vygeneruje `powercfg /sleepstudy` (posledných 7 dní) ako HTML do priečinka %ProgramData%\\PortableFix, prístupného len SYSTEM a administrátorom: spotreba batérie v spánku po reláciách a aplikácie či ovládače, ktoré ju spôsobili. Funguje len na PC s Modern Standby a pod administrátorom, inak skončí chybou. Ukladá len HTML súbor, nič iné nemení."
+    description_en: "Generates `powercfg /sleepstudy` (last 7 days) as HTML in %ProgramData%\\PortableFix, readable only by SYSTEM and administrators: battery drain per sleep session and the apps or drivers behind it. Works only on a PC with Modern Standby and as administrator, otherwise it fails. Saves only the HTML file, changes nothing else."

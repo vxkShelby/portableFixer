@@ -1941,6 +1941,31 @@ def test_update_banner_check_finished_with_none_stays_hidden(qtbot, tmp_path):
     assert window.update_banner.isVisible() is False
 
 
+@pytest.mark.parametrize("language", ["en", "sk"])
+def test_manual_update_check_failure_says_so_and_links_the_releases(qtbot, tmp_path, language):
+    from portablefix import updater
+    from portablefix.updater import UpdateCheckFailed
+
+    base_dir = _make_base_dir(tmp_path)
+    window = MainWindow(assets_dir=base_dir, state_dir=base_dir, settings=Settings(language=language), is_admin=True, run_id="run_update3f")
+    qtbot.addWidget(window)
+    window.show()
+
+    window._manual_update_check = True
+    window._on_update_check_finished(UpdateCheckFailed("URLError"))
+    message = window.statusBar().currentMessage()
+    assert updater.RELEASES_PAGE_URL in message
+    assert message != window._t("update_check_none")
+    assert window.update_banner.isVisible() is False
+    assert window._manual_update_check is False
+
+    # The automatic check at start stays silent about a failure too.
+    window.statusBar().clearMessage()
+    window._on_update_check_finished(UpdateCheckFailed("URLError"))
+    assert window.statusBar().currentMessage() == ""
+    assert window.update_banner.isVisible() is False
+
+
 def test_update_banner_dismiss_hides_it(qtbot, tmp_path):
     from portablefix.updater import UpdateInfo
 
