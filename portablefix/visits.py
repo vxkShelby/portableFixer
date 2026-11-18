@@ -73,7 +73,9 @@ def _read_visit(path: Path) -> Visit | None:
     if not isinstance(data, dict) or not isinstance(data.get("actions"), list):
         return None
     actions = [a for a in data["actions"] if isinstance(a, dict)]
-    run_id = str(data.get("run_id") or path.stem)
+    # No run_id field: the file is <hostname>_<run_id>, so only the last part is the id (the name before it
+    # is the computer name, which redaction must be able to mask).
+    run_id = str(data.get("run_id") or path.stem.rsplit("_", 1)[-1])
     hostname = data.get("hostname")
     if not isinstance(hostname, str) or not hostname.strip():
         # No field (an old report): the name before "_<run_id>" in the file name.
