@@ -635,8 +635,8 @@ _STRINGS = {
         "restart_admin_busy": "Reštart ako administrátor počká, kým skončí prebiehajúca úloha.",
         "closing_waiting_uninstall": "Čakám na dokončenie prebiehajúceho odinštalovania, potom sa aplikácia zavrie…",
         # --- Administrator Protection (Windows 11) ---
-        "target_user_banner_adminprot": "Ochrana správcu (Administrator Protection) je zapnutá: PortableFix beží pod skrytým účtom správcu ({process_user}). Nastavenia používateľa a cache pôjdu do profilu {user} (prihlásený). Cache náhľadov sa preskočí.",
-        "target_user_banner_adminprot_tooltip": "Windows 11 pri zvýšení oprávnení spúšťa PortableFix pod skrytým, systémom spravovaným účtom správcu {process_user} s vlastným profilom - jeho HKCU a %USERPROFILE% nie sú profil používateľa. Preto akcie zapisujú do profilu {user} (HKEY_USERS\\{sid}). Akcia Cache náhľadov odmietne bežať (reštart Explorera by nahradil plochu používateľa).",
+        "target_user_banner_adminprot": "Ochrana správcu (Administrator Protection) je zapnutá: PortableFix beží pod skrytým účtom správcu ({process_user}), nie pod používateľom {user}. Čistenie používateľských priečinkov (dočasné súbory, cache, náhľady, hlásenia o chybách) sa preskočí - spusti ho v relácii používateľa {user} alebo ochranu správcu na čas návštevy vypni.",
+        "target_user_banner_adminprot_tooltip": "Windows 11 pri zvýšení oprávnení spúšťa PortableFix pod skrytým, systémom spravovaným účtom správcu {process_user} s vlastným profilom - jeho HKCU a %USERPROFILE% nie sú profil používateľa. Nastavenia v registri idú do profilu {user} (HKEY_USERS\\{sid}), ale akcie Dočasné súbory používateľa, Cache náhľadov, Hlásenia o chybách, Cache prehliadačov, Cache DirectX shaderov a Cache aplikácií odmietnu bežať - spusti ich v relácii používateľa alebo ochranu správcu na čas návštevy vypni.",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1274,8 +1274,8 @@ _STRINGS = {
         "restart_admin_busy": "Restart as administrator waits until the running task has finished.",
         "closing_waiting_uninstall": "Waiting for the running uninstall to finish, then the app closes…",
         # --- Administrator Protection (Windows 11) ---
-        "target_user_banner_adminprot": "Administrator Protection is on: PortableFix runs as a hidden admin account ({process_user}). User settings and caches will go to the profile of {user} (signed in). The thumbnail cache is skipped.",
-        "target_user_banner_adminprot_tooltip": "On elevation Windows 11 runs PortableFix as a hidden, system-managed admin account {process_user} with its own profile - its HKCU and %USERPROFILE% are not the user's. Actions therefore write to the profile of {user} (HKEY_USERS\\{sid}). The Thumbnail cache action refuses to run (restarting Explorer would replace the user's desktop).",
+        "target_user_banner_adminprot": "Administrator Protection is on: PortableFix runs as a hidden admin account ({process_user}), not as {user}. Cleanup of user folders (temp files, caches, thumbnails, error reports) is skipped - run it from {user}'s own session or turn Administrator Protection off for the visit.",
+        "target_user_banner_adminprot_tooltip": "On elevation Windows 11 runs PortableFix as a hidden, system-managed admin account {process_user} with its own profile - its HKCU and %USERPROFILE% are not the user's. Registry settings go to the profile of {user} (HKEY_USERS\\{sid}), but the actions User temp files, Thumbnail cache, Error reports (WER), Browser caches, DirectX shader cache and Teams/Discord/Spotify app caches refuse to run - run them from the user's own session or turn Administrator Protection off for the visit.",
     },
 }
 
