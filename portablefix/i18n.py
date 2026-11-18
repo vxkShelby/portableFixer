@@ -680,6 +680,14 @@ _STRINGS = {
         "visits_col_run_id": "ID behu",
         "visits_yes": "áno",
         "visits_no": "nie",
+        # --- winget Cancel button and restore point wait (cancel/timeout block) ---
+        "winget_cancel_button": "Zrušiť",
+        "winget_cancelling": "Ruším aktualizáciu – ukončujem bežiaci winget…",
+        "winget_cancelled_before_start": "Zrušené – nič sa neaktualizovalo.",
+        "winget_status_cancelled": "ZRUŠENÉ",
+        "winget_update_summary_cancelled": "Zrušených: {cancelled} (balík, ktorý práve bežal, a čakajúce balíky sa neaktualizovali; ten, ktorý bežal, mohol byť čiastočne nainštalovaný).",
+        "restore_point_elapsed": "Vytváram bod obnovenia… {seconds} s (limit {limit} s)",
+        "restore_point_failed_hint": "Bod obnovenia sa nepodarilo vytvoriť. Windows obmedzuje body obnovenia (štandardne jeden za 24 hodín) alebo môže byť vypnutá Ochrana systému; vytváranie sa mohlo aj zaseknúť a vypršal limit.",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1362,6 +1370,14 @@ _STRINGS = {
         "visits_col_run_id": "Run ID",
         "visits_yes": "yes",
         "visits_no": "no",
+        # --- winget Cancel button and restore point wait (cancel/timeout block) ---
+        "winget_cancel_button": "Cancel",
+        "winget_cancelling": "Cancelling the update - ending the running winget...",
+        "winget_cancelled_before_start": "Cancelled - nothing was updated.",
+        "winget_status_cancelled": "CANCELLED",
+        "winget_update_summary_cancelled": "Cancelled: {cancelled} (the package that was running and the queued ones were not updated; the running one may be partly installed).",
+        "restore_point_elapsed": "Creating the restore point... {seconds} s (limit {limit} s)",
+        "restore_point_failed_hint": "The restore point could not be created. Windows limits restore points (one per 24 hours by default) or System Protection may be off; the creation may also have hung and timed out.",
     },
 }
 

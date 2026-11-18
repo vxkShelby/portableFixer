@@ -1132,6 +1132,34 @@ class MainWindow(
         console.appendPlainText(self._t("panel_needs_admin"))
         return True
 
+    def _watch_restore_point_elapsed(self, runner, append_console) -> None:
+        """Checkpoint-Computer prints nothing for up to its whole timeout:
+        tick the elapsed seconds into the status bar every second (and a
+        console line every 30 s) so the wait does not look like a freeze."""
+        started = time.monotonic()
+        timer = QTimer(self)
+
+        def tick() -> None:
+            if self._closed or not _thread_running(runner):
+                timer.stop()
+                return
+            seconds = int(time.monotonic() - started)
+            text = self._t("restore_point_elapsed").format(
+                seconds=seconds, limit=restore_point.RESTORE_POINT_TIMEOUT_SEC,
+            )
+            self.statusBar().showMessage(text)
+            if seconds and seconds % 30 == 0:
+                append_console(text)
+
+        timer.timeout.connect(tick)
+        runner.finished.connect(timer.stop)
+        runner.finished.connect(timer.deleteLater)
+        timer.start(1000)
+
+    def _restore_point_failed_text(self) -> str:
+        """The "continue anyway?" question with the plain reasons first."""
+        return self._t("restore_point_failed_hint") + "\n\n" + self._t("restore_point_failed_confirm")
+
     def _start_panel_restore_point(self, subjects: list[str], console: QPlainTextEdit, on_done) -> bool:
         """The panels' real runs get the batch's safety net (research G01):
         one restore point before the change, through the same runner, logged
@@ -1167,13 +1195,18 @@ class MainWindow(
         console.appendPlainText(self._t("panel_restore_point_running"))
         runner = restore_point.RestorePointRunner(f"PortableFix {self.run_id}", parent=self)
         runner.result_ready.connect(
-            lambda success, detail, info, s=list(subjects), cb=on_done: self._on_panel_restore_point_checked(success, detail, info, s, cb)
+            lambda success, detail, info, s=list(subjects), cb=on_done, c=console: self._on_panel_restore_point_checked(
+                success, detail, info, s, cb, c,
+            )
         )
         self._pending_panel_restore_point_runner = runner
+        self._watch_restore_point_elapsed(runner, console.appendPlainText)
         runner.start()
         return True
 
-    def _on_panel_restore_point_checked(self, success: bool, detail: str, info: dict | None, subjects: list[str], on_done) -> None:
+    def _on_panel_restore_point_checked(
+        self, success: bool, detail: str, info: dict | None, subjects: list[str], on_done, console: QPlainTextEdit,
+    ) -> None:
         # The first subject keys the record (the "continue anyway?" answer
         # pairs with it); the rest ride along for the report.
         subject = subjects[0] if subjects else ""
@@ -1183,12 +1216,21 @@ class MainWindow(
             # the uninstall/update it guarded must never start now.
             return
         proceed = True
-        if not success:
-            # Checkpoint-Computer can take its whole 300 s to fail; by then the
+        if not success and (info or {}).get("cancelled"):
+            # The technician's own Cancel - not a failure to ask about.
+            self._log_system_event(
+                "restore_point_decision", 0,
+                "Technician cancelled while the restore point was being made - nothing was changed.",
+                subject=subject, decision="skip",
+            )
+            proceed = False
+        elif not success:
+            # Checkpoint-Computer can take its whole timeout to fail; by then the
             # technician is in another window and the run just sits waiting.
             QApplication.alert(self)
+            console.appendPlainText(self._t("restore_point_failed_hint"))
             answer = QMessageBox.warning(
-                self, self._t("app_title"), self._t("restore_point_failed_confirm"),
+                self, self._t("app_title"), self._restore_point_failed_text(),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
             )
             proceed = answer == QMessageBox.Yes
@@ -1945,6 +1987,7 @@ class MainWindow(
                 self._append_console(self._t("panel_restore_point_running"))
                 self.statusBar().showMessage(self._t("panel_restore_point_running"))
                 self.progress_bar.setRange(0, 0)
+                self._watch_restore_point_elapsed(rp_runner, self._append_console)
             rp_runner.start()
             return
 
@@ -2033,10 +2076,11 @@ class MainWindow(
             self._run_next()
             return
         if not success:
+            self._append_console(self._t("restore_point_failed_hint"))
             proceed = QMessageBox.warning(
                 self,
                 self._t("app_title"),
-                self._t("restore_point_failed_confirm"),
+                self._restore_point_failed_text(),
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

@@ -1,14 +1,17 @@
 import os
 import subprocess
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from portablefix import winget_updates
+from portablefix import executor, winget_updates
+from portablefix.executor import ProcessCanceller
 from portablefix.winget_updates import (
     OutdatedPackage,
     WingetScanError,
     WingetScanRunner,
+    UpdateCancelled,
     WingetUpdateRunner,
     export_package_list,
     import_package_ids,
@@ -199,7 +202,7 @@ def test_winget_update_runner_continues_after_a_failed_package():
     finished, done = [], []
     runner.package_finished.connect(lambda *args: finished.append(args))
     runner.all_finished.connect(lambda: done.append(True))
-    with patch("portablefix.winget_updates.update_package", side_effect=lambda p: results[p.id]):
+    with patch("portablefix.winget_updates.update_package", side_effect=lambda p, **k: results[p.id]):
         runner.run()
     assert finished == [(pid, *results[pid]) for pid in ("A.A", "B.B", "C.C")]
     assert done == [True]
@@ -757,3 +760,134 @@ def test_visible_packages_hides_updated_unknown_only_while_the_version_matches()
     remembered = {"A.B": "2.0", "C.D": "9.9"}
     assert winget_updates.visible_packages([same, other, ignored], {"E.F"}, remembered) == [other]
     assert winget_updates.visible_packages([newer, other], set(), remembered) == [newer, other]
+
+
+# --- Cancel (stops the running package, skips the queue) ---
+
+
+def _packages(*names):
+    return [
+        OutdatedPackage(name=n, id=f"{n}.{n}", installed_version="1", available_version="2", source="winget")
+        for n in names
+    ]
+
+
+class _BlockedWinget:
+    """A winget process that sits in communicate() until its tree is killed."""
+
+    pid = 777
+
+    def __init__(self, output="half-way output", exit_code=1):
+        self.killed = threading.Event()
+        self.started = threading.Event()
+        self.returncode = None
+        self._output, self._exit_code = output, exit_code
+
+    def communicate(self, timeout=None):
+        self.started.set()
+        assert self.killed.wait(10), "winget was never killed"
+        self.returncode = self._exit_code
+        return self._output, None
+
+
+def test_cancel_ends_the_running_winget_tree_and_raises_cancelled():
+    process = _BlockedWinget()
+    kills = []
+    canceller = ProcessCanceller()
+    outcome = []
+
+    def worker():
+        try:
+            outcome.append(update_package(_packages("A")[0], canceller=canceller))
+        except UpdateCancelled as exc:
+            outcome.append(exc)
+
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=process), \
+         patch.object(executor, "kill_process_tree", side_effect=lambda proc: (kills.append(proc), process.killed.set())):
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert process.started.wait(10)
+        canceller.cancel()
+        thread.join(10)
+
+    [exc] = outcome
+    assert isinstance(exc, UpdateCancelled) and exc.output == "half-way output"
+    assert kills == [process]
+
+
+def test_cancel_does_not_retry_with_install_location():
+    # exit code is the "needs --location" one: a cancelled run must not start winget again.
+    process = _BlockedWinget(exit_code=winget_updates._INSTALL_LOCATION_REQUIRED)
+    canceller = ProcessCanceller()
+    canceller.cancel()  # before winget even started
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=process) as popen, \
+         patch.object(executor, "kill_process_tree", side_effect=lambda proc: process.killed.set()), \
+         patch("portablefix.winget_updates._find_install_location", return_value="C:/Apps/A") as find_location:
+        with pytest.raises(UpdateCancelled):
+            update_package(_packages("A")[0], canceller=canceller)
+    assert popen.call_count == 1
+    find_location.assert_not_called()
+
+
+def test_cancel_landing_after_winget_exited_zero_still_reports_success():
+    process = MagicMock()
+    process.communicate.return_value = ("Successfully installed", None)
+    process.returncode = 0
+    canceller = ProcessCanceller()
+    canceller.cancelled = True
+    with patch("portablefix.winget_updates.subprocess.Popen", return_value=process), \
+         patch.object(executor, "kill_process_tree"):
+        ok, output, code = update_package(_packages("A")[0], canceller=canceller)
+    assert (ok, output, code) == (True, "Successfully installed", 0)
+
+
+def _run_collecting(runner):
+    seen = {"started": [], "finished": [], "cancelled": [], "done": []}
+    runner.package_started.connect(seen["started"].append)
+    runner.package_finished.connect(lambda *args: seen["finished"].append(args))
+    runner.package_cancelled.connect(lambda *args: seen["cancelled"].append(args))
+    runner.all_finished.connect(lambda: seen["done"].append(True))
+    runner.run()
+    return seen
+
+
+def test_runner_cancel_marks_running_package_cancelled_and_skips_the_queue():
+    runner = WingetUpdateRunner(_packages("A", "B", "C"))
+    calls = []
+
+    def fake_update(package, canceller=None, **_):
+        calls.append(package.id)
+        if package.id == "B.B":
+            runner.request_cancel()  # the click lands while B's winget is running
+            if canceller.cancelled:
+                raise UpdateCancelled("partial")
+        return True, "ok", 0
+
+    with patch("portablefix.winget_updates.update_package", side_effect=fake_update):
+        seen = _run_collecting(runner)
+
+    assert calls == ["A.A", "B.B"]  # C never starts
+    assert seen["started"] == ["A.A", "B.B"]
+    assert seen["finished"] == [("A.A", True, "ok", 0)]  # B is cancelled, not failed
+    assert seen["cancelled"] == [("B.B", "partial", True), ("C.C", "", False)]
+    assert seen["done"] == [True]
+
+
+def test_runner_cancel_before_start_cancels_every_package_without_running_winget():
+    runner = WingetUpdateRunner(_packages("A", "B"))
+    runner.request_cancel()
+    with patch("portablefix.winget_updates.update_package") as mock_update:
+        seen = _run_collecting(runner)
+    mock_update.assert_not_called()
+    assert seen["cancelled"] == [("A.A", "", False), ("B.B", "", False)]
+    assert seen["done"] == [True]
+
+
+def test_runner_plain_stop_does_not_report_cancelled():
+    # request_stop is the app closing, not the technician's Cancel.
+    runner = WingetUpdateRunner(_packages("A", "B"))
+    runner.request_stop()
+    with patch("portablefix.winget_updates.update_package") as mock_update:
+        seen = _run_collecting(runner)
+    mock_update.assert_not_called()
+    assert seen["cancelled"] == [] and seen["done"] == [True]

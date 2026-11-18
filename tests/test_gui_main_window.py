@@ -6592,7 +6592,8 @@ def test_uninstall_with_failed_restore_point_declined_uninstalls_nothing(qtbot, 
 
     log_path = audit_log_path(tmp_path, "run_g01_uninst_rp_no")
     qtbot.waitUntil(lambda: bool(_system_events(log_path, "restore_point_decision")), timeout=10000)
-    assert asked[1] == window._t("restore_point_failed_confirm")
+    assert asked[1] == window._restore_point_failed_text()
+    assert asked[1].endswith(window._t("restore_point_failed_confirm"))
     [event] = _system_events(log_path, "restore_point")
     assert event["exit_code"] == 1 and "System Protection is off" in event["output"]
     [decision] = _system_events(log_path, "restore_point_decision")
@@ -8816,3 +8817,161 @@ def test_winget_row_buttons_name_their_package_for_screen_readers(qtbot, tmp_pat
     window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_a11y", True, _fake_outdated_package())
     ignore = next(b for b in card.findChildren(QPushButton) if b.text() == window._t("winget_ignore_button"))
     assert ignore.accessibleName() == "Ignore updates for Fake Editor"
+
+
+# --- winget Cancel button and the restore point wait ---
+
+
+def _cancel_button(card, window):
+    from PySide6.QtWidgets import QPushButton
+
+    [button] = [b for b in card.findChildren(QPushButton) if b.text() == window._t("winget_cancel_button")]
+    return button
+
+
+def test_winget_cancel_stops_the_running_package_skips_the_queue_and_reports_cancelled(qtbot, tmp_path, monkeypatch):
+    import time
+
+    from PySide6.QtWidgets import QCheckBox
+
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    _stub_restore_point(monkeypatch)
+    first = _fake_outdated_package()
+    second = winget_updates.OutdatedPackage(
+        name="Fake Launcher", id="Fake.Launcher", installed_version="1.0", available_version="2.0", source="winget",
+    )
+    attempted = []
+
+    def blocking_update(package, *a, canceller=None, **k):
+        attempted.append(package.id)
+        deadline = time.monotonic() + 10
+        while not canceller.cancelled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        raise winget_updates.UpdateCancelled("half-way installer output")
+
+    monkeypatch.setattr(winget_updates, "update_package", blocking_update)
+    window, card, _row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_cancel", False, first)
+    monkeypatch.setattr(winget_updates, "list_outdated_packages", lambda: [first, second])
+
+    def rows():
+        return {cb.toolTip(): cb for cb in card.findChildren(QCheckBox) if cb.toolTip() in ("Fake.Editor", "Fake.Launcher")}
+
+    _panel_button(card, window._t("winget_refresh_button")).click()
+    qtbot.waitUntil(lambda: len(rows()) == 2, timeout=10000)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    for checkbox in rows().values():
+        checkbox.setChecked(True)
+    cancel_btn = _cancel_button(card, window)
+    assert cancel_btn.isHidden()
+
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+    qtbot.waitUntil(lambda: attempted == ["Fake.Editor"], timeout=10000)
+    assert not cancel_btn.isHidden() and cancel_btn.isEnabled()
+
+    cancel_btn.click()
+
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_update_runner), timeout=10000)
+    summary_start = window._t("winget_update_summary").format(ok=0, failed=0)
+    qtbot.waitUntil(lambda: summary_start in _panel_console_text(card), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._winget_scan_runner), timeout=10000)
+    console_text = _panel_console_text(card)
+    cancelled = window._t("winget_status_cancelled")
+    assert f"[{cancelled}] Fake Editor" in console_text and f"[{cancelled}] Fake Launcher" in console_text
+    assert "half-way installer output" in console_text
+    assert window._t("winget_update_summary_cancelled").format(cancelled=2) in console_text
+    assert window._t("status_failed") not in console_text  # cancelled is not failed
+    assert attempted == ["Fake.Editor"]  # the queued package never started
+    assert cancel_btn.isHidden()
+    assert _panel_button(card, window._t("winget_refresh_button")).isEnabled()
+    log_path = audit_log_path(tmp_path, "run_winget_cancel")
+    entries = [e for e in _audit_entries(log_path) if e["module_id"] == "_winget"]
+    assert [e["action_id"] for e in entries] == ["Fake.Editor"] and "Cancelled" in entries[0]["output"]
+    skipped = _system_events(log_path, "risk_declined")
+    assert [e["subject"] for e in skipped] == ["_winget/Fake.Launcher"]
+    undo_text = (tmp_path / "Backups" / "run_winget_cancel" / "undo.ps1").read_text(encoding="utf-8-sig")
+    assert "Fake.Editor" in undo_text and "cancelled" in undo_text
+
+
+def test_winget_cancel_during_the_restore_point_starts_nothing_and_asks_no_question(qtbot, tmp_path, monkeypatch):
+    import time
+
+    from portablefix import restore_point, winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    started = []
+
+    def blocking_restore_point(description):
+        canceller = restore_point._context.canceller  # what RestorePointRunner.request_cancel() trips
+        started.append(description)
+        deadline = time.monotonic() + 10
+        while not canceller.cancelled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return restore_point.RestorePointResult(False, "Cancelled by the technician.", {"cancelled": True})
+
+    monkeypatch.setattr(restore_point, "create_restore_point", blocking_restore_point)
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    monkeypatch.setattr(QMessageBox, "warning", _refuse_runner("the continue-anyway question"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_cancel_rp", False, _fake_outdated_package())
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    row.setChecked(True)
+    cancel_btn = _cancel_button(card, window)
+
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+    qtbot.waitUntil(lambda: bool(started) and not cancel_btn.isHidden(), timeout=10000)
+    cancel_btn.click()
+
+    qtbot.waitUntil(lambda: window._t("winget_cancelled_before_start") in _panel_console_text(card), timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._pending_panel_restore_point_runner), timeout=10000)
+    assert window._winget_update_runner is None
+    assert cancel_btn.isHidden()
+    assert _panel_button(card, window._t("winget_refresh_button")).isEnabled()
+    log_path = audit_log_path(tmp_path, "run_winget_cancel_rp")
+    [decision] = _system_events(log_path, "restore_point_decision")
+    assert decision["decision"] == "skip" and decision["subject"] == "_winget/Fake.Editor"
+    assert not [e for e in _audit_entries(log_path) if e["module_id"] == "_winget"]
+
+
+def test_failed_restore_point_says_plainly_why_before_asking_to_continue(qtbot, tmp_path, monkeypatch):
+    from portablefix import winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    _stub_restore_point(monkeypatch, success=False)
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_rp_hint", False, _fake_outdated_package())
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: asked.append(text) or QMessageBox.No)
+    row.setChecked(True)
+
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    qtbot.waitUntil(lambda: len(asked) == 1, timeout=10000)
+    qtbot.waitUntil(lambda: not _thread_running(window._pending_panel_restore_point_runner), timeout=10000)
+    hint = window._t("restore_point_failed_hint")
+    assert "24" in hint and hint in asked[0] and asked[0].endswith(window._t("restore_point_failed_confirm"))
+    assert hint in _panel_console_text(card)
+
+
+def test_restore_point_wait_shows_an_elapsed_seconds_counter(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from portablefix import restore_point, winget_updates
+    from portablefix.gui.main_window import _thread_running
+
+    release = threading.Event()
+    monkeypatch.setattr(restore_point, "create_restore_point", lambda description: release.wait(10) and (False, "x"))
+    monkeypatch.setattr(winget_updates, "WingetUpdateRunner", _refuse_runner("WingetUpdateRunner"))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: QMessageBox.No)
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_rp_elapsed", False, _fake_outdated_package())
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    row.setChecked(True)
+
+    _panel_button(card, window._t("winget_update_selected_button")).click()
+
+    expected = window._t("restore_point_elapsed").format(seconds=1, limit=restore_point.RESTORE_POINT_TIMEOUT_SEC)
+    qtbot.waitUntil(lambda: window.statusBar().currentMessage().startswith(expected.split("1")[0]), timeout=10000)
+    assert f"(limit {restore_point.RESTORE_POINT_TIMEOUT_SEC} s)" in window.statusBar().currentMessage()
+    release.set()
+    qtbot.waitUntil(lambda: not _thread_running(window._pending_panel_restore_point_runner), timeout=10000)

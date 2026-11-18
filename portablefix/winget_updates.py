@@ -12,6 +12,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from .executor import ProcessCanceller
+
 _SCAN_TIMEOUT_SEC = 60
 # The PowerShell module is only a first try - it gets a slice of the scan
 # budget so a hung module still leaves the CLI fallback time to run, and the
@@ -489,8 +491,18 @@ def _find_install_location(package_name: str) -> str | None:
     return None
 
 
+class UpdateCancelled(Exception):
+    """The technician cancelled the update while winget was running; output
+    is whatever winget had printed by then."""
+
+    def __init__(self, output: str = ""):
+        super().__init__("winget update cancelled")
+        self.output = output
+
+
 def _run_winget_upgrade(package_id: str, timeout_sec: int,
-                        extra_args: list[str] | None = None) -> tuple[bool, str, int | None]:
+                        extra_args: list[str] | None = None,
+                        canceller: ProcessCanceller | None = None) -> tuple[bool, str, int | None]:
     # Same lookup as the scan: a winget the scan found outside PATH must
     # not then fail to update with "file not found".
     args = [
@@ -507,6 +519,8 @@ def _run_winget_upgrade(package_id: str, timeout_sec: int,
         args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
         creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
     )
+    if canceller is not None:
+        canceller.attach(process)
     try:
         output, _ = process.communicate(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
@@ -519,6 +533,13 @@ def _run_winget_upgrade(package_id: str, timeout_sec: int,
             capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30,
         )
         raise
+    finally:
+        if canceller is not None:
+            canceller.detach()
+    if canceller is not None and canceller.cancelled and process.returncode != 0:
+        # A cancel that lands just after winget exited 0 is not a cancel:
+        # the update happened and is reported as such.
+        raise UpdateCancelled((output or "").strip())
     return process.returncode == 0, (output or "").strip(), process.returncode
 
 
@@ -526,14 +547,18 @@ def _needs_install_location(process_returncode) -> bool:
     return isinstance(process_returncode, int) and (process_returncode & 0xFFFFFFFF) == _INSTALL_LOCATION_REQUIRED
 
 
-def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str, int | None]:
-    """(ok, output, winget's exit code - None when it timed out or never ran)."""
+def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC,
+                   canceller: ProcessCanceller | None = None) -> tuple[bool, str, int | None]:
+    """(ok, output, winget's exit code - None when it timed out or never ran).
+    Raises UpdateCancelled when `canceller` ended the winget process."""
     try:
-        ok, output, code = _run_winget_upgrade(package.id, timeout_sec)
+        ok, output, code = _run_winget_upgrade(package.id, timeout_sec, canceller=canceller)
         if not ok and _needs_install_location(code):
             location = _find_install_location(package.name)
             if location:
-                ok, output, code = _run_winget_upgrade(package.id, timeout_sec, ["--location", location])
+                ok, output, code = _run_winget_upgrade(
+                    package.id, timeout_sec, ["--location", location], canceller=canceller,
+                )
         return ok, output, code
     except subprocess.TimeoutExpired:
         return False, "Update timed out.", None
@@ -568,12 +593,18 @@ class WingetUpdateRunner(QThread):
     package_started = Signal(str)
     # (package id, ok, output, winget's exit code or None)
     package_finished = Signal(str, bool, str, object)
+    # (package id, winget's output so far, started) - the Cancel button
+    # (request_cancel): the package winget was running (started=True) and
+    # every queued one that never started (started=False, output "").
+    package_cancelled = Signal(str, str, bool)
     all_finished = Signal()
 
     def __init__(self, packages: list[OutdatedPackage], parent=None):
         super().__init__(parent)
         self._packages = packages
         self._stop_requested = False
+        self._cancel_requested = False
+        self._canceller = ProcessCanceller()
         self.finished.connect(self.deleteLater)
 
     def request_stop(self) -> None:
@@ -584,11 +615,30 @@ class WingetUpdateRunner(QThread):
         # the whole remaining batch's.
         self._stop_requested = True
 
+    def request_cancel(self) -> None:
+        # The technician's Cancel: unlike request_stop it also ends the
+        # in-flight winget process tree, and the packages left are reported
+        # as cancelled rather than silently dropped.
+        self._cancel_requested = True
+        self._stop_requested = True
+        self._canceller.cancel()
+
     def run(self) -> None:
-        for package in self._packages:
+        for index, package in enumerate(self._packages):
             if self._stop_requested:
+                self._emit_cancelled(self._packages[index:])
                 break
             self.package_started.emit(package.id)
-            ok, output, code = update_package(package)
+            try:
+                ok, output, code = update_package(package, canceller=self._canceller)
+            except UpdateCancelled as exc:
+                self.package_cancelled.emit(package.id, exc.output, True)
+                self._emit_cancelled(self._packages[index + 1:])
+                break
             self.package_finished.emit(package.id, ok, output, code)
         self.all_finished.emit()
+
+    def _emit_cancelled(self, packages: list[OutdatedPackage]) -> None:
+        if self._cancel_requested:
+            for package in packages:
+                self.package_cancelled.emit(package.id, "", False)

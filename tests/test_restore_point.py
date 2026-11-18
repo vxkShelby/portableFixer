@@ -1,7 +1,10 @@
 import subprocess
+import threading
 
 from portablefix.executor import POWERSHELL_PREFIX
 from portablefix import restore_point
+from portablefix import executor
+from portablefix.executor import ProcessCanceller
 from portablefix.restore_point import (
     RESULT_MARKER,
     RestorePointRunner,
@@ -18,6 +21,27 @@ class _FakeResult:
         self.stdout = stdout
 
 
+def _patch_run(monkeypatch, fake_run):
+    """create_restore_point starts powershell with Popen; adapt the
+    subprocess.run-style fakes these tests were written with, and never let
+    the (fake) process tree kill reach a real taskkill."""
+
+    class _Popen:
+        pid = 4242
+
+        def __init__(self, argv, stdout=None, stderr=None, creationflags=0):
+            self._argv, self._creationflags = argv, creationflags
+
+        def communicate(self, timeout=None):
+            result = fake_run(self._argv, capture_output=True, timeout=timeout, creationflags=self._creationflags)
+            self.returncode = result.returncode
+            return result.stdout, result.stderr
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+    monkeypatch.setattr(restore_point, "kill_process_tree", lambda process: None)
+    monkeypatch.setattr(executor, "kill_process_tree", lambda process: None)
+
+
 def test_create_restore_point_success(monkeypatch):
     captured = {}
 
@@ -26,7 +50,7 @@ def test_create_restore_point_success(monkeypatch):
         captured["creationflags"] = creationflags
         return _FakeResult(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     success, detail = create_restore_point("test checkpoint")
     assert success is True
     assert detail == ""
@@ -47,15 +71,13 @@ def test_create_restore_point_suppresses_console_window(monkeypatch):
         captured["creationflags"] = creationflags
         return _FakeResult(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     create_restore_point("test checkpoint")
     assert captured["creationflags"] == subprocess.CREATE_NO_WINDOW
 
 
 def test_create_restore_point_nonzero_returncode_is_false_with_stderr_detail(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"Access is denied."),
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"Access is denied."),
     )
     success, detail = create_restore_point("x")
     assert success is False
@@ -66,7 +88,7 @@ def test_create_restore_point_exception_is_false_with_exception_detail(monkeypat
     def raise_error(argv, capture_output, timeout, creationflags):
         raise OSError("boom")
 
-    monkeypatch.setattr(subprocess, "run", raise_error)
+    _patch_run(monkeypatch, raise_error)
     success, detail = create_restore_point("x")
     assert success is False
     assert "boom" in detail
@@ -81,7 +103,7 @@ def test_create_restore_point_keeps_embedded_double_quotes_literal(monkeypatch):
         captured["argv"] = argv
         return _FakeResult(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     create_restore_point('test "quoted" description')
     command = captured["argv"][-1]
     assert "'test \"quoted\" description'" in command
@@ -96,7 +118,7 @@ def test_create_restore_point_escapes_embedded_single_quote(monkeypatch):
         captured["argv"] = argv
         return _FakeResult(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     create_restore_point("O'Brien's PC")
     command = captured["argv"][-1]
     assert "O''Brien''s PC" in command
@@ -111,7 +133,7 @@ def test_create_restore_point_single_quotes_do_not_interpolate_dollar_sign(monke
         captured["argv"] = argv
         return _FakeResult(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     create_restore_point("PortableFix run$1")
     command = captured["argv"][-1]
     assert "'PortableFix run$1'" in command
@@ -194,9 +216,7 @@ def test_parse_restore_point_output_missing_or_malformed_is_empty():
 
 def test_create_restore_point_returns_sequence_and_still_unpacks_as_pair(monkeypatch):
     stdout = f'{RESULT_MARKER}{{"sequence":42,"created":"c","description":"d"}}\n'.encode()
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda argv, capture_output, timeout, creationflags: _FakeResult(0, stdout=stdout),
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(0, stdout=stdout),
     )
     result = create_restore_point("d")
     success, detail = result
@@ -207,9 +227,7 @@ def test_create_restore_point_returns_sequence_and_still_unpacks_as_pair(monkeyp
 
 
 def test_create_restore_point_success_without_marker_has_no_sequence(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda argv, capture_output, timeout, creationflags: _FakeResult(0, stdout=b"noise\n"),
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(0, stdout=b"noise\n"),
     )
     result = create_restore_point("d")
     assert result == (True, "")
@@ -218,9 +236,7 @@ def test_create_restore_point_success_without_marker_has_no_sequence(monkeypatch
 
 
 def test_create_restore_point_failure_has_no_sequence(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"denied"),
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"denied"),
     )
     result = create_restore_point("d")
     assert result == (False, "denied")
@@ -286,7 +302,7 @@ def _timeout_run_that_zeroes_throttle(reg):
 def test_timeout_restores_previous_throttle_value(monkeypatch):
     reg = _FakeWinreg(value=(1440, _FakeWinreg.REG_DWORD))
     monkeypatch.setattr(restore_point, "_winreg", reg)
-    monkeypatch.setattr(subprocess, "run", _timeout_run_that_zeroes_throttle(reg))
+    _patch_run(monkeypatch, _timeout_run_that_zeroes_throttle(reg))
 
     success, detail = create_restore_point("x")
 
@@ -304,7 +320,7 @@ def test_timeout_restores_previous_throttle_value(monkeypatch):
 def test_timeout_removes_throttle_value_that_was_absent(monkeypatch):
     reg = _FakeWinreg(value=None)
     monkeypatch.setattr(restore_point, "_winreg", reg)
-    monkeypatch.setattr(subprocess, "run", _timeout_run_that_zeroes_throttle(reg))
+    _patch_run(monkeypatch, _timeout_run_that_zeroes_throttle(reg))
 
     create_restore_point("x")
 
@@ -316,12 +332,10 @@ def test_normal_end_does_not_rewrite_already_restored_throttle(monkeypatch):
     # The PowerShell finally already put the value back - no second write.
     reg = _FakeWinreg(value=(60, _FakeWinreg.REG_DWORD))
     monkeypatch.setattr(restore_point, "_winreg", reg)
-    monkeypatch.setattr(
-        subprocess, "run", lambda argv, capture_output, timeout, creationflags: _FakeResult(0),
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(0),
     )
     assert create_restore_point("x") == (True, "")
-    monkeypatch.setattr(
-        subprocess, "run", lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"no"),
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(1, stderr=b"no"),
     )
     assert create_restore_point("x") == (False, "no")
     assert reg.writes == []
@@ -336,7 +350,7 @@ def test_any_abnormal_end_leaving_throttle_changed_is_repaired(monkeypatch):
         reg.value = (0, reg.REG_DWORD)
         return _FakeResult(1)
 
-    monkeypatch.setattr(subprocess, "run", killed_run)
+    _patch_run(monkeypatch, killed_run)
     create_restore_point("x")
     assert reg.value == (60, reg.REG_DWORD)
 
@@ -350,16 +364,14 @@ def test_unreadable_throttle_disables_safety_net(monkeypatch):
 
     reg.QueryValueEx = denied
     monkeypatch.setattr(restore_point, "_winreg", reg)
-    monkeypatch.setattr(subprocess, "run", _timeout_run_that_zeroes_throttle(reg))
+    _patch_run(monkeypatch, _timeout_run_that_zeroes_throttle(reg))
     create_restore_point("x")
     assert reg.writes == []
 
 
 def test_throttle_safety_net_is_a_no_op_without_winreg(monkeypatch):
     monkeypatch.setattr(restore_point, "_winreg", None)
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda argv, capture_output, timeout, creationflags: (_ for _ in ()).throw(
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: (_ for _ in ()).throw(
             subprocess.TimeoutExpired(argv, timeout)
         ),
     )
@@ -367,16 +379,18 @@ def test_throttle_safety_net_is_a_no_op_without_winreg(monkeypatch):
     assert success is False and "timed out" in detail
 
 
-def test_restore_point_timeout_allows_slow_vss(monkeypatch):
+def test_restore_point_timeout_is_two_minutes(monkeypatch):
     captured = {}
 
     def fake_run(argv, capture_output, timeout, creationflags):
         captured["timeout"] = timeout
         return _FakeResult(0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     create_restore_point("x")
-    assert captured["timeout"] >= 300
+    # Shortened from 300: a checkpoint still stuck after two minutes is the
+    # 24h throttle / System Protection / a wedged VSS, not a slow disk.
+    assert captured["timeout"] == restore_point.RESTORE_POINT_TIMEOUT_SEC == 120
 
 
 def test_runner_emits_info_and_tolerates_plain_tuple_stubs(monkeypatch):
@@ -393,3 +407,95 @@ def test_runner_emits_info_and_tolerates_plain_tuple_stubs(monkeypatch):
     monkeypatch.setattr(restore_point, "create_restore_point", lambda description: (False, "boom"))
     runner.run()
     assert emitted == [(True, "", {"sequence_number": 5}), (False, "boom", {})]
+
+
+# --- cancel (winget panel's Cancel button) ---
+
+
+class _BlockingPowershell:
+    """A powershell that sits in communicate() until it is killed."""
+
+    pid = 4242
+
+    def __init__(self, reg=None):
+        self.started = threading.Event()
+        self.killed = threading.Event()
+        self.kills = []
+        self._reg = reg
+        self.returncode = None
+
+    def popen(self, argv, stdout=None, stderr=None, creationflags=0):
+        return self
+
+    def communicate(self, timeout=None):
+        if self._reg is not None:
+            self._reg.value = (0, self._reg.REG_DWORD)  # the script lifted the 24h throttle
+        self.started.set()
+        assert self.killed.wait(10), "never killed"
+        self.returncode = 1
+        return b"", b""
+
+    def kill_tree(self, process):
+        self.kills.append(process)
+        self.killed.set()
+
+
+def _install(monkeypatch, powershell):
+    monkeypatch.setattr(subprocess, "Popen", powershell.popen)
+    monkeypatch.setattr(restore_point, "kill_process_tree", powershell.kill_tree)
+    monkeypatch.setattr(executor, "kill_process_tree", powershell.kill_tree)  # what ProcessCanceller calls
+
+
+def test_cancel_kills_the_process_tree_and_reports_cancelled_not_failed_timeout(monkeypatch):
+    reg = _FakeWinreg(value=(60, _FakeWinreg.REG_DWORD))
+    monkeypatch.setattr(restore_point, "_winreg", reg)
+    powershell = _BlockingPowershell(reg)
+    _install(monkeypatch, powershell)
+    canceller = ProcessCanceller()
+    results = []
+    worker = threading.Thread(target=lambda: results.append(create_restore_point("x", canceller)))
+    worker.start()
+    assert powershell.started.wait(10)
+
+    canceller.cancel()
+    worker.join(10)
+
+    [result] = results
+    assert result[0] is False and result.info == {"cancelled": True}
+    assert powershell.kills == [powershell]
+    # The killed script never ran its finally - the Python safety net did.
+    assert reg.value == (60, reg.REG_DWORD)
+
+
+def test_cancel_before_powershell_started_still_kills_it(monkeypatch):
+    powershell = _BlockingPowershell()
+    _install(monkeypatch, powershell)
+    canceller = ProcessCanceller()
+    canceller.cancel()
+
+    result = create_restore_point("x", canceller)
+
+    assert result.info == {"cancelled": True} and powershell.kills == [powershell]
+
+
+def test_runner_request_cancel_emits_cancelled_info(monkeypatch):
+    powershell = _BlockingPowershell()
+    _install(monkeypatch, powershell)
+    emitted = []
+    runner = RestorePointRunner("d")
+    runner.result_ready.connect(lambda *args: emitted.append(args))
+    runner.request_cancel()  # before run(): the thread-local hand-off must still reach the call
+
+    runner.run()
+
+    assert emitted == [(False, "Cancelled by the technician.", {"cancelled": True})]
+
+
+def test_a_cancel_that_lands_after_a_clean_exit_does_not_discard_the_restore_point(monkeypatch):
+    _patch_run(monkeypatch, lambda argv, capture_output, timeout, creationflags: _FakeResult(0))
+    canceller = ProcessCanceller()
+    canceller.cancelled = True  # clicked just as powershell finished
+
+    result = create_restore_point("x", canceller)
+
+    assert result == (True, "") and not result.info.get("cancelled")
