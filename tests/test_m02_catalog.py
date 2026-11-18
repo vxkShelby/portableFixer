@@ -213,7 +213,8 @@ def test_deletion_actions_report_skipped_locked_items_and_exit_zero():
     ):
         command = by_id[action_id].command
         assert "$skipped += Remove-PfSafe" in command or "$skipped = Remove-PfSafe" in command, action_id
-        assert command.rstrip().endswith(")"), action_id
+        # the Administrator Protection handle guard closes the command with a finally block
+        assert command.rstrip().removesuffix(" } finally { if ('PfGuard' -as [type]) { [PfGuard]::Release() } }").endswith(")"), action_id
         assert '"Skipped locked/in-use items: " + $skipped' in command, action_id
 
 
@@ -328,6 +329,7 @@ def test_m02_user_temp_exclude_pattern_protects_the_update_logs_and_downloads():
 
 import json as _json  # noqa: E402
 import os as _os  # noqa: E402
+import shutil as _shutil  # noqa: E402
 import subprocess as _subprocess  # noqa: E402
 
 import pytest as _pytest  # noqa: E402
@@ -1208,30 +1210,27 @@ def test_wer_reports_also_clears_the_signed_in_users_reports_under_administrator
     assert (technician / "r.wer").exists()
 
 
-def test_browser_cache_sweep_cleans_the_signed_in_users_browsers_under_administrator_protection(tmp_path):
-    technician = _browser_tree(tmp_path / "tech")
+@pytest.mark.parametrize("action_id", ["browser_cache_sweep", "thirdparty_app_caches"])
+def test_dynamic_descent_actions_refuse_under_administrator_protection(tmp_path, action_id):
+    # Many profile/app sub-folders are enumerated, so the elevated account does
+    # not run them there at all (a held chain would be fragile).
     client = tmp_path / "Users" / "klient"
-    chrome = _chromium_profile(client / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default")
-    script = _profile_list_stub(client) + ADMIN_PROTECTION + _sweep_action().command
-    result, stops = _run_browser_ps(tmp_path, script, technician["local"], technician["roaming"])
+    mine = _chromium_profile(client / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default")
+    discord = _cache_only(client / "AppData" / "Roaming" / "discord" / "Cache")
+    (tmp_path / "tech" / "Local").mkdir(parents=True)
+    (tmp_path / "tech" / "Roaming").mkdir(parents=True)
+    action = _m02(action_id)
+    script = _profile_list_stub(client) + ADMIN_PROTECTION
+    result, stops = _run_browser_ps(tmp_path, script + action.command, tmp_path / "tech" / "Local", tmp_path / "tech" / "Roaming")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Administrator Protection is on" in result.stdout
+    assert "Add-Type" not in action.command and "PfGuard" not in action.command
+    result, _ = _run_browser_ps(tmp_path, script + action.preview_command, tmp_path / "tech" / "Local", tmp_path / "tech" / "Roaming")
     assert result.returncode == 0, result.stdout + result.stderr
-    _assert_swept(chrome)
-    _assert_untouched(technician["chrome_default"])
+    assert "Would refuse: Administrator Protection is on" in result.stdout
+    _assert_untouched(mine)
+    _assert_untouched(discord)
     assert stops == []
-
-
-def test_thirdparty_app_caches_cleans_the_signed_in_users_apps_under_administrator_protection(tmp_path):
-    client = tmp_path / "Users" / "klient"
-    mine = _cache_only(client / "AppData" / "Roaming" / "discord" / "Cache")
-    technician_local = tmp_path / "tech" / "Local"
-    technician_roaming = tmp_path / "tech" / "Roaming"
-    theirs = _cache_only(technician_roaming / "discord" / "Cache")
-    technician_local.mkdir(parents=True, exist_ok=True)
-    script = _profile_list_stub(client) + ADMIN_PROTECTION + _m02("thirdparty_app_caches").command
-    result, _ = _run_browser_ps(tmp_path, script, technician_local, technician_roaming)
-    assert result.returncode == 0, result.stdout + result.stderr
-    _assert_swept(mine)
-    _assert_untouched(theirs)
 
 
 @pytest.mark.parametrize("action_id", ["user_temp", "browser_cache_sweep", "directx_shader_cache", "thirdparty_app_caches"])
@@ -1242,7 +1241,8 @@ def test_per_user_cache_actions_still_refuse_under_administrator_protection_with
     script = _profile_list_stub(None) + ADMIN_PROTECTION
     result, _ = _run_m02(tmp_path, [], [], script + _m02(action_id).command, env)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "Signed-in user differs from the elevated account" in result.stdout
+    assert ("Signed-in user differs from the elevated account" in result.stdout
+            or "Administrator Protection is on" in result.stdout)
     assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
 
 
@@ -1322,7 +1322,8 @@ def test_administrator_protection_never_walks_a_junction_in_place_of_appdata(tmp
         assert result.returncode == 0, result.stdout + result.stderr
     elif which == "command":
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "Signed-in user differs from the elevated account" in result.stdout
+        assert ("Signed-in user differs from the elevated account" in result.stdout
+                or "Administrator Protection is on" in result.stdout)
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "Would refuse" in result.stdout
@@ -1377,3 +1378,164 @@ def test_administrator_protection_refuses_a_relative_profile_path(tmp_path):
     result, _ = _run_m02(tmp_path, [], [], script, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+
+
+# --- Administrator Protection: the checked chain is HELD, so it cannot be swapped
+#
+# A link check alone is a snapshot: the standard user could replace a folder
+# with a junction between the check and the delete. The chain is therefore
+# opened by handle (no FILE_SHARE_DELETE) and kept open until the action ends;
+# Windows then refuses to rename or delete any held folder.
+
+GUARD_HOLD_END = "[PfGuard]::Release() } catch { } } } }; try { "
+GUARD_FINALLY = " } finally { if ('PfGuard' -as [type]) { [PfGuard]::Release() } }"
+HELD_ACTIONS = ["user_temp", "wer_reports", "directx_shader_cache"]
+FIVE_ACTION_FIELDS = [(a, f) for a in HELD_ACTIONS for f in ("command", "preview_command")]
+
+
+def test_the_handle_guard_is_one_shared_snippet_in_the_three_fixed_chain_actions():
+    helpers = set()
+    for action_id, field in FIVE_ACTION_FIELDS:
+        text = getattr(_m02(action_id), field)
+        assert text.count("Add-Type -TypeDefinition") == 1, (action_id, field)
+        assert GUARD_HOLD_END in text and text.rstrip().endswith(GUARD_FINALLY.strip()), (action_id, field)
+        start = text.index("Add-Type -TypeDefinition '")
+        helpers.add(text[start:text.index("' }; ", start)])
+    assert len(helpers) == 1  # same C# helper everywhere
+    helper = helpers.pop()
+    assert "CreateFileW" in helper and "GetFinalPathNameByHandleW" in helper and "GetFileInformationByHandle" in helper
+    assert "0x02200000" in helper  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    # FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES (attribute-only access would skip the share check), share READ|WRITE only - never FILE_SHARE_DELETE (4)
+    assert ", 0x81, 3, " in helper
+
+
+def _held_script(action_id, client, body, after=""):
+    command = _m02(action_id).command
+    head = command[: command.index(GUARD_HOLD_END) + len(GUARD_HOLD_END)]
+    return _profile_list_stub(client) + ADMIN_PROTECTION + head + body + GUARD_FINALLY + "; " + after
+
+
+@pytest.mark.parametrize(
+    "action_id, leaf",
+    [
+        ("user_temp", "AppData\\Local\\Temp"),
+        ("directx_shader_cache", "AppData\\Local\\D3DSCache"),
+        ("wer_reports", "AppData\\Local\\Microsoft\\Windows\\WER\\ReportQueue"),
+    ],
+)
+def test_administrator_protection_holds_the_checked_chain_so_it_cannot_be_swapped(tmp_path, action_id, leaf):
+    client = tmp_path / "Users" / "klient"
+    (client / leaf).mkdir(parents=True)
+    # While the action's handles are open: rename (the first step of swapping
+    # in a junction) and delete of the leaf, its parents and the profile root.
+    body = (
+        "$r = @(); foreach ($rel in @('" + leaf + "', 'AppData\\Local', 'AppData', '')) { "
+        "$p = $(if ($rel) { $pfFull + '\\' + $rel } else { $pfFull }); "
+        "try { [IO.Directory]::Move($p, $p + '_moved'); $r += 'RENAMED:' + $rel } catch { $r += 'BLOCKED:' + $rel }; "
+        "if (Test-Path -LiteralPath $p) { try { [IO.Directory]::Delete($p); $r += 'DELETED:' + $rel } "
+        "catch { $r += 'KEPT:' + $rel } } }; Write-Output ('HELD ' + ($r -join ',')); "
+    )
+    after = (
+        "$pfLeaf = " + _ps_quote(str(client / leaf)) + "; try { [IO.Directory]::Move($pfLeaf, $pfLeaf + '_moved'); "
+        "Write-Output 'RELEASED renamed' } catch { Write-Output 'RELEASED still-blocked' }"
+    )
+    result, _ = _run_m02(tmp_path, [], [], _held_script(action_id, client, body, after))
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    held = next(line for line in out.splitlines() if line.startswith("HELD "))
+    for rel in (leaf, "AppData\\Local", "AppData", ""):
+        assert f"BLOCKED:{rel}" in held and f"KEPT:{rel}" in held, held
+    assert "RENAMED" not in held and "DELETED" not in held, held
+    # the finally block let go of the handles: the same rename now works
+    assert "RELEASED renamed" in out, out
+    assert (client / (leaf + "_moved")).exists()
+
+
+def test_administrator_protection_refuses_when_the_handle_helper_cannot_be_built(tmp_path):
+    # Constrained language / no compiler: Add-Type fails -> refuse, never run unguarded.
+    env = _cache_env(tmp_path)
+    client = tmp_path / "Users" / "klient"
+    (client / "AppData" / "Local" / "D3DSCache").mkdir(parents=True)
+    broken = "function Add-Type { throw 'no compiler' }; "
+    script = _profile_list_stub(client) + broken + ADMIN_PROTECTION + _m02("directx_shader_cache").command
+    result, _ = _run_m02(tmp_path, [], [], script, env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+    assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+
+
+# --- a missing folder is never walked: required ones refuse, target ones are skipped
+
+@pytest.mark.parametrize("missing", ["AppData", "AppData\\Local", "AppData\\Local\\Temp"])
+def test_user_temp_refuses_under_administrator_protection_when_a_required_folder_is_missing(tmp_path, missing):
+    env = _cache_env(tmp_path)
+    client = tmp_path / "Users" / "klient"
+    temp = client / "AppData" / "Local" / "Temp"
+    temp.mkdir(parents=True)
+    (temp / "stale.tmp").write_bytes(b"x")
+    _shutil.rmtree(client / missing)
+    script = _profile_list_stub(client) + ADMIN_PROTECTION + _m02("user_temp").command
+    result, _ = _run_m02(tmp_path, [], [], script, env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+
+
+def test_directx_shader_cache_skips_a_missing_target_and_cleans_the_present_ones(tmp_path):
+    env = _cache_env(tmp_path)
+    client = tmp_path / "Users" / "klient"
+    present = [client / "AppData" / "Local" / "D3DSCache" / "a.bin", client / "AppData" / "Local" / "NVIDIA" / "DXCache" / "b.bin"]
+    for f in present:
+        f.parent.mkdir(parents=True)
+        f.write_bytes(b"x")
+    script = _profile_list_stub(client) + ADMIN_PROTECTION + _m02("directx_shader_cache").command
+    result, _ = _run_m02(tmp_path, [], [], script, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Cleared 2 shader cache folder(s)" in result.stdout, result.stdout
+    assert not any(f.exists() for f in present)
+
+
+def _inject_after_check(action_id, client, inject, field="command"):
+    text = getattr(_m02(action_id), field)
+    cut = text.index(GUARD_HOLD_END) + len(GUARD_HOLD_END)
+    return _profile_list_stub(client) + ADMIN_PROTECTION + text[:cut] + inject + text[cut:]
+
+
+@pytest.mark.parametrize("field", ["command", "preview_command"])
+def test_directx_shader_cache_never_follows_a_junction_planted_after_the_check_at_a_missing_target(tmp_path, field):
+    # NVIDIA\DXCache did not exist when the chain was checked; the standard
+    # user creates it as a junction into the victim before the action looks.
+    env = _cache_env(tmp_path)
+    client = tmp_path / "Users" / "klient"
+    own = client / "AppData" / "Local" / "D3DSCache" / "a.bin"
+    own.parent.mkdir(parents=True)
+    own.write_bytes(b"x")
+    victim = tmp_path / "victim"
+    keep = victim / "keep.bin"
+    victim.mkdir()
+    keep.write_bytes(b"keep")
+    inject = (
+        "New-Item -ItemType Directory -Path ($pfFull + '\\AppData\\Local\\NVIDIA') | Out-Null; "
+        "cmd /c mklink /J ($pfFull + '\\AppData\\Local\\NVIDIA\\DXCache') " + _ps_quote(str(victim)) + " | Out-Null; "
+    )
+    result, _ = _run_m02(tmp_path, [], [], _inject_after_check("directx_shader_cache", client, inject, field), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert keep.exists(), result.stdout
+    if field == "command":
+        assert not own.exists()
+        assert "Cleared 1 shader cache folder(s)" in result.stdout, result.stdout
+    else:
+        assert "Would delete 1 files" in result.stdout, result.stdout
+
+
+def test_wer_reports_never_follows_a_junction_planted_after_the_check_above_a_missing_target(tmp_path):
+    client = tmp_path / "Users" / "klient"
+    (client / "AppData" / "Local").mkdir(parents=True)
+    victim = tmp_path / "victim"
+    keep = victim / "Windows" / "WER" / "ReportQueue" / "r.wer"
+    keep.parent.mkdir(parents=True)
+    keep.write_bytes(b"keep")
+    inject = "cmd /c mklink /J ($pfFull + '\\AppData\\Local\\Microsoft') " + _ps_quote(str(victim)) + " | Out-Null; "
+    text = _inject_after_check("wer_reports", client, inject).replace("C:\\ProgramData", str(tmp_path / "PD"))
+    result, _ = _run_m02(tmp_path, [], [], text)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert keep.exists(), result.stdout
