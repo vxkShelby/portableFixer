@@ -79,6 +79,10 @@ def test_every_shipped_diagnostic_is_safe_and_every_fix_exists(table, catalog):
     ("zálohovať dáta", "backup_before_reinstall"),
     ("koniec podpory windows 10", "win10_end_of_support"),
     ("reklamy v štart menu", "start_menu_ads"),
+    ("počítač sa v noci zobudí", "unwanted_wake"),
+    ("laptop wakes up by itself at night", "unwanted_wake"),
+    ("nejde do spánku", "wont_sleep"),
+    ("battery drains while asleep", "drains_asleep"),
 ])
 def test_client_complaints_find_their_symptom(table, complaint, expected):
     assert _top(table, complaint) == expected

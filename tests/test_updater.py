@@ -16,6 +16,7 @@ from portablefix.updater import (
     UpdateInfo,
     UpdateVerificationError,
     check_for_update,
+    UpdateCheckFailed,
     download_update,
     is_newer,
     is_writable,
@@ -105,30 +106,37 @@ def test_check_for_update_returns_info_when_remote_newer():
     )
 
 
-def test_check_for_update_returns_none_on_network_error():
+def test_check_for_update_reports_a_failed_check_on_network_error():
+    # A check that could not run is not "nothing newer" (research F8).
     with patch("portablefix.updater.urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
-        assert check_for_update("1.0.0") is None
+        result = check_for_update("1.0.0")
+    assert result == UpdateCheckFailed("URLError")
 
 
-def test_check_for_update_returns_none_on_malformed_json():
+def test_check_for_update_reports_a_failed_check_on_malformed_json():
     with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(b"not json")):
-        assert check_for_update("1.0.0") is None
+        assert isinstance(check_for_update("1.0.0"), UpdateCheckFailed)
 
 
-def test_check_for_update_returns_none_when_no_zip_asset_present():
+def test_check_for_update_reports_a_failed_check_when_the_release_has_no_tag():
+    with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(b"{}")):
+        assert isinstance(check_for_update("1.0.0"), UpdateCheckFailed)
+
+
+def test_check_for_update_reports_a_failed_check_when_no_zip_asset_present():
     body = _release_json(tag="v1.1.0", zip_name="SomethingElse.zip")
     with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(body)):
-        assert check_for_update("1.0.0") is None
+        assert isinstance(check_for_update("1.0.0"), UpdateCheckFailed)
 
 
-def test_check_for_update_returns_none_when_zip_asset_url_is_untrusted_host():
+def test_check_for_update_reports_a_failed_check_when_zip_asset_url_is_untrusted_host():
     body = json.dumps({
         "tag_name": "v1.1.0",
         "assets": [{"name": "PortableFix-Portable.zip", "browser_download_url": "https://evil.example.com/PortableFix-Portable.zip"}],
         "body": "release notes",
     }).encode("utf-8")
     with patch("portablefix.updater.urllib.request.urlopen", return_value=_mock_response(body)):
-        assert check_for_update("1.0.0") is None
+        assert isinstance(check_for_update("1.0.0"), UpdateCheckFailed)
 
 
 def test_check_for_update_drops_sha256_url_when_untrusted_host_but_keeps_zip():
@@ -384,6 +392,15 @@ def test_update_check_runner_emits_none_when_no_update(qtbot):
         with qtbot.waitSignal(runner.check_finished, timeout=10000) as blocker:
             runner.start()
     assert blocker.args == [None]
+
+
+def test_update_check_runner_emits_a_failed_check(qtbot):
+    failed = UpdateCheckFailed("URLError")
+    with patch("portablefix.updater.check_for_update", return_value=failed):
+        runner = UpdateCheckRunner("1.0.0")
+        with qtbot.waitSignal(runner.check_finished, timeout=10000) as blocker:
+            runner.start()
+    assert blocker.args == [failed]
 
 
 def test_update_check_runner_emits_update_info(qtbot):

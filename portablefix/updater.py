@@ -79,7 +79,16 @@ class UpdateInfo:
     notes: str
 
 
-def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo | None:
+@dataclass(frozen=True)
+class UpdateCheckFailed:
+    """The check itself did not work (offline, GitHub error, a newer release
+    without a usable package) - not the same as "nothing newer"."""
+    reason: str
+
+
+def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo | UpdateCheckFailed | None:
+    """UpdateInfo for a newer release, None when this is the latest, and
+    UpdateCheckFailed when that could not be told."""
     try:
         req = urllib.request.Request(
             GITHUB_API_LATEST_RELEASE,
@@ -88,12 +97,14 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         tag = data.get("tag_name", "")
-        if not tag or not is_newer(tag, current_version):
+        if not tag:
+            return UpdateCheckFailed("release without a tag")
+        if not is_newer(tag, current_version):
             return None
         assets = data.get("assets", [])
         zip_asset = next((a for a in assets if a.get("name", "").lower() == "portablefix-portable.zip"), None)
         if not zip_asset or not _is_trusted_download_url(zip_asset["browser_download_url"]):
-            return None
+            return UpdateCheckFailed("newer release without a trusted package")
         sha_asset = next(
             (a for a in assets if a.get("name", "").lower() == "portablefix-portable.zip.sha256"), None
         )
@@ -106,8 +117,8 @@ def check_for_update(current_version: str, timeout: float = 5.0) -> UpdateInfo |
             sha256_url=sha256_url,
             notes=data.get("body", ""),
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return UpdateCheckFailed(type(exc).__name__)
 
 
 def download_update(

@@ -288,7 +288,7 @@ _STRINGS = {
         "quiet_mode_check_network_button": "Skontrolovať ping a VPN teraz",
         "quiet_mode_check_updates_button": "Skontrolovať aktualizácie",
         "update_check_running": "Kontrolujem aktualizácie na GitHube...",
-        "update_check_none": "Novšia verzia sa nenašla (alebo GitHub nie je dostupný).",
+        "update_check_none": "Používate najnovšiu verziu.",
         "update_check_dev_build": "Kontrola aktualizácií funguje len v zbalenej verzii (PortableFix.exe).",
         "winget_quiet_mode": "Tichý režim: automatická kontrola je vypnutá. Kliknite na Obnoviť.",
         "export_diagnostics_button": "Exportovať diagnostiku",
@@ -634,6 +634,9 @@ _STRINGS = {
         "noun_core_many": "jadier",
         "restart_admin_busy": "Reštart ako administrátor počká, kým skončí prebiehajúca úloha.",
         "closing_waiting_uninstall": "Čakám na dokončenie prebiehajúceho odinštalovania, potom sa aplikácia zavrie…",
+
+        # --- update check failure (research F8) ---
+        "update_check_failed": "Kontrola aktualizácií zlyhala (GitHub nie je dostupný alebo odpovedal neočakávane). Najnovšie vydanie skontrolujte ručne: {url}",
     },
     "en": {
         "app_title": "PortableFix",
@@ -924,7 +927,7 @@ _STRINGS = {
         "quiet_mode_check_network_button": "Check ping and VPN now",
         "quiet_mode_check_updates_button": "Check for updates",
         "update_check_running": "Checking GitHub for updates...",
-        "update_check_none": "No newer version found (or GitHub could not be reached).",
+        "update_check_none": "You are on the latest version.",
         "update_check_dev_build": "The update check only works in the packaged build (PortableFix.exe).",
         "winget_quiet_mode": "Quiet mode: the automatic check is off. Click Refresh to check now.",
         "export_diagnostics_button": "Export diagnostics",
@@ -1270,6 +1273,9 @@ _STRINGS = {
         "noun_core_many": "cores",
         "restart_admin_busy": "Restart as administrator waits until the running task has finished.",
         "closing_waiting_uninstall": "Waiting for the running uninstall to finish, then the app closes…",
+
+        # --- update check failure (research F8) ---
+        "update_check_failed": "The update check failed (GitHub could not be reached or answered unexpectedly). Check the latest release by hand: {url}",
     },
 }
 
