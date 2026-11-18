@@ -649,6 +649,18 @@ _STRINGS = {
 
         # --- update check failure (research F8) ---
         "update_check_failed": "Kontrola aktualizácií zlyhala (GitHub nie je dostupný alebo odpovedal neočakávane). Najnovšie vydanie skontrolujte ručne: {url}",
+        # --- winget update run: summary and failure reasons ---
+        "winget_update_summary": "Aktualizácia cez winget dokončená: úspešne {ok}, zlyhalo {failed}.",
+        "winget_update_summary_failed_hint": "Zlyhané balíky zostali v zozname s tlačidlom „Aktualizovať manuálne“ – dôvod je pri každom vyššie.",
+        "winget_row_failed": "aktualizácia zlyhala",
+        "winget_row_still_listed": "inštalátor prebehol, winget nevie overiť verziu",
+        "winget_fail_not_applicable": "winget nemá inštalátor, ktorý sedí na túto inštaláciu (iný typ inštalátora, rozsah alebo architektúra). Aktualizujte program priamo v ňom, alebo ho odinštalujte a nainštalujte nanovo.",
+        "winget_fail_hash_mismatch": "Stiahnutý inštalátor nezodpovedá kontrolnému súčtu vo winget (výrobca ho medzitým vymenil). Aktualizujte program priamo v ňom alebo to skúste neskôr.",
+        "winget_fail_installer_failed": "Zlyhal vlastný inštalátor programu, nie winget – jeho kód je vo výpise vyššie. Zatvorte program a skúste to znova, alebo ho aktualizujte priamo v ňom.",
+        "winget_fail_no_elevation": "Tento inštalátor sa nedá spustiť ako správca. Aktualizujte program priamo v ňom.",
+        "winget_fail_pinned": "Balík je vo winget pripnutý (pin), preto sa neaktualizuje.",
+        "winget_fail_in_use": "Program alebo jeho súbory sa práve používajú. Zatvorte ho a skúste to znova.",
+        "winget_fail_reboot": "Inštalácia potrebuje reštart počítača.",
     },
     "en": {
         "app_title": "PortableFix",
@@ -1300,6 +1312,18 @@ _STRINGS = {
 
         # --- update check failure (research F8) ---
         "update_check_failed": "The update check failed (GitHub could not be reached or answered unexpectedly). Check the latest release by hand: {url}",
+        # --- winget update run: summary and failure reasons ---
+        "winget_update_summary": "winget update finished: {ok} updated, {failed} failed.",
+        "winget_update_summary_failed_hint": "Failed packages stay in the list with an \"Update manually\" button - the reason is next to each one above.",
+        "winget_row_failed": "update failed",
+        "winget_row_still_listed": "installer ran, winget cannot confirm the version",
+        "winget_fail_not_applicable": "winget has no installer that fits this installation (different installer type, scope or architecture). Update the program from inside it, or uninstall and reinstall it.",
+        "winget_fail_hash_mismatch": "The downloaded installer does not match winget's checksum (the vendor replaced it meanwhile). Update the program from inside it or try again later.",
+        "winget_fail_installer_failed": "The program's own installer failed, not winget - its code is in the output above. Close the program and try again, or update it from inside it.",
+        "winget_fail_no_elevation": "This installer cannot run as administrator. Update the program from inside it.",
+        "winget_fail_pinned": "The package is pinned in winget, so it is not upgraded.",
+        "winget_fail_in_use": "The program or its files are in use. Close it and try again.",
+        "winget_fail_reboot": "The installation needs a restart of the PC.",
     },
 }
 

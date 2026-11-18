@@ -147,6 +147,22 @@ class WingetPanelMixin:
         row_widgets: dict[str, QWidget] = {}
         package_by_id: dict[str, object] = {}
         known_packages: dict[str, object] = {}
+        # package id -> ok of its last update attempt. Survives the rescan
+        # that follows a run, which rebuilds every row: without it a finished
+        # run left the same list, nothing checked and no trace of what failed.
+        last_results: dict[str, bool] = {}
+
+        def add_manual_button(row_widget: QWidget, package) -> None:
+            def open_app(_checked=False, name=package.name) -> None:
+                found = uninstaller.find_program_by_name(name)
+                if found is not None:
+                    uninstaller.launch_program(found)
+
+            manual_btn = QPushButton(self._t("winget_manual_update_button"))
+            manual_btn.setObjectName("selectionBtn")
+            manual_btn.setAccessibleName(self._t("a11y_winget_manual_update").format(name=package.name))
+            manual_btn.clicked.connect(open_app)
+            row_widget.layout().addWidget(manual_btn)
 
         def update_button_state() -> None:
             update_btn.setEnabled(any(cb.isChecked() for cb in row_checkboxes.values()))
@@ -242,6 +258,13 @@ class WingetPanelMixin:
             set_status(self._t("winget_updates_found").format(count=len(visible_packages)), "warn")
             for package in visible_packages:
                 label = f"{package.name}  {package.installed_version} → {package.available_version}"
+                attempted_ok = last_results.get(package.id)
+                if attempted_ok is not None:
+                    # Still offered after its installer reported success:
+                    # typically an "Unknown" installed version winget can
+                    # never compare, so it lists the package forever.
+                    note = "winget_row_still_listed" if attempted_ok else "winget_row_failed"
+                    label += f"  –  {self._t(note)}"
                 row_widget = QWidget()
                 row = QHBoxLayout(row_widget)
                 row.setContentsMargins(0, 0, 0, 0)
@@ -269,6 +292,8 @@ class WingetPanelMixin:
                 row_ignore_buttons[package.id] = ignore_btn
                 row_widgets[package.id] = row_widget
                 package_by_id[package.id] = package
+                if attempted_ok is False:
+                    add_manual_button(row_widget, package)
                 list_layout.addWidget(row_widget)
             list_layout.addStretch(1)
             list_scroll.setVisible(True)
@@ -536,6 +561,7 @@ class WingetPanelMixin:
             # counter is concrete evidence it's still alive, not frozen.
             elapsed_timer = QTimer(panel)
             elapsed_state = {"package_id": None, "seconds": 0}
+            counts = {"ok": 0, "failed": 0}
 
             def tick_elapsed() -> None:
                 pid = elapsed_state["package_id"]
@@ -567,13 +593,14 @@ class WingetPanelMixin:
                 if ignore_btn is not None:
                     ignore_btn.setVisible(False)
 
-            def on_package_finished(package_id: str, ok: bool, output: str) -> None:
+            def on_package_finished(package_id: str, ok: bool, output: str, code=None) -> None:
                 package = package_by_id.get(package_id)
                 name = package.name if package is not None else package_id
                 # Recorded before any widget is touched, so a console error
                 # can never leave a real update out of the log.
                 self._log_panel_action(
-                    "_winget", package_id, upgrade_command(package_id), 0 if ok else 1, output,
+                    "_winget", package_id, upgrade_command(package_id),
+                    code if isinstance(code, int) else (0 if ok else 1), output,
                     False, risk, True, warning_text,
                 )
                 # winget has no rollback to the previous version - undo.ps1
@@ -590,6 +617,16 @@ class WingetPanelMixin:
                 console.appendPlainText(f"[{status}] {name}")
                 if output:
                     console.appendPlainText(output)
+                last_results[package_id] = ok
+                counts["ok" if ok else "failed"] += 1
+                if not ok:
+                    # winget's own last line is often just "exit code: 1".
+                    reason = winget_updates.update_failure_reason(code)
+                    text = self._t(f"winget_fail_{reason}") if reason else ""
+                    if isinstance(code, int):
+                        text += self._t("winget_exit_code_suffix").format(code=winget_updates.format_exit_code(code))
+                    if text:
+                        console.appendPlainText(f"  → {text.strip()}")
                 if ok:
                     # Successfully updated - it's no longer outdated, so drop
                     # it from the list right away instead of waiting for the
@@ -601,22 +638,20 @@ class WingetPanelMixin:
                     if progress is not None:
                         progress.setVisible(False)
                     if row_widget is not None and package is not None:
-                        def open_app(_checked=False, name=package.name) -> None:
-                            found = uninstaller.find_program_by_name(name)
-                            if found is not None:
-                                uninstaller.launch_program(found)
-
-                        manual_btn = QPushButton(self._t("winget_manual_update_button"))
-                        manual_btn.setObjectName("selectionBtn")
-                        manual_btn.setAccessibleName(self._t("a11y_winget_manual_update").format(name=package.name))
-                        manual_btn.clicked.connect(open_app)
-                        row_widget.layout().addWidget(manual_btn)
+                        add_manual_button(row_widget, package)
 
             def on_all_finished() -> None:
                 update_btn.setEnabled(True)
                 select_all_btn.setEnabled(True)
                 select_none_btn.setEnabled(True)
                 refresh_btn.setEnabled(True)
+                # The run used to end on the last package's output with no
+                # word that it was over - it read as a queue that had stopped.
+                summary = self._t("winget_update_summary").format(ok=counts["ok"], failed=counts["failed"])
+                if counts["failed"]:
+                    summary += " " + self._t("winget_update_summary_failed_hint")
+                console.appendPlainText(summary)
+                self.statusBar().showMessage(summary)
                 start_scan()
 
             runner.package_started.connect(_ignore_deleted(on_package_started))

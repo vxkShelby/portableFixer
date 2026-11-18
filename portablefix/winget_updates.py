@@ -40,6 +40,23 @@ _SOURCE_ERROR_CODES = {
 # NTSTATUS codes of a winget.exe that cannot even start: App Installer's
 # VCLibs/UI.Xaml dependencies missing or broken (typical of LTSC, Server and
 # images with the Store stripped out).
+# Why one package's upgrade failed, by exit code - the panel turns the
+# reason into a sentence, so the technician is not left with winget's bare
+# "exit code: 1". Anything else is shown with its hex value only.
+_UPDATE_FAILURE_REASONS = {
+    _UPDATE_NOT_APPLICABLE: "not_applicable",  # also "install technology is different"
+    0x8A150011: "hash_mismatch",  # INSTALLER_HASH_MISMATCH
+    0x8A150006: "installer_failed",  # SHELLEXEC_INSTALL_FAILED
+    0x8A150049: "installer_failed",  # MSI_INSTALL_FAILED
+    0x8A150115: "installer_failed",  # INSTALL_CUSTOM_ERROR
+    0x8A150056: "no_elevation",  # INSTALLER_PROHIBITS_ELEVATION
+    0x8A150068: "pinned",  # PACKAGE_IS_PINNED
+    0x8A150101: "in_use",  # INSTALL_PACKAGE_IN_USE
+    0x8A150103: "in_use",  # INSTALL_FILE_IN_USE
+    0x8A150111: "in_use",  # INSTALL_PACKAGE_IN_USE_BY_APPLICATION
+    0x8A150109: "reboot",  # INSTALL_REBOOT_REQUIRED_TO_FINISH
+    0x8A15010A: "reboot",  # INSTALL_REBOOT_REQUIRED_FOR_INSTALL
+}
 _BROKEN_INSTALL_CODES = {
     0xC0000135,  # STATUS_DLL_NOT_FOUND
     0xC0000142,  # STATUS_DLL_INIT_FAILED
@@ -70,6 +87,12 @@ def format_exit_code(code: int) -> str:
     # test) may pass the signed form winget's docs also list - both mean
     # the same HRESULT.
     return f"0x{code & 0xFFFFFFFF:08X}"
+
+
+def update_failure_reason(code: int | None) -> str:
+    """"not_applicable", "installer_failed", ... or "" for a code with no
+    known meaning (and for None: a timeout or a winget that did not start)."""
+    return _UPDATE_FAILURE_REASONS.get(code & 0xFFFFFFFF, "") if isinstance(code, int) else ""
 
 
 class WingetScanError(Exception):
@@ -486,18 +509,19 @@ def _needs_install_location(process_returncode) -> bool:
     return isinstance(process_returncode, int) and (process_returncode & 0xFFFFFFFF) == _INSTALL_LOCATION_REQUIRED
 
 
-def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str]:
+def update_package(package: OutdatedPackage, timeout_sec: int = _UPDATE_TIMEOUT_SEC) -> tuple[bool, str, int | None]:
+    """(ok, output, winget's exit code - None when it timed out or never ran)."""
     try:
         ok, output, code = _run_winget_upgrade(package.id, timeout_sec)
         if not ok and _needs_install_location(code):
             location = _find_install_location(package.name)
             if location:
-                ok, output, _ = _run_winget_upgrade(package.id, timeout_sec, ["--location", location])
-        return ok, output
+                ok, output, code = _run_winget_upgrade(package.id, timeout_sec, ["--location", location])
+        return ok, output, code
     except subprocess.TimeoutExpired:
-        return False, "Update timed out."
+        return False, "Update timed out.", None
     except OSError as exc:
-        return False, str(exc)
+        return False, str(exc), None
 
 
 class WingetScanRunner(QThread):
@@ -525,7 +549,8 @@ class WingetUpdateRunner(QThread):
     # Each winget upgrade is a blocking subprocess call - runs off the GUI
     # thread so the window stays responsive, mirroring uninstaller.py.
     package_started = Signal(str)
-    package_finished = Signal(str, bool, str)
+    # (package id, ok, output, winget's exit code or None)
+    package_finished = Signal(str, bool, str, object)
     all_finished = Signal()
 
     def __init__(self, packages: list[OutdatedPackage], parent=None):
@@ -547,6 +572,6 @@ class WingetUpdateRunner(QThread):
             if self._stop_requested:
                 break
             self.package_started.emit(package.id)
-            ok, output = update_package(package)
-            self.package_finished.emit(package.id, ok, output)
+            ok, output, code = update_package(package)
+            self.package_finished.emit(package.id, ok, output, code)
         self.all_finished.emit()
