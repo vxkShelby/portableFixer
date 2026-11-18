@@ -1263,3 +1263,117 @@ def test_the_six_per_user_cache_actions_mention_administrator_protection():
         action = _m02(action_id)
         assert "Administrator Protection" in action.description_en, action_id
         assert "Administrator Protection" in action.description_sk, action_id
+
+
+# --- Administrator Protection: never walk a link the standard user planted ----
+#
+# The profile folder belongs to a standard user who may swap AppData, Local,
+# Temp, D3DSCache... for a junction. The elevated shadow admin must then not
+# enumerate or delete through it (it could reach C:\Windows). Every segment
+# from the profile root down is checked; a reparse point means "refuse".
+
+
+def _victim_tree(root: Path) -> list:
+    """What a swept profile would hold; lives OUTSIDE the profile, so any
+    survivor check proves nothing was reached through a link."""
+    files = [
+        root / "Local" / "Temp" / "stale.tmp",
+        root / "Local" / "D3DSCache" / "shader.bin",
+        root / "Local" / "Microsoft" / "Windows" / "WER" / "ReportQueue" / "r.wer",
+        root / "Local" / "Google" / "Chrome" / "User Data" / "Default" / "Preferences",
+        root / "Local" / "Google" / "Chrome" / "User Data" / "Default" / "Cache" / "b.bin",
+        root / "Roaming" / "discord" / "Cache" / "d.bin",
+    ]
+    for f in files:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"keep")
+    _os.utime(files[0], (1_000_000_000, 1_000_000_000))
+    return files
+
+
+def _run_ap(tmp_path, action_id, client, which="command"):
+    """Runs one of the five actions under the Administrator Protection
+    prelude with the client's profile resolved from a stubbed ProfileList."""
+    action = _m02(action_id)
+    script = _profile_list_stub(client) + ADMIN_PROTECTION + getattr(action, which)
+    if action_id in ("browser_cache_sweep", "thirdparty_app_caches"):
+        return _run_browser_ps(tmp_path, script, tmp_path / "tech" / "Local", tmp_path / "tech" / "Roaming")[0]
+    if action_id == "wer_reports":
+        script = script.replace("C:\\ProgramData", str(tmp_path / "PD"))
+    return _run_m02(tmp_path, [], [], script, _cache_env(tmp_path))[0]
+
+
+FIVE_ACTIONS = ["user_temp", "wer_reports", "browser_cache_sweep", "directx_shader_cache", "thirdparty_app_caches"]
+
+
+@pytest.mark.parametrize("which", ["command", "preview_command"])
+@pytest.mark.parametrize("action_id", FIVE_ACTIONS)
+def test_administrator_protection_never_walks_a_junction_in_place_of_appdata(tmp_path, action_id, which):
+    victim = tmp_path / "victim"
+    files = _victim_tree(victim)
+    client = tmp_path / "Users" / "klient"
+    client.mkdir(parents=True)
+    _link(client / "AppData", victim, "junction")
+    (tmp_path / "tech" / "Local").mkdir(parents=True)
+    (tmp_path / "tech" / "Roaming").mkdir(parents=True)
+    result = _run_ap(tmp_path, action_id, client, which)
+    if action_id == "wer_reports":
+        # its documented fallback for a user it cannot reach: machine-wide only
+        assert result.returncode == 0, result.stdout + result.stderr
+    elif which == "command":
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Signed-in user differs from the elevated account" in result.stdout
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Would refuse" in result.stdout
+    assert all(f.exists() for f in files), [str(f) for f in files if not f.exists()]
+
+
+@pytest.mark.parametrize(
+    "action_id, segment, target",
+    [
+        ("user_temp", "AppData/Local/Temp", "Local/Temp"),
+        ("directx_shader_cache", "AppData/Local/D3DSCache", "Local/D3DSCache"),
+        ("wer_reports", "AppData/Local/Microsoft", "Local/Microsoft"),
+        ("browser_cache_sweep", "AppData/Local", "Local"),
+        ("thirdparty_app_caches", "AppData/Roaming", "Roaming"),
+    ],
+)
+def test_administrator_protection_refuses_a_junction_below_appdata(tmp_path, action_id, segment, target):
+    victim = tmp_path / "victim"
+    files = _victim_tree(victim)
+    client = tmp_path / "Users" / "klient"
+    (client / "AppData" / "Local").mkdir(parents=True)
+    (client / "AppData" / "Roaming").mkdir(parents=True)
+    link = client / segment
+    if link.exists():
+        link.rmdir()
+    # the junction stands in for exactly one segment and leads into the victim tree
+    _link(link, victim / target, "junction")
+    (tmp_path / "tech" / "Local").mkdir(parents=True)
+    (tmp_path / "tech" / "Roaming").mkdir(parents=True)
+    result = _run_ap(tmp_path, action_id, client)
+    assert result.returncode == (0 if action_id == "wer_reports" else 1), result.stdout + result.stderr
+    assert all(f.exists() for f in files), [str(f) for f in files if not f.exists()]
+
+
+def test_administrator_protection_refuses_a_profile_folder_that_is_itself_a_junction(tmp_path):
+    victim = tmp_path / "victim"
+    files = _victim_tree(victim)
+    (victim / "AppData" / "Local" / "D3DSCache").mkdir(parents=True)
+    (victim / "AppData" / "Local" / "D3DSCache" / "shader.bin").write_bytes(b"keep")
+    files.append(victim / "AppData" / "Local" / "D3DSCache" / "shader.bin")
+    client = tmp_path / "Users" / "klient"
+    client.parent.mkdir(parents=True)
+    _link(client, victim, "junction")
+    result = _run_ap(tmp_path, "directx_shader_cache", client)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert all(f.exists() for f in files)
+
+
+def test_administrator_protection_refuses_a_relative_profile_path(tmp_path):
+    env = _cache_env(tmp_path)
+    script = _profile_list_stub("Users/klient") + ADMIN_PROTECTION + _m02("directx_shader_cache").command
+    result, _ = _run_m02(tmp_path, [], [], script, env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()

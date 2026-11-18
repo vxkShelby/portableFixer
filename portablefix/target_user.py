@@ -16,6 +16,7 @@ decision logic runs on Linux.
 import re
 import sys
 from dataclasses import dataclass
+from typing import TypeGuard
 
 # What the comparison concluded - also the audit/report vocabulary.
 SAME = "same"  # the desktop user is the account PortableFix runs as
@@ -39,7 +40,7 @@ _NO_CONSOLE_SESSION = 0xFFFFFFFF
 ADMIN_PROTECTION_TYPE = 2
 
 
-def is_valid_sid(sid) -> bool:
+def is_valid_sid(sid) -> TypeGuard[str]:
     return isinstance(sid, str) and bool(_SID_RE.match(sid))
 
 
