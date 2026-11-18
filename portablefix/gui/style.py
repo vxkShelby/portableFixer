@@ -14,6 +14,7 @@ single row drowned out the handful of rows that actually need attention
 """
 
 import ctypes
+import re
 import sys
 from string import Template
 
@@ -278,7 +279,8 @@ QPushButton#runButton:hover {
 /* DRY-RUN on: amber, so it is obvious the batch will change nothing. */
 QPushButton#runButton[dryrun="true"] { background: $warn; }
 QPushButton#runButton[dryrun="true"]:hover { background: rgba($warn_rgb, 210); }
-QPushButton#runButton:disabled {
+QPushButton#runButton:disabled,
+QPushButton#runButton[dryrun="true"]:disabled {
     background: $line_strong;
     color: $disabled;
 }
@@ -720,6 +722,13 @@ QPushButton#jobBtn[set="true"] {
     color: $accent_text;
     background-color: rgba($accent_rgb, 18);
 }
+/* Small heading above a group of rows in the system panel. */
+QLabel#sysinfoGroup {
+    color: $accent_text;
+    font-size: 9pt;
+    font-weight: bold;
+    padding-top: 6px;
+}
 """
 
 
@@ -730,8 +739,51 @@ def _tokens(name: str) -> dict:
     return tokens
 
 
+# The Windows "Text size" slider (Settings > Accessibility) as a factor. The
+# stylesheet sets every font size in pt, which a QApplication font cannot
+# override, so the factor is applied to the sheet itself.
+_text_scale = 1.0
+TEXT_SCALE_MAX = 2.25  # the slider's own ceiling (225 %)
+
+
+def system_text_scale(read_registry=None) -> float:
+    """Windows' "Text size" setting (the TextScaleFactor value under
+    HKCU "Software/Microsoft/Accessibility" key, a percentage) as a factor; 1.0
+    when unset or unreadable.
+    `read_registry` stands in for the registry read so tests can drive it."""
+    try:
+        if read_registry is None:
+            import winreg
+
+            def read_registry():
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Accessibility") as key:
+                    return winreg.QueryValueEx(key, "TextScaleFactor")[0]
+
+        percent = read_registry()
+    except (ImportError, OSError):
+        return 1.0
+    if not isinstance(percent, int) or isinstance(percent, bool) or not 100 <= percent <= TEXT_SCALE_MAX * 100:
+        return 1.0
+    return percent / 100
+
+
+def set_text_scale(factor: float) -> None:
+    global _text_scale
+    _text_scale = min(max(float(factor), 1.0), TEXT_SCALE_MAX)
+
+
+def text_scale() -> float:
+    return _text_scale
+
+
+def _scale_font_sizes(sheet: str, factor: float) -> str:
+    if factor == 1.0:
+        return sheet
+    return re.sub(r"font-size: ([\d.]+)pt", lambda m: f"font-size: {float(m.group(1)) * factor:.1f}pt", sheet)
+
+
 def build_stylesheet(name: str) -> str:
-    return Template(STYLE_TEMPLATE).substitute(_tokens(name))
+    return _scale_font_sizes(Template(STYLE_TEMPLATE).substitute(_tokens(name)), _text_scale)
 
 
 def resolve_theme(setting: str) -> str:

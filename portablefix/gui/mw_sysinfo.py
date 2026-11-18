@@ -98,27 +98,41 @@ class SysinfoMixin:
             # panel is wide enough for that now (400-600px), unlike the
             # fixed 345px it used to be capped at.
             value.setWordWrap(not long)
+            # Top-aligned: the disk row has one line per drive.
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
             row = QHBoxLayout()
             row.setSpacing(6)
-            row.addWidget(caption)
+            row.addWidget(caption, 0, Qt.AlignmentFlag.AlignTop)
             row.addStretch(1)
             row.addWidget(value)
             layout.addLayout(row)
 
+        def add_group(label_key: str) -> None:
+            # "Load" and "Clock" exist for the CPU and the GPU - a heading
+            # says which, instead of repeating the word in every caption.
+            heading = QLabel(self._t(label_key))
+            heading.setObjectName("sysinfoGroup")
+            layout.addWidget(heading)
+
+        add_group("sysinfo_group_system")
         add_row("os", "sysinfo_os", long=True)
         add_row("uptime", "sysinfo_uptime")
-        add_row("cpu_name", "sysinfo_cpu", long=True)
-        add_row("cpu_load", "sysinfo_cpu_load")
-        add_row("cpu_clock", "sysinfo_cpu_clock", tooltip=self._t("sysinfo_cpu_clock_hint"))
         add_row("ram", "sysinfo_ram")
         add_row("ram_speed", "sysinfo_ram_speed")
         add_row("battery", "sysinfo_battery")
-        add_row("disk_health", "sysinfo_disk_health", long=True)
+        add_group("sysinfo_cpu")
+        add_row("cpu_name", "sysinfo_cpu", long=True)
+        add_row("cpu_load", "sysinfo_cpu_load")
+        add_row("cpu_clock", "sysinfo_cpu_clock", tooltip=self._t("sysinfo_cpu_clock_hint"))
+        add_group("sysinfo_gpu")
         add_row("gpu_name", "sysinfo_gpu", long=True)
         add_row("gpu_load", "sysinfo_gpu_load")
         add_row("gpu_temp", "sysinfo_gpu_temp")
         add_row("gpu_clock", "sysinfo_gpu_clock")
         add_row("gpu_vram", "sysinfo_gpu_vram")
+        add_group("sysinfo_group_storage")
+        add_row("disk_health", "sysinfo_disk_health", long=True)
+        add_group("sysinfo_network")
         add_row("ip", "sysinfo_ip")
         add_row("ping", "sysinfo_ping")
         add_row("vpn", "sysinfo_vpn", long=True)

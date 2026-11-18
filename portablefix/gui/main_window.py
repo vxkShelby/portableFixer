@@ -1443,6 +1443,7 @@ class MainWindow(
                 self._snapshot_before = resuming.snapshot_before
             else:
                 self._snapshot_before = self._take_snapshot()
+            self._show_console()
             self.run_button.setEnabled(False)
             self.dashboard_analyze_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
@@ -1774,7 +1775,7 @@ class MainWindow(
         # The batch is over (report written or not): sleep is allowed again.
         self._keep_awake.release()
         if not self._closed:
-            self.run_button.setEnabled(True)
+            self._apply_run_button_dry_run_tint()
             self.dashboard_analyze_button.setEnabled(True)
             self.language_button.setEnabled(True)
             self.dry_run_checkbox.setEnabled(True)
@@ -2282,6 +2283,7 @@ class MainWindow(
         except (OSError, items_mod.ItemsError):
             self._report_write_failure()
             return
+        self._show_console()
         self._append_console(self._t("preview_console_start").format(action=action.label(self.settings.language)))
         runner = ActionRunner(
             prepared.plan, parent=self,
@@ -2301,7 +2303,7 @@ class MainWindow(
                 button.setEnabled(not busy)
             except RuntimeError:
                 pass  # a card from before a language toggle
-        self.run_button.setEnabled(not self._batch_start_blocked())
+        self._apply_run_button_dry_run_tint()
         self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
 
     def _on_preview_finished(self, action_id: str, exit_code: int, runner: ActionRunner) -> None:
