@@ -443,6 +443,7 @@ class WingetPanelMixin:
                 # Nothing is started: DRY-RUN must never install anything,
                 # so this only shows (and logs) what would have run.
                 console.setVisible(True)
+                self._show_console()
                 console.appendPlainText(self._t("winget_update_dry_run_notice"))
                 for package in selected_packages:
                     command = upgrade_command(package.id)
@@ -525,6 +526,7 @@ class WingetPanelMixin:
             select_none_btn.setEnabled(False)
             refresh_btn.setEnabled(False)
             console.setVisible(True)
+            self._show_console()
             console.appendPlainText(self._t("winget_updating"))
             runner = winget_updates.WingetUpdateRunner(selected_packages, parent=self)
             self._winget_update_runner = runner
