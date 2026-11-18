@@ -1130,3 +1130,69 @@ def test_downloads_aging_report_counts_only_old_files_and_deletes_nothing(tmp_pa
     assert out.index("big_old.iso") < out.index("small_old.zip")  # largest first
     for p in old_files + [fresh]:
         assert p.exists(), p
+
+
+# --- Windows 11 Administrator Protection: all six per-user actions refuse -----
+#
+# The elevated account is a hidden admin with its own profile, and a recursive
+# delete by path inside the signed-in user's (user-writable) profile cannot be
+# made race-free, so nothing is redirected there: each action refuses and the
+# technician cleans from the user's own session (or turns the feature off).
+
+ADMIN_PROTECTION = "$__pfUserSid = 'S-1-5-21-7777-8888-9999-1002'; $__pfUserAdminProt = $true; "
+SIX_PER_USER_IDS = ["user_temp", "wer_reports", "thumbnail_cache", "browser_cache_sweep", "directx_shader_cache",
+                    "thirdparty_app_caches"]
+
+
+def _m02(action_id):
+    return next(a for a in load_module(CATALOG_PATH).actions if a.id == action_id)
+
+
+@pytest.mark.parametrize("action_id", SIX_PER_USER_IDS)
+def test_per_user_actions_refuse_under_administrator_protection(tmp_path, action_id):
+    action = _m02(action_id)
+    env = _cache_env(tmp_path)
+    old = tmp_path / "Temp" / "stale.tmp"
+    old.write_bytes(b"x")
+    _os.utime(old, (1_000_000_000, 1_000_000_000))
+    wer = tmp_path / "PD" / "Microsoft" / "Windows" / "WER" / "ReportQueue"
+    wer.mkdir(parents=True)
+    (wer / "r.wer").write_bytes(b"x")
+    stubs = ["function Stop-Process { exit 96 }", "function Start-Process { exit 96 }", "function Get-Process { exit 96 }"]
+    names = EXPLORER_NAMES if action_id == "thumbnail_cache" else []
+    command = action.command.replace("C:\\ProgramData", str(tmp_path / "PD"))
+    result, _ = _run_m02(tmp_path, stubs if names else [], names, ADMIN_PROTECTION + command, env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Administrator Protection is on" in result.stdout
+    assert "signed-in user" in result.stdout
+    # nothing was touched
+    assert old.exists() and (wer / "r.wer").exists()
+    assert (tmp_path / "Local" / "D3DSCache" / "shader.bin").exists()
+    # the preview says so instead of promising a cleanup
+    preview = action.preview_command.replace("C:\\ProgramData", str(tmp_path / "PD"))
+    result, _ = _run_m02(tmp_path, [], [], ADMIN_PROTECTION + preview, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Would refuse: Administrator Protection is on" in result.stdout
+
+
+@pytest.mark.parametrize("action_id", SIX_PER_USER_IDS)
+def test_per_user_action_descriptions_say_they_refuse_under_administrator_protection(action_id):
+    action = _m02(action_id)
+    assert "Administrator Protection" in action.description_en and "refuses to run" in action.description_en
+    assert "Administrator Protection" in action.description_sk and "odmietne" in action.description_sk
+
+
+def test_m02_has_no_cross_profile_delete_helper():
+    text = CATALOG_PATH.read_text(encoding="utf-8")
+    assert "Add-Type" not in text and "PfGuard" not in text and "ProfileImagePath" not in text
+
+
+def test_the_administrator_protection_marker_does_not_change_plain_over_the_shoulder_elevation(tmp_path):
+    # Policy off: the prelude has no $__pfUserAdminProt, so another signed-in
+    # user still gets the original refusal text (and wer_reports its
+    # machine-wide-only fallback) - see the tests above.
+    action = _m02("directx_shader_cache")
+    result, _ = _run_m02(tmp_path, [], [], OTHER_USER + action.command, _cache_env(tmp_path))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Signed-in user differs from the elevated account" in result.stdout
+    assert "Administrator Protection" not in result.stdout

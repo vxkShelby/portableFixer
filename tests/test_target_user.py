@@ -19,13 +19,18 @@ NAMES = {TECH: "PC\\technik", CLIENT: "PC\\klient", OTHER: "PC\\iny"}
 
 
 class FakeApi:
-    def __init__(self, process_sid=TECH, own_session=1, console_session=1, processes=(), session_users=None):
+    def __init__(self, process_sid=TECH, own_session=1, console_session=1, processes=(), session_users=None,
+                 admin_type=None):
+        self._admin_type = admin_type
         self._process_sid = process_sid
         self._own_session = own_session
         self._console_session = console_session
         self._processes = list(processes)
         self._session_users = session_users or {}
         self.sessions_asked = []
+
+    def admin_approval_type(self):
+        return self._admin_type
 
     def process_sid(self):
         return self._process_sid
@@ -362,3 +367,44 @@ def test_report_uses_the_newest_recorded_target(tmp_path):
         make_entry("m01", "b", "cmd", 0, "", False, "run1", **_different().audit_fields()),
     )
     assert report.build_report_data(tmp_path, "run1", [], "en", {}, {})["target_user"]["sid"] == CLIENT
+
+
+# --- Windows 11 Administrator Protection ------------------------------------
+
+
+def _ap_api(admin_type, desktop=CLIENT):
+    return FakeApi(admin_type=admin_type, processes=[_explorer(desktop)])
+
+
+def test_administrator_protection_is_a_different_account_with_the_policy_on():
+    result = target_user.detect(_ap_api(2))
+    assert result.status == target_user.DIFFERENT
+    assert result.admin_protection
+    assert result.target_sid == CLIENT
+    assert result.prelude().endswith("$__pfUserAdminProt = $true; ")
+    assert f"$__pfUserSid = '{CLIENT}'; " in result.prelude()
+
+
+@pytest.mark.parametrize("admin_type", [None, 0, 1, 3])
+def test_other_admin_approval_modes_are_plain_over_the_shoulder(admin_type):
+    result = target_user.detect(_ap_api(admin_type))
+    assert result.status == target_user.DIFFERENT
+    assert not result.admin_protection
+    assert "AdminProt" not in result.prelude()
+
+
+def test_administrator_protection_policy_alone_changes_nothing_for_the_desktop_user():
+    result = target_user.detect(_ap_api(2, desktop=TECH))
+    assert result.status == target_user.SAME
+    assert not result.admin_protection
+    assert "AdminProt" not in result.prelude()
+
+
+def test_failing_or_missing_policy_read_does_not_break_detection():
+    class NoPolicy(FakeApi):
+        def admin_approval_type(self):
+            raise OSError("registry")
+
+    result = target_user.detect(NoPolicy(processes=[_explorer(CLIENT)]))
+    assert result.status == target_user.DIFFERENT
+    assert not result.admin_protection

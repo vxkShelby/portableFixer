@@ -150,6 +150,25 @@ def parse_check_state(lines: list[str]) -> str:
     return "UNKNOWN"
 
 
+def kill_process_tree(process: subprocess.Popen) -> None:
+    """Ends powershell.exe AND everything it started (DISM, sfc, chkdsk, a
+    Defender scan, a scanner from M24...). Popen.kill() only ends the
+    PowerShell host: the children keep running, keep the stdout pipe open
+    and can collide with the next action. taskkill /T walks the tree while
+    the parent is still alive, so it runs first; kill() is the fallback."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
 class PlanRun:
     """Runs one ExecutionPlan to completion on the calling thread - the
     Qt-free core that ActionRunner puts on a QThread and the headless CLI
@@ -191,10 +210,7 @@ class PlanRun:
         if self._check_run is not None:
             self._check_run.cancel()
         if self.process is not None:
-            try:
-                self.process.kill()
-            except OSError:
-                pass
+            kill_process_tree(self.process)
 
     def _check(self) -> str:
         check = PlanRun(self._check_plan, inactivity_timeout_sec=CHECK_INACTIVITY_SEC, hard_cap_sec=CHECK_HARD_CAP_SEC)
@@ -226,10 +242,7 @@ class PlanRun:
             if now - self._last_activity > timeout or now - start > hard_cap:
                 self._timed_out = True
                 if self.process is not None:
-                    try:
-                        self.process.kill()
-                    except OSError:
-                        pass
+                    kill_process_tree(self.process)
                 break
 
     def run(self, emit=lambda line: None) -> int:
