@@ -6,7 +6,7 @@
 ; value as /DMyAppVersion (hence #ifndef: a command-line define wins).
 #define MyAppName "PortableFix"
 #ifndef MyAppVersion
-#define MyAppVersion "1.20.2"
+#define MyAppVersion "1.21.0"
 #endif
 #define MyAppPublisher "vxkShelby"
 #define MyAppURL "https://github.com/vxkShelby/portableFixer"
