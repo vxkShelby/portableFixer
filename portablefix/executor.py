@@ -169,6 +169,38 @@ def kill_process_tree(process: subprocess.Popen) -> None:
         pass
 
 
+class ProcessCanceller:
+    """Lets another thread end a subprocess the worker thread is blocked on.
+
+    The worker calls attach(process) right after Popen and detach() once it
+    has the result; cancel() (any thread) kills the whole process tree.
+    A cancel that arrives before attach() is remembered, so the process is
+    killed the moment it starts - a click can never be lost to that race."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen | None = None
+        self.cancelled = False
+
+    def attach(self, process: subprocess.Popen) -> None:
+        with self._lock:
+            self._process = process
+            kill_now = self.cancelled
+        if kill_now:
+            kill_process_tree(process)
+
+    def detach(self) -> None:
+        with self._lock:
+            self._process = None
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled = True
+            process = self._process
+        if process is not None:
+            kill_process_tree(process)
+
+
 class PlanRun:
     """Runs one ExecutionPlan to completion on the calling thread - the
     Qt-free core that ActionRunner puts on a QThread and the headless CLI

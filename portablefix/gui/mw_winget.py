@@ -128,6 +128,11 @@ class WingetPanelMixin:
         update_btn.setObjectName("runButton")
         update_btn.setEnabled(False)
         select_row.addWidget(update_btn)
+        # Only shown while an update run (restore point included) is going.
+        cancel_btn = QPushButton(self._t("winget_cancel_button"))
+        cancel_btn.setObjectName("selectionBtn")
+        cancel_btn.setVisible(False)
+        select_row.addWidget(cancel_btn)
         select_row_widget = QWidget()
         select_row_widget.setLayout(select_row)
         select_row_widget.setVisible(False)
@@ -452,6 +457,24 @@ class WingetPanelMixin:
                 "--accept-package-agreements --accept-source-agreements --disable-interactivity"
             )
 
+        # The Cancel button's state for the current run: "cancelled" is also
+        # what lets the restore point's callback tell a click from a failure.
+        cancel_state = {"cancelled": False}
+
+        def cancel_update() -> None:
+            cancel_state["cancelled"] = True
+            cancel_btn.setEnabled(False)
+            console.appendPlainText(self._t("winget_cancelling"))
+            runner = self._winget_update_runner
+            if _thread_running(runner):
+                runner.request_cancel()
+                return
+            # Still making the restore point: kill its PowerShell; its
+            # result comes back as cancelled and after_restore_point stops.
+            restore_runner = self._pending_panel_restore_point_runner
+            if _thread_running(restore_runner):
+                restore_runner.request_cancel()
+
         def start_update() -> None:
             selected_packages = [package_by_id[pid] for pid, cb in row_checkboxes.items() if cb.isChecked()]
             if not selected_packages:
@@ -525,12 +548,21 @@ class WingetPanelMixin:
 
             def after_restore_point(proceed: bool) -> None:
                 confirm_state["open"] = False
+                if cancel_state["cancelled"]:
+                    # Cancel was clicked while the restore point was made (or
+                    # during the "continue anyway?" gap): nothing is started.
+                    cancel_btn.setVisible(False)
+                    set_controls_enabled(True)
+                    console.appendPlainText(self._t("winget_cancelled_before_start"))
+                    self.statusBar().showMessage(self._t("winget_cancelled_before_start"))
+                    return
                 if proceed and (self._update_phase == "launch" or self._closing_for_update):
                     # The app update's hand-off began while the restore point
                     # ran - same refusal as a click at that moment.
                     self.statusBar().showMessage(self._t("winget_update_blocked_by_app_update"))
                     proceed = False
                 if not proceed:
+                    cancel_btn.setVisible(False)
                     set_controls_enabled(True)
                     console.appendPlainText(self._t("panel_cancelled_no_restore_point"))
                     return
@@ -539,11 +571,15 @@ class WingetPanelMixin:
             # Same safety net as a batch (G01): winget has no way back to the
             # previous version, a restore point does.
             set_controls_enabled(False)
+            cancel_state["cancelled"] = False
+            cancel_btn.setEnabled(True)
+            cancel_btn.setVisible(True)
             confirm_state["open"] = True
             if not self._start_panel_restore_point(
                 [f"_winget/{package.id}" for package in selected_packages], console, after_restore_point,
             ):
                 confirm_state["open"] = False
+                cancel_btn.setVisible(False)
                 set_controls_enabled(True)
 
         def run_update(selected_packages: list, warning_text: str) -> None:
@@ -564,7 +600,7 @@ class WingetPanelMixin:
             # counter is concrete evidence it's still alive, not frozen.
             elapsed_timer = QTimer(panel)
             elapsed_state = {"package_id": None, "seconds": 0}
-            counts = {"ok": 0, "failed": 0, "hidden": 0}
+            counts = {"ok": 0, "failed": 0, "hidden": 0, "cancelled": 0}
 
             def tick_elapsed() -> None:
                 pid = elapsed_state["package_id"]
@@ -649,7 +685,41 @@ class WingetPanelMixin:
                     if row_widget is not None and package is not None:
                         add_manual_button(row_widget, package)
 
+            def on_package_cancelled(package_id: str, output: str, started: bool) -> None:
+                package = package_by_id.get(package_id)
+                name = package.name if package is not None else package_id
+                counts["cancelled"] += 1
+                if started:
+                    # The installer may have run part-way: recorded like any
+                    # attempt, and listed as irreversible in undo.ps1 too.
+                    self._log_panel_action(
+                        "_winget", package_id, upgrade_command(package_id), 1,
+                        "Cancelled by the technician." + (f"\n{output}" if output else ""),
+                        False, risk, True, warning_text,
+                    )
+                    self._irreversible_actions.append(
+                        f"[{risk}] {self._t('category_winget')}: {name} ({package_id}) - cancelled"
+                    )
+                    self._write_undo_script()
+                    elapsed_timer.stop()
+                    elapsed_state["package_id"] = None
+                    progress = row_progress.get(package_id)
+                    if progress is not None:
+                        progress.setVisible(False)
+                else:
+                    self._log_system_event(
+                        "risk_declined", None,
+                        "Technician cancelled the winget update run - package not updated.",
+                        risk=risk, warned=True, warning_text=warning_text,
+                        subject=f"_winget/{package_id}", decision="declined",
+                    )
+                console.appendPlainText(f"[{self._t('winget_status_cancelled')}] {name}")
+                if started and output:
+                    console.appendPlainText(output)
+
             def on_all_finished() -> None:
+                cancel_btn.setVisible(False)
+                cancel_state["cancelled"] = False
                 update_btn.setEnabled(True)
                 select_all_btn.setEnabled(True)
                 select_none_btn.setEnabled(True)
@@ -657,6 +727,8 @@ class WingetPanelMixin:
                 # The run used to end on the last package's output with no
                 # word that it was over - it read as a queue that had stopped.
                 summary = self._t("winget_update_summary").format(ok=counts["ok"], failed=counts["failed"])
+                if counts["cancelled"]:
+                    summary += " " + self._t("winget_update_summary_cancelled").format(cancelled=counts["cancelled"])
                 if counts["failed"]:
                     summary += " " + self._t("winget_update_summary_failed_hint")
                 if counts["hidden"]:
@@ -667,6 +739,7 @@ class WingetPanelMixin:
 
             runner.package_started.connect(_ignore_deleted(on_package_started))
             runner.package_finished.connect(_ignore_deleted(on_package_finished))
+            runner.package_cancelled.connect(_ignore_deleted(on_package_cancelled))
             runner.all_finished.connect(_ignore_deleted(on_all_finished))
             runner.start()
 
@@ -676,6 +749,7 @@ class WingetPanelMixin:
         select_none_btn.clicked.connect(lambda _checked=False: [cb.setChecked(False) for cb in row_checkboxes.values()])
         refresh_btn.clicked.connect(lambda _checked=False: start_scan())
         update_btn.clicked.connect(lambda _checked=False: start_update())
+        cancel_btn.clicked.connect(lambda _checked=False: cancel_update())
         export_btn.clicked.connect(lambda _checked=False: export_list())
         import_btn.clicked.connect(lambda _checked=False: import_list())
         manage_ignored_btn.clicked.connect(lambda _checked=False: ignored_panel.setVisible(not ignored_panel.isVisible()))

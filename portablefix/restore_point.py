@@ -1,9 +1,10 @@
 import json
 import subprocess
+import threading
 
 from PySide6.QtCore import QThread, Signal
 
-from .executor import POWERSHELL_PREFIX
+from .executor import POWERSHELL_PREFIX, ProcessCanceller, kill_process_tree
 
 
 def _ps_quote(value: str) -> str:
@@ -21,9 +22,11 @@ except ImportError:  # not Windows (tests, linting) - see _read_throttle
 SYSTEM_RESTORE_SUBKEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore"
 SYSTEM_RESTORE_KEY = "HKLM:\\" + SYSTEM_RESTORE_SUBKEY
 FREQUENCY_VALUE = "SystemRestorePointCreationFrequency"
-# Checkpoint-Computer waits for a VSS snapshot, which on a slow/fragmented
-# HDD can take minutes - 120s cut real, still-progressing checkpoints off.
-RESTORE_POINT_TIMEOUT_SEC = 300
+# Checkpoint-Computer waits for a VSS snapshot. A slow/fragmented HDD can take
+# minutes, but a run that is still stuck after two (the 24h throttle, System
+# Protection off, a wedged VSS) was in practice sitting out the whole 300s
+# before failing - the UI now shows an elapsed counter and a Cancel button.
+RESTORE_POINT_TIMEOUT_SEC = 120
 # Prefix of the one stdout line that carries the created point as JSON - a
 # marker, so stray output from any cmdlet can never be mistaken for it.
 RESULT_MARKER = "PORTABLEFIX_RESTORE_POINT="
@@ -172,18 +175,41 @@ def _ensure_throttle_restored(snapshot) -> None:
         pass
 
 
-def create_restore_point(description: str) -> RestorePointResult:
+# The runner thread hands its canceller to create_restore_point through this
+# (a parameter would break every caller/test that stubs the function with the
+# one-argument signature it has always had).
+_context = threading.local()
+
+
+def create_restore_point(description: str, canceller: ProcessCanceller | None = None) -> RestorePointResult:
+    canceller = canceller or getattr(_context, "canceller", None)
     command = build_restore_point_command(description)
     throttle_before = _read_throttle()
     try:
-        result = subprocess.run(
-            POWERSHELL_PREFIX + [command], capture_output=True, timeout=RESTORE_POINT_TIMEOUT_SEC,
+        process = subprocess.Popen(
+            POWERSHELL_PREFIX + [command], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        if result.returncode == 0:
-            stdout = (result.stdout or b"").decode("utf-8", errors="replace")
+        if canceller is not None:
+            canceller.attach(process)
+        try:
+            stdout_bytes, stderr_bytes = process.communicate(timeout=RESTORE_POINT_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            # The whole tree, not just powershell.exe: kill() alone leaves the
+            # child holding the pipes open.
+            kill_process_tree(process)
+            raise
+        finally:
+            if canceller is not None:
+                canceller.detach()
+        if canceller is not None and canceller.cancelled and process.returncode != 0:
+            # Killing the PowerShell client does not roll back a VSS snapshot
+            # the service already started - Windows may still finish it.
+            return RestorePointResult(False, "Cancelled by the technician.", {"cancelled": True})
+        if process.returncode == 0:
+            stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
             return RestorePointResult(True, "", parse_restore_point_output(stdout))
-        return RestorePointResult(False, result.stderr.decode("utf-8", errors="replace").strip())
+        return RestorePointResult(False, (stderr_bytes or b"").decode("utf-8", errors="replace").strip())
     except subprocess.TimeoutExpired:
         # str(exc) would dump the whole command line into the audit log.
         return RestorePointResult(False, f"Checkpoint-Computer timed out after {RESTORE_POINT_TIMEOUT_SEC}s.")
@@ -201,10 +227,21 @@ class RestorePointRunner(QThread):
     def __init__(self, description: str, parent=None):
         super().__init__(parent)
         self._description = description
+        self._canceller = ProcessCanceller()
         self.finished.connect(self.deleteLater)
 
+    def request_cancel(self) -> None:
+        """Kills the PowerShell checkpoint (and its children) if it is
+        running; result_ready then reports (False, ..., {"cancelled": True}).
+        The throttle value is put back by create_restore_point's finally."""
+        self._canceller.cancel()
+
     def run(self) -> None:
-        result = create_restore_point(self._description)
+        _context.canceller = self._canceller
+        try:
+            result = create_restore_point(self._description)
+        finally:
+            _context.canceller = None
         success, detail = result
         # getattr: a stub returning a plain (success, detail) tuple has no info.
         self.result_ready.emit(success, detail, dict(getattr(result, "info", None) or {}))
