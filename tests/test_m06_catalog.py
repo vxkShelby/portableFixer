@@ -12,11 +12,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m06_network" / "actions.yaml"
 
 
-def test_m06_catalog_loads_19_actions_in_repair_category():
+def test_m06_catalog_loads_20_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m06_network"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 19
+    assert len(module.actions) == 20
 
 
 def test_m06_catalog_risk_distribution():
@@ -24,7 +24,7 @@ def test_m06_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert len(by_risk[RiskLevel.SAFE]) == 6
+    assert len(by_risk[RiskLevel.SAFE]) == 7
     assert len(by_risk[RiskLevel.MODERATE]) == 10
     assert len(by_risk[RiskLevel.REQUIRES_REBOOT]) == 3
     assert RiskLevel.DESTRUCTIVE not in by_risk
@@ -37,6 +37,7 @@ def test_m06_catalog_covers_expected_ids():
         "net_adapter_status",
         "net_ip_config_report",
         "net_wifi_diagnostics",
+        "net_wifi_history_report",
         "net_lan_inspector",
         "net_flush_dns",
         "net_hosts_reset",
@@ -74,6 +75,7 @@ def test_m06_catalog_undo_commands_on_hosts_reset_and_firewall_reset():
         "net_adapter_status",
         "net_ip_config_report",
         "net_wifi_diagnostics",
+        "net_wifi_history_report",
         "net_lan_inspector",
         "net_flush_dns",
         "net_dhcp_renew",
@@ -609,3 +611,180 @@ def test_dns_cache_report_handles_an_empty_cache_and_an_unreadable_one():
     assert empty.returncode == 0 and "DNS client cache entries: 0" in empty.stdout and "empty" in empty.stdout
     broken = run_ps(command, ["function Get-DnsClientCache { throw 'Pristup odmietnuty' }"], ["Get-DnsClientCache"])
     assert broken.returncode == 1 and "Could not read the DNS client cache" in broken.stdout
+
+
+# --- F2: Wi-Fi diagnostics on Windows 11 24H2+ (netsh wlan needs Location) ----
+
+CV_KEY = "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"
+LOCATION_CONSENT = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location"
+LOCATION_POLICY = "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors"
+WIFI_ADAPTER = {"Name": "Wi-Fi", "InterfaceDescription": "Intel AX201", "Status": "Up", "LinkSpeed": "866 Mbps",
+                "MacAddress": "AA-BB-CC-00-11-22", "NdisPhysicalMedium": 9}
+ETHERNET = {"Name": "Ethernet", "InterfaceDescription": "Realtek", "Status": "Up", "LinkSpeed": "1 Gbps",
+            "MacAddress": "AA-BB-CC-00-11-33", "NdisPhysicalMedium": 14}
+
+
+def _wifi_stubs(netsh_exit=0, adapters=(WIFI_ADAPTER, ETHERNET)):
+    objs = ", ".join(_ps_object(a) for a in adapters)
+    return [
+        "function netsh { Add-Content -Path $global:PfLog -Value ('netsh ' + ($args -join ' ')); "
+        f"'Názov: Wi-Fi'; $global:LASTEXITCODE = {netsh_exit} }}",
+        f"function Get-NetAdapter {{ [CmdletBinding()] param([switch] $Physical) Add-Content -Path $global:PfLog -Value 'Get-NetAdapter'; @({objs}) }}",
+    ]
+
+
+def _run_wifi(tmp_path, build, netsh_exit=0, adapters=(WIFI_ADAPTER, ETHERNET), policy=None, consent=None):
+    registry = {CV_KEY: {"CurrentBuildNumber": str(build)}}
+    if policy is not None:
+        registry[LOCATION_POLICY] = {"DisableLocation": policy}
+    if consent is not None:
+        registry[LOCATION_CONSENT] = {"Value": consent}
+    result, calls, _ = _run_registry(
+        tmp_path, _action("net_wifi_diagnostics").command, registry,
+        extra_stubs=_wifi_stubs(netsh_exit, adapters), extra_names=["netsh", "Get-NetAdapter"],
+    )
+    return result, calls
+
+
+def test_wifi_diagnostics_is_unchanged_before_24h2(tmp_path):
+    # Windows 10 / 11 23H2: netsh's output and exit code are the result.
+    result, calls = _run_wifi(tmp_path, 22631, netsh_exit=1, policy=1)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "NOTE" not in result.stdout
+    assert calls == ["netsh wlan show interfaces"]
+
+
+def test_wifi_diagnostics_healthy_24h2_prints_only_netsh(tmp_path):
+    result, _ = _run_wifi(tmp_path, 26100, consent="Allow")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "NOTE" not in result.stdout and "Fallback" not in result.stdout
+
+
+@pytest.mark.parametrize("registry", [{"policy": 1}, {"consent": "Deny"}])
+def test_wifi_diagnostics_24h2_explains_a_blocked_location_and_falls_back_to_get_netadapter(tmp_path, registry):
+    result, _ = _run_wifi(tmp_path, 26100, **registry)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Windows 11 24H2 and newer let netsh wlan show Wi-Fi details" in result.stdout
+    assert "Detected: " in result.stdout and "Location" in result.stdout
+    assert "Fallback: Wi-Fi adapter state from Get-NetAdapter" in result.stdout
+    assert "Intel AX201" in result.stdout and "866 Mbps" in result.stdout
+    assert "Realtek" not in result.stdout  # only the Wi-Fi adapter (NdisPhysicalMedium 9)
+
+
+def test_wifi_diagnostics_24h2_netsh_failure_with_a_wifi_adapter_gets_the_explanation(tmp_path):
+    result, _ = _run_wifi(tmp_path, 26100, netsh_exit=1)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "netsh failed (exit code 1) although Windows lists a Wi-Fi adapter" in result.stdout
+    assert "Intel AX201" in result.stdout
+
+
+def test_wifi_diagnostics_24h2_without_a_wifi_adapter_keeps_netsh_result(tmp_path):
+    result, _ = _run_wifi(tmp_path, 26100, netsh_exit=1, adapters=(ETHERNET,), policy=1)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "NOTE" not in result.stdout
+
+
+# --- N6: net_wifi_history_report ------------------------------------------------
+
+
+def _wlanreport_stubs(netsh_exit=0, writes=True):
+    write = (
+        "$src = Join-Path $env:ProgramData 'Microsoft\\Windows\\WlanReport\\wlan-report-latest.html'; "
+        "New-Item -ItemType Directory -Force -Path (Split-Path $src) | Out-Null; Set-Content -LiteralPath $src -Value 'WLAN REPORT'; "
+        if writes else ""
+    )
+    return [
+        "function netsh { Add-Content -Path $global:PfLog -Value ('netsh ' + ($args -join ' ')); "
+        f"if ($args[2] -eq 'wlanreport') {{ {write}$global:LASTEXITCODE = {netsh_exit} }} else {{ $global:LASTEXITCODE = 0 }} }}",
+    ]
+
+
+def _run_wlanreport(tmp_path, build=26100, **stub_args):
+    registry = {CV_KEY: {"CurrentBuildNumber": str(build)}}
+    result, calls, _ = _run_registry(
+        tmp_path, _action("net_wifi_history_report").command, registry,
+        extra_stubs=_wlanreport_stubs(**stub_args), extra_names=["netsh"],
+    )
+    return result, calls
+
+
+def _saved_reports(tmp_path):
+    return sorted((tmp_path / "ProgramData" / "PortableFix").glob("WlanReport_*"))
+
+
+def test_wifi_history_report_is_a_safe_bilingual_report_next_to_the_battery_report():
+    action = _action("net_wifi_history_report")
+    assert action.risk == RiskLevel.SAFE
+    assert action.undo_command is None and action.check_command is None
+    assert "wlan show wlanreport" in action.command
+    for verb in ("Set-NetAdapter", "Disable-", "Remove-", "netsh wlan delete", "netsh wlan set"):
+        assert verb not in action.command, verb
+    assert "WlanReport_" in action.description_sk and "WlanReport_" in action.description_en
+    assert "24H2" in action.description_sk and "24H2" in action.description_en
+
+
+def test_wifi_history_report_copies_the_report_into_the_backup_folder(tmp_path):
+    result, calls = _run_wlanreport(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    folders = _saved_reports(tmp_path)
+    assert len(folders) == 1
+    assert (folders[0] / "WlanReport.html").read_text(encoding="utf-8-sig").strip() == "WLAN REPORT"
+    assert "Wi-Fi history report saved to: " + str(folders[0] / "WlanReport.html") in result.stdout
+    assert "netsh wlan show wlanreport" in calls
+    assert not any(c.startswith("icacls") for c in calls)  # the folder is secured by the central prelude
+
+
+def test_wifi_history_report_never_copies_a_stale_report(tmp_path):
+    # netsh "succeeded" but wrote nothing new: wlan-report-latest.html from
+    # an earlier visit must not be presented as this run's evidence.
+    src = tmp_path / "ProgramData" / "Microsoft" / "Windows" / "WlanReport" / "wlan-report-latest.html"
+    src.parent.mkdir(parents=True)
+    src.write_text("OLD", encoding="utf-8")
+    old = src.stat().st_mtime - 86400
+    os.utime(src, (old, old))
+    result, _ = _run_wlanreport(tmp_path, writes=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Could not create the Wi-Fi history report" in result.stdout
+    assert not (_saved_reports(tmp_path)[0] / "WlanReport.html").exists()
+
+
+@pytest.mark.parametrize("build, mentions_location", [(26100, True), (22631, False)])
+def test_wifi_history_report_failure_explains_the_location_requirement_only_on_24h2(tmp_path, build, mentions_location):
+    result, _ = _run_wlanreport(tmp_path, build=build, netsh_exit=1, writes=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "netsh exit code 1" in result.stdout
+    assert ("Location access is off" in result.stdout) == mentions_location
+
+
+def test_wifi_history_report_is_wrapped_by_the_central_backup_folder_hardening():
+    # Not a hand-rolled icacls: executor.build_execution_plan prepends
+    # backup_acl.HARDEN_PS (owner/ACL by SID, untrusted items set aside, fail
+    # closed) to every real run whose command mentions ProgramData\PortableFix.
+    from portablefix.backup_acl import HARDEN_PS
+    from portablefix.executor import build_execution_plan
+
+    command = _action("net_wifi_history_report").command
+    assert "icacls" not in command
+    script = build_execution_plan(command, dry_run=False).argv[-1]
+    assert script.startswith(HARDEN_PS) and script.count(HARDEN_PS) == 1
+
+
+def _junction(link: Path, target: Path) -> bool:
+    import subprocess as sp
+
+    target.mkdir(parents=True, exist_ok=True)
+    made = sp.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+    return made.returncode == 0
+
+
+def test_wifi_history_report_refuses_a_reparse_point_instead_of_writing_through_it(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    link = tmp_path / "ProgramData" / "PortableFix"
+    link.parent.mkdir(parents=True)
+    if not _junction(link, elsewhere):
+        pytest.skip("cannot create a junction here")
+    result, calls = _run_wlanreport(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "is a reparse point" in result.stdout
+    assert list(elsewhere.rglob("*.html")) == []
+    assert "netsh wlan show wlanreport" not in calls

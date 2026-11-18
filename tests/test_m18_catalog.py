@@ -14,11 +14,11 @@ from portablefix.module_engine import load_module
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "Modules" / "m18_user_backup" / "actions.yaml"
 
 
-def test_m18_catalog_loads_5_actions_in_repair_category():
+def test_m18_catalog_loads_9_actions_in_repair_category():
     module = load_module(CATALOG_PATH)
     assert module.module_id == "m18_user_backup"
     assert module.category == ModuleCategory.REPAIR
-    assert len(module.actions) == 5
+    assert len(module.actions) == 9
 
 
 def test_m18_catalog_risk_distribution():
@@ -26,11 +26,15 @@ def test_m18_catalog_risk_distribution():
     by_risk = {}
     for action in module.actions:
         by_risk.setdefault(action.risk, []).append(action.id)
-    assert set(by_risk[RiskLevel.SAFE]) == {"backup_list_existing", "backup_verify_external"}
+    assert set(by_risk[RiskLevel.SAFE]) == {
+        "backup_list_existing", "backup_verify_external", "backup_bitlocker_state", "backup_onedrive_state",
+    }
     assert set(by_risk[RiskLevel.MODERATE]) == {
         "backup_user_folders",
         "backup_restore_latest",
         "backup_user_data_external",
+        "backup_wifi_profiles",
+        "backup_oem_product_key",
     }
     assert RiskLevel.DESTRUCTIVE not in by_risk
     assert RiskLevel.REQUIRES_REBOOT not in by_risk
@@ -63,6 +67,10 @@ def test_m18_catalog_covers_expected_ids():
         "backup_restore_latest",
         "backup_user_data_external",
         "backup_verify_external",
+        "backup_wifi_profiles",
+        "backup_oem_product_key",
+        "backup_bitlocker_state",
+        "backup_onedrive_state",
     }
 
 
@@ -111,7 +119,9 @@ def test_m18_catalog_restore_and_external_backup_exclude_from_select_all():
     # "select all" for this category, only when checked deliberately.
     module = load_module(CATALOG_PATH)
     for action in module.actions:
-        expected = action.id in {"backup_restore_latest", "backup_user_data_external"}
+        expected = action.id in {
+            "backup_restore_latest", "backup_user_data_external", "backup_wifi_profiles", "backup_oem_product_key",
+        }
         assert action.exclude_from_select_all is expected, action.id
 
 
@@ -179,7 +189,8 @@ class Box:
         return [c for c in self.log.read_text(encoding="utf-8-sig").splitlines() if c.startswith(prefix)]
 
     def run(self, command: str, *, system_drive="C:", partitions=None, free_space=500 * 1024**3,
-            usf=None, robocopy_exit=None, location="E:\\", computer="PC1"):
+            usf=None, robocopy_exit=None, location="E:\\", computer="PC1", extra_stubs=(), extra_names=(),
+            env=None):
         """partitions: drive letter -> disk number (a missing letter makes
         Get-Partition throw, as for a network drive). usf: registry value ->
         path (None = key absent). robocopy_exit: target folder name -> exit
@@ -193,6 +204,7 @@ class Box:
         rc_map = "@{ " + "; ".join(f"{_ps_quote(k)} = {v}" for k, v in (robocopy_exit or {}).items()) + " }"
         free = "$null" if free_space is None else f"[pscustomobject]@{{ DeviceID = 'E:'; FreeSpace = [uint64]{free_space} }}"
         stubs = [
+            "function icacls { Add-Content -LiteralPath " + lg + " -Value ('icacls ' + (@($args) -join '|')) }",
             "function Get-ItemProperty { [CmdletBinding()] param([string] $Path) "
             f"if ($Path -eq {_ps_quote(USF_KEY)}) {{ {usf_obj} }} else {{ throw 'Neočakávaný kľúč' }} }}",
             "function Get-Partition { [CmdletBinding()] param([char] $DriveLetter) "
@@ -225,7 +237,8 @@ class Box:
             "[pscustomobject]@{ Algorithm = 'SHA256'; Hash = ([BitConverter]::ToString($pfStubH) -replace '-', ''); "
             "Path = $LiteralPath } }",
         ]
-        names = ["Get-ItemProperty", "Get-Partition", "Get-CimInstance", "robocopy", "Get-FileHash"]
+        names = ["Get-ItemProperty", "Get-Partition", "Get-CimInstance", "robocopy", "Get-FileHash", "icacls",
+                 *extra_names]
         # In Windows PowerShell 5.1 Get-FileHash is a function exported by the
         # autoloading Utility module: the first Utility cmdlet the script calls
         # would import it and overwrite a stub defined earlier. Loading the
@@ -245,6 +258,7 @@ class Box:
         env_vars = {
             "SystemDrive": system_drive, "USERPROFILE": self.profile, "LOCALAPPDATA": self.local,
             "APPDATA": self.roaming, "COMPUTERNAME": computer, "USERNAME": "klient",
+            "ProgramData": self.tmp / "ProgramData", **(env or {}),
         }
         env_lines = [f"$env:{k} = {_ps_quote(v)}" for k, v in env_vars.items()]
         setup = [
@@ -252,7 +266,7 @@ class Box:
             f"Set-Location {_ps_quote(location)}",
         ]
         script = "; ".join(
-            ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + env_lines + preload + stubs + [guard] + setup + [command]
+            ["[Console]::OutputEncoding=[Text.Encoding]::UTF8"] + env_lines + preload + stubs + list(extra_stubs) + [guard] + setup + [command]
         )
         result = subprocess.run(
             [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -646,3 +660,273 @@ def test_m18_catalog_scripts_parse_without_powershell_7_only_syntax(tmp_path):
     )
     assert "PARSE_DONE" in result.stdout, result.stdout + result.stderr
     assert [line for line in result.stdout.splitlines() if line.startswith("ERR")] == []
+
+
+# --- F5: the quick backup follows redirected known folders ------------------
+
+
+def _quick_setup(box: Box) -> None:
+    """Desktop and Favorites in the profile, Documents redirected into OneDrive
+    through a %USERPROFILE% value (as Windows stores it), Pictures missing."""
+    _write(box.profile / "Desktop" / "poznámky.txt", b"desktop")
+    _write(box.profile / "Favorites" / "Banka.url", b"[InternetShortcut]")
+    _write(box.profile / "OneDrive" / "Documents" / "faktúry" / "2026.pdf", b"%PDF")
+    _write(box.profile / "OneDrive" / "Documents" / "zmluva.docx", b"docx")
+    # The pre-redirect folder, which the registry value must win over.
+    _write(box.profile / "Documents" / "stale.txt", b"old")
+
+
+QUICK_USF = {"Personal": "%USERPROFILE%\\OneDrive\\Documents"}
+
+
+def _set_offline(path: Path) -> None:
+    import ctypes
+
+    # FILE_ATTRIBUTE_OFFLINE | ARCHIVE: how an online-only OneDrive file looks.
+    if not getattr(ctypes, "windll", None) or not ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x1000 | 0x20):
+        pytest.skip("cannot set the Offline attribute here")
+
+
+def test_f5_quick_backup_follows_a_redirected_folder_and_reports_every_folder(tmp_path):
+    box = Box(tmp_path)
+    _quick_setup(box)
+    result = box.run(_action("backup_user_folders").command, usf=QUICK_USF)
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    onedrive_docs = str(box.profile / "OneDrive" / "Documents")
+    # One line per folder: the resolved path and the counts - the missing one too.
+    assert f"Documents = {onedrive_docs} : 2 file(s) found, 2 copied" in out
+    assert f"Desktop = {box.profile / 'Desktop'} : 1 file(s) found, 1 copied" in out
+    assert f"Pictures = {box.profile / 'Pictures'} : MISSING, skipped (0 files)" in out
+    assert "Favorites = " in out and "WARN" not in out
+    [backup] = list((tmp_path / "ProgramData" / "PortableFix" / "UserFileBackup").iterdir())
+    assert (backup / "Documents" / "faktúry" / "2026.pdf").read_bytes() == b"%PDF"
+    assert not (backup / "Documents" / "stale.txt").exists()
+    assert f"Backup complete: {backup}" in out
+
+
+def test_f5_quick_backup_counts_online_only_files_and_does_not_copy_them(tmp_path):
+    box = Box(tmp_path)
+    _quick_setup(box)
+    cloud = _write(box.profile / "OneDrive" / "Documents" / "video-robocopy-skips.mp4", b"x" * 10)
+    _set_offline(cloud)
+    result = box.run(_action("backup_user_folders").command, usf=QUICK_USF)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ": 3 file(s) found, 2 copied, 1 online-only not copied" in result.stdout
+    # robocopy is told to leave online-only files (they would be downloaded) and junctions alone.
+    [call] = [c for c in box.calls("robocopy") if "OneDrive" in c]
+    assert "/XA:O" in call and "/XJ" in call
+
+
+def test_f5_quick_backup_with_nothing_to_copy_fails_instead_of_looking_done(tmp_path):
+    box = Box(tmp_path)
+    result = box.run(_action("backup_user_folders").command, usf=None)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.count("MISSING, skipped (0 files)") == 4
+    assert "Backup is EMPTY" in result.stdout and "Backup complete" not in result.stdout
+    assert box.calls("robocopy") == []
+
+
+def test_f5_quick_backup_robocopy_failure_is_still_an_error(tmp_path):
+    box = Box(tmp_path)
+    _quick_setup(box)
+    result = box.run(_action("backup_user_folders").command, usf=QUICK_USF, robocopy_exit={"Documents": 8})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Backup completed with errors: " in result.stdout
+
+
+def test_f5_quick_backup_preview_resolves_redirected_folders_too(tmp_path):
+    box = Box(tmp_path)
+    _quick_setup(box)
+    result = box.run(_action("backup_user_folders").preview_command, usf=QUICK_USF)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"Documents = {box.profile / 'OneDrive' / 'Documents'} : 2 file(s)" in result.stdout
+    assert "Pictures = " in result.stdout and "MISSING, would be skipped" in result.stdout
+    assert "Would back up 4 file(s)" in result.stdout
+    # A preview copies nothing.
+    assert box.calls("robocopy") == []
+
+
+# --- N4: reinstall preparation ------------------------------------------------
+
+SECRET_WIFI = "S3cretWifiPassphrase!"
+SECRET_KEY = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+SECRET_RECOVERY = "123456-234567-345678-456789-567890-678901-789012-890123"
+
+
+def _netsh_stub(exit_code=0, profiles=("Home", "Office")):
+    # Writes into the current folder like `netsh wlan export profile` does and
+    # prints a line naming each file (with the SSID), like the real tool.
+    writes = "; ".join(
+        f"$f = Join-Path (Get-Location).ProviderPath 'Wi-Fi-{p}.xml'; "
+        f"Set-Content -LiteralPath $f -Value '<keyMaterial>{SECRET_WIFI}</keyMaterial>'; "
+        f"Write-Output ('Interface profile \"{p}\" is saved in file \"' + $f + '\" successfully.')"
+        for p in profiles
+    )
+    return (
+        "function netsh { $a = @($args) -join ' '; "
+        "if ($a -ne 'wlan export profile key=clear') { throw ('unexpected netsh call: ' + $a) }; "
+        f"{writes}; $global:LASTEXITCODE = {exit_code} }}"
+    )
+
+
+def _prep_dirs(box: Box) -> list[Path]:
+    base = box.drive / "PortableFix_ReinstallPrep" / "PC1"
+    return sorted(base.iterdir()) if base.exists() else []
+
+
+def test_n4_wifi_export_goes_to_the_stick_and_only_paths_reach_the_output(tmp_path):
+    box = Box(tmp_path)
+    result = box.run(_action("backup_wifi_profiles").command, extra_stubs=[_netsh_stub()], extra_names=["netsh"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    [folder] = _prep_dirs(box)
+    assert folder.name.endswith("_WiFi")
+    assert sorted(p.name for p in folder.glob("*.xml")) == ["Wi-Fi-Home.xml", "Wi-Fi-Office.xml"]
+    assert SECRET_WIFI in (folder / "Wi-Fi-Home.xml").read_text(encoding="utf-8-sig")
+    assert "Wi-Fi profiles exported: 2" in result.stdout
+    assert "Folder: " + "\\".join(["E:", "PortableFix_ReinstallPrep", "PC1", folder.name]) in result.stdout
+    assert "PLAIN TEXT" in result.stdout
+    # Neither the passphrase nor the SSIDs (they are in the netsh lines) reach the output.
+    assert SECRET_WIFI not in result.stdout and "Home" not in result.stdout and "Office" not in result.stdout
+    # Nothing is written to the client's disk.
+    assert not (tmp_path / "ProgramData").exists()
+
+
+def test_n4_wifi_export_refuses_the_system_drive_and_a_missing_drive_letter(tmp_path):
+    box = Box(tmp_path)
+    on_system = box.run(_action("backup_wifi_profiles").command, system_drive="E:",
+                        extra_stubs=[_netsh_stub()], extra_names=["netsh"])
+    assert on_system.returncode == 1 and "REFUSED" in on_system.stdout and "system drive" in on_system.stdout
+    assert _prep_dirs(box) == []
+    assert SECRET_WIFI not in on_system.stdout
+
+
+def test_n4_wifi_export_without_profiles_or_service_is_reported(tmp_path):
+    box = Box(tmp_path)
+    none_saved = box.run(_action("backup_wifi_profiles").command,
+                         extra_stubs=[_netsh_stub(profiles=())], extra_names=["netsh"])
+    assert none_saved.returncode == 0 and "No saved Wi-Fi profiles" in none_saved.stdout
+    no_service = box.run(_action("backup_wifi_profiles").command,
+                         extra_stubs=[_netsh_stub(exit_code=1, profiles=())], extra_names=["netsh"])
+    assert no_service.returncode == 1 and "Nothing exported" in no_service.stdout
+
+
+def _oem_stub(key):
+    value = "$null" if key is None else f"'{key}'"
+    return ("function Get-CimInstance { [CmdletBinding()] param([string] $ClassName, [string] $Namespace, [string] $Filter) "
+            "if ($ClassName -ne 'SoftwareLicensingService') { throw 'unexpected class' }; "
+            f"[pscustomobject]@{{ OA3xOriginalProductKey = {value} }} }}")
+
+
+def test_n4_oem_key_is_saved_to_the_stick_and_never_printed(tmp_path):
+    box = Box(tmp_path)
+    result = box.run(_action("backup_oem_product_key").command, extra_stubs=[_oem_stub(SECRET_KEY)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    [key_file] = _prep_dirs(box)
+    assert key_file.name.endswith("_OEM-ProductKey.txt")
+    assert key_file.read_text(encoding="ascii").strip() == SECRET_KEY
+    assert "saved to: " + "\\".join(["E:", "PortableFix_ReinstallPrep", "PC1", key_file.name]) in result.stdout
+    assert SECRET_KEY not in result.stdout and "3V66T" not in result.stdout
+
+
+def test_n4_oem_key_absent_or_unsaveable(tmp_path):
+    box = Box(tmp_path)
+    absent = box.run(_action("backup_oem_product_key").command, extra_stubs=[_oem_stub(None)])
+    assert absent.returncode == 0 and "No OEM product key in the firmware" in absent.stdout
+    assert _prep_dirs(box) == []
+    on_system = box.run(_action("backup_oem_product_key").command, system_drive="E:", extra_stubs=[_oem_stub(SECRET_KEY)])
+    assert on_system.returncode == 1 and "REFUSED" in on_system.stdout
+    assert SECRET_KEY not in on_system.stdout and _prep_dirs(box) == []
+
+
+def _bitlocker_stub(volumes):
+    """volumes: (mount, protection, [recovery key ids]) - each protector also carries a secret."""
+    objs = []
+    for mount, prot, ids in volumes:
+        protectors = ", ".join(
+            f"[pscustomobject]@{{ KeyProtectorType = 'RecoveryPassword'; KeyProtectorId = '{{{i}}}'; "
+            f"RecoveryPassword = '{SECRET_RECOVERY}' }}" for i in ids
+        )
+        objs.append(f"[pscustomobject]@{{ MountPoint = '{mount}'; VolumeStatus = 'FullyEncrypted'; "
+                    f"ProtectionStatus = '{prot}'; EncryptionPercentage = 100; KeyProtector = @({protectors}) }}")
+    return "function Get-BitLockerVolume { [CmdletBinding()] param() @(" + ", ".join(objs) + ") }"
+
+
+def test_n4_bitlocker_state_shows_the_key_id_but_never_the_recovery_password(tmp_path):
+    box = Box(tmp_path)
+    stub = _bitlocker_stub([("C:", "On", ["1A2B3C4D-0000-1111-2222-333344445555"]), ("D:", "Off", [])])
+    result = box.run(_action("backup_bitlocker_state").command, extra_stubs=[stub], extra_names=["Get-BitLockerVolume"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "C: : VolumeStatus=FullyEncrypted, Protection=On, Encrypted=100%, recovery password protectors=1" in result.stdout
+    assert "Recovery key ID: {1A2B3C4D-0000-1111-2222-333344445555}" in result.stdout
+    assert "D: : VolumeStatus=FullyEncrypted, Protection=Off" in result.stdout and "WARN" not in result.stdout
+    assert "make sure a copy of the recovery key exists" in result.stdout
+    assert SECRET_RECOVERY not in result.stdout
+    # The key-ID line is the one the report redaction already knows.
+    from portablefix.redaction import KEY_ID, redact_text
+
+    assert f"Recovery key ID: {KEY_ID}" in redact_text(result.stdout)
+
+
+def test_n4_bitlocker_protected_volume_without_a_recovery_key_is_flagged(tmp_path):
+    box = Box(tmp_path)
+    result = box.run(_action("backup_bitlocker_state").command,
+                     extra_stubs=[_bitlocker_stub([("C:", "On", [])])], extra_names=["Get-BitLockerVolume"])
+    assert result.returncode == 0 and "WARN: a protected volume has NO recovery password protector" in result.stdout
+
+
+def test_n4_bitlocker_without_the_module_or_device_encryption_says_so(tmp_path):
+    box = Box(tmp_path)
+    broken = "function Get-BitLockerVolume { [CmdletBinding()] param() throw 'not available' }"
+    # The harness's default Get-CimInstance answers with a free-space object (not a volume), so
+    # replace it with one that returns nothing for the encryption namespace.
+    no_cim = "function Get-CimInstance { [CmdletBinding()] param([string] $Namespace, [string] $ClassName) }"
+    result = box.run(_action("backup_bitlocker_state").command, extra_stubs=[broken, no_cim],
+                     extra_names=["Get-BitLockerVolume"])
+    assert result.returncode == 0 and "not available on this Windows edition" in result.stdout
+
+
+def test_n4_onedrive_state_reports_redirection_and_online_only_files(tmp_path):
+    box = Box(tmp_path)
+    _quick_setup(box)
+    _write(box.profile / "Pictures" / "a.jpg", b"jpg")
+    cloud = _write(box.profile / "OneDrive" / "Documents" / "video.mp4", b"x")
+    _set_offline(cloud)
+    result = box.run(_action("backup_onedrive_state").command, usf=QUICK_USF,
+                     env={"OneDrive": str(box.profile / "OneDrive")})
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert f"Documents = {box.profile / 'OneDrive' / 'Documents'} : inside OneDrive, 3 file(s), 1 online-only" in out
+    assert f"Desktop = {box.profile / 'Desktop'} : local only, 1 file(s), 0 online-only" in out
+    assert "Pictures = " in out and "Favorites = " not in out
+    assert "redirected into OneDrive: 1 of 3" in out
+    assert "OneDrive client running: " in out and "OneDrive accounts signed in: " in out
+    assert "WARN: 1 online-only file(s)" in out and "cannot be read here" in out
+
+
+def test_n4_new_actions_print_no_secret_and_only_the_writing_ones_touch_files():
+    by_id = {a.id: a for a in load_module(CATALOG_PATH).actions}
+    for aid in ("backup_bitlocker_state", "backup_onedrive_state"):
+        assert by_id[aid].risk == RiskLevel.SAFE and by_id[aid].undo_command is None
+        assert "Set-Content" not in by_id[aid].command and "New-Item" not in by_id[aid].command
+    # The key material is never read for display.
+    assert ".RecoveryPassword" not in by_id["backup_bitlocker_state"].command
+    for aid in ("backup_wifi_profiles", "backup_oem_product_key"):
+        action = by_id[aid]
+        assert action.changes_system is False and action.exclude_from_select_all is True
+        # Not under ProgramData: the client's disk is wiped, and the plain-text secrets belong on the stick only.
+        assert "programdata" not in action.command.lower()
+        assert "PLAIN TEXT" in action.command and "PLAIN TEXT" in action.description_en.upper()
+    assert "key=clear" in by_id["backup_wifi_profiles"].command
+    assert "OA3xOriginalProductKey" in by_id["backup_oem_product_key"].command
+
+
+def test_n4_backup_before_reinstall_symptom_is_wired_to_the_new_actions():
+    import yaml
+
+    data = yaml.safe_load((CATALOG_PATH.parents[1] / "symptoms.yaml").read_text(encoding="utf-8"))
+    entry = next(s for s in data["symptoms"] if s["id"] == "backup_before_reinstall")
+    assert {"backup_onedrive_state", "backup_bitlocker_state"} <= set(entry["diagnostics"])
+    assert {"backup_wifi_profiles", "backup_oem_product_key"} <= set(entry["fixes"])
+    # The two that write plain-text secrets are fixes (reviewed), never auto-run diagnostics.
+    assert not {"backup_wifi_profiles", "backup_oem_product_key"} & set(entry["diagnostics"])

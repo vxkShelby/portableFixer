@@ -643,6 +643,9 @@ _STRINGS = {
         "a11y_winget_ignore": "Ignorovať aktualizácie: {name}",
         "a11y_winget_unignore": "Prestať ignorovať: {name}",
         "a11y_winget_manual_update": "Aktualizovať ručne: {name}",
+        # --- Administrator Protection (Windows 11) ---
+        "target_user_banner_adminprot": "Ochrana správcu (Administrator Protection) je zapnutá: PortableFix beží pod skrytým účtom správcu ({process_user}), nie pod používateľom {user}. Čistenie používateľských priečinkov (dočasné súbory, cache, náhľady, hlásenia o chybách) sa preskočí - spusti ho v relácii používateľa {user} alebo ochranu správcu na čas návštevy vypni.",
+        "target_user_banner_adminprot_tooltip": "Windows 11 pri zvýšení oprávnení spúšťa PortableFix pod skrytým, systémom spravovaným účtom správcu {process_user} s vlastným profilom - jeho HKCU a %USERPROFILE% nie sú profil používateľa. Nastavenia v registri idú do profilu {user} (HKEY_USERS\\{sid}), ale akcie Dočasné súbory používateľa, Cache náhľadov, Hlásenia o chybách, Cache prehliadačov, Cache DirectX shaderov a Cache aplikácií odmietnu bežať - spusti ich v relácii používateľa alebo ochranu správcu na čas návštevy vypni.",
 
         # --- update check failure (research F8) ---
         "update_check_failed": "Kontrola aktualizácií zlyhala (GitHub nie je dostupný alebo odpovedal neočakávane). Najnovšie vydanie skontrolujte ručne: {url}",
@@ -1291,6 +1294,9 @@ _STRINGS = {
         "a11y_winget_ignore": "Ignore updates for {name}",
         "a11y_winget_unignore": "Stop ignoring {name}",
         "a11y_winget_manual_update": "Update {name} manually",
+        # --- Administrator Protection (Windows 11) ---
+        "target_user_banner_adminprot": "Administrator Protection is on: PortableFix runs as a hidden admin account ({process_user}), not as {user}. Cleanup of user folders (temp files, caches, thumbnails, error reports) is skipped - run it from {user}'s own session or turn Administrator Protection off for the visit.",
+        "target_user_banner_adminprot_tooltip": "On elevation Windows 11 runs PortableFix as a hidden, system-managed admin account {process_user} with its own profile - its HKCU and %USERPROFILE% are not the user's. Registry settings go to the profile of {user} (HKEY_USERS\\{sid}), but the actions User temp files, Thumbnail cache, Error reports (WER), Browser caches, DirectX shader cache and Teams/Discord/Spotify app caches refuse to run - run them from the user's own session or turn Administrator Protection off for the visit.",
 
         # --- update check failure (research F8) ---
         "update_check_failed": "The update check failed (GitHub could not be reached or answered unexpectedly). Check the latest release by hand: {url}",

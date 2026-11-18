@@ -151,7 +151,7 @@ symptoms:
       - wifi keeps dropping
       - wifi disconnects
       - internet drops
-    diagnostics: [net_wifi_diagnostics, net_adapter_status, drv_network_adapter_versions, eventlog_critical_7d]
+    diagnostics: [net_wifi_diagnostics, net_wifi_history_report, net_adapter_status, drv_network_adapter_versions, eventlog_critical_7d]
     fixes: [net_adapter_power_disable, net_dhcp_renew, drv_install_updates]
 
   - id: slow_startup
@@ -559,7 +559,7 @@ symptoms:
       - windows 10 end of support
       - can it run windows 11
       - extended security updates esu
-    diagnostics: [os_win10_esu_status, os_edition_eol, boot_tpm_status]
+    diagnostics: [os_win10_esu_status, os_edition_eol, win11_upgrade_readiness, boot_tpm_status]
     fixes: []
 
   - id: usb_device_not_recognized
@@ -797,8 +797,8 @@ symptoms:
   - id: backup_before_reinstall
     title_sk: Záloha dát pred reinštaláciou alebo výmenou disku
     title_en: Back up data before a reinstall or disk swap
-    why_sk: Existujúce zálohy, najväčšie priečinky a stav disku - pri zlyhávajúcom disku záloha ide pred čímkoľvek iným.
-    why_en: Existing backups, the largest folders and the disk's health - on a failing disk the backup goes before anything else.
+    why_sk: Existujúce zálohy, najväčšie priečinky, stav disku, OneDrive a BitLocker (obnovovací kľúč) - pri zlyhávajúcom disku záloha ide pred čímkoľvek iným. Wi-Fi heslá a OEM kľúč Windows sa ukladajú len na externý disk.
+    why_en: Existing backups, the largest folders, the disk's health, OneDrive and BitLocker (recovery key) - on a failing disk the backup goes before anything else. Wi-Fi passwords and the OEM Windows key are saved to the external drive only.
     phrases_sk:
       - zálohovať dáta
       - záloha pred reinštaláciou
@@ -807,8 +807,13 @@ symptoms:
       - back up data
       - backup before reinstall
       - move files to a new pc
-    diagnostics: [backup_list_existing, largest_folders_report, disk_health_verdict]
-    fixes: [backup_user_data_external, backup_user_folders]
+      - wifi heslá pred reinštaláciou
+      - kľúč windows pred reinštaláciou
+      - bitlocker kľúč pred reinštaláciou
+      - wifi passwords before reinstall
+      - windows product key before reinstall
+    diagnostics: [backup_list_existing, largest_folders_report, disk_health_verdict, backup_onedrive_state, backup_bitlocker_state]
+    fixes: [backup_user_data_external, backup_user_folders, backup_wifi_profiles, backup_oem_product_key]
 
   - id: security_checkup
     title_sk: Kontrola zabezpečenia počítača
@@ -823,7 +828,7 @@ symptoms:
       - security check
       - is my pc secure
       - security audit
-    diagnostics: [sec_defender_status, sec_firewall_status, sec_uac_status, sec_local_admins, sec_autologon_check, sec_wdigest_status, sec_exploit_mitigation_baseline, feature_legacy_insecure_report, sec_lsa_runasppl_status]
+    diagnostics: [sec_defender_status, sec_firewall_status, sec_uac_status, sec_local_admins, sec_autologon_check, sec_wdigest_status, sec_exploit_mitigation_baseline, feature_legacy_insecure_report, sec_lsa_runasppl_status, sec_smart_app_control_status]
     fixes: [hard_firewall_enable_all, hard_uac_restore_default, hard_disable_smb1, hard_smartscreen_default]
 
   - id: start_menu_ads

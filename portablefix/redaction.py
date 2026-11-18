@@ -137,6 +137,20 @@ _KEY_ID = re.compile(
     re.IGNORECASE,
 )
 
+# Secrets of a reinstall-preparation run (m18) that must never reach a report
+# even if an action prints them by mistake: a Wi-Fi passphrase ("Key Content :"
+# of netsh show profile key=clear, <keyMaterial> of an exported profile), the
+# firmware product key and a BitLocker recovery password (label form - the
+# 5x5 key shape is already caught by _KEY). Everything up to the end of the
+# line (XML: up to the closing tag) is the value, a passphrase may hold spaces.
+_SECRET_LABEL = re.compile(
+    r"(?P<key>(?:\b(?:Key Content|KeyMaterial|OA3xOriginalProductKey|RecoveryPassword)\"?[ \t]*[:=][ \t]*\"?"
+    r"|<keyMaterial>))(?P<value>[^\s<][^\r\n<]*)",
+    re.IGNORECASE,
+)
+# BitLocker recovery password: eight groups of six digits.
+_RECOVERY_PASSWORD = re.compile(r"(?<![\w-])\d{6}(?:-\d{6}){7}(?![\w-])")
+
 # Values collected once (an SSID, a serial number, a profile name) are masked
 # wherever else they appear too - e.g. the Wi-Fi profile line naming the
 # same network, or "PC\Jan Novak" next to C:\Users\Jan Novak\. Too short a
@@ -331,6 +345,8 @@ def _redact(text: str, kept: tuple[str, ...], masker: "_Masker") -> str:
     text = _sub(_DOMAIN, text, kept, domain)
     text = _sub(_SERIAL, text, kept, lambda m: m.group("key") + SERIAL)
     text = _sub(_PARTIAL_KEY, text, kept, lambda m: m.group("key") + KEY)
+    text = _sub(_SECRET_LABEL, text, kept, lambda m: m.group("key") + KEY)
+    text = _sub(_RECOVERY_PASSWORD, text, kept, lambda m: KEY)
     text = _sub(_MAC, text, kept, lambda m: MAC)
     text = _sub(_IPV6, text, kept, lambda m: m.group(0) if _keep_ipv6(m.group(0)) else IP)
     # Column offsets are taken from the text as it is now - the masks above
