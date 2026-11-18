@@ -903,7 +903,11 @@ def test_run_button_disabled_during_batch_and_reenabled_after(qtbot, tmp_path):
     assert window.progress_bar.isVisibleTo(window) is True
     assert window.progress_bar.maximum() == 1
 
-    qtbot.waitUntil(lambda: window.run_button.isEnabled() is True, timeout=10000)
+    # The batch clears the selection, so Run goes back to neutral (disabled).
+    qtbot.waitUntil(lambda: not window._batch_start_blocked(), timeout=10000)
+    assert window.run_button.isEnabled() is False
+    window._action_checkboxes["hello"].setChecked(True)
+    assert window.run_button.isEnabled() is True
     assert window.progress_bar.isVisibleTo(window) is False
     assert window.progress_bar.value() == 1
 
@@ -1519,8 +1523,8 @@ def test_undo_steps_accumulate_across_batches_in_same_run(qtbot, tmp_path, monke
 
     window._action_checkboxes["step_one"].setChecked(True)
     window.run_selected_actions()
-    # The report is written off the GUI thread; Run re-enables once it's done.
-    qtbot.waitUntil(lambda: window.run_button.isEnabled(), timeout=10000)
+    # The report is written off the GUI thread; the batch is over once it's done.
+    qtbot.waitUntil(lambda: not window._batch_start_blocked(), timeout=10000)
     assert window._undo_steps == ["Write-Output 'undo-one'"]
 
     window._action_checkboxes["step_one"].setChecked(False)
@@ -3589,7 +3593,7 @@ def test_batch_end_report_is_generated_off_the_gui_thread_then_summary_follows(q
 
     assert report_threads and report_threads[0] is not threading.main_thread()
     assert order == ["dashboard", "notify", ("summary", tmp_path / "r.html")]
-    assert window.run_button.isEnabled() is True
+    assert not window._batch_start_blocked()
     assert window.language_button.isEnabled() is True
 
 
@@ -3612,7 +3616,7 @@ def test_batch_end_report_write_failure_still_finishes_the_batch(qtbot, tmp_path
     assert window.console.toPlainText().count(window._t("disk_write_failed")) == 1
     # No report, so no "report is ready" summary - but the batch still ends.
     assert order == ["notify"]
-    assert window.run_button.isEnabled() is True
+    assert not window._batch_start_blocked()
 
 
 def test_new_batch_is_refused_while_previous_report_is_being_written(qtbot, tmp_path, monkeypatch):
@@ -4547,9 +4551,10 @@ def test_dashboard_analyze_is_ignored_and_disabled_mid_batch(qtbot, tmp_path, mo
     assert window.dashboard_analyze_button.isEnabled() is False
     release_report.set()
     _wait_batch_idle(qtbot, window)
-    # ...and unlocked together with run_button once it is written.
+    # ...and unlocked once it is written (Run itself stays neutral: the batch
+    # cleared the selection).
     assert window.dashboard_analyze_button.isEnabled() is True
-    assert window.run_button.isEnabled() is True
+    assert not window._batch_start_blocked()
     assert "slow-done" in window.console.toPlainText()
     assert "quick-done" not in window.console.toPlainText()
 
@@ -8000,20 +8005,26 @@ def test_console_collapse_folds_to_the_toolbar_and_restores(qtbot, tmp_path):
     qtbot.addWidget(window)
     window.show()
     window.resize(1000, 700)
-    console_height = window._main_splitter.sizes()[1]
-
-    window.console_collapse_button.click()
-    qtbot.waitUntil(lambda: window._main_splitter.sizes()[1] < console_height)
-    assert window.console.isHidden()
-    assert window.console_collapse_button.text() == "▸ Show output"
-    assert not window.console_fullscreen_button.isEnabled()
+    # Folded from the start; the button brings it back.
+    assert window.console.isHidden() and window.console_collapse_button.text() == "▸ Show output"
     assert window._main_splitter.sizes()[1] <= window.console_collapse_button.sizeHint().height() + 20
 
     window.console_collapse_button.click()
     assert not window.console.isHidden()
     assert window.console_collapse_button.text() == "▾ Hide output"
-    assert window.console_fullscreen_button.isEnabled()
-    qtbot.waitUntil(lambda: abs(window._main_splitter.sizes()[1] - console_height) <= 2)
+    qtbot.waitUntil(lambda: window._main_splitter.sizes()[1] > window.console_collapse_button.sizeHint().height() + 20)
+    console_height = window._main_splitter.sizes()[1]
+
+    window.console_collapse_button.click()
+    assert window.console.isHidden()
+    assert window.console_collapse_button.text() == "▸ Show output"
+    qtbot.waitUntil(lambda: window._main_splitter.sizes()[1] < console_height)
+    assert window._main_splitter.sizes()[1] <= window.console_collapse_button.sizeHint().height() + 20
+
+    # Full screen and pop-out unfold it first instead of being disabled.
+    window.console_fullscreen_button.click()
+    assert not window.console.isHidden()
+    window.console_fullscreen_button.click()
 
 
 def test_console_collapse_is_off_while_popped_out(qtbot, tmp_path):
@@ -8121,7 +8132,7 @@ def test_preview_button_runs_only_the_preview_command_even_with_dry_run_off(qtbo
     assert window._preview_box.windowTitle() == "Preview – Risky thing"
     assert "destructive-preview" in window.console.toPlainText()
     assert "destructive-ran" not in window.console.toPlainText()
-    assert window._preview_buttons["safe_thing"].isEnabled() and window.run_button.isEnabled()
+    assert window._preview_buttons["safe_thing"].isEnabled() and not window._batch_start_blocked()
     # Read-only and outside any batch: nothing on record.
     assert _audit_entries(audit_log_path(base_dir, "run_card_preview")) == []
 
@@ -8659,3 +8670,11 @@ def test_batch_review_shows_an_estimate_only_from_history(qtbot, tmp_path, monke
     _check(window, "wipe_thing", "tweak_one")
     window.run_selected_actions()
     assert "~7 min" in seen[0]
+
+
+def test_winget_row_buttons_name_their_package_for_screen_readers(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+
+    window, card, row = _winget_window(qtbot, tmp_path, monkeypatch, "run_winget_a11y", True, _fake_outdated_package())
+    ignore = next(b for b in card.findChildren(QPushButton) if b.text() == window._t("winget_ignore_button"))
+    assert ignore.accessibleName() == "Ignore updates for Fake Editor"

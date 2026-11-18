@@ -215,6 +215,7 @@ class WingetPanelMixin:
                 row.addWidget(QLabel(name), 1)
                 unignore_btn = QPushButton(self._t("winget_unignore_button"))
                 unignore_btn.setObjectName("selectionBtn")
+                unignore_btn.setAccessibleName(self._t("a11y_winget_unignore").format(name=name))
                 unignore_btn.clicked.connect(lambda _checked=False, p=pid: unignore_package(p))
                 row.addWidget(unignore_btn)
                 ignored_panel_layout.addWidget(row_widget)
@@ -260,6 +261,7 @@ class WingetPanelMixin:
                 row.addWidget(progress)
                 ignore_btn = QPushButton(self._t("winget_ignore_button"))
                 ignore_btn.setObjectName("selectionBtn")
+                ignore_btn.setAccessibleName(self._t("a11y_winget_ignore").format(name=package.name))
                 ignore_btn.clicked.connect(lambda _checked=False, pid=package.id: ignore_package(pid))
                 row.addWidget(ignore_btn)
                 row_checkboxes[package.id] = checkbox
@@ -604,6 +606,7 @@ class WingetPanelMixin:
 
                         manual_btn = QPushButton(self._t("winget_manual_update_button"))
                         manual_btn.setObjectName("selectionBtn")
+                        manual_btn.setAccessibleName(self._t("a11y_winget_manual_update").format(name=package.name))
                         manual_btn.clicked.connect(open_app)
                         row_widget.layout().addWidget(manual_btn)
 

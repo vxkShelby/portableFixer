@@ -123,7 +123,8 @@ def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
              _UTF8_PREFIX +
              "(Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 -ExpandProperty Speed); "
              "'---PF_SEP---'; "
-             "(Get-PhysicalDisk | Select-Object -ExpandProperty HealthStatus) -join ', '"],
+             # One "Name: Health" line per drive.
+             "(Get-PhysicalDisk | ForEach-Object { \"$($_.FriendlyName): $($_.HealthStatus)\" }) -join [char]10"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_PS_TIMEOUT_SEC,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -131,8 +132,14 @@ def _get_ram_speed_and_disk_health() -> tuple[int | None, str | None]:
         speed_part, health_part = speed_part.strip(), health_part.strip()
         speed = int(speed_part) if speed_part else None
         # Some builds print the enum's number.
-        health = ", ".join(_HEALTH_STATUS.get(p.strip(), p.strip()) for p in health_part.split(",") if p.strip())
-        return speed, (health or None)
+        lines = []
+        for line in health_part.splitlines():
+            if not line.strip():
+                continue
+            name, sep, status = line.rpartition(":")
+            status = _HEALTH_STATUS.get(status.strip(), status.strip())
+            lines.append(f"{name.strip()}: {status}" if sep else status)
+        return speed, ("\n".join(lines) or None)
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None, None
 

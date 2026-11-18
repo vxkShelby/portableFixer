@@ -78,9 +78,9 @@ def test_get_battery_percent_returns_int_or_none():
 
 def test_get_ram_speed_and_disk_health_via_mocked_subprocess():
     fake = MagicMock()
-    fake.stdout = "3200\n---PF_SEP---\nHealthy, Healthy\n"
+    fake.stdout = "3200\n---PF_SEP---\nSamsung SSD: Healthy\nWD Blue: Healthy\n"
     with patch("portablefix.sysinfo.subprocess.run", return_value=fake):
-        assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Healthy, Healthy")
+        assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Samsung SSD: Healthy\nWD Blue: Healthy")
 
 
 def test_disk_health_numbers_are_mapped_and_output_is_read_as_utf8():
@@ -89,10 +89,10 @@ def test_disk_health_numbers_are_mapped_and_output_is_read_as_utf8():
     def fake_run(argv, **kwargs):
         calls.update(kwargs)
         calls["script"] = argv[-1]
-        return MagicMock(stdout="3200\n---PF_SEP---\n0, 2\n")
+        return MagicMock(stdout="3200\n---PF_SEP---\nDisk A: 0\nDisk B: 2\n")
 
     with patch("portablefix.sysinfo.subprocess.run", side_effect=fake_run):
-        assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Healthy, Unhealthy")
+        assert sysinfo._get_ram_speed_and_disk_health() == (3200, "Disk A: Healthy\nDisk B: Unhealthy")
     assert calls["encoding"] == "utf-8" and calls["errors"] == "replace" and calls["timeout"] == 20
     assert calls["script"].startswith("[Console]::OutputEncoding=")
 
