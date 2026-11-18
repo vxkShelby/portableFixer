@@ -149,7 +149,7 @@ symptoms:
       - wifi keeps dropping
       - wifi disconnects
       - internet drops
-    diagnostics: [net_wifi_diagnostics, net_adapter_status, drv_network_adapter_versions, eventlog_critical_7d]
+    diagnostics: [net_wifi_diagnostics, net_wifi_history_report, net_adapter_status, drv_network_adapter_versions, eventlog_critical_7d]
     fixes: [net_adapter_power_disable, net_dhcp_renew, drv_install_updates]
 
   - id: slow_startup

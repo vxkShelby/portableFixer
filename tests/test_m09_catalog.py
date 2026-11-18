@@ -144,7 +144,7 @@ def test_m09_catalog_new_tweaks_capture_state_on_every_run():
         assert "ProgramData" not in action.command, action_id
 
 
-def test_m09_catalog_power_undo_restores_balanced_plan():
+def test_m09_catalog_power_undo_falls_back_to_balanced_plan():
     module = load_module(CATALOG_PATH)
     by_id = {a.id: a for a in module.actions}
     assert "381b4222-f694-41f0-9685-ff5bb260df2e" in by_id["tune_power_high_performance"].undo_command
@@ -862,3 +862,90 @@ def test_m09_sticky_keys_undo_after_two_runs_returns_the_customer_value(tmp_path
     for step in reversed(steps):
         assert machine.run(step).returncode == 0
     assert machine.values("HKCU\\Control Panel\\Accessibility\\StickyKeys") == {"Flags": ("String", "511")}
+
+
+# --- F7: High Performance undo restores the plan that was active before ------
+
+HP = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+BALANCED = "381b4222-f694-41f0-9685-ff5bb260df2e"
+OEM = "aaaaaaaa-1111-2222-3333-444444444444"
+
+
+def _power_run(tmp_path, command, active, plans, set_fails=False):
+    """powercfg is a stub that keeps the active plan; its text is Slovak (the
+    GUID is all the command may read). Returns (result, calls, active, saved)."""
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir(exist_ok=True)
+    lg = _ps_quote(str(log))
+    stub = (
+        f"$global:Active = '{active}'; $global:Plans = @({', '.join(_ps_quote(p) for p in plans)}); "
+        "function powercfg { $a = @($args); " + f"Add-Content -Path {lg} -Value ('powercfg ' + ($a -join ' ')); $global:LASTEXITCODE = 0; "
+        "if ($a[0] -eq '/list') { foreach ($g in $global:Plans) { 'Schéma napájania - GUID: ' + $g + '  (plán)' } } "
+        "elseif ($a[0] -eq '/getactivescheme') { 'GUID schémy napájania: ' + $global:Active + '  (plán)' } "
+        "elseif ($a[0] -eq '/query') { if ($global:Plans -notcontains $a[1]) { $global:LASTEXITCODE = 1 } } "
+        f"elseif ($a[0] -eq '/setactive') {{ if ({'$true' if set_fails else '$false'}) {{ $global:LASTEXITCODE = 1 }} else {{ $global:Active = $a[1]; Add-Content -Path {lg} -Value ('active ' + $a[1]) }} }} }}; "
+        f"if ((Get-Command powercfg -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') {{ exit {STUB_GUARD_EXIT} }}; "
+    )
+    script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + stub + command
+    result = subprocess.run(
+        [_powershell_or_skip(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        env=dict(os.environ, ProgramData=str(program_data)), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != STUB_GUARD_EXIT, "powercfg was not stubbed - refusing to run the real one"
+    saved = program_data / "PortableFix" / "previous_power_plan_guid.txt"
+    calls = log.read_text(encoding="utf-8-sig").splitlines()
+    now = [c[7:] for c in calls if c.startswith("active ")]
+    return result, calls, now[-1] if now else active, saved
+
+
+def test_hp_switch_saves_the_active_plan_and_undo_restores_it(tmp_path):
+    action = _action("tune_power_high_performance")
+    result, _, active, saved = _power_run(tmp_path, action.command, OEM, [OEM, HP, BALANCED])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == HP and saved.read_text(encoding="utf-8-sig").strip() == OEM
+    result, calls, active, saved = _power_run(tmp_path, action.undo_command, HP, [OEM, HP, BALANCED])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == OEM and f"powercfg /setactive {OEM}" in calls
+    assert not saved.exists()
+
+
+def test_hp_switch_does_not_overwrite_the_saved_plan_when_hp_is_already_active(tmp_path):
+    action = _action("tune_power_high_performance")
+    saved = tmp_path / "ProgramData" / "PortableFix" / "previous_power_plan_guid.txt"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(OEM, encoding="ascii")
+    result, _, active, _ = _power_run(tmp_path, action.command, HP, [OEM, HP, BALANCED])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == HP and saved.read_text(encoding="utf-8-sig").strip() == OEM
+
+
+@pytest.mark.parametrize("saved_guid", [None, OEM, "not a guid"])
+def test_hp_undo_falls_back_to_balanced_without_a_usable_saved_plan(tmp_path, saved_guid):
+    # Nothing saved, the saved plan was deleted meanwhile (OEM not in the
+    # plan list) or the file is junk: Balanced, and it says so.
+    if saved_guid:
+        saved = tmp_path / "ProgramData" / "PortableFix" / "previous_power_plan_guid.txt"
+        saved.parent.mkdir(parents=True)
+        saved.write_text(saved_guid, encoding="ascii")
+    result, _, active, _ = _power_run(tmp_path, _action("tune_power_high_performance").undo_command, HP, [HP, BALANCED])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == BALANCED and "Balanced" in result.stdout
+
+
+def test_hp_switch_and_undo_report_a_failed_setactive(tmp_path):
+    action = _action("tune_power_high_performance")
+    result, _, active, saved = _power_run(tmp_path, action.command, OEM, [OEM, HP], set_fails=True)
+    assert result.returncode == 1 and "Could not activate" in result.stdout, result.stdout
+    assert active == OEM
+    result, _, _, _ = _power_run(tmp_path, action.undo_command, HP, [HP, BALANCED], set_fails=True)
+    assert result.returncode == 1 and "Could not restore the power plan" in result.stdout, result.stdout
+
+
+def test_hp_switch_without_the_plan_changes_nothing(tmp_path):
+    result, calls, active, saved = _power_run(tmp_path, _action("tune_power_high_performance").command, OEM, [OEM, BALANCED])
+    assert result.returncode == 0 and "not available" in result.stdout
+    assert active == OEM and not saved.exists()
+    assert not [c for c in calls if c.startswith("powercfg /setactive")]

@@ -264,3 +264,11 @@ def test_plan_without_fixes_needs_no_approval():
     table, _ = symptoms.parse({"symptoms": [_entry(fixes=[])]})
     symptoms.check_catalog(table, FAKE_CATALOG)
     assert symptoms.plan(table.symptoms[0], FAKE_CATALOG, "sk")["needs_approval"] is False
+
+
+def test_wifi_drops_attaches_the_wifi_history_report(table, catalog):
+    # N6: three days of connect/disconnect events are the evidence for "wifi
+    # keeps dropping" - a SAFE report action, not a fix.
+    symptom = next(s for s in table.symptoms if s.id == "wifi_drops")
+    assert "net_wifi_history_report" in symptom.diagnostics
+    assert catalog["net_wifi_history_report"].risk.value == "SAFE"
