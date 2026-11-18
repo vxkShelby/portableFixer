@@ -696,7 +696,6 @@ def _wlanreport_stubs(netsh_exit=0, writes=True):
     return [
         "function netsh { Add-Content -Path $global:PfLog -Value ('netsh ' + ($args -join ' ')); "
         f"if ($args[2] -eq 'wlanreport') {{ {write}$global:LASTEXITCODE = {netsh_exit} }} else {{ $global:LASTEXITCODE = 0 }} }}",
-        "function icacls { Add-Content -Path $global:PfLog -Value ('icacls ' + ($args[0])); $global:LASTEXITCODE = 0 }",
     ]
 
 
@@ -704,7 +703,7 @@ def _run_wlanreport(tmp_path, build=26100, **stub_args):
     registry = {CV_KEY: {"CurrentBuildNumber": str(build)}}
     result, calls, _ = _run_registry(
         tmp_path, _action("net_wifi_history_report").command, registry,
-        extra_stubs=_wlanreport_stubs(**stub_args), extra_names=["netsh", "icacls"],
+        extra_stubs=_wlanreport_stubs(**stub_args), extra_names=["netsh"],
     )
     return result, calls
 
@@ -724,7 +723,7 @@ def test_wifi_history_report_is_a_safe_bilingual_report_next_to_the_battery_repo
     assert "24H2" in action.description_sk and "24H2" in action.description_en
 
 
-def test_wifi_history_report_copies_the_report_into_a_locked_down_folder(tmp_path):
+def test_wifi_history_report_copies_the_report_into_the_backup_folder(tmp_path):
     result, calls = _run_wlanreport(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     folders = _saved_reports(tmp_path)
@@ -732,8 +731,7 @@ def test_wifi_history_report_copies_the_report_into_a_locked_down_folder(tmp_pat
     assert (folders[0] / "WlanReport.html").read_text(encoding="utf-8-sig").strip() == "WLAN REPORT"
     assert "Wi-Fi history report saved to: " + str(folders[0] / "WlanReport.html") in result.stdout
     assert "netsh wlan show wlanreport" in calls
-    assert calls.count("icacls " + str(tmp_path / "ProgramData" / "PortableFix")) == 1
-    assert "icacls " + str(folders[0]) in calls
+    assert not any(c.startswith("icacls") for c in calls)  # the folder is secured by the central prelude
 
 
 def test_wifi_history_report_never_copies_a_stale_report(tmp_path):
@@ -756,3 +754,37 @@ def test_wifi_history_report_failure_explains_the_location_requirement_only_on_2
     assert result.returncode == 1, result.stdout + result.stderr
     assert "netsh exit code 1" in result.stdout
     assert ("Location access is off" in result.stdout) == mentions_location
+
+
+def test_wifi_history_report_is_wrapped_by_the_central_backup_folder_hardening():
+    # Not a hand-rolled icacls: executor.build_execution_plan prepends
+    # backup_acl.HARDEN_PS (owner/ACL by SID, untrusted items set aside, fail
+    # closed) to every real run whose command mentions ProgramData\PortableFix.
+    from portablefix.backup_acl import HARDEN_PS
+    from portablefix.executor import build_execution_plan
+
+    command = _action("net_wifi_history_report").command
+    assert "icacls" not in command
+    script = build_execution_plan(command, dry_run=False).argv[-1]
+    assert script.startswith(HARDEN_PS) and script.count(HARDEN_PS) == 1
+
+
+def _junction(link: Path, target: Path) -> bool:
+    import subprocess as sp
+
+    target.mkdir(parents=True, exist_ok=True)
+    made = sp.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+    return made.returncode == 0
+
+
+def test_wifi_history_report_refuses_a_reparse_point_instead_of_writing_through_it(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    link = tmp_path / "ProgramData" / "PortableFix"
+    link.parent.mkdir(parents=True)
+    if not _junction(link, elsewhere):
+        pytest.skip("cannot create a junction here")
+    result, calls = _run_wlanreport(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "is a reparse point" in result.stdout
+    assert list(elsewhere.rglob("*.html")) == []
+    assert "netsh wlan show wlanreport" not in calls

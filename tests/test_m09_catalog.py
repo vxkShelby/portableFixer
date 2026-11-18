@@ -949,3 +949,51 @@ def test_hp_switch_without_the_plan_changes_nothing(tmp_path):
     assert result.returncode == 0 and "not available" in result.stdout
     assert active == OEM and not saved.exists()
     assert not [c for c in calls if c.startswith("powercfg /setactive")]
+
+
+def test_hp_plan_file_is_wrapped_by_the_central_backup_folder_hardening(tmp_path):
+    # The saved GUID lives in %ProgramData%\PortableFix: the run is prefixed
+    # with backup_acl.HARDEN_PS and so is the undo script step (undo.ps1).
+    from portablefix import undo
+    from portablefix.backup_acl import HARDEN_PS
+    from portablefix.executor import build_execution_plan
+
+    action = _action("tune_power_high_performance")
+    script = build_execution_plan(action.command, dry_run=False).argv[-1]
+    assert script.startswith(HARDEN_PS) and script.count(HARDEN_PS) == 1
+    path = undo.create_undo_script(tmp_path, "run1", steps=[action.undo_command])
+    text = path.read_text(encoding="utf-8-sig")
+    assert HARDEN_PS.rstrip() in text and text.index(HARDEN_PS.rstrip()) < text.index(action.undo_command)
+
+
+def _junction(link: Path, target: Path) -> bool:
+    target.mkdir(parents=True, exist_ok=True)
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return made.returncode == 0
+
+
+def test_hp_switch_refuses_a_reparse_point_folder_before_changing_the_plan(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    link = tmp_path / "ProgramData" / "PortableFix"
+    link.parent.mkdir(parents=True)
+    if not _junction(link, elsewhere):
+        pytest.skip("cannot create a junction here")
+    result, calls, active, _ = _power_run(tmp_path, _action("tune_power_high_performance").command, OEM, [OEM, HP])
+    assert result.returncode == 1 and "reparse point" in result.stdout, result.stdout
+    assert active == OEM and not [c for c in calls if c.startswith("powercfg /setactive")]
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_hp_undo_ignores_and_keeps_a_saved_plan_behind_a_reparse_point(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere).mkdir(parents=True)
+    (elsewhere / "previous_power_plan_guid.txt").write_text(OEM, encoding="ascii")
+    link = tmp_path / "ProgramData" / "PortableFix"
+    link.parent.mkdir(parents=True)
+    if not _junction(link, elsewhere):
+        pytest.skip("cannot create a junction here")
+    result, _, active, _ = _power_run(tmp_path, _action("tune_power_high_performance").undo_command, HP, [OEM, HP, BALANCED])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == BALANCED
+    assert (elsewhere / "previous_power_plan_guid.txt").exists()
