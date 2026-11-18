@@ -219,6 +219,7 @@ class LayoutMixin:
         bold_font.setBold(True)
         metrics = QFontMetrics(bold_font)
         widest_label = max((metrics.horizontalAdvance(label) for label in category_labels), default=0)
+        widest_label = int(widest_label * style.text_scale())
         self.category_list.setFixedWidth(min(max(widest_label + 64, 190), 300))
         body_layout.addWidget(self.category_list)
 
@@ -259,18 +260,6 @@ class LayoutMixin:
         self.global_select_button.setMenu(global_select_menu)
         global_select_row.addWidget(self.global_select_button)
         global_select_row.addStretch(1)
-        center_layout.addLayout(global_select_row)
-
-        preset_row = QHBoxLayout()
-        preset_row.setSpacing(6)
-        preset_label = QLabel(self._t("presets_label"))
-        preset_label.setObjectName("selectionScope")
-        preset_row.addWidget(preset_label)
-        self._preset_buttons: dict[str, QPushButton] = {}
-        preset_row.addWidget(self._make_preset_button(self._t("preset_quick_clean"), "quick_clean"))
-        preset_row.addWidget(self._make_preset_button(self._t("preset_full_diagnostic"), "full_diagnostic"))
-        preset_row.addWidget(self._make_preset_button(self._t("preset_privacy_debloat"), "privacy_debloat"))
-        preset_row.addStretch(1)
         self.search_box = QLineEdit()
         self.search_box.setObjectName("searchBox")
         self.search_box.setPlaceholderText(self._t("search_placeholder"))
@@ -282,28 +271,32 @@ class LayoutMixin:
         # rather than as a window-wide shortcut, which would also swallow
         # Esc from dialogs and the console.
         self.search_box.installEventFilter(self)
-        preset_row.addWidget(self.search_box)
-        center_layout.addLayout(preset_row)
+        global_select_row.addWidget(self.search_box)
+        center_layout.addLayout(global_select_row)
 
-        # User-saved presets get their own row: sharing the built-in preset
-        # row squeezed the search box down to nothing once a couple existed.
-        # The inner sub-layout lets saving/deleting rebuild only these
+        # Built-in and the technician's own presets share one row (the search
+        # box lives on the select row above, so they no longer squeeze it).
+        # The inner sub-layout lets saving/deleting rebuild only the custom
         # buttons, not the whole window.
-        custom_preset_row = QHBoxLayout()
-        custom_preset_row.setSpacing(6)
-        custom_preset_label = QLabel(self._t("custom_presets_label"))
-        custom_preset_label.setObjectName("selectionScope")
-        custom_preset_row.addWidget(custom_preset_label)
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        preset_label = QLabel(self._t("presets_label"))
+        preset_label.setObjectName("selectionScope")
+        preset_row.addWidget(preset_label)
+        self._preset_buttons: dict[str, QPushButton] = {}
+        preset_row.addWidget(self._make_preset_button(self._t("preset_quick_clean"), "quick_clean"))
+        preset_row.addWidget(self._make_preset_button(self._t("preset_full_diagnostic"), "full_diagnostic"))
+        preset_row.addWidget(self._make_preset_button(self._t("preset_privacy_debloat"), "privacy_debloat"))
         self._custom_preset_layout = QHBoxLayout()
         self._custom_preset_layout.setSpacing(6)
         self._custom_preset_layout.setContentsMargins(0, 0, 0, 0)
-        custom_preset_row.addLayout(self._custom_preset_layout)
+        preset_row.addLayout(self._custom_preset_layout)
         self.save_preset_button = self._make_selection_button(self._t("preset_save_button"), self._on_save_preset_clicked)
         self.save_preset_button.setEnabled(False)
-        custom_preset_row.addWidget(self.save_preset_button)
-        custom_preset_row.addStretch(1)
+        preset_row.addWidget(self.save_preset_button)
+        preset_row.addStretch(1)
         self._rebuild_custom_preset_buttons()
-        center_layout.addLayout(custom_preset_row)
+        center_layout.addLayout(preset_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -507,7 +500,6 @@ class LayoutMixin:
         self.run_button = QPushButton(self._t("run_selected"))
         self.run_button.setObjectName("runButton")
         self.run_button.clicked.connect(self.run_selected_actions)
-        self._apply_run_button_dry_run_tint()
         run_row.addWidget(self.run_button, 1)
 
         self.cancel_button = QPushButton(self._t("cancel_batch"))
@@ -530,6 +522,9 @@ class LayoutMixin:
         self.console.setMaximumBlockCount(CONSOLE_MAX_LINES)
         self._console_window: QDialog | None = None
         self._console_fullscreen = False
+        # Folded to its toolbar row until a batch starts (the first build) -
+        # a rebuild (language toggle) keeps whatever the technician chose.
+        start_collapsed = getattr(self, "_console_collapsed", True) and not self._batch_active
         self._console_collapsed = False
         self._console_expanded_sizes: list[int] | None = None
         self._console_splitter_sizes: list[int] | None = None
@@ -569,6 +564,10 @@ class LayoutMixin:
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 1)
         root_layout.addWidget(self._main_splitter, 1)
+        if start_collapsed:
+            self._set_console_collapsed(True)
+            # Measured before the window has a size - useless for unfolding.
+            self._console_expanded_sizes = None
 
         self.category_list.currentRowChanged.connect(self._on_category_changed)
         if self._categories_order:

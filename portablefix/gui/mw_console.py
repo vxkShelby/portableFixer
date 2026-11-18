@@ -16,6 +16,7 @@ class ConsoleMixin:
 
     def _update_status_bar(self) -> None:
         selected = [aid for aid, cb in self._action_checkboxes.items() if cb.isChecked()]
+        self._apply_run_button_dry_run_tint()
         self.global_select_none_button.setEnabled(bool(selected))
         self.save_preset_button.setEnabled(bool(selected))
         if self._batch_active:
@@ -51,11 +52,14 @@ class ConsoleMixin:
             return
         if self._console_fullscreen:
             self._on_console_fullscreen_toggled()
-        self._console_collapsed = not self._console_collapsed
-        self.console.setVisible(not self._console_collapsed)
-        self.console_fullscreen_button.setEnabled(not self._console_collapsed)
-        self.console_popout_button.setEnabled(not self._console_collapsed)
-        if self._console_collapsed:
+        self._set_console_collapsed(not self._console_collapsed)
+
+    def _set_console_collapsed(self, collapsed: bool) -> None:
+        if collapsed == self._console_collapsed:
+            return
+        self._console_collapsed = collapsed
+        self.console.setVisible(not collapsed)
+        if collapsed:
             self._console_expanded_sizes = self._main_splitter.sizes()
             # The toolbar row only - a splitter would otherwise keep the
             # console's old height as empty space.
@@ -63,11 +67,23 @@ class ConsoleMixin:
             self.console_collapse_button.setText(f"▸ {self._t('console_expand')}")
         else:
             self._console_panel.setMaximumHeight(16777215)
-            if self._console_expanded_sizes:
-                self._main_splitter.setSizes(self._console_expanded_sizes)
+            sizes = self._console_expanded_sizes
+            if not sizes or not sizes[1] or sum(sizes) <= 0:
+                # Never seen expanded (it starts folded) or measured before
+                # the window had a size: the 3:1 split of the stretch factors.
+                total = sum(self._main_splitter.sizes()) or 4
+                sizes = [total * 3 // 4, total - total * 3 // 4]
+            self._main_splitter.setSizes(sizes)
             self.console_collapse_button.setText(f"▾ {self._t('console_collapse')}")
 
+    def _show_console(self) -> None:
+        """Opens a folded console (a batch or a card preview is about to write
+        into it); a popped-out one is already visible."""
+        if self._console_window is None and self._console_collapsed:
+            self._on_console_collapse_toggled()
+
     def _on_console_fullscreen_toggled(self) -> None:
+        self._show_console()
         if self._console_fullscreen:
             sizes = self._console_splitter_sizes or [3, 1]
             self._main_splitter.setSizes(sizes)
@@ -84,6 +100,7 @@ class ConsoleMixin:
             self._console_window.raise_()
             self._console_window.activateWindow()
             return
+        self._show_console()
         window = QDialog(self)
         window.setWindowTitle(self._t("console_popout_title"))
         window.setStyleSheet(style.stylesheet())

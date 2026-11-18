@@ -420,13 +420,20 @@ class SettingsMixin:
         self._apply_run_button_dry_run_tint()
 
     def _apply_run_button_dry_run_tint(self) -> None:
-        """Amber Run button while DRY-RUN is on (research-design-additions
-        item 9) - QSS runButton[dryrun="true"], like riskBadge[risk=...]."""
+        """The Run button's look and label: amber while DRY-RUN is on
+        (research-design-additions item 9 - QSS runButton[dryrun="true"], like
+        riskBadge[risk=...]), the selected count in the label, and disabled
+        (neutral grey, via QSS) while nothing is selected or a batch runs."""
         dry_run = bool(self.settings.dry_run)
+        count = sum(1 for cb in self._action_checkboxes.values() if cb.isChecked())
+        if count:
+            self.run_button.setText(self._t("run_selected_count_dry" if dry_run else "run_selected_count").format(count=count))
+        else:
+            self.run_button.setText(self._t("run_selected_preview" if dry_run else "run_selected"))
         self.run_button.setProperty("dryrun", "true" if dry_run else "false")
-        self.run_button.setText(self._t("run_selected_preview" if dry_run else "run_selected"))
         tip = self._t("run_dry_run_tooltip") if dry_run else self._t("run_selected")
         self.run_button.setToolTip(f"{tip} (F5)")
+        self.run_button.setEnabled(bool(count) and not self._batch_start_blocked())
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
 

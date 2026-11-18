@@ -2,7 +2,7 @@
 
 import socket
 
-from PySide6.QtCore import QUrl, Qt
+from PySide6.QtCore import QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,14 +21,32 @@ from ..settings import PRESETS
 from .mw_common import DASHBOARD_SYMPTOM_CHIPS, HISTORY_MAX_ROWS, _DashboardTile
 
 
+# One tile column per this many pixels of dashboard width (2 to 4 columns).
+_TILE_COLUMN_WIDTH = 210
+# Worst verdict first on the health tiles.
+_HEALTH_STATE_ORDER = {"critical": 0, "attention": 1, "unknown": 2, "ok": 3}
+
+
+class _DashboardCard(QFrame):
+    """The dashboard card; tells the mixin when its width changes so the tile
+    grids can pick their column count."""
+
+    resized = Signal(int)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.resized.emit(event.size().width())
+
+
 class DashboardMixin:
     """Dashboard tiles, health, history.
 
     Methods moved verbatim out of MainWindow, which inherits them."""
 
     def _build_dashboard_card(self, category_i18n_keys: dict) -> QFrame:
-        card = QFrame()
+        card = _DashboardCard()
         card.setObjectName("actionCard")
+        card.resized.connect(self._on_dashboard_resized)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(14, 10, 14, 10)
         card_layout.setSpacing(10)
@@ -40,6 +58,31 @@ class DashboardMixin:
         # B14: one-time "start here" hint, dismissed for good.
         self.first_run_banner = self._build_first_run_banner()
         card_layout.addWidget(self.first_run_banner)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(16)
+        # Kept on self so batch start/end can lock it together with
+        # run_button - it starts a batch too. Its initial state matters when
+        # a language toggle rebuilds the dashboard while a batch, its report
+        # or an update download is still in flight.
+        self.dashboard_analyze_button = QPushButton(self._t("dashboard_analyze_button"))
+        self.dashboard_analyze_button.setObjectName("runButton")
+        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
+        self.dashboard_analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
+        top_row.addWidget(self.dashboard_analyze_button)
+        self._analyze_promise_label = QLabel(self._t("dashboard_analyze_promise"))
+        self._analyze_promise_label.setObjectName("selectionScope")
+        top_row.addWidget(self._analyze_promise_label)
+        top_row.addStretch(1)
+        card_layout.addLayout(top_row)
+
+        # Before the first analysis this block is the dashboard's hero: the one
+        # primary button and one sentence saying it changes nothing. It stays
+        # as the compact "analyze again" row once there are results.
+        self._health_empty_label = QLabel(self._t("dashboard_analyze_hero"))
+        self._health_empty_label.setObjectName("selectionScope")
+        self._health_empty_label.setWordWrap(True)
+        card_layout.addWidget(self._health_empty_label)
 
         # B6 / research G27: the home user's entry point. The client's
         # complaint -> the top 3 symptoms, each a tile like the health tiles
@@ -78,29 +121,12 @@ class DashboardMixin:
         hero.setVisible(bool(self._symptoms.symptoms))
         card_layout.addWidget(hero)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(16)
-        # Kept on self so batch start/end can lock it together with
-        # run_button - it starts a batch too. Its initial state matters when
-        # a language toggle rebuilds the dashboard while a batch, its report
-        # or an update download is still in flight.
-        self.dashboard_analyze_button = QPushButton(self._t("dashboard_analyze_button"))
-        self.dashboard_analyze_button.setObjectName("runButton")
-        self.dashboard_analyze_button.setEnabled(not self._batch_start_blocked())
-        self.dashboard_analyze_button.clicked.connect(lambda _checked=False: self._run_dashboard_analysis())
-        top_row.addWidget(self.dashboard_analyze_button)
-        promise_label = QLabel(self._t("dashboard_analyze_promise"))
-        promise_label.setObjectName("selectionScope")
-        top_row.addWidget(promise_label)
-        top_row.addStretch(1)
-        card_layout.addLayout(top_row)
-
         # Research G02: one verdict per health area from the findings the
         # diagnostics reported - no score formula. Unknown until checked.
-        health_grid = QGridLayout()
-        health_grid.setSpacing(10)
+        self._health_grid = QGridLayout()
+        self._health_grid.setSpacing(10)
         self._health_tiles = {}
-        for index, area in enumerate(pfjson.AREAS):
+        for area in pfjson.AREAS:
             tile = QFrame()
             tile.setObjectName("actionCard")
             tile_layout = QVBoxLayout(tile)
@@ -122,21 +148,18 @@ class DashboardMixin:
                 tile_layout.addWidget(widget)
             tile_layout.addStretch(1)
             self._health_tiles[area] = (tile, state_label, reason_label, fix_button)
-            health_grid.addWidget(tile, index // 4, index % 4)
-        card_layout.addLayout(health_grid)
-        # B14: while nothing has been checked, one line instead of seven
-        # identical reasons.
-        self._health_empty_label = QLabel(self._t("health_unknown_reason"))
-        self._health_empty_label.setObjectName("selectionScope")
-        card_layout.addWidget(self._health_empty_label)
+        card_layout.addLayout(self._health_grid)
+        # B14: while nothing has been checked the tiles stay hidden - the hero
+        # above says so once instead of seven identical "not checked" tiles.
+        self._dashboard_columns = 3  # until the card's first resize says otherwise
         self._refresh_health_tiles()
 
 
-        grid = QGridLayout()
-        grid.setSpacing(10)
+        self._category_grid = QGridLayout()
+        self._category_grid.setSpacing(10)
+        self._category_tile_order: list[_DashboardTile] = []
         tile_categories = [c for c in self._categories_order if c != ModuleCategory.DASHBOARD]
-        columns = 4
-        for index, category in enumerate(tile_categories):
+        for category in tile_categories:
             tile = _DashboardTile()
             tile.setObjectName("actionCard")
             tile.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -162,8 +185,9 @@ class DashboardMixin:
             tile.setAccessibleDescription(self._t("a11y_dashboard_tile_hint"))
             self._update_dashboard_tile_accessible_name(category)
             tile.activated.connect(lambda c=category: self._dashboard_tile_clicked(c))
-            grid.addWidget(tile, index // columns, index % columns)
-        card_layout.addLayout(grid)
+            self._category_tile_order.append(tile)
+        self._layout_category_tiles()
+        card_layout.addLayout(self._category_grid)
 
         history_heading = QLabel(self._t("history_heading"))
         history_heading.setObjectName("cardHeading")
@@ -185,6 +209,30 @@ class DashboardMixin:
 
         card_layout.addStretch(1)
         return card
+
+    def _on_dashboard_resized(self, width: int) -> None:
+        columns = max(2, min(4, width // _TILE_COLUMN_WIDTH))
+        if columns != self._dashboard_columns:
+            self._dashboard_columns = columns
+            self._layout_health_tiles()
+            self._layout_category_tiles()
+
+    def _layout_category_tiles(self) -> None:
+        self._regrid(self._category_grid, self._category_tile_order)
+
+    def _layout_health_tiles(self) -> None:
+        order = getattr(self, "_health_order", None) or list(self._health_tiles)
+        self._regrid(self._health_grid, [self._health_tiles[area][0] for area in order])
+
+    def _regrid(self, grid: QGridLayout, tiles: list) -> None:
+        columns = self._dashboard_columns
+        for tile in tiles:
+            grid.removeWidget(tile)
+        for index, tile in enumerate(tiles):
+            grid.addWidget(tile, index // columns, index % columns)
+        # Columns of a previous, wider layout would keep their old stretch.
+        for column in range(4):
+            grid.setColumnStretch(column, 1 if column < columns else 0)
 
     def _update_dashboard_tile_accessible_name(self, category: ModuleCategory) -> None:
         # The tile's text lives in child QLabels focus never reaches - fold
@@ -274,9 +322,16 @@ class DashboardMixin:
         message_key = "msg_en" if self.settings.language == "en" else "msg_sk"
         unchecked = all(v["state"] == "unknown" for v in verdicts.values())
         self._health_empty_label.setVisible(unchecked)
+        self._analyze_promise_label.setVisible(not unchecked)
+        self.dashboard_analyze_button.setMinimumHeight(44 if unchecked else 0)
+        self._health_order = sorted(
+            verdicts, key=lambda area: (_HEALTH_STATE_ORDER[verdicts[area]["state"]], list(verdicts).index(area))
+        )
+        self._layout_health_tiles()
         for area, (tile, state_label, reason_label, fix_button) in self._health_tiles.items():
             verdict = verdicts[area]
             state = verdict["state"]
+            tile.setVisible(not unchecked)
             state_label.setText(self._t("health_state_unchecked" if unchecked else f"health_state_{state}"))
             state_label.setProperty("state", state)
             state_label.style().unpolish(state_label)
