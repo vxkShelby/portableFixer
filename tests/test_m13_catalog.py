@@ -190,7 +190,8 @@ def _pwsh_or_skip() -> str:
     return exe
 
 
-def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, target=None, keys_exist: bool = True):
+def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, target=None, keys_exist: bool = True,
+                           extra_stubs: tuple = ()):
     """Runs `command` the way the executor does (prelude included when
     `target` is given) with every registry and file cmdlet stubbed: each
     registry call prints "REG <cmdlet> <path>" straight to the console (a
@@ -216,7 +217,12 @@ def _run_user_hive_command(command: str, hive: str, hive_loaded: bool = True, ta
             f"function {name} {{ [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name, $Value, $Type, "
             f"$PropertyType, $ItemType, [switch] $Force) [Console]::Out.WriteLine('REG {name} ' + $Path){value_line} }}"
         )
-    stubbed = ("Test-Path", "Get-Content", "Set-Content") + REGISTRY_STUBS
+    # Copilot (F6) is an AppX package: never let a test query or remove the
+    # real one. The stubs answer "not installed".
+    stubs.append("function Get-AppxPackage { [CmdletBinding()] param($Name, $User) }")
+    stubs.append("function Remove-AppxPackage { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Package, $User) process { } }")
+    stubs.extend(extra_stubs)  # a later definition of the same function wins
+    stubbed = ("Test-Path", "Get-Content", "Set-Content", "Get-AppxPackage", "Remove-AppxPackage") + REGISTRY_STUBS
     guard = (
         "foreach ($n in " + ", ".join(f"'{n}'" for n in stubbed) + ") { "
         "if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') "
@@ -633,3 +639,77 @@ def test_m13_catalog_parses_in_powershell(tmp_path):
         capture_output=True, text=True, timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- F6: Copilot is a Store app on 24H2+, the policy alone does not remove it -
+
+
+def _copilot_stubs(installed: bool = True, remove_fails: bool = False, query_fails: bool = False):
+    """Get-AppxPackage answers one Microsoft.Copilot package while
+    `installed`; Remove-AppxPackage uninstalls it (or raises). Each call
+    reports the -User it was given. Get-ItemProperty answers "policy set"."""
+    return (
+        f"$global:__pfCopilot = ${str(installed).lower()}",
+        "function Get-ItemProperty { [CmdletBinding()] param([Parameter(Position=0)] $Path, $Name) "
+        "[pscustomobject]@{ TurnOffWindowsCopilot = 1 } }",
+        "function Get-AppxPackage { [CmdletBinding()] param($Name, $User) "
+        + ("throw 'appx unavailable'; " if query_fails else "")
+        + "[Console]::Out.WriteLine('APPX Get ' + $Name + ' user=' + $User); "
+        "if ($Name -eq 'Microsoft.Copilot' -and $global:__pfCopilot) { [pscustomobject]@{ Name = 'Microsoft.Copilot' } } }",
+        "function Remove-AppxPackage { [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)] $Package, $User) "
+        "process { [Console]::Out.WriteLine('APPX Remove ' + $Package.Name + ' user=' + $User); "
+        + ("Write-Error 'locked' } }" if remove_fails else "$global:__pfCopilot = $false } }"),
+    )
+
+
+def test_m13_removal_list_has_the_copilot_store_app():
+    for action_id in ("debloat_remove_promo_apps", "debloat_remove_provisioned"):
+        assert "'Microsoft.Copilot'" in _m13_action(action_id).command, action_id
+
+
+def test_m13_disable_copilot_removes_the_store_app_for_the_signed_in_user():
+    action = _m13_action("debloat_disable_copilot")
+    result, _ = _run_user_hive_command(action.command, CLIENT_HIVE, target=_client(), extra_stubs=_copilot_stubs())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "APPX Remove Microsoft.Copilot user=" + CLIENT_SID in result.stdout
+    assert "APPX Get Microsoft.Copilot user=" + CLIENT_SID in result.stdout
+
+
+def test_m13_disable_copilot_fails_honestly_when_the_app_stays_installed():
+    action = _m13_action("debloat_disable_copilot")
+    result, _ = _run_user_hive_command(
+        action.command, CLIENT_HIVE, target=_client(), extra_stubs=_copilot_stubs(remove_fails=True),
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Microsoft.Copilot) is still installed" in result.stdout
+
+
+@pytest.mark.parametrize("kwargs, state", [
+    ({"installed": False}, "APPLIED"),
+    ({"installed": True}, "NOT_APPLIED"),
+    ({"query_fails": True}, "UNKNOWN"),
+])
+def test_m13_disable_copilot_check_tests_the_package_not_only_the_policy(kwargs, state):
+    action = _m13_action("debloat_disable_copilot")
+    result, _ = _run_user_hive_command(
+        action.check_command, CLIENT_HIVE, target=_client(), extra_stubs=_copilot_stubs(**kwargs),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().splitlines()[-1] == state, result.stdout
+
+
+def test_m13_disable_copilot_check_is_unknown_for_a_signed_out_user():
+    action = _m13_action("debloat_disable_copilot")
+    result, _ = _run_user_hive_command(
+        action.check_command, CLIENT_HIVE, hive_loaded=False, target=_client(), extra_stubs=_copilot_stubs(installed=False),
+    )
+    assert result.stdout.strip().splitlines()[-1] == "UNKNOWN", result.stdout
+
+
+# --- F2: location policy also blinds PortableFix's own Wi-Fi diagnostics -----
+
+
+@pytest.mark.parametrize("field", ["description_sk", "description_en"])
+def test_m13_disable_location_warns_that_it_blinds_the_wifi_diagnostics(field):
+    text = getattr(_m13_action("debloat_disable_location"), field)
+    assert "netsh wlan" in text and "24H2" in text and "Wi-Fi" in text

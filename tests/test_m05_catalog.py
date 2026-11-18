@@ -96,41 +96,48 @@ def test_m05_catalog_uninstall_last_update_requires_reboot():
     module = load_module(CATALOG_PATH)
     action = next(a for a in module.actions if a.id == "wu_uninstall_last_update")
     assert action.risk == RiskLevel.REQUIRES_REBOOT
+    assert action.restart_before_next is True
     assert action.undo_command is None
-    assert "wusa.exe" in action.command
+    # wusa /quiet uninstall is refused by Windows (disabled since 1507).
+    assert "wusa" not in action.command
+    assert "/Remove-Package" in action.command and "/NoRestart" in action.command
+    # DISM's text is localized: only its exit code may decide.
+    assert "-match" not in action.command.split("dism.exe", 1)[1]
+    assert "Select-String" not in action.command
 
 
-def test_m05_catalog_uninstall_last_update_uses_wua_history_not_gethotfix():
-    # Get-HotFix's InstalledOn field is unreliable (frequently null on real
-    # machines), so sorting by it doesn't reliably surface the actual most
-    # recent update. The WUA COM API's update history is more consistent;
-    # Get-HotFix only tells whether a KB is an installed servicing package.
-    module = load_module(CATALOG_PATH)
-    action = next(a for a in module.actions if a.id == "wu_uninstall_last_update")
-    assert "InstalledOn" not in action.command
-    assert "Microsoft.Update.Session" in action.command
-    assert "QueryHistory" in action.command
-
+BASE_PKG = "Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.1.1.0"
+OLD_PKG = "Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.4061.1.8"
+NEW_PKG = "Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.4349.1.10"
 
 UNINSTALL_STUBS = r"""
-function New-Object { [CmdletBinding()] param([string] $ComObject) $searcher = [pscustomobject]@{}; $searcher | Add-Member ScriptMethod GetTotalHistoryCount { @($global:WUH).Count }; $searcher | Add-Member ScriptMethod QueryHistory { param($start, $count) $global:WUH }; $session = [pscustomobject]@{ S = $searcher }; $session | Add-Member ScriptMethod CreateUpdateSearcher { $this.S }; $session }
-function Get-HotFix { [CmdletBinding()] param() foreach ($id in $global:HOTFIX) { [pscustomobject]@{ HotFixID = $id } } }
-function wusa.exe { [Console]::Out.WriteLine('STUB wusa ' + ($args -join ' ')); $global:LASTEXITCODE = 3010 }
-foreach ($n in 'New-Object', 'Get-HotFix', 'wusa.exe') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
+function Get-ChildItem { [CmdletBinding()] param([string] $LiteralPath) foreach ($n in $global:PKGS.Keys) { [pscustomobject]@{ PSChildName = $n; PSPath = 'CBS::' + $n } } }
+function Get-ItemProperty { [CmdletBinding()] param([string] $LiteralPath) $global:PKGS[$LiteralPath.Substring(5)] }
+function dism.exe { [Console]::Out.WriteLine('STUB dism ' + ($args -join ' ')); [Console]::Out.WriteLine('Hotfix lokalizovaný text'); $global:LASTEXITCODE = $global:DISM_EXIT }
+foreach ($n in 'Get-ChildItem', 'Get-ItemProperty', 'dism.exe') { if ((Get-Command $n -EA SilentlyContinue | Select-Object -First 1).CommandType -ne 'Function') { exit 97 } }
 """
 
 
-def _run_uninstall(history, hotfixes):
-    """history: (title, days ago, operation, result code)."""
-    entries = ", ".join(
-        f"[pscustomobject]@{{ Title = {_ps_quote(title)}; Date = [DateTime]::UtcNow.AddDays(-{days}); Operation = {op}; ResultCode = {rc} }}"
-        for title, days, op, rc in history
-    )
+def _filetime(days_ago: float) -> int:
+    from datetime import datetime, timedelta, timezone
+
+    moment = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return int((moment - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 10_000_000)
+
+
+def _run_uninstall(packages, dism_exit=3010):
+    """packages: {servicing package name: (CurrentState, days since install)}."""
+    rows = []
+    for name, (state, days) in packages.items():
+        ft = _filetime(days)
+        rows.append(
+            f"{_ps_quote(name)} = [pscustomobject]@{{ CurrentState = {state}; InstallTimeHigh = {ft >> 32}; InstallTimeLow = {ft & 0xFFFFFFFF} }}"
+        )
     command = next(a for a in load_module(CATALOG_PATH).actions if a.id == "wu_uninstall_last_update").command
     script = "\n".join([
         "[Console]::OutputEncoding=[Text.Encoding]::UTF8",
-        f"$global:WUH = @({entries})",
-        "$global:HOTFIX = @(" + ", ".join(_ps_quote(h) for h in hotfixes) + ")",
+        "$global:PKGS = [ordered]@{ " + "; ".join(rows) + " }",
+        f"$global:DISM_EXIT = {dism_exit}",
         UNINSTALL_STUBS, command,
     ])
     result = subprocess.run(
@@ -142,37 +149,37 @@ def _run_uninstall(history, hotfixes):
     return result
 
 
-DEFENDER = "Security Intelligence Update for Microsoft Defender Antivirus - KB2267602 (Version 1.431.0.0)"
-CUMULATIVE = "2026-03 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5055523)"
-DOTNET = "2026-02 Cumulative Update for .NET Framework 3.5 and 4.8.1 (KB5054980)"
-
-
-def test_m05_uninstall_last_update_skips_defender_and_picks_the_installed_cumulative_update():
-    # The newest successful entry is nearly always a Defender definition
-    # update - wusa /uninstall /kb:2267602 always fails. The cumulative
-    # update that Get-HotFix still lists is what the technician means.
-    history = [(DEFENDER, 0.1, 1, 2), (DEFENDER, 0.6, 1, 2), (DOTNET, 1.5, 1, 4), (CUMULATIVE, 2.5, 1, 2),
-               ("2026-02 Cumulative Update (KB5050000)", 30.5, 1, 2)]
-    result = _run_uninstall(history, hotfixes=["KB5055523", "KB5050000"])
+def test_m05_uninstall_last_update_removes_the_newest_installed_rollup_with_dism():
+    # Listed oldest-first and newest-in-the-middle on purpose: the install
+    # time decides, not the enumeration order; the base image package and a
+    # superseded package (state 80) are never candidates.
+    result = _run_uninstall({BASE_PKG: (112, 400), NEW_PKG: (112, 3), OLD_PKG: (112, 40), "Package_for_RollupFix~x~amd64~~26100.9999.1.1": (80, 1)})
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Chosen: KB5055523 - " + CUMULATIVE in result.stdout
-    assert "reason: newest successful install still listed by Get-HotFix" in result.stdout
-    assert "Skipped newer Defender/definition entries: KB2267602" in result.stdout
-    assert "STUB wusa /uninstall /kb:5055523 /quiet /norestart" in result.stdout
-    assert "Uninstall of KB5055523 started (exit code 3010)" in result.stdout
+    assert "Newest installed cumulative update package: " + NEW_PKG in result.stdout
+    assert f"STUB dism /Online /Remove-Package /PackageName:{NEW_PKG} /NoRestart" in result.stdout
+    assert "Removal of " + NEW_PKG + " started (DISM exit code 3010). Restart required" in result.stdout
 
 
-def test_m05_uninstall_last_update_falls_back_to_the_newest_non_defender_entry_and_says_so():
-    result = _run_uninstall([(DEFENDER, 0.1, 1, 2), (DOTNET, 1.5, 1, 2)], hotfixes=["KB9999999"])
+def test_m05_uninstall_last_update_accepts_exit_code_zero_too():
+    result = _run_uninstall({OLD_PKG: (112, 40)}, dism_exit=0)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Chosen: KB5054980" in result.stdout and "NOT listed by Get-HotFix" in result.stdout
+    assert "DISM exit code 0" in result.stdout
 
 
-def test_m05_uninstall_last_update_refuses_when_only_defender_updates_are_in_history():
-    result = _run_uninstall([(DEFENDER, 0.1, 1, 2)], hotfixes=["KB2267602"])
+@pytest.mark.parametrize("packages", [{}, {BASE_PKG: (112, 400)}, {OLD_PKG: (80, 3)}])
+def test_m05_uninstall_last_update_refuses_when_there_is_no_update_to_remove(packages):
+    result = _run_uninstall(packages)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "No removable update found" in result.stdout and "KB2267602" in result.stdout
-    assert "STUB wusa" not in result.stdout
+    assert "there is no update to uninstall" in result.stdout
+    assert "STUB dism" not in result.stdout
+
+
+def test_m05_uninstall_last_update_reports_a_failed_removal_honestly():
+    result = _run_uninstall({OLD_PKG: (112, 40)}, dism_exit=-2146498555)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DISM could not remove " + OLD_PKG + " (exit code -2146498555, 0x800F0805)" in result.stdout
+    assert "Uninstall updates" in result.stdout
+    assert "Restart required" not in result.stdout
 
 
 def test_m05_reset_cache_in_use_warning_fails_and_points_at_stop_services():
